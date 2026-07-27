@@ -20,7 +20,7 @@ app.use(cookieParser())
 app.get('/api/session', (req, res) => res.json({ authenticated: isAuthenticated(req) }))
 app.post('/api/login', (req, res) => {
   try {
-    if (!login(String(req.body?.password || ''), res)) return res.status(401).json({ error: '密码不正确' })
+    if (!login(String(req.body?.username || ''), String(req.body?.password || ''), res)) return res.status(401).json({ error: '管理员账号或密码不正确' })
     addAudit('login', 'console')
     res.json({ ok: true })
   } catch (error) {

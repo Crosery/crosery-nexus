@@ -26,7 +26,8 @@ npm run start
 
 ## 环境变量
 
-- `CONSOLE_PASSWORD`：控制台单一管理密码。
+- `CONSOLE_USERNAME`：管理员账号，默认 `admin`。
+- `CONSOLE_PASSWORD`：管理员密码。
 - `SESSION_SECRET`：Cookie 会话签名密钥。
 - `CPA_BASE_URL`：CPA 地址，服务器部署默认 `http://127.0.0.1:8317`。
 - `CPA_MANAGEMENT_KEY`：CPA Management API 明文管理密钥，仅后端可见。

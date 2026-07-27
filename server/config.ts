@@ -6,6 +6,7 @@ export const config = {
   dataDir: process.env.DATA_DIR || path.resolve('data'),
   cpaBaseUrl: (process.env.CPA_BASE_URL || 'http://127.0.0.1:8317').replace(/\/$/, ''),
   cpaManagementKey: process.env.CPA_MANAGEMENT_KEY || '',
+  consoleUsername: process.env.CONSOLE_USERNAME || 'admin',
   consolePassword: process.env.CONSOLE_PASSWORD || '',
   sessionSecret: process.env.SESSION_SECRET || '',
   cookieSecure: process.env.COOKIE_SECURE !== 'false',

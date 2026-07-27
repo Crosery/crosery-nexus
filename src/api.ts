@@ -10,7 +10,7 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   session: () => request<{ authenticated: boolean }>('/api/session'),
-  login: (password: string) => request('/api/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  login: (username: string, password: string) => request('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request('/api/logout', { method: 'POST' }),
   bootstrap: <T>() => request<T>('/api/bootstrap'),
   analytics: <T>(days: number, keyId = '') => request<T>(`/api/analytics?days=${days}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}`),

@@ -15,9 +15,13 @@ function safeEqual(a: string, b: string) {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
-export function login(password: string, response: Response) {
-  if (!config.consolePassword || !config.sessionSecret) throw new Error('控制台登录配置缺失')
-  if (!safeEqual(password, config.consolePassword)) return false
+export function validateCredentials(username: string, password: string, expectedUsername: string, expectedPassword: string) {
+  return safeEqual(username, expectedUsername) && safeEqual(password, expectedPassword)
+}
+
+export function login(username: string, password: string, response: Response) {
+  if (!config.consoleUsername || !config.consolePassword || !config.sessionSecret) throw new Error('控制台登录配置缺失')
+  if (!validateCredentials(username, password, config.consoleUsername, config.consolePassword)) return false
   const expires = Date.now() + MAX_AGE
   const payload = `${expires}.${sign(String(expires))}`
   response.cookie(COOKIE, payload, {

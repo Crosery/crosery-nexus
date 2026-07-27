@@ -6,7 +6,7 @@ import type { ApiKeyItem, Group } from '../types'
 
 const defaultConcurrency = (groups: Group[]) => Object.fromEntries(groups.map((group) => [group.id, 2]))
 
-export function KeysPage({ keys, groups, onRefresh, onSelectKey }: { keys: ApiKeyItem[]; groups: Group[]; onRefresh: () => Promise<void>; onSelectKey: (key: ApiKeyItem) => void }) {
+export function KeysPage({ keys, groups, onRefresh, onSelectKey, onNotify }: { keys: ApiKeyItem[]; groups: Group[]; onRefresh: () => Promise<void>; onSelectKey: (key: ApiKeyItem) => void; onNotify: (message: string) => void }) {
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState<ApiKeyItem | null>(null)
   const [creating, setCreating] = useState(false)
@@ -19,6 +19,7 @@ export function KeysPage({ keys, groups, onRefresh, onSelectKey }: { keys: ApiKe
       const { key: fullKey } = await api.revealKey(key.id, token)
       await navigator.clipboard.writeText(fullKey)
       setCopiedId(key.id)
+      onNotify(`“${key.name}”的完整 API Key 已复制`)
       setTimeout(() => setCopiedId(''), 1600)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '复制失败')

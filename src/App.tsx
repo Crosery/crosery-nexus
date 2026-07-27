@@ -47,14 +47,14 @@ export default function App() {
     <aside className="sidebar">
       <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={17}/></div><div><strong>Crosery</strong><span>API Console</span></div></div>
       <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'nav-item active' : 'nav-item'} onClick={() => navigate(id)}><Icon size={18}/><span>{label}</span></button>)}</nav>
-      <div className="sidebar-foot"><div className="gateway-status"><span className="live-dot"/><div><strong>CPA Gateway</strong><small>在线</small></div></div><button className="nav-item logout" onClick={async () => { await api.logout(); setAuthenticated(false) }}><LogOut size={17}/><span>退出登录</span></button></div>
+      <div className="sidebar-foot"><div className="gateway-status"><span className="live-dot"/><div><strong>CPA Gateway</strong><small>在线</small></div></div><button className="nav-item logout" onClick={async () => { await api.logout(); setBootstrap(null); setAnalytics(null); setMonitor(null); setAuthenticated(false) }}><LogOut size={17}/><span>退出登录</span></button></div>
     </aside>
     <main className="main-content">
       <header className="topbar"><div className="crumb"><ShieldCheck size={16}/><span>console.ai.crosery.com</span></div><button className="icon-button top-refresh" onClick={refresh} title="刷新"><RefreshCw size={17}/></button></header>
       <div className="page-content">
         <div key={page} className="page-motion-layer">
           {page === 'dashboard' && <DashboardPage analytics={analytics} keys={bootstrap?.keys || []} onOpenKeys={() => navigate('keys')}/>}
-          {page === 'keys' && <KeysPage keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} onRefresh={refresh} onSelectKey={selectKey}/>}
+          {page === 'keys' && <KeysPage keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} onRefresh={refresh} onSelectKey={selectKey} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }}/>}
           {page === 'analytics' && <AnalyticsPage analytics={analytics} keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} days={days} setDays={setDays} keyId={keyId} setKeyId={setKeyId}/>}
           {page === 'monitor' && <MonitorPage data={monitor} loading={loading} onRefresh={loadMonitor}/>}
         </div>
