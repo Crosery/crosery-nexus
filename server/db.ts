@@ -41,6 +41,13 @@ db.exec(`
     reasoning_tokens INTEGER NOT NULL,
     cached_tokens INTEGER NOT NULL,
     total_tokens INTEGER NOT NULL,
+    error_detail TEXT NOT NULL DEFAULT '',
+    upstream_request_id TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    auth_index TEXT NOT NULL DEFAULT '',
+    reasoning_effort TEXT NOT NULL DEFAULT '',
+    service_tier TEXT NOT NULL DEFAULT '',
+    response_headers_json TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(key_hash) REFERENCES api_keys(key_hash) ON DELETE SET NULL
   );
 
@@ -56,6 +63,19 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 `)
+
+const usageColumns = new Set((db.prepare('PRAGMA table_info(usage_events)').all() as Array<{ name: string }>).map((column) => column.name))
+for (const [name, definition] of [
+  ['error_detail', "TEXT NOT NULL DEFAULT ''"],
+  ['upstream_request_id', "TEXT NOT NULL DEFAULT ''"],
+  ['source', "TEXT NOT NULL DEFAULT ''"],
+  ['auth_index', "TEXT NOT NULL DEFAULT ''"],
+  ['reasoning_effort', "TEXT NOT NULL DEFAULT ''"],
+  ['service_tier', "TEXT NOT NULL DEFAULT ''"],
+  ['response_headers_json', "TEXT NOT NULL DEFAULT '{}'"],
+] as const) {
+  if (!usageColumns.has(name)) db.exec(`ALTER TABLE usage_events ADD COLUMN ${name} ${definition}`)
+}
 
 export function transaction<T>(fn: () => T): T {
   db.exec('BEGIN IMMEDIATE')

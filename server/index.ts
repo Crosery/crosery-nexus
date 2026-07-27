@@ -140,13 +140,15 @@ app.get('/api/analytics', (req, res) => {
   const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
   const keyId = String(req.query.keyId || '')
   const where = keyId ? 'timestamp >= datetime(\'now\', ?) AND key_hash = ?' : 'timestamp >= datetime(\'now\', ?)'
+  const requestWhere = keyId ? 'u.timestamp >= datetime(\'now\', ?) AND u.key_hash = ?' : 'u.timestamp >= datetime(\'now\', ?)'
   const params = keyId ? [`-${days} days`, keyId] : [`-${days} days`]
   const summary = db.prepare(`SELECT COUNT(*) requests, COALESCE(SUM(total_tokens),0) tokens, COALESCE(AVG(latency_ms),0) avgLatency, COALESCE(AVG(CASE WHEN success=0 THEN 1.0 ELSE 0 END),0) errorRate FROM usage_events WHERE ${where}`).get(...params)
   const trend = db.prepare(`SELECT substr(timestamp,1,13) bucket, COUNT(*) requests, SUM(total_tokens) tokens, SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) errors FROM usage_events WHERE ${where} GROUP BY bucket ORDER BY bucket`).all(...params)
   const groups = db.prepare(`SELECT model_group name, COUNT(*) requests, SUM(total_tokens) tokens FROM usage_events WHERE ${where} GROUP BY model_group ORDER BY requests DESC`).all(...params)
   const models = db.prepare(`SELECT model name, COUNT(*) requests, SUM(total_tokens) tokens FROM usage_events WHERE ${where} GROUP BY model ORDER BY requests DESC LIMIT 8`).all(...params)
   const keyUsage = db.prepare(`SELECT a.key_hash id, a.name, COUNT(u.id) requests, COALESCE(SUM(u.total_tokens),0) tokens, COALESCE(AVG(CASE WHEN u.success=0 THEN 1.0 ELSE 0 END),0) errorRate FROM api_keys a LEFT JOIN usage_events u ON u.key_hash=a.key_hash AND u.timestamp >= datetime('now', ?) GROUP BY a.key_hash ORDER BY requests DESC`).all(`-${days} days`)
-  res.json({ days, summary, trend, groups, models, keyUsage })
+  const requests = db.prepare(`SELECT u.request_id requestId,u.timestamp,u.provider,u.model,u.endpoint,u.success,u.status_code statusCode,u.latency_ms latencyMs,u.ttft_ms ttftMs,u.input_tokens inputTokens,u.output_tokens outputTokens,u.reasoning_tokens reasoningTokens,u.cached_tokens cachedTokens,u.total_tokens totalTokens,u.error_detail errorDetail,u.upstream_request_id upstreamRequestId,u.source,u.auth_index authIndex,u.reasoning_effort reasoningEffort,u.service_tier serviceTier,a.name keyName FROM usage_events u LEFT JOIN api_keys a ON a.key_hash=u.key_hash WHERE ${requestWhere} ORDER BY u.timestamp DESC LIMIT 200`).all(...params)
+  res.json({ days, summary, trend, groups, models, keyUsage, requests })
 })
 
 app.get('/api/monitor', async (_req, res) => {

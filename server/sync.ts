@@ -7,8 +7,9 @@ const insertUsage = db.prepare(`
   INSERT OR IGNORE INTO usage_events (
     request_id, timestamp, key_hash, provider, model, model_group, endpoint,
     success, status_code, latency_ms, ttft_ms, input_tokens, output_tokens,
-    reasoning_tokens, cached_tokens, total_tokens
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    reasoning_tokens, cached_tokens, total_tokens, error_detail, upstream_request_id,
+    source, auth_index, reasoning_effort, service_tier, response_headers_json
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 
 export async function syncKeysFromCPA() {
@@ -45,6 +46,10 @@ export async function collectUsage() {
       const tokens = record.tokens || {}
       const model = record.alias || record.model || 'unknown'
       const provider = record.provider || 'unknown'
+      const responseHeaders = record.response_headers && typeof record.response_headers === 'object' ? record.response_headers : {}
+      const upstreamRequestId = ['x-upstream-request-id', 'x-request-id', 'request-id', 'cf-ray']
+        .flatMap((name) => Object.entries(responseHeaders).filter(([key]) => key.toLowerCase() === name).flatMap(([, value]) => Array.isArray(value) ? value : [value]))
+        .map(String)[0] || ''
       insertUsage.run(
         record.request_id || `${timestamp}-${model}-${Math.random()}`,
         timestamp,
@@ -62,6 +67,13 @@ export async function collectUsage() {
         tokens.reasoning_tokens || 0,
         tokens.cached_tokens || 0,
         tokens.total_tokens || 0,
+        String(record.fail?.body || ''),
+        upstreamRequestId,
+        String(record.source || ''),
+        String(record.auth_index || ''),
+        String(record.reasoning_effort || ''),
+        String(record.service_tier || ''),
+        JSON.stringify(responseHeaders),
       )
       if (keyHash) updateLastUsed.run(timestamp, keyHash)
     }

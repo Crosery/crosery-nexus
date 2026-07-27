@@ -28,4 +28,27 @@ export type AnalyticsData = {
   groups: Array<{ name: string; requests: number; tokens: number }>
   models: Array<{ name: string; requests: number; tokens: number }>
   keyUsage: Array<{ id: string; name: string; requests: number; tokens: number; errorRate: number }>
+  requests: Array<{
+    requestId: string
+    timestamp: string
+    provider: string
+    model: string
+    endpoint: string
+    success: number
+    statusCode: number
+    latencyMs: number
+    ttftMs: number
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens: number
+    cachedTokens: number
+    totalTokens: number
+    errorDetail: string
+    upstreamRequestId: string
+    source: string
+    authIndex: string
+    reasoningEffort: string
+    serviceTier: string
+    keyName: string
+  }>
 }

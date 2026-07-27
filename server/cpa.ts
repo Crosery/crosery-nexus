@@ -12,7 +12,12 @@ export type UsageRecord = {
   latency_ms?: number
   ttft_ms?: number
   failed?: boolean
-  fail?: { status_code?: number }
+  fail?: { status_code?: number; body?: string }
+  source?: string
+  auth_index?: string
+  reasoning_effort?: string
+  service_tier?: string
+  response_headers?: Record<string, string | string[]>
   tokens?: {
     input_tokens?: number
     output_tokens?: number
