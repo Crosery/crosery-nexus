@@ -1,4 +1,5 @@
 import { Activity, BarChart3, KeyRound, LayoutDashboard, LogOut, RefreshCw, ShieldCheck, Sparkles } from 'lucide-react'
+import { motion, AnimatePresence } from 'motion/react'
 import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import { api } from './api'
@@ -43,6 +44,7 @@ export default function App() {
     { id: 'monitor' as const, label: '账号监控', icon: Activity },
   ]
   return <div className="app-shell">
+    <div className="top-gradient-blur" aria-hidden="true" />
     <aside className="sidebar">
       <div className="sidebar-brand"><div className="brand-mark small"><Sparkles size={17}/></div><div><strong>Crosery</strong><span>API Console</span></div></div>
       <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'nav-item active' : 'nav-item'} onClick={() => navigate(id)}><Icon size={18}/><span>{label}</span></button>)}</nav>
@@ -51,10 +53,14 @@ export default function App() {
     <main className="main-content">
       <header className="topbar"><div className="crumb"><ShieldCheck size={16}/><span>console.ai.crosery.com</span></div><button className="icon-button top-refresh" onClick={refresh} title="刷新"><RefreshCw size={17}/></button></header>
       <div className="page-content">
-        {page === 'dashboard' && <DashboardPage analytics={analytics} keys={bootstrap?.keys || []} onOpenKeys={() => navigate('keys')}/>} 
-        {page === 'keys' && <KeysPage keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} onRefresh={refresh} onSelectKey={selectKey}/>} 
-        {page === 'analytics' && <AnalyticsPage analytics={analytics} keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} days={days} setDays={setDays} keyId={keyId} setKeyId={setKeyId}/>} 
-        {page === 'monitor' && <MonitorPage data={monitor} loading={loading} onRefresh={loadMonitor}/>} 
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div key={page} className="page-motion-layer" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}>
+            {page === 'dashboard' && <DashboardPage analytics={analytics} keys={bootstrap?.keys || []} onOpenKeys={() => navigate('keys')}/>}
+            {page === 'keys' && <KeysPage keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} onRefresh={refresh} onSelectKey={selectKey}/>}
+            {page === 'analytics' && <AnalyticsPage analytics={analytics} keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} days={days} setDays={setDays} keyId={keyId} setKeyId={setKeyId}/>}
+            {page === 'monitor' && <MonitorPage data={monitor} loading={loading} onRefresh={loadMonitor}/>}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </main>
     {toast && <div className="toast"><ShieldCheck size={16}/>{toast}</div>}
