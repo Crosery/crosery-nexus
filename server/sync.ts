@@ -2,6 +2,7 @@ import { config } from './config.js'
 import { db, transaction } from './db.js'
 import { getCPAKeys, groupForModel, hashKey, maskKey, popUsage } from './cpa.js'
 import { extractKeySlug } from './keyNaming.js'
+import { extractUsageDiagnostics } from './usageDetails.js'
 
 const insertUsage = db.prepare(`
   INSERT OR IGNORE INTO usage_events (
@@ -46,10 +47,7 @@ export async function collectUsage() {
       const tokens = record.tokens || {}
       const model = record.alias || record.model || 'unknown'
       const provider = record.provider || 'unknown'
-      const responseHeaders = record.response_headers && typeof record.response_headers === 'object' ? record.response_headers : {}
-      const upstreamRequestId = ['x-upstream-request-id', 'x-request-id', 'request-id', 'cf-ray']
-        .flatMap((name) => Object.entries(responseHeaders).filter(([key]) => key.toLowerCase() === name).flatMap(([, value]) => Array.isArray(value) ? value : [value]))
-        .map(String)[0] || ''
+      const diagnostics = extractUsageDiagnostics(record)
       insertUsage.run(
         record.request_id || `${timestamp}-${model}-${Math.random()}`,
         timestamp,
@@ -67,13 +65,13 @@ export async function collectUsage() {
         tokens.reasoning_tokens || 0,
         tokens.cached_tokens || 0,
         tokens.total_tokens || 0,
-        String(record.fail?.body || ''),
-        upstreamRequestId,
-        String(record.source || ''),
-        String(record.auth_index || ''),
-        String(record.reasoning_effort || ''),
-        String(record.service_tier || ''),
-        JSON.stringify(responseHeaders),
+        diagnostics.errorDetail,
+        diagnostics.upstreamRequestId,
+        diagnostics.source,
+        diagnostics.authIndex,
+        diagnostics.reasoningEffort,
+        diagnostics.serviceTier,
+        diagnostics.responseHeadersJson,
       )
       if (keyHash) updateLastUsed.run(timestamp, keyHash)
     }
