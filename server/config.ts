@@ -13,6 +13,7 @@ export const config = {
   usageRetentionDays: Number(process.env.USAGE_RETENTION_DAYS || 90),
   syncIntervalMs: Number(process.env.SYNC_INTERVAL_MS || 15000),
   groups: [
+    { id: 'qijichuangtan', name: '奇迹创谈', color: '#ef6c57', match: ['qiji/'] },
     { id: 'claude', name: 'Claude', color: '#d97757', match: ['claude'] },
     { id: 'codex', name: 'Codex', color: '#6ee7b7', match: ['gpt-', 'codex'] },
     { id: 'kimi', name: 'Kimi', color: '#60a5fa', match: ['kimi', 'moonshot'] },
