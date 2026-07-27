@@ -13,17 +13,20 @@ export function MonitorPage({ data, loading, onRefresh }: { data: { accounts?: A
 function AccountCard({ account }: { account: Record<string, any> }) {
   const quota = account.quota || {}
   const isClaude = account.type === 'claude'
+  const usage = isClaude ? quota.usage || {} : quota
+  const profile = isClaude ? quota.profile || {} : {}
+  const plan = profile.account?.has_claude_max ? 'Claude Max' : profile.account?.has_claude_pro ? 'Claude Pro' : profile.organization?.organization_type || ''
   const windows = isClaude ? [
-    { label: '5 小时额度', data: quota.five_hour },
-    { label: '7 天额度', data: quota.seven_day },
-    { label: '7 天 Sonnet', data: quota.seven_day_sonnet },
+    { label: '5 小时额度', data: usage.five_hour },
+    { label: '7 天额度', data: usage.seven_day },
+    { label: '7 天 Sonnet', data: usage.seven_day_sonnet },
   ] : [
     { label: '主要窗口', data: quota.rate_limit?.primary_window },
     { label: '次要窗口', data: quota.rate_limit?.secondary_window },
   ]
   return <article className={`account-card ${isClaude ? 'claude' : 'codex'}`}>
     <header><div className="account-logo">{isClaude ? 'AI' : 'O'}</div><div><span className="provider-name">{isClaude ? 'Claude' : 'Codex'}</span><h2>{account.email || account.account || account.name}</h2></div><span className={account.disabled ? 'status-chip' : 'status-chip success'}>{account.disabled ? '已停用' : '运行中'}</span></header>
-    <div className="account-meta"><span><ShieldCheck size={15}/>OAuth 已连接</span><span><Activity size={15}/>{String(account.status || 'ready')}</span></div>
+    <div className="account-meta"><span><ShieldCheck size={15}/>OAuth 已连接</span><span><Activity size={15}/>{String(account.status || 'ready')}</span>{plan && <span>{plan}</span>}{profile.organization?.subscription_status && <span>{profile.organization.subscription_status}</span>}</div>
     <div className="quota-stack">{windows.filter((window) => window.data).map((window) => { const remaining = percent(window.data?.utilization ?? window.data?.used_percent); return <div className="quota-row" key={window.label}><div><strong>{window.label}</strong><span>{window.data?.resets_at ? `重置于 ${new Date(window.data.resets_at).toLocaleString('zh-CN')}` : '滚动窗口'}</span></div><div className="quota-value"><strong>{remaining === null ? '--' : `${Math.round(remaining)}%`}</strong><span>剩余</span></div><div className="progress-track"><span style={{ width: `${remaining ?? 0}%` }}/></div></div> })}</div>
     {quota.error && <p className="form-error">{quota.error}</p>}
   </article>

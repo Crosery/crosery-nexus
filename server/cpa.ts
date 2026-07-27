@@ -98,6 +98,14 @@ export async function apiCall(authIndex: string, url: string) {
   })
 }
 
+export async function getClaudeAccountMonitor(authIndex: string) {
+  const [usage, profile] = await Promise.all([
+    apiCall(authIndex, 'https://api.anthropic.com/api/oauth/usage'),
+    apiCall(authIndex, 'https://api.anthropic.com/api/oauth/profile'),
+  ])
+  return { usage, profile }
+}
+
 export function groupForModel(model: string, provider = '') {
   const haystack = `${model} ${provider}`.toLowerCase()
   return config.groups.find((group) => group.match.some((term) => haystack.includes(term)))?.id || 'other'

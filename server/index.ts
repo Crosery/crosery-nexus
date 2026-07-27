@@ -5,10 +5,11 @@ import express from 'express'
 import cookieParser from 'cookie-parser'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { apiCall, getCPAKeys, getModelAccess, groupForModel, hashKey, listAuthFiles, listModels, maskKey, putModelAccess, replaceCPAKeys } from './cpa.js'
+import { apiCall, getClaudeAccountMonitor, getCPAKeys, getModelAccess, groupForModel, hashKey, listAuthFiles, listModels, maskKey, putModelAccess, replaceCPAKeys } from './cpa.js'
 import { isAuthenticated, login, logout, requireAuth } from './auth.js'
 import { runSyncCycle, startSync } from './sync.js'
 import { validatePolicy } from './policy.js'
+import { buildNamedAPIKey, normalizeKeySlug, validateKeySlug } from './keyNaming.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -59,8 +60,9 @@ app.get('/api/bootstrap', async (_req, res) => {
 app.post('/api/keys', async (req, res) => {
   try {
   const name = String(req.body?.name || '').trim()
-  if (!name) return res.status(400).json({ error: '请输入 Key 名称' })
-  const value = `sk-${crypto.randomBytes(24).toString('hex')}`
+  if (!name) return res.status(400).json({ error: '请输入显示名称' })
+  const slug = validateKeySlug(String(req.body?.slug || normalizeKeySlug(name)))
+  const value = buildNamedAPIKey(slug, crypto.randomBytes(16).toString('hex'))
   const groups = Array.isArray(req.body?.groups) ? req.body.groups : config.groups.map((item) => item.id)
   const totalConcurrency = Number(req.body?.totalConcurrency || 4)
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : {}
@@ -75,7 +77,7 @@ app.post('/api/keys', async (req, res) => {
   const now = new Date().toISOString()
   db.prepare(`INSERT INTO api_keys (key_hash,key_value,name,note,enabled,groups_json,total_concurrency,group_concurrency_json,created_at,updated_at) VALUES (?,?,?,?,1,?,?,?,?,?)`)
     .run(hashKey(value), value, name, String(req.body?.note || ''), JSON.stringify(groups), totalConcurrency, JSON.stringify(groupConcurrency), now, now)
-  addAudit('create_key', name, JSON.stringify({ groups, totalConcurrency }))
+  addAudit('create_key', name, JSON.stringify({ slug, groups, totalConcurrency }))
   res.status(201).json({ key: value, item: publicKeyRow(db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(hashKey(value)) as Record<string, unknown>) })
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '创建失败' }) }
 })
@@ -139,10 +141,24 @@ app.get('/api/monitor', async (_req, res) => {
     const type = String(file.type)
     let quota: unknown = null
     try {
-      const url = type === 'claude' ? 'https://api.anthropic.com/api/oauth/usage' : 'https://chatgpt.com/backend-api/wham/usage'
-      const result = await apiCall(String(file.auth_index), url)
-      const body = result.body ?? result.body_text
-      quota = typeof body === 'string' ? JSON.parse(body) : body
+      if (type === 'claude') {
+        const result = await getClaudeAccountMonitor(String(file.auth_index))
+        const parseResult = (response: typeof result.usage) => {
+          const body = response.body ?? response.body_text
+          const parsedBody = typeof body === 'string' ? JSON.parse(body) : body
+          const statusCode = Number(response.status_code ?? response.statusCode ?? 0)
+          if (statusCode < 200 || statusCode >= 300) throw new Error(`上游返回 HTTP ${statusCode}`)
+          return parsedBody
+        }
+        quota = { usage: parseResult(result.usage), profile: parseResult(result.profile) }
+      } else {
+        const result = await apiCall(String(file.auth_index), 'https://chatgpt.com/backend-api/wham/usage')
+        const body = result.body ?? result.body_text
+        const parsedBody = typeof body === 'string' ? JSON.parse(body) : body
+        const statusCode = Number(result.status_code ?? result.statusCode ?? 0)
+        if (statusCode < 200 || statusCode >= 300) throw new Error(`上游返回 HTTP ${statusCode}`)
+        quota = parsedBody
+      }
     } catch (error) {
       quota = { error: error instanceof Error ? error.message : '读取失败' }
     }

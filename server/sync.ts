@@ -1,6 +1,7 @@
 import { config } from './config.js'
 import { db, transaction } from './db.js'
 import { getCPAKeys, groupForModel, hashKey, maskKey, popUsage } from './cpa.js'
+import { extractKeySlug } from './keyNaming.js'
 
 const insertUsage = db.prepare(`
   INSERT OR IGNORE INTO usage_events (
@@ -23,7 +24,8 @@ export async function syncKeysFromCPA() {
     keys.forEach((key, index) => {
       const keyHash = hashKey(key)
       const existing = db.prepare('SELECT name FROM api_keys WHERE key_hash = ?').get(keyHash) as { name?: string } | undefined
-      insert.run(keyHash, key, existing?.name || `API Key ${index + 1} · ${maskKey(key)}`, now, now)
+      const slug = extractKeySlug(key)
+      insert.run(keyHash, key, existing?.name || (slug ? slug : `API Key ${index + 1} · ${maskKey(key)}`), now, now)
     })
     const rows = db.prepare('SELECT key_hash FROM api_keys WHERE enabled = 1').all() as Array<{ key_hash: string }>
     for (const row of rows) {
