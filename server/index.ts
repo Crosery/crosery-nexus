@@ -10,6 +10,7 @@ import { isAuthenticated, login, logout, requireAuth } from './auth.js'
 import { runSyncCycle, startSync } from './sync.js'
 import { validatePolicy } from './policy.js'
 import { buildNamedAPIKey, normalizeKeySlug, validateKeySlug } from './keyNaming.js'
+import { consumeKeyRevealToken, issueKeyRevealToken } from './keySecrets.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -55,6 +56,19 @@ app.get('/api/bootstrap', async (_req, res) => {
   const keys = (db.prepare('SELECT * FROM api_keys ORDER BY enabled DESC, created_at DESC').all() as Array<Record<string, unknown>>).map(publicKeyRow)
   const models = await listModels()
   res.json({ keys, groups: config.groups, models, retentionDays: config.usageRetentionDays })
+})
+
+app.post('/api/keys/:id/reveal-token', (req, res) => {
+  const row = db.prepare('SELECT key_value FROM api_keys WHERE key_hash = ?').get(req.params.id) as { key_value?: string } | undefined
+  if (!row?.key_value) return res.status(404).json({ error: 'Key 不存在' })
+  res.json({ token: issueKeyRevealToken(req.params.id, row.key_value), expiresIn: 60 })
+})
+
+app.get('/api/keys/:id/reveal', (req, res) => {
+  const key = consumeKeyRevealToken(String(req.query.token || ''), req.params.id)
+  if (!key) return res.status(410).json({ error: '复制令牌已失效，请重新点击复制' })
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ key })
 })
 
 app.post('/api/keys', async (req, res) => {

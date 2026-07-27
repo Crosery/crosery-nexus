@@ -1,4 +1,4 @@
-import { Check, Copy, KeyRound, MoreHorizontal, Plus, Search, Settings2, Trash2 } from 'lucide-react'
+import { Check, Copy, KeyRound, Plus, Search, Settings2, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -12,6 +12,18 @@ export function KeysPage({ keys, groups, onRefresh, onSelectKey }: { keys: ApiKe
   const [creating, setCreating] = useState(false)
   const [revealed, setRevealed] = useState('')
   const [error, setError] = useState('')
+  const [copiedId, setCopiedId] = useState('')
+  const copyExistingKey = async (key: ApiKeyItem) => {
+    try {
+      const { token } = await api.createRevealToken(key.id)
+      const { key: fullKey } = await api.revealKey(key.id, token)
+      await navigator.clipboard.writeText(fullKey)
+      setCopiedId(key.id)
+      setTimeout(() => setCopiedId(''), 1600)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '复制失败')
+    }
+  }
   const filtered = useMemo(() => keys.filter((key) => `${key.name} ${key.note} ${key.maskedKey}`.toLowerCase().includes(query.toLowerCase())), [keys, query])
   return <div className="page-stack">
     <section className="page-heading"><div><p className="eyebrow">ACCESS CONTROL</p><h1>API Key 管理</h1><p>创建独立密钥，并为每个 Key 配置渠道分组与并发策略。</p></div><button className="primary-button" onClick={() => setCreating(true)}><Plus size={17}/>创建 API Key</button></section>
@@ -24,9 +36,10 @@ export function KeysPage({ keys, groups, onRefresh, onSelectKey }: { keys: ApiKe
           <span>{key.totalConcurrency === 0 ? <strong className="unlimited-label">不限速</strong> : <><strong>{key.totalConcurrency}</strong><small className="cell-note"> 总并发</small></>}</span>
           <span>{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '从未使用'}</span>
           <span className={key.enabled ? 'status-chip success' : 'status-chip'}>{key.enabled ? '启用' : '停用'}</span>
-          <div className="row-actions"><button className="icon-button" title="编辑" onClick={() => setEditing(key)}><Settings2 size={17}/></button><button className="icon-button" title="更多"><MoreHorizontal size={17}/></button></div>
+          <div className="row-actions"><button className="icon-button" title="复制完整 API Key" onClick={() => void copyExistingKey(key)}>{copiedId === key.id ? <Check size={17}/> : <Copy size={17}/>}</button><button className="icon-button" title="编辑" onClick={() => setEditing(key)}><Settings2 size={17}/></button></div>
         </div>)}
         {!filtered.length && <div className="empty-state"><KeyRound size={28}/><h3>没有找到 API Key</h3><p>创建一个密钥后即可开始分组授权和统计。</p></div>}
+        {error && !creating && !editing && <p className="form-error table-error">{error}</p>}
       </div>
     </section>
     {(creating || editing) && <KeyEditor key={editing?.id || 'new'} item={editing} groups={groups} onClose={() => { setCreating(false); setEditing(null); setError('') }} onSaved={async (newKey) => { if (newKey) setRevealed(newKey); setCreating(false); setEditing(null); await onRefresh() }} error={error} setError={setError} />}
