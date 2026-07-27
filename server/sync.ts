@@ -1,5 +1,5 @@
 import { config } from './config.js'
-import { db } from './db.js'
+import { db, transaction } from './db.js'
 import { getCPAKeys, groupForModel, hashKey, maskKey, popUsage } from './cpa.js'
 
 const insertUsage = db.prepare(`
@@ -19,7 +19,7 @@ export async function syncKeysFromCPA() {
     VALUES (?, ?, ?, '', 1, '[]', 4, '{}', ?, ?)
     ON CONFLICT(key_hash) DO UPDATE SET key_value = excluded.key_value, enabled = 1, updated_at = excluded.updated_at
   `)
-  const transaction = db.transaction(() => {
+  transaction(() => {
     keys.forEach((key, index) => {
       const keyHash = hashKey(key)
       const existing = db.prepare('SELECT name FROM api_keys WHERE key_hash = ?').get(keyHash) as { name?: string } | undefined
@@ -30,14 +30,13 @@ export async function syncKeysFromCPA() {
       if (!known.has(row.key_hash)) db.prepare('UPDATE api_keys SET enabled = 0, updated_at = ? WHERE key_hash = ?').run(now, row.key_hash)
     }
   })
-  transaction()
 }
 
 export async function collectUsage() {
   const records = await popUsage(500)
   if (!records.length) return 0
   const updateLastUsed = db.prepare('UPDATE api_keys SET last_used_at = ? WHERE key_hash = ?')
-  const transaction = db.transaction(() => {
+  transaction(() => {
     for (const record of records) {
       const keyHash = record.api_key ? hashKey(record.api_key) : null
       const timestamp = record.timestamp || new Date().toISOString()
@@ -65,7 +64,6 @@ export async function collectUsage() {
       if (keyHash) updateLastUsed.run(timestamp, keyHash)
     }
   })
-  transaction()
   return records.length
 }
 

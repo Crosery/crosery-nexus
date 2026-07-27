@@ -1,13 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import Database from 'better-sqlite3'
+import { DatabaseSync } from 'node:sqlite'
 import { config } from './config.js'
 
 fs.mkdirSync(config.dataDir, { recursive: true })
 
-export const db = new Database(path.join(config.dataDir, 'console.db'))
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
+export const db = new DatabaseSync(path.join(config.dataDir, 'console.db'))
+db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS api_keys (
@@ -57,6 +56,18 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 `)
+
+export function transaction<T>(fn: () => T): T {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const result = fn()
+    db.exec('COMMIT')
+    return result
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
 
 export function addAudit(action: string, target: string, details = '') {
   db.prepare('INSERT INTO audit_log (action, target, details, created_at) VALUES (?, ?, ?, ?)')

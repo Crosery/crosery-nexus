@@ -15,7 +15,6 @@
     "verify": "npm run test && npm run lint && npm run build"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.1",
     "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
     "lucide-react": "^1.27.0",
@@ -25,7 +24,6 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/node": "^24.13.2",
