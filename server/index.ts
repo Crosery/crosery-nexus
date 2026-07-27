@@ -64,7 +64,7 @@ app.post('/api/keys', async (req, res) => {
   const slug = validateKeySlug(String(req.body?.slug || normalizeKeySlug(name)))
   const value = buildNamedAPIKey(slug, crypto.randomBytes(16).toString('hex'))
   const groups = Array.isArray(req.body?.groups) ? req.body.groups : config.groups.map((item) => item.id)
-  const totalConcurrency = Number(req.body?.totalConcurrency || 4)
+  const totalConcurrency = req.body?.totalConcurrency === 0 ? 0 : Number(req.body?.totalConcurrency || 4)
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : {}
   validatePolicy({ enabled: true, groups, totalConcurrency, groupConcurrency })
   const cpaKeys = await getCPAKeys()

@@ -7,6 +7,11 @@ test('accepts total and per-group concurrency limits', () => {
   assert.equal(validatePolicy(policy), policy)
 })
 
+test('accepts unlimited concurrency with zero limits', () => {
+  const policy = { enabled: true, groups: ['claude'], totalConcurrency: 0, groupConcurrency: {} }
+  assert.equal(validatePolicy(policy), policy)
+})
+
 test('rejects group concurrency above total concurrency', () => {
   assert.throws(() => validatePolicy({ enabled: true, groups: ['claude'], totalConcurrency: 2, groupConcurrency: { claude: 3 } }), /总并发/)
 })

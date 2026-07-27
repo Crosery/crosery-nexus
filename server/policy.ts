@@ -6,10 +6,11 @@ export type KeyPolicy = {
 }
 
 export function validatePolicy(policy: KeyPolicy) {
-  if (!Number.isInteger(policy.totalConcurrency) || policy.totalConcurrency < 1 || policy.totalConcurrency > 500) {
-    throw new Error('总并发必须是 1 到 500 的整数')
+  if (!Number.isInteger(policy.totalConcurrency) || policy.totalConcurrency < 0 || policy.totalConcurrency > 500) {
+    throw new Error('总并发必须是 0 到 500 的整数，0 表示不限速')
   }
   if (!Array.isArray(policy.groups) || policy.groups.length === 0) throw new Error('至少选择一个渠道分组')
+  if (policy.totalConcurrency === 0) return policy
   for (const group of policy.groups) {
     const limit = policy.groupConcurrency[group]
     if (!Number.isInteger(limit) || limit < 1 || limit > policy.totalConcurrency) {

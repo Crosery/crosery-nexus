@@ -21,7 +21,7 @@ export function KeysPage({ keys, groups, onRefresh, onSelectKey }: { keys: ApiKe
         {filtered.map((key) => <div className="key-row" key={key.id}>
           <button className="key-name-cell" onClick={() => onSelectKey(key)}><span className="key-icon"><KeyRound size={16}/></span><span><strong>{key.name}</strong><small>{key.maskedKey}</small></span></button>
           <div className="group-chips">{key.groups.length ? key.groups.slice(0, 3).map((id) => { const group = groups.find((item) => item.id === id); return <span key={id} style={{ '--chip': group?.color } as React.CSSProperties}>{group?.name || id}</span> }) : <span className="muted">未配置</span>}</div>
-          <span><strong>{key.totalConcurrency}</strong><small className="cell-note"> 总并发</small></span>
+          <span>{key.totalConcurrency === 0 ? <strong className="unlimited-label">不限速</strong> : <><strong>{key.totalConcurrency}</strong><small className="cell-note"> 总并发</small></>}</span>
           <span>{key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '从未使用'}</span>
           <span className={key.enabled ? 'status-chip success' : 'status-chip'}>{key.enabled ? '启用' : '停用'}</span>
           <div className="row-actions"><button className="icon-button" title="编辑" onClick={() => setEditing(key)}><Settings2 size={17}/></button><button className="icon-button" title="更多"><MoreHorizontal size={17}/></button></div>
@@ -42,14 +42,15 @@ function KeyEditor({ item, groups, onClose, onSaved, error, setError }: { item: 
   const [note, setNote] = useState(item?.note || '')
   const [enabled, setEnabled] = useState(item?.enabled ?? true)
   const [selected, setSelected] = useState(item?.groups || groups.map((group) => group.id))
-  const [total, setTotal] = useState(item?.totalConcurrency || 4)
+  const [total, setTotal] = useState(item ? item.totalConcurrency : 4)
+  const [unlimited, setUnlimited] = useState(item?.totalConcurrency === 0)
   const [limits, setLimits] = useState(item?.groupConcurrency || defaultConcurrency(groups))
   const [saving, setSaving] = useState(false)
   const toggleGroup = (id: string) => setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
   const save = async () => {
     setSaving(true); setError('')
     try {
-      const body = { name, slug, note, enabled, groups: selected, totalConcurrency: total, groupConcurrency: limits }
+      const body = { name, slug, note, enabled, groups: selected, totalConcurrency: unlimited ? 0 : total, groupConcurrency: unlimited ? {} : limits }
       if (item) { await api.updateKey(item.id, body); onSaved() } else { const result = await api.createKey<{ key: string }>(body); onSaved(result.key) }
     } catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败') } finally { setSaving(false) }
   }
@@ -62,9 +63,8 @@ function KeyEditor({ item, groups, onClose, onSaved, error, setError }: { item: 
       {item && <label className="toggle-row"><span><strong>启用密钥</strong><small>停用后将立即从 CPA 可用 Key 中移除</small></span><button type="button" className={enabled ? 'switch active' : 'switch'} onClick={() => setEnabled(!enabled)}><span /></button></label>}
       <div><span className="field-label standalone">允许使用的渠道分组</span><div className="group-selector">{groups.map((group) => <button type="button" className={selected.includes(group.id) ? 'group-choice active' : 'group-choice'} style={{ '--group': group.color } as React.CSSProperties} onClick={() => toggleGroup(group.id)} key={group.id}><span className="choice-dot"/><strong>{group.name}</strong>{selected.includes(group.id) && <Check size={15}/>}</button>)}</div></div>
     </div><div className="policy-column">
-      <div className="policy-section"><div className="policy-heading"><div><h3>总并发限额</h3><p>该 Key 同时进行的全部请求数量。</p></div><div className="stepper"><button type="button" onClick={() => setTotal(Math.max(1, total - 1))}>−</button><input type="text" inputMode="numeric" value={total} onChange={(event) => setTotal(Math.max(1, Number(event.target.value.replace(/\D/g, '')) || 1))}/><button type="button" onClick={() => setTotal(Math.min(500, total + 1))}>+</button></div></div>
-        <div className="policy-divider" />
-        <div className="policy-heading"><div><h3>分组并发限额</h3><p>每个分组独立限制，同时受总并发上限约束。</p></div></div><div className="limit-list">{groups.filter((group) => selected.includes(group.id)).map((group) => <label key={group.id}><span><i style={{ background: group.color }}/>{group.name}</span><input type="text" inputMode="numeric" value={limits[group.id] || 1} onChange={(event) => setLimits({ ...limits, [group.id]: Math.max(1, Math.min(total, Number(event.target.value.replace(/\D/g, '')) || 1)) })}/></label>)}</div>
+      <div className="policy-section"><div className="policy-heading"><div><h3>总并发策略</h3><p>不限速会绕过 API Key 的并发限制。</p></div><button type="button" className={unlimited ? 'switch active' : 'switch'} onClick={() => setUnlimited(!unlimited)} aria-label="切换不限速"><span /></button></div>
+        {unlimited ? <div className="unlimited-summary">不限速</div> : <><div className="policy-divider" /><div className="policy-heading"><div><h3>总并发限额</h3><p>该 Key 同时进行的全部请求数量。</p></div><div className="stepper"><button type="button" onClick={() => setTotal(Math.max(1, total - 1))}>−</button><input type="text" inputMode="numeric" value={total} onChange={(event) => setTotal(Math.max(1, Number(event.target.value.replace(/\D/g, '')) || 1))}/><button type="button" onClick={() => setTotal(Math.min(500, total + 1))}>+</button></div></div><div className="policy-divider" /><div className="policy-heading"><div><h3>分组并发限额</h3><p>每个分组独立限制，同时受总并发上限约束。</p></div></div><div className="limit-list">{groups.filter((group) => selected.includes(group.id)).map((group) => <label key={group.id}><span><i style={{ background: group.color }}/>{group.name}</span><input type="text" inputMode="numeric" value={limits[group.id] || 1} onChange={(event) => setLimits({ ...limits, [group.id]: Math.max(1, Math.min(total, Number(event.target.value.replace(/\D/g, '')) || 1)) })}/></label>)}</div></>}
       </div>
     </div></div>
     {error && <p className="form-error modal-error">{error}</p>}
