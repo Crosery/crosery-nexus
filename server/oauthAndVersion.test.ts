@@ -15,13 +15,13 @@ test('getConsoleVersion reads valid console version info', () => {
   assert.ok(versionInfo.version.length > 0)
 })
 
-test('OAUTH_PROVIDER_ENDPOINTS contains required providers', () => {
-  assert.equal(OAUTH_PROVIDER_ENDPOINTS['codex'], '/codex-auth-url')
-  assert.equal(OAUTH_PROVIDER_ENDPOINTS['claude'], '/anthropic-auth-url')
-  assert.equal(OAUTH_PROVIDER_ENDPOINTS['antigravity'], '/antigravity-auth-url')
+test('OAUTH_PROVIDER_ENDPOINTS contains required providers with is_webui', () => {
+  assert.equal(OAUTH_PROVIDER_ENDPOINTS['codex'], '/codex-auth-url?is_webui=true')
+  assert.equal(OAUTH_PROVIDER_ENDPOINTS['claude'], '/anthropic-auth-url?is_webui=true')
+  assert.equal(OAUTH_PROVIDER_ENDPOINTS['antigravity'], '/antigravity-auth-url?is_webui=true')
   assert.equal(OAUTH_PROVIDER_ENDPOINTS['kimi'], '/kimi-auth-url')
-  assert.equal(OAUTH_PROVIDER_ENDPOINTS['xai'], '/xai-auth-url')
-  assert.equal(OAUTH_PROVIDER_ENDPOINTS['devin'], '/devin-auth-url')
+  assert.equal(OAUTH_PROVIDER_ENDPOINTS['xai'], '/xai-auth-url?is_webui=true')
+  assert.equal(OAUTH_PROVIDER_ENDPOINTS['devin'], '/devin-auth-url?is_webui=true')
   assert.equal(OAUTH_PROVIDER_ENDPOINTS['meta'], '/meta-auth-url')
 })
 

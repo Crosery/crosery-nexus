@@ -452,17 +452,30 @@ export function getConsoleVersion(): ConsoleVersionInfo {
 }
 
 export const OAUTH_PROVIDER_ENDPOINTS: Record<string, string> = {
-  antigravity: '/antigravity-auth-url',
-  google: '/antigravity-auth-url',
-  codex: '/codex-auth-url',
-  openai: '/codex-auth-url',
-  claude: '/anthropic-auth-url',
-  anthropic: '/anthropic-auth-url',
+  antigravity: '/antigravity-auth-url?is_webui=true',
+  google: '/antigravity-auth-url?is_webui=true',
+  codex: '/codex-auth-url?is_webui=true',
+  openai: '/codex-auth-url?is_webui=true',
+  claude: '/anthropic-auth-url?is_webui=true',
+  anthropic: '/anthropic-auth-url?is_webui=true',
   kimi: '/kimi-auth-url',
-  devin: '/devin-auth-url',
+  'kimi-ai': '/kimi-ai-auth-url',
+  devin: '/devin-auth-url?is_webui=true',
   meta: '/meta-auth-url',
-  xai: '/xai-auth-url',
-  grok: '/xai-auth-url',
+  muse: '/meta-auth-url',
+  xai: '/xai-auth-url?is_webui=true',
+  grok: '/xai-auth-url?is_webui=true',
+}
+
+export function canonicalCPAProvider(provider: string): string {
+  const norm = provider.toLowerCase().trim()
+  if (norm === 'claude' || norm === 'anthropic') return 'anthropic'
+  if (norm === 'codex' || norm === 'openai') return 'codex'
+  if (norm === 'antigravity' || norm === 'google' || norm === 'anti-gravity') return 'antigravity'
+  if (norm === 'xai' || norm === 'x-ai' || norm === 'grok') return 'xai'
+  if (norm === 'devin' || norm === 'cognition') return 'devin'
+  if (norm === 'meta' || norm === 'muse') return 'meta'
+  return norm
 }
 
 export type OAuthStartResponse = {
@@ -498,16 +511,68 @@ export async function getOAuthStatus(state: string): Promise<OAuthStatusResponse
   return cpaRequest<OAuthStatusResponse>(`/get-auth-status?state=${encodeURIComponent(state)}`)
 }
 
-export async function submitOAuthCallback(provider: string, redirectUrl: string, state?: string): Promise<{ ok: boolean }> {
-  let target = redirectUrl.trim()
-  if (!target) throw new Error('缺少回调 URL 或授权码')
-  if (!target.startsWith('http://') && !target.startsWith('https://')) {
-    const stateParam = state ? `&state=${encodeURIComponent(state)}` : ''
-    target = `http://localhost:8317/v0/management/oauth-callback?code=${encodeURIComponent(target)}${stateParam}`
+export async function submitOAuthCallback(provider: string, redirectUrl: string, sessionState?: string): Promise<{ ok: boolean }> {
+  const raw = redirectUrl.trim()
+  if (!raw) throw new Error('缺少回调 URL 或授权码')
+  const canonical = canonicalCPAProvider(provider)
+
+  let code = ''
+  let state = (sessionState || '').trim()
+  let errorMsg = ''
+  let effectiveRedirectUrl = raw
+
+  // 1. 如果是完整 URL
+  try {
+    const parsed = new URL(raw)
+    code = parsed.searchParams.get('code') || ''
+    const qState = parsed.searchParams.get('state')
+    if (qState) state = qState
+    errorMsg = parsed.searchParams.get('error') || parsed.searchParams.get('error_description') || ''
+
+    // 部分平台如 Claude 可能在 hash 中携带
+    if (parsed.hash) {
+      const hashParams = new URLSearchParams(parsed.hash.replace(/^[#?]/, ''))
+      if (!code && hashParams.get('code')) code = hashParams.get('code')!
+      if (!state && hashParams.get('state')) state = hashParams.get('state')!
+      if (!errorMsg) errorMsg = hashParams.get('error') || hashParams.get('error_description') || ''
+    }
+  } catch {
+    // 2. 如果不是完整 URL，尝试按 query 格式解析或当作纯 code
+    if (raw.includes('code=') || raw.includes('state=')) {
+      const params = new URLSearchParams(raw.replace(/^[?#]/, ''))
+      code = params.get('code') || ''
+      const pState = params.get('state')
+      if (pState) state = pState
+      errorMsg = params.get('error') || params.get('error_description') || ''
+    } else {
+      // 用户直接粘贴了纯 authorization code
+      code = raw
+    }
   }
+
+  if (!state) {
+    throw new Error('缺少 state 会话标识，请确认当前授权会话未过期并重新开始')
+  }
+
+  // 如果不是完整 http(s) URL，构造符合提供商约定的标准 callback 地址
+  if (!effectiveRedirectUrl.startsWith('http://') && !effectiveRedirectUrl.startsWith('https://')) {
+    let baseCallback = 'http://localhost:8317/v0/management/oauth-callback'
+    if (canonical === 'anthropic') baseCallback = 'http://localhost:54545/callback'
+    else if (canonical === 'codex') baseCallback = 'http://localhost:1455/auth/callback'
+    else if (canonical === 'antigravity') baseCallback = 'http://localhost:51121/oauth-callback'
+
+    effectiveRedirectUrl = `${baseCallback}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`
+  }
+
   await cpaRequest<any>('/oauth-callback', {
     method: 'POST',
-    body: JSON.stringify({ provider, redirect_url: target }),
+    body: JSON.stringify({
+      provider: canonical,
+      redirect_url: effectiveRedirectUrl,
+      code: code || undefined,
+      state,
+      error: errorMsg || undefined,
+    }),
   })
   return { ok: true }
 }

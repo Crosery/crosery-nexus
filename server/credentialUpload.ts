@@ -28,7 +28,7 @@ type CredentialRecord = {
 
 export type PreparedCredential = {
   name: string
-  provider: 'xai'
+  provider: string
   label: string
   raw: Buffer
 }
@@ -68,24 +68,18 @@ function parseCredential(name: string, raw: Buffer): PreparedCredential {
   }
   const record = parsed as CredentialRecord
   const provider = String(record.type || record.provider || '').trim().toLowerCase()
-  const tokenEndpoint = String(record.token_endpoint || '').trim().toLowerCase().replace(/\/$/, '')
-  const authKind = String(record.auth_kind || '').trim().toLowerCase()
-  const providerMatches = provider === 'xai' || provider === 'grok'
-  const endpointMatches = tokenEndpoint === 'https://auth.x.ai/oauth/token' || tokenEndpoint === 'https://auth.x.ai/oauth2/token'
-  const authKindMatches = authKind === '' || authKind === 'oauth' || authKind === 'grok'
-  if (!providerMatches || !endpointMatches || !authKindMatches) {
-    throw new CredentialUploadError('UPLOAD_PROVIDER_NOT_ALLOWED', `“${name}”不是 xAI/Grok 凭据`)
-  }
-  if (typeof record.access_token !== 'string' || !record.access_token.trim() || typeof record.refresh_token !== 'string' || !record.refresh_token.trim()) {
-    throw new CredentialUploadError('UPLOAD_CREDENTIAL_INVALID', `“${name}”缺少 access_token 或 refresh_token`)
-  }
-
   const label = typeof record.email === 'string' && record.email.trim()
     ? record.email.trim()
     : typeof record.sub === 'string' && record.sub.trim()
       ? record.sub.trim()
       : name
-  return { name, provider: 'xai', label, raw }
+
+  return {
+    name,
+    provider: provider || 'oauth',
+    label,
+    raw,
+  }
 }
 
 async function fromZip(data: Buffer, limits: ReturnType<typeof resolvedLimits>) {

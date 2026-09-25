@@ -19,7 +19,7 @@ const proxyText = (proxyUrl: string, presets: ProxyPreset[], globalProxy: string
   return presets.find((preset) => preset.url === proxyUrl)?.label || proxyUrl
 }
 
-export function ChannelsPage({ data, loading, onRefresh, onNotify }: { data: ChannelsData | null; loading: boolean; onRefresh: () => Promise<void>; onNotify: (message: string) => void }) {
+export function ChannelsPage({ data, loading, onRefresh, onNotify, onOpenOAuth }: { data: ChannelsData | null; loading: boolean; onRefresh: () => Promise<void>; onNotify: (message: string) => void; onOpenOAuth?: () => void }) {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string>('')
@@ -180,7 +180,7 @@ export function ChannelsPage({ data, loading, onRefresh, onNotify }: { data: Cha
       <div className="panel-title">
         <div><h2>账号管理</h2><p>OAuth 账号池（Codex / Claude / Grok 等）。停用后该账号不再参与调度，模型随之下线；出口代理按账号单独设置。</p></div>
         <div className="channel-head-actions">
-          <button type="button" className="channel-login-btn" onClick={() => { setError(''); setLoggingInOAuth(true) }} title="通过 OAuth / Device Code 授权登录新账号"><KeyRound size={12} /><span>账号登录</span></button>
+          <button type="button" className="channel-login-btn" onClick={() => { if (onOpenOAuth) { onOpenOAuth(); return; } setError(''); setLoggingInOAuth(true) }} title="通过 OAuth / Device Code 授权登录新账号"><KeyRound size={12} /><span>账号登录</span></button>
           <span className="soft-badge">{visibleCredentials.filter((item) => !item.disabled).length}/{visibleCredentials.length} 可用</span>
         </div>
       </div>
