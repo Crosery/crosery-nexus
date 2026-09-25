@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser'
 import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/index.js'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
+import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
 import { isAuthenticated, login, logout, requireAuth } from './auth.js'
 import { getKeyModelAccessState } from './managementCapability.js'
@@ -1063,14 +1063,29 @@ app.get('/api/cpa/oauth/status', async (req, res) => {
 app.post('/api/cpa/oauth/callback', async (req, res) => {
   try {
     const provider = String(req.body?.provider || '').trim()
-    const redirectUrl = String(req.body?.redirectUrl || '').trim()
-    if (!provider || !redirectUrl) return res.status(400).json({ error: '缺少 provider 或 redirectUrl' })
-    const result = await submitOAuthCallback(provider, redirectUrl)
+    const redirectUrl = String(req.body?.redirectUrl || req.body?.code || '').trim()
+    const state = String(req.body?.state || '').trim()
+    if (!provider || !redirectUrl) return res.status(400).json({ error: '缺少 provider 或回调内容/授权码' })
+    const result = await submitOAuthCallback(provider, redirectUrl, state)
     invalidateControlPlaneCaches()
     addAudit('oauth_callback_submit', `provider=${provider}`)
     res.json(result)
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : '提交回调失败' })
+  }
+})
+
+app.post('/api/cpa/credentials/api-key', async (req, res) => {
+  try {
+    const provider = String(req.body?.provider || '').trim()
+    const apiKey = String(req.body?.apiKey || '').trim()
+    if (!provider || !apiKey) return res.status(400).json({ error: '请提供有效的 provider 和 API Key' })
+    const result = await addProviderApiKey(provider, apiKey)
+    invalidateControlPlaneCaches()
+    addAudit('add_provider_api_key', `provider=${provider}`)
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '录入 API Key 失败' })
   }
 })
 

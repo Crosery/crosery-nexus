@@ -73,12 +73,16 @@ export const api = {
     body: JSON.stringify({ provider }),
   }),
   getOAuthStatus: (state: string) => request<OAuthStatusResult>(`/api/cpa/oauth/status?state=${encodeURIComponent(state)}`),
-  submitOAuthCallback: (provider: string, redirectUrl: string) => request<{ ok: boolean }>('/api/cpa/oauth/callback', {
+  submitOAuthCallback: (provider: string, redirectUrl: string, state?: string) => request<{ ok: boolean }>('/api/cpa/oauth/callback', {
     method: 'POST',
-    body: JSON.stringify({ provider, redirectUrl }),
+    body: JSON.stringify({ provider, redirectUrl, state }),
   }),
   cancelOAuth: (state: string) => request<{ ok: boolean }>('/api/cpa/oauth/cancel', {
     method: 'POST',
     body: JSON.stringify({ state }),
+  }),
+  addApiKey: (provider: string, apiKey: string) => request<{ ok: boolean }>('/api/cpa/credentials/api-key', {
+    method: 'POST',
+    body: JSON.stringify({ provider, apiKey }),
   }),
 }

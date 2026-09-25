@@ -498,11 +498,16 @@ export async function getOAuthStatus(state: string): Promise<OAuthStatusResponse
   return cpaRequest<OAuthStatusResponse>(`/get-auth-status?state=${encodeURIComponent(state)}`)
 }
 
-export async function submitOAuthCallback(provider: string, redirectUrl: string): Promise<{ ok: boolean }> {
-  if (!redirectUrl) throw new Error('缺少 redirectUrl')
+export async function submitOAuthCallback(provider: string, redirectUrl: string, state?: string): Promise<{ ok: boolean }> {
+  let target = redirectUrl.trim()
+  if (!target) throw new Error('缺少回调 URL 或授权码')
+  if (!target.startsWith('http://') && !target.startsWith('https://')) {
+    const stateParam = state ? `&state=${encodeURIComponent(state)}` : ''
+    target = `http://localhost:8317/v0/management/oauth-callback?code=${encodeURIComponent(target)}${stateParam}`
+  }
   await cpaRequest<any>('/oauth-callback', {
     method: 'POST',
-    body: JSON.stringify({ provider, redirect_url: redirectUrl }),
+    body: JSON.stringify({ provider, redirect_url: target }),
   })
   return { ok: true }
 }
@@ -515,6 +520,37 @@ export async function cancelOAuthSession(state: string): Promise<{ ok: boolean }
     })
   } catch {
     // 忽略取消会话失败
+  }
+  return { ok: true }
+}
+
+export async function addProviderApiKey(provider: string, apiKey: string): Promise<{ ok: boolean }> {
+  const norm = provider.toLowerCase().trim()
+  const key = apiKey.trim()
+  if (!key) throw new Error('API Key 不能为空')
+
+  let endpoint = ''
+  if (norm === 'claude' || norm === 'anthropic') {
+    endpoint = '/claude-api-key'
+  } else if (norm === 'codex' || norm === 'openai') {
+    endpoint = '/codex-api-key'
+  } else if (norm === 'gemini' || norm === 'google') {
+    endpoint = '/gemini-api-key'
+  } else if (norm === 'xai' || norm === 'grok') {
+    endpoint = '/xai-api-key'
+  } else {
+    throw new Error(`提供商 ${provider} 不支持直接录入 API Key`)
+  }
+
+  const listKey = endpoint.slice(1)
+  const existing = await cpaRequest<Record<string, Array<{ 'api-key': string }>>>(endpoint).catch(() => ({ [listKey]: [] }))
+  const currentList = Array.isArray(existing[listKey]) ? existing[listKey] : []
+  if (!currentList.some((item) => item['api-key'] === key)) {
+    const updated = [...currentList, { 'api-key': key }]
+    await cpaRequest<any>(endpoint, {
+      method: 'PUT',
+      body: JSON.stringify(updated),
+    })
   }
   return { ok: true }
 }

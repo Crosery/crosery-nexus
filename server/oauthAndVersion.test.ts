@@ -48,7 +48,7 @@ test('submitOAuthCallback requires redirectUrl', async () => {
     async () => {
       await submitOAuthCallback('codex', '')
     },
-    { message: /缺少 redirectUrl/ }
+    { message: /缺少回调 URL 或授权码/ }
   )
 })
 
