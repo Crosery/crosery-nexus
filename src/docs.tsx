@@ -1,14 +1,15 @@
-import { Activity, Check, ChevronRight, Copy, Database, Gauge, Image as ImageIcon, KeyRound, Menu, MessageSquare, Send, Terminal, X } from 'lucide-react'
+import { Activity, Check, ChevronRight, Copy, Database, Gauge, Image as ImageIcon, KeyRound, Menu, MessageSquare, Send, Sparkles, Terminal, X } from 'lucide-react'
 import { useState } from 'react'
 import './docs.css'
 
 const BASE_URL = 'https://ai.crosery.com/v1'
 const USAGE_URL = 'https://console.ai.crosery.com/v1'
 
-type DocId = 'start' | 'models' | 'openai' | 'anthropic' | 'responses' | 'images' | 'usage' | 'quota' | 'clients'
+type DocId = 'start' | 'crapi' | 'models' | 'openai' | 'anthropic' | 'responses' | 'images' | 'usage' | 'quota' | 'clients'
 
 const NAV: Array<{ id: DocId; label: string; icon: typeof Terminal }> = [
   { id: 'start', label: '开始使用', icon: KeyRound },
+  { id: 'crapi', label: 'crapi 一键接入（推荐）', icon: Sparkles },
   { id: 'models', label: '列出模型', icon: Database },
   { id: 'openai', label: 'OpenAI 聊天', icon: MessageSquare },
   { id: 'anthropic', label: 'Anthropic 原生', icon: Terminal },
@@ -71,6 +72,20 @@ export default function DocsApp() {
             <div><span>先做什么</span><code>GET {BASE_URL}/models</code></div>
           </div>
           <div className="docs-callout"><KeyRound size={17} /><p>文本、图片和模型接口使用 <code>ai.crosery.com/v1</code>；自助用量接口使用 <code>console.ai.crosery.com/v1</code>。如果你已经拿到了 API Key，不需要登录控制台：先调用模型目录，再把返回的 <code>data[].id</code> 作为请求中的 <code>model</code>。</p></div>
+        </DocSection>
+
+        <DocSection id="crapi" icon={Sparkles} title="crapi 一键接入 CLI（推荐）" subtitle="无需手动配置各客户端或使用 ccswitch，一行命令全自动适配本机所有 Agent 环境">
+          <div className="docs-callout"><Sparkles size={17} /><p><strong>crapi</strong> 是小鸡云 CPA / crosery 渠道的专用配置工具。自动扫描识别本机已安装的 Agent CLI 和客户端（Claude Code、Codex CLI、Cursor、Windsurf、Cline、Roo Code、Cherry Studio 等），一键配置 Base URL 与 Key，支持模型热切换与号池/用量监控。</p></div>
+          <Code label="macOS / Linux 一键安装">{`curl -fsSL https://cdn.jsdelivr.net/gh/crosery/crapi/install.sh | sh`}</Code>
+          <Code label="Windows PowerShell 一键安装">{`irm https://cdn.jsdelivr.net/gh/crosery/crapi/install.ps1 | iex`}</Code>
+          <Code label="常用命令">{`# 自动检测本机所有已安装客户端并一键完成配置接入
+crapi setup
+
+# 快速统一切换所有工具的默认主力模型
+crapi use claude-opus-5-5
+
+# 从网关拉取最新模型和渠道
+crapi update`}</Code>
         </DocSection>
 
         <DocSection id="models" icon={Database} title="列出当前 Key 可用模型" subtitle="每次调用前可用它确认模型名称和图片模型权限">

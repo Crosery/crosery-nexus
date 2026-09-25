@@ -1,14 +1,15 @@
-import { Activity, Boxes, Check, ChevronRight, Copy, Database, Gauge, Image as ImageIcon, KeyRound, MessageSquare, Terminal } from 'lucide-react'
+import { Activity, Boxes, Check, ChevronRight, Copy, Database, Gauge, Image as ImageIcon, KeyRound, MessageSquare, Sparkles, Terminal } from 'lucide-react'
 import { useState } from 'react'
 import type { ModelIndexData } from '../types'
 
 const BASE_URL = 'https://ai.crosery.com/v1'
 const HELP_API = 'https://console.ai.crosery.com/api'
 
-type HelpSectionId = 'quick-start' | 'openai' | 'anthropic' | 'responses' | 'images' | 'quota' | 'usage' | 'clients' | 'models'
+type HelpSectionId = 'quick-start' | 'crapi' | 'openai' | 'anthropic' | 'responses' | 'images' | 'quota' | 'usage' | 'clients' | 'models'
 
 const TOC: Array<{ id: HelpSectionId; label: string }> = [
   { id: 'quick-start', label: '开始之前' },
+  { id: 'crapi', label: 'crapi 一键接入（推荐）' },
   { id: 'openai', label: 'OpenAI 聊天' },
   { id: 'anthropic', label: 'Anthropic 原生' },
   { id: 'responses', label: 'Responses / Codex' },
@@ -81,6 +82,28 @@ export function HelpPage({ modelIndex }: { modelIndex: ModelIndexData | null }) 
             <Fact label="模型目录">GET {BASE_URL}/models</Fact>
           </div>
           <p className="help-note">在「API Key」页创建密钥后复制。Anthropic 请求也支持 <code>x-api-key: &lt;KEY&gt;</code>；无效 Key 返回 <code>401</code>，没有模型权限返回 <code>403 model_not_allowed</code>。</p>
+        </Section>
+
+        <Section id="crapi" icon={Sparkles} title="crapi 一键接入 CLI（推荐）" subtitle="无需手动配置各工具环境变量或使用 ccswitch，一行命令自动适配本机所有 Agent 环境">
+          <p className="help-note">
+            <strong>crapi</strong> 是专为小鸡云 CPA / crosery 渠道打造的一键式 Harness 配置工具，可自动识别并配置 Claude Code、Codex CLI、Cursor、Windsurf、Cline、Roo Code、Cherry Studio、Aider 等工具，支持模型一键热切换与用量监控。
+          </p>
+          <CodeBlock label="macOS / Linux 一键安装" code={`curl -fsSL https://cdn.jsdelivr.net/gh/crosery/crapi/install.sh | sh`} />
+          <CodeBlock label="Windows PowerShell 一键安装" code={`irm https://cdn.jsdelivr.net/gh/crosery/crapi/install.ps1 | iex`} />
+          <CodeBlock label="一键配置本机所有 Agent Harness" code={`# 输入你的 API Key，自动检测并写入所有已安装客户端的配置
+crapi setup
+
+# 快速切换已接入工具的默认模型（交互式或指定模型）
+crapi use claude-opus-5-5
+
+# 从网关同步最新模型与渠道
+crapi update`} />
+          <div className="help-tip-grid">
+            <div><strong>全自动发现</strong><p>自动扫描本机安装的 Claude Code、Codex、Cursor、Cline、Cherry Studio 等，按最佳实践写入 Base URL 和密钥。</p></div>
+            <div><strong>无痛替代 ccswitch</strong><p>集中管理多端配置，自带配置备份与还原（<code>crapi restore</code>），告别环境冲突与手动配置。</p></div>
+            <div><strong>用量与号池</strong><p>在终端可直接通过 <code>crapi usage</code> 和 <code>crapi pool</code> 查看实时额度消耗与账号健康度。</p></div>
+            <div><strong>快速模型切换</strong><p>运行 <code>crapi use</code> 或 <code>crapi switch</code> 即可为全部工具统一切换主力模型。</p></div>
+          </div>
         </Section>
 
         <Section id="openai" icon={MessageSquare} title="OpenAI 聊天接口" subtitle="/v1/chat/completions，绝大多数 OpenAI 兼容客户端都使用这个接口">
