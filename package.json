@@ -1,34 +1,64 @@
 {
-  "name": "crosery-api-console",
+  "name": "crosery-cpe-console",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "workspaces": [
+    "apps/data",
+    "packages/contracts"
+  ],
+  "overrides": {
+    "nanoid": "^3.3.18"
+  },
   "scripts": {
-    "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
-    "dev:web": "vite",
-    "dev:server": "tsx watch server/index.ts",
-    "build": "tsc -b && vite build",
+    "dev": "concurrently \"npm:dev:web\" \"npm:dev:edge\"",
+    "dev:all": "concurrently \"npm:dev:web\" \"npm:dev:edge\" \"npm:dev:data\"",
+    "dev:web": "vite --configLoader runner",
+    "dev:edge": "tsx watch server/index.ts",
+    "dev:data": "tsx watch apps/data/src/index.ts",
+    "dev:server": "npm run dev:edge",
+    "build": "tsc -b && vite build --configLoader runner",
+    "build:data": "npm run build --workspace @crosery/cpe-data",
+    "build:all": "npm run build && npm run build:data",
     "start": "tsx server/index.ts",
-    "lint": "oxlint src server",
-    "typecheck": "tsc -b --pretty false",
-    "test": "node --test --import tsx server/*.test.ts",
-    "verify": "npm run test && npm run lint && npm run build"
+    "start:data": "node build/apps/data/src/index.js",
+    "migrate:data": "node build/apps/data/src/migrate-cli.js",
+    "backfill:data": "node scripts/backfill-data-plane.mjs",
+    "lint": "oxlint src server apps packages scripts",
+    "typecheck": "tsc -b --pretty false && tsc -p apps/data/tsconfig.json --pretty false",
+    "test": "node --test --import tsx server/*.test.ts apps/data/src/*.test.ts packages/contracts/*.test.ts scripts/*.test.mjs",
+    "test:backfill": "node --test scripts/backfill-data-plane.test.mjs",
+    "test:deploy": "sh deploy/data-plane/tests/postgres-secrets.test.sh && sh deploy/data-plane/tests/data-secrets.test.sh && sh deploy/data-plane/tests/wal-archive.test.sh",
+    "test:pg": "npm run test:integration --workspace @crosery/cpe-data",
+    "qa:bundle": "node scripts/check-bundle-budget.mjs",
+    "benchmark:api": "node scripts/benchmark-api.mjs",
+    "verify": "npm run test && npm run test:deploy && npm run lint && npm run build:all && npm run qa:bundle",
+    "pricing:update": "node scripts/build-pricing.mjs"
   },
   "dependencies": {
+    "busboy": "^1.6.0",
     "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
     "lucide-react": "^1.27.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "recharts": "^3.10.1"
+    "recharts": "^3.10.1",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/busboy": "^1.5.4",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/yauzl": "^3.4.0",
     "@vitejs/plugin-react": "^6.0.3",
+    "adm-zip": "^0.6.0",
     "concurrently": "^10.0.4",
     "oxlint": "^1.71.0",
     "tsx": "^4.23.1",

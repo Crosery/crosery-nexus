@@ -4,7 +4,10 @@ import './index.css'
 import './request-details.css'
 import App from './App.tsx'
 
-createRoot(document.getElementById('root')!).render(
+const root = document.getElementById('root')
+if (!root) throw new Error('缺少 #root 容器')
+
+createRoot(root).render(
   <StrictMode>
     <App />
   </StrictMode>,

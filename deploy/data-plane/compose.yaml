@@ -1,0 +1,229 @@
+name: crosery-cpe-data
+
+x-data-image: &data-image
+  image: ${DATA_IMAGE:-crosery-cpe-data:local}
+  build:
+    context: ../..
+    dockerfile: deploy/data-plane/Dockerfile.data
+    args:
+      NODE_IMAGE: ${NODE_IMAGE:?set a reviewed Node 24 image tag and digest}
+
+x-data-environment: &data-environment
+  NODE_ENV: production
+  HOST: 0.0.0.0
+  PORT: "8792"
+  MIGRATIONS_DIR: /app/build/apps/data/migrations
+  DATABASE_URL_FILE: /run/secrets/database-url
+  AUTH_MAX_CLOCK_SKEW_SECONDS: ${AUTH_MAX_CLOCK_SKEW_SECONDS:-300}
+  MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+  MAX_INGEST_BATCH: ${MAX_INGEST_BATCH:-500}
+  SNAPSHOT_REFRESH_MS: ${SNAPSHOT_REFRESH_MS:-15000}
+  MAINTENANCE_INTERVAL_MS: ${MAINTENANCE_INTERVAL_MS:-60000}
+  MAINTENANCE_BATCH_SIZE: ${MAINTENANCE_BATCH_SIZE:-5000}
+  RAW_RETENTION_DAYS: ${RAW_RETENTION_DAYS:-90}
+  MINUTE_RETENTION_DAYS: ${MINUTE_RETENTION_DAYS:-90}
+  HOUR_RETENTION_DAYS: ${HOUR_RETENTION_DAYS:-400}
+  IDENTITY_RETENTION_DAYS: ${IDENTITY_RETENTION_DAYS:-410}
+  INGEST_BATCH_RETENTION_DAYS: ${INGEST_BATCH_RETENTION_DAYS:-100}
+  PG_POOL_MAX: ${PG_POOL_MAX:-12}
+  PG_STATEMENT_TIMEOUT_MS: ${PG_STATEMENT_TIMEOUT_MS:-5000}
+  POSTGRES_APP_USER: ${POSTGRES_APP_USER:-console_app}
+
+services:
+  storage-init:
+    image: ${POSTGRES_IMAGE:?set a reviewed PostgreSQL 18 image tag and digest}
+    pull_policy: never
+    restart: "no"
+    user: "0:0"
+    entrypoint: [install]
+    command:
+      - -d
+      - -o
+      - postgres
+      - -g
+      - postgres
+      - -m
+      - "0700"
+      - /var/lib/postgresql
+      - /var/lib/postgresql/18
+      - /var/lib/postgresql/18/docker
+      - /var/lib/postgresql-backup
+      - /var/lib/postgresql-backup/base
+      - /var/lib/postgresql-backup/wal
+    volumes:
+      - type: bind
+        source: ${PG_LOCAL_ROOT:?set a local SSD path}
+        target: /var/lib/postgresql
+      - type: bind
+        source: ${PG_BACKUP_STAGING_ROOT:?set a local SSD staging path}
+        target: /var/lib/postgresql-backup
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?set a reviewed PostgreSQL 18 image tag and digest}
+    pull_policy: never
+    restart: unless-stopped
+    entrypoint: [/usr/local/bin/cpe-postgres-entrypoint]
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-crosery_console}
+      POSTGRES_USER: ${POSTGRES_OWNER_USER:-console_owner}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --data-checksums
+      PGDATA: /var/lib/postgresql/18/docker
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-console_app}
+      POSTGRES_APP_PASSWORD_FILE: /run/secrets/postgres-app-password
+      POSTGRES_BACKUP_USER: ${POSTGRES_BACKUP_USER:-console_backup}
+      POSTGRES_BACKUP_PASSWORD_FILE: /run/secrets/postgres-backup-password
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-50}
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=${POSTGRES_ARCHIVE_TIMEOUT:-300s}
+      - -c
+      - archive_command=/usr/local/bin/crosery-archive-wal "%p" "%f" /var/lib/postgresql-backup/wal
+      - -c
+      - log_min_duration_statement=${POSTGRES_LOG_MIN_DURATION_MS:-250}
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=on
+    volumes:
+      # PostgreSQL 18 mounts the versioned PGDATA below this local-SSD root.
+      - type: bind
+        source: ${PG_LOCAL_ROOT:?set a local SSD path}
+        target: /var/lib/postgresql
+      # WAL archive staging is local SSD. The host backup job copies it to NAS.
+      - type: bind
+        source: ${PG_BACKUP_STAGING_ROOT:?set a local SSD staging path}
+        target: /var/lib/postgresql-backup
+      - type: bind
+        source: ./initdb/10-runtime-roles.sh
+        target: /docker-entrypoint-initdb.d/10-runtime-roles.sh
+        read_only: true
+      - type: bind
+        source: ./scripts/archive-wal.sh
+        target: /usr/local/bin/crosery-archive-wal
+        read_only: true
+      - type: bind
+        source: ./scripts/postgres-entrypoint.sh
+        target: /usr/local/bin/cpe-postgres-entrypoint
+        read_only: true
+    secrets:
+      - postgres-owner-password
+      - postgres-app-password
+      - postgres-backup-password
+    shm_size: ${POSTGRES_SHM_SIZE:-1gb}
+    tmpfs:
+      - /run/cpe-postgres-secrets:size=1m,mode=0700,uid=999,gid=999
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -h 127.0.0.1']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    networks: [database]
+
+  migrate:
+    <<: *data-image
+    pull_policy: never
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *data-environment
+    command: [node, build/apps/data/src/migrate-cli.js]
+    secrets:
+      - source: database-owner-url
+        target: database-url
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /run/cpe-data-secrets:size=1m,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    networks: [database]
+
+  data:
+    <<: *data-image
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *data-environment
+      DATA_AUTH_BEARER_TOKENS_FILE: /run/secrets/data-auth-bearer-token
+    command: [node, build/apps/data/src/index.js]
+    ports:
+      - ${DATA_SERVICE_BIND_ADDRESS:?set the data host Tailnet address}:${DATA_SERVICE_PORT:-8792}:8792
+    secrets:
+      - source: database-app-url
+        target: database-url
+      - data-auth-bearer-token
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /run/cpe-data-secrets:size=1m,mode=0700
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8792/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    networks: [database, edge]
+
+networks:
+  database:
+    internal: true
+  # Only the data API joins this network. Its published port is still bound to
+  # DATA_SERVICE_BIND_ADDRESS, which must be the host's Tailnet address.
+  edge: {}
+
+secrets:
+  postgres-owner-password:
+    file: ${POSTGRES_OWNER_PASSWORD_FILE:?set a root-owned secret file}
+  postgres-app-password:
+    file: ${POSTGRES_APP_PASSWORD_FILE:?set a root-owned secret file}
+  postgres-backup-password:
+    file: ${POSTGRES_BACKUP_PASSWORD_FILE:?set a root-owned secret file}
+  database-owner-url:
+    file: ${DATABASE_OWNER_URL_FILE:?set a root-owned PostgreSQL owner URL file}
+  database-app-url:
+    file: ${DATABASE_APP_URL_FILE:?set a root-owned PostgreSQL runtime URL file}
+  data-auth-bearer-token:
+    file: ${DATA_AUTH_BEARER_TOKEN_FILE:?set a root-owned Bearer token file}

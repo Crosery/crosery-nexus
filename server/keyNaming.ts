@@ -19,6 +19,10 @@ export function validateKeySlug(value: string) {
   return slug
 }
 
+export function deriveKeySlug(name: string) {
+  return normalizeKeySlug(name) || 'api-key'
+}
+
 export function buildNamedAPIKey(slugValue: string, randomSuffix: string) {
   return `sk-${validateKeySlug(slugValue)}-${randomSuffix}`
 }

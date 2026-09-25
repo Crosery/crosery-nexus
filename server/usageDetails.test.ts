@@ -1,29 +1,44 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { extractUsageDiagnostics } from './usageDetails.js'
+import { categorizeUsageError, resolveCacheReadTokens, resolveCacheWriteTokens } from './usageDetails.js'
 
-test('extracts error body and upstream request id from a usage record', () => {
-  const result = extractUsageDiagnostics({
-    fail: { status_code: 429, body: 'upstream saturated' },
-    response_headers: { 'CF-Ray': ['abc-HKG'] },
-    source: 'config:qijichuangtan',
-    auth_index: '42',
-    reasoning_effort: 'high',
-    service_tier: 'standard',
-  })
-  assert.equal(result.errorDetail, 'upstream saturated')
-  assert.equal(result.upstreamRequestId, 'abc-HKG')
-  assert.equal(result.source, 'config:qijichuangtan')
-  assert.equal(result.authIndex, '42')
-  assert.equal(result.reasoningEffort, 'high')
+test('categorizes the production Codex EOF burst as an upstream transport failure', () => {
+  assert.equal(categorizeUsageError(500, 'Post "https://chatgpt.com/backend-api/codex/responses": EOF'), 'upstream_eof')
+  assert.equal(categorizeUsageError(500, 'stream error: stream ID 1; PROTOCOL_ERROR; received from peer'), 'upstream_eof')
 })
 
-test('prefers an explicit upstream request id over generic request headers', () => {
-  const result = extractUsageDiagnostics({
-    response_headers: {
-      'X-Request-Id': 'generic-id',
-      'X-Upstream-Request-Id': 'upstream-id',
+test('prefers explicit Claude cache read/write segments and derives writes from the same read value', () => {
+  const record = {
+    provider: 'claude',
+    model: 'claude-opus-5',
+    tokens: {
+      input_tokens: 2,
+      cached_tokens: 999,
+      cache_read_tokens: 73_630,
+      cache_creation_tokens: 77_076,
+      output_tokens: 670,
+      total_tokens: 151_378,
     },
-  })
-  assert.equal(result.upstreamRequestId, 'upstream-id')
+  }
+  assert.equal(resolveCacheReadTokens(record), 73_630)
+  assert.equal(resolveCacheWriteTokens(record), 77_076)
+  assert.equal(resolveCacheReadTokens({ provider: 'claude', model: 'claude-opus-5', tokens: { cached_tokens: 999, cache_read_tokens: 0, cache_read_tokens_present: true } }), 0)
+  assert.equal(resolveCacheWriteTokens({ ...record, tokens: { ...record.tokens, cache_creation_tokens: undefined } }), 77_076)
+})
+
+test('compatible Claude-named models never invent a cache write segment', () => {
+  const record = {
+    provider: 'openai-compatible-minimax',
+    model: 'claude-opus-5',
+    tokens: { input_tokens: 100, cached_tokens: 50, output_tokens: 2, total_tokens: 1000 },
+  }
+  assert.equal(resolveCacheReadTokens(record), 50)
+  assert.equal(resolveCacheWriteTokens(record), 0)
+})
+
+test('separates caller input, quota, auth and wrong-endpoint failures', () => {
+  assert.equal(categorizeUsageError(400, '{"code":"context_too_large"}'), 'context_too_large')
+  assert.equal(categorizeUsageError(402, 'Insufficient balance'), 'quota_exhausted')
+  assert.equal(categorizeUsageError(401, 'OAuth access token has been revoked.'), 'auth_failed')
+  assert.equal(categorizeUsageError(400, 'model is not available on this endpoint'), 'wrong_endpoint')
 })

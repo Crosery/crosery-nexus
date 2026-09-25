@@ -1,0 +1,32 @@
+ARG NODE_IMAGE=node:24-bookworm-slim
+FROM ${NODE_IMAGE} AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY apps/data/package.json apps/data/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+RUN npm ci --ignore-scripts
+
+COPY . .
+RUN npm run build:data \
+  && npm prune --omit=dev --ignore-scripts
+
+FROM ${NODE_IMAGE} AS runtime
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY --from=build --chown=node:node /app/package.json ./package.json
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/build ./build
+COPY --chown=root:root deploy/data-plane/scripts/with-file-secrets.sh /usr/local/bin/cpe-file-env
+
+RUN chmod 0555 /usr/local/bin/cpe-file-env \
+  && command -v setpriv >/dev/null \
+  && id node >/dev/null
+
+USER root
+EXPOSE 8792
+ENTRYPOINT ["/usr/local/bin/cpe-file-env"]
+CMD ["node", "build/apps/data/src/index.js"]

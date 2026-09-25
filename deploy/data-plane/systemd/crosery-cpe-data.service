@@ -1,0 +1,49 @@
+[Unit]
+Description=Crosery CPE Console private data service
+Documentation=file:///opt/crosery-cpe-console/docs/architecture/ADR-001-low-latency-data-plane.md
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+ConditionPathExists=/etc/crosery-cpe-console/data-plane.env
+ConditionPathExists=/etc/crosery-cpe-console/secrets/database-app-url
+ConditionPathExists=/etc/crosery-cpe-console/secrets/data-auth-bearer-token
+
+[Service]
+Type=simple
+User=crosery-cpe
+Group=crosery-cpe
+WorkingDirectory=/opt/crosery-cpe-console
+EnvironmentFile=/etc/crosery-cpe-console/data-plane.env
+LoadCredential=database-url:/etc/crosery-cpe-console/secrets/database-app-url
+LoadCredential=data-auth-bearer-token:/etc/crosery-cpe-console/secrets/data-auth-bearer-token
+Environment=DATABASE_URL_FILE=%d/database-url
+Environment=DATA_AUTH_BEARER_TOKENS_FILE=%d/data-auth-bearer-token
+ExecStart=/opt/crosery-cpe-console/deploy/data-plane/scripts/with-file-secrets.sh /usr/bin/npm run start:data
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

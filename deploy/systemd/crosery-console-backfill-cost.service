@@ -1,0 +1,35 @@
+[Unit]
+Description=Backfill NULL usage costs in the Crosery console database
+After=crosery-api-console.service
+ConditionPathExists=/opt/crosery-api-console/data/console.db
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/crosery-api-console-current
+# 补价只需要 DATA_DIR（用于回读 data/gateway-pricing.json）和 node 运行时。
+# 刻意不读 console 的 .env：那里 DATA_PLANE_ENABLED=true，而数据桥的令牌是通过
+# systemd LoadCredential 下发的，不在 env 里，照搬会直接起不来。
+Environment=DATA_DIR=/opt/crosery-api-console/data
+Environment=DATA_PLANE_ENABLED=false
+Environment=HOME=/tmp
+Environment=XDG_CACHE_HOME=/tmp/.cache
+Environment=PATH=/opt/crosery-node-current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/crosery-node-current/bin/node --import tsx scripts/backfill-cost.mjs /opt/crosery-api-console/data/console.db 2000
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# 不需要网络：补价只读本地数据库与本地价格表
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/opt/crosery-api-console/data

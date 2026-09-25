@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch Crosery Console unlimited-key policy
+After=crosery-api-console.service
+
+[Path]
+PathChanged=/opt/crosery-api-console/data/nginx-unlimited-policy.json
+Unit=crosery-nginx-policy-sync.service
+
+[Install]
+WantedBy=multi-user.target

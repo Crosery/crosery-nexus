@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule Crosery CPE PostgreSQL base backups
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=20m
+Persistent=true
+Unit=crosery-cpe-backup.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,25 @@
+{
+  // Merge these owners and grants into the reviewed tailnet policy. Do not
+  // broaden either selector to all users or all tagged devices.
+  "tagOwners": {
+    "tag:cpe-console-edge": ["autogroup:admin"],
+    "tag:cpe-console-data": ["autogroup:admin"],
+  },
+
+  "grants": [
+    {
+      "src": ["tag:cpe-console-edge"],
+      "dst": ["tag:cpe-console-data"],
+      "ip": ["tcp:8792"],
+    },
+  ],
+
+  "tests": [
+    {
+      "src": "tag:cpe-console-edge",
+      "accept": ["tag:cpe-console-data:8792"],
+      "deny": ["tag:cpe-console-data:5432"],
+    },
+  ],
+}
+

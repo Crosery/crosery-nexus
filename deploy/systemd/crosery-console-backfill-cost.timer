@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically backfill NULL usage costs in the Crosery console database
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

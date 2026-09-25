@@ -1,0 +1,29 @@
+[Unit]
+Description=Apply Crosery Console unlimited-key policy to nginx
+After=nginx.service
+Requires=nginx.service
+ConditionPathExists=/opt/crosery-api-console/data/nginx-unlimited-policy.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/crosery-api-console
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/opt/crosery-api-console/node_modules/.bin/tsx server/nginxUnlimitedApplyCli.ts
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# nginx -t resolves hostnames from the full config, so DNS requires INET sockets.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/opt/crosery-api-console/data /etc/nginx/generated /etc/nginx/backup/crosery-api-console
