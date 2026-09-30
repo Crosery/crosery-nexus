@@ -9,11 +9,29 @@ import { createMagpieAdmission, mapMagpieRoutes, type AdmissionKey } from './mag
 
 export async function magpieRoutes() {
   if (config.magpieControlPlane === 'local') {
-    const channels = await Promise.all(readMagpieChannels().filter(channel => !channel.disabled).map(async channel => ({
-      ...channel,
-      'api-key-entries': await Promise.all(channel['api-key-entries'].map(async key => ({ ...key, 'api-key': await resolveMagpieCredential(key['api-key']) }))),
-      headers: channel.headers && Object.fromEntries(Object.entries(channel.headers).map(([name, reference]) => [name, resolveMagpieSecret(reference)])),
-    })))
+    const rawChannels = readMagpieChannels().filter(channel => !channel.disabled)
+    const resolvedChannels = await Promise.all(rawChannels.map(async channel => {
+      try {
+        const keys = await Promise.all(channel['api-key-entries'].map(async key => {
+          try {
+            const resolved = await resolveMagpieCredential(key['api-key'])
+            return { ...key, 'api-key': resolved }
+          } catch {
+            return null
+          }
+        }))
+        const validKeys = keys.filter((k): k is NonNullable<typeof k> => k !== null && Boolean(k['api-key']))
+        if (!validKeys.length) return null
+        return {
+          ...channel,
+          'api-key-entries': validKeys,
+          headers: channel.headers && Object.fromEntries(Object.entries(channel.headers).map(([name, reference]) => [name, resolveMagpieSecret(reference)])),
+        }
+      } catch {
+        return null
+      }
+    }))
+    const channels = resolvedChannels.filter((c): c is NonNullable<typeof c> => c !== null) as unknown as CompatChannel[]
 
     const { listLocalAuthFiles, readExcludedModels, getLocalAuthFileModels } = await import('./magpieControl.js')
     const oauthFiles = listLocalAuthFiles().filter(f => !f.disabled)

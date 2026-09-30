@@ -21,7 +21,7 @@ const readManifest = async () => JSON.parse(await fs.readFile(manifestPath, 'utf
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
 const action = process.argv[2]
 
-if (Number(process.versions.node.split('.')[0]) !== 24) throw new Error('Use Node 24, matching the Console package engines')
+if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Use Node >= 24, matching the Console package engines')
 
 if (action === 'prepare') {
   if (await exists(manifestPath) || await exists(path.join(runtime, 'data'))) throw new Error('Console runtime already exists; refusing to overwrite')
@@ -110,8 +110,8 @@ if (action === 'prepare') {
       MAGPIE_SOURCE_CPA_BASE_URL: manifest.credentialSourceBaseUrl, MAGPIE_SOURCE_CPA_KEY_FILE: manifest.credentialSourceKeyFile,
     }, stdio: ['ignore', 'pipe', 'pipe'],
   })
-  consoleServer.stdout.on('data', () => {})
-  consoleServer.stderr.on('data', () => {})
+  consoleServer.stdout.pipe(process.stdout)
+  consoleServer.stderr.pipe(process.stderr)
   let stopping = false
   const stop = () => {
     if (stopping) return

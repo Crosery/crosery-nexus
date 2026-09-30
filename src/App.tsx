@@ -1,4 +1,4 @@
-import { Activity, BarChart3, CircleHelp, Cpu, Gauge, Globe, KeyRound, LayoutDashboard, Layers, LogOut, RefreshCw, ShieldCheck, Sparkles, Table2, TriangleAlert, UploadCloud } from 'lucide-react'
+import { Activity, BarChart3, CircleHelp, Cpu, Gauge, Globe, KeyRound, LayoutDashboard, Layers, LogOut, RefreshCw, ShieldCheck, Sparkles, Table2, TriangleAlert } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import { api } from './api'
@@ -16,11 +16,10 @@ const LoginPage = lazy(() => import('./pages/LoginPage').then((module) => ({ def
 const MonitorPage = lazy(() => import('./pages/MonitorPage').then((module) => ({ default: module.MonitorPage })))
 const UsagePage = lazy(() => import('./pages/UsagePage').then((module) => ({ default: module.UsagePage })))
 const CachePage = lazy(() => import('./pages/CachePage').then((module) => ({ default: module.CachePage })))
-const CredentialUploadPage = lazy(() => import('./pages/CredentialUploadPage').then((module) => ({ default: module.CredentialUploadPage })))
 const OAuthPage = lazy(() => import('./pages/OAuthPage').then((module) => ({ default: module.OAuthPage })))
 import { VersionWidget } from './components/VersionWidget'
 
-type Page = 'dashboard' | 'keys' | 'channels' | 'oauth' | 'credentials-upload' | 'models' | 'charts' | 'analytics' | 'usage' | 'cache' | 'monitor' | 'help'
+type Page = 'dashboard' | 'keys' | 'channels' | 'oauth' | 'models' | 'charts' | 'analytics' | 'usage' | 'cache' | 'monitor' | 'help'
 type ProgressiveState = 'idle' | 'loading' | 'ready' | 'error'
 
 export default function App() {
@@ -306,7 +305,6 @@ export default function App() {
         case 'usage': return loadUsage()
         case 'cache': return loadCacheTrend()
         case 'monitor': return loadMonitor()
-        case 'credentials-upload': return Promise.resolve()
       }
     })()
     const [bootstrapResult, pageResult] = await Promise.allSettled([loadBootstrap(), pageRefresh])
@@ -324,7 +322,6 @@ export default function App() {
         { id: 'keys' as const, label: 'API Key', icon: KeyRound },
         { id: 'channels' as const, label: '渠道账号', icon: Layers },
         { id: 'oauth' as const, label: 'OAuth 登录', icon: Globe },
-        { id: 'credentials-upload' as const, label: '凭据导入', icon: UploadCloud },
         { id: 'models' as const, label: '模型总览', icon: Cpu },
       ],
     },
@@ -397,7 +394,6 @@ export default function App() {
             {page === 'keys' && <KeysPage keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} quotaTimeZone={bootstrap?.quotaTimeZone || ''} gatewayModelAccess={bootstrap?.gatewayModelAccess || 'unknown'} usage={currentUsageBreakdown} usageLoading={breakdownLoading} usageDays={days} onUsageDaysChange={setDays} usageKeyId={keyId} onUsageKeyChange={setKeyId} onRefresh={refresh} onSelectKey={selectKey} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }}/>}
             {page === 'channels' && <ChannelsPage data={channels} loading={channelsLoading} onRefresh={() => loadChannels(true)} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }} onOpenOAuth={() => navigate('oauth')}/>}
             {page === 'oauth' && <OAuthPage onNavigateChannels={() => navigate('channels')} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }}/>}
-            {page === 'credentials-upload' && <CredentialUploadPage limits={bootstrap?.credentialUploadLimits || { maxBytes: 64 * 1024 * 1024, maxEntries: 500 }} onUploaded={async () => { await Promise.all([loadBootstrap(), loadChannels()]) }} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2600) }}/>}
             {page === 'models' && <ModelsPage data={modelIndex} usage={currentUsageBreakdown} keys={bootstrap?.keys || []} days={days} setDays={setDays} keyId={keyId} setKeyId={setKeyId} loading={modelsLoading} onRefresh={() => loadModelIndex(true)} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }}/>}
             {page === 'charts' && <ChartsPage analytics={currentCharts} latencyState={chartsLatencyState} keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} days={days} setDays={setDays} keyId={keyId} setKeyId={setKeyId}/>}
             {page === 'analytics' && <AnalyticsPage analytics={currentAnalytics} keys={bootstrap?.keys || []} days={days} setDays={setDays} keyId={keyId} setKeyId={setKeyId}/>}
