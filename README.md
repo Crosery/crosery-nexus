@@ -120,6 +120,13 @@ npm run verify
 
 生产推荐使用 systemd 服务守护运行，并通过不可变 Release 软链机制发布。
 
+### Magpie 本地接入
+
+Magpie 接入 CPA 的隔离部署、凭据桥、可回退迁移与停止命令见
+[deploy/magpie/README.md](deploy/magpie/README.md)；协议差异、迁移边界与实测结果见
+[docs/research/magpie-cpa-integration.md](docs/research/magpie-cpa-integration.md)。
+该方案仅用于本机验证，不替换生产 CPA、数据库或真实 Agent 配置。
+
 ### 部署脚本示例（Systemd 单元）
 ```ini
 [Unit]
