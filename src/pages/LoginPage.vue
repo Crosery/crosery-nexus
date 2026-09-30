@@ -1,36 +1,33 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { reactive, ref } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
-import { TxButton } from '@talex-touch/tuffex/button'
-import { TxInput } from '@talex-touch/tuffex/input'
 import { TxForm, TxFormItem } from '@talex-touch/tuffex/form'
+import { TxInput } from '@talex-touch/tuffex/input'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxAlert } from '@talex-touch/tuffex/alert'
 import { api } from '../api'
-import { updateAuthState } from '../router'
 
-const router = useRouter()
-const username = ref('admin')
-const password = ref('')
+const emit = defineEmits<{
+  (e: 'success'): void
+}>()
+
+const form = reactive({
+  username: 'admin',
+  password: '',
+})
+
 const loading = ref(false)
 const error = ref('')
 
-async function handleLogin() {
-  if (!username.value || !password.value) {
-    error.value = '请输入用户名和密码'
-    return
-  }
+async function handleSubmit() {
+  if (!form.username || !form.password || loading.value) return
   loading.value = true
   error.value = ''
   try {
-    const res = await api.login(username.value, password.value) as { ok?: boolean }
-    if (res.ok) {
-      updateAuthState(true)
-      void router.replace('/dashboard')
-    } else {
-      error.value = '登录失败，请检查密码'
-    }
-  } catch (err: unknown) {
-    error.value = err instanceof Error ? err.message : '登录请求失败'
+    await api.login(form.username, form.password)
+    emit('success')
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '登录失败，请检查账号密码'
   } finally {
     loading.value = false
   }
@@ -38,92 +35,141 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="login-wrapper console-ground">
-    <TxCard class="login-card">
-      <div class="login-header">
-        <div class="login-logo">
-          <i class="i-carbon-cloud-services text-2xl text-[var(--tx-color-primary)]" />
+  <main class="login-wrapper">
+    <div class="login-container">
+      <TxCard class="login-card" :padding="32" variant="solid" background="glass" shadow="soft" :radius="16">
+        <div class="login-brand-header">
+          <div class="brand-badge">
+            <span class="brand-icon">⚡</span>
+          </div>
+          <p class="eyebrow">CROSERY CONSOLE</p>
+          <h1>欢迎登录</h1>
+          <p class="login-subtitle">统一管理网关 API Key、模型路由、用量审计与账号额度。</p>
         </div>
-        <h1>Crosery API Console</h1>
-        <p>输入管理员凭据登录管理控制台</p>
-      </div>
 
-      <TxForm label-position="top" @submit.prevent="handleLogin">
-        <TxFormItem label="用户名">
-          <TxInput v-model="username" placeholder="admin" autofocus class="fill-width" />
-        </TxFormItem>
-        <TxFormItem label="密码">
-          <TxInput v-model="password" type="password" placeholder="请输入密码" class="fill-width" />
-        </TxFormItem>
+        <TxAlert v-if="error" type="danger" :title="error" :closable="false" class="mb-4" />
 
-        <p v-if="error" class="login-error">{{ error }}</p>
+        <TxForm :model="form" class="login-form" @submit.prevent="handleSubmit">
+          <TxFormItem label="管理员账号" prop="username">
+            <TxInput
+              v-model="form.username"
+              placeholder="请输入管理员账号"
+              autocomplete="username"
+              class="w-full"
+            />
+          </TxFormItem>
 
-        <div class="login-actions">
-          <TxButton
-            variant="primary"
-            class="fill-width"
-            :loading="loading"
-            @click="handleLogin"
-          >
-            登录
-          </TxButton>
+          <TxFormItem label="登录密码" prop="password">
+            <TxInput
+              v-model="form.password"
+              type="password"
+              placeholder="请输入控制台密码"
+              autocomplete="current-password"
+              class="w-full"
+              @keydown.enter="handleSubmit"
+            />
+          </TxFormItem>
+
+          <div class="form-actions">
+            <TxButton
+              variant="primary"
+              size="lg"
+              block
+              :loading="loading"
+              :disabled="!form.username || !form.password"
+              @click="handleSubmit"
+            >
+              {{ loading ? '正在验证...' : '进入控制台' }}
+            </TxButton>
+          </div>
+        </TxForm>
+
+        <div class="login-footer text-muted text-xs">
+          <span>🔒 12 小时安全加密会话 · 本地安全防护</span>
         </div>
-      </TxForm>
-    </TxCard>
-  </div>
+      </TxCard>
+    </div>
+  </main>
 </template>
 
 <style scoped>
 .login-wrapper {
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
-  padding: 24px;
+  background: var(--tx-bg-color-page, #f4f6fc);
+  padding: 24px 16px;
 }
-
+.login-container {
+  width: 100%;
+  max-width: 440px;
+}
 .login-card {
   width: 100%;
-  max-width: 400px;
-  padding: 32px !important;
+  background: var(--tx-bg-color, #ffffff);
+  border: 1px solid var(--tx-border-color, #d5daec);
 }
-
-.login-header {
+.login-brand-header {
   text-align: center;
   margin-bottom: 24px;
 }
-
-.login-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
+.brand-badge {
+  width: 52px;
+  height: 52px;
   border-radius: 12px;
-  background: var(--tx-fill-color);
-  margin-bottom: 12px;
+  background: var(--tx-color-primary, #3346c8);
+  display: grid;
+  place-items: center;
+  margin: 0 auto 12px;
+  box-shadow: 0 4px 14px rgba(51, 70, 200, 0.35);
 }
-
-.login-header h1 {
+.brand-icon {
+  font-size: 24px;
+  color: #ffffff;
+}
+.eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--tx-color-primary, #3346c8);
+  margin: 0 0 4px;
+}
+.login-brand-header h1 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--tx-text-color-primary);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--tx-text-color-primary, #151b45);
 }
-
-.login-header p {
-  margin: 6px 0 0;
+.login-subtitle {
+  margin: 8px 0 0;
   font-size: 13px;
-  color: var(--tx-text-color-secondary);
+  color: var(--tx-text-color-secondary, #535b85);
+  line-height: 1.5;
 }
-
-.login-error {
-  color: var(--tx-color-danger);
-  font-size: 12px;
-  margin: 8px 0;
+.mb-4 {
+  margin-bottom: 16px;
 }
-
-.login-actions {
-  margin-top: 20px;
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.w-full {
+  width: 100%;
+}
+.form-actions {
+  margin-top: 12px;
+}
+.login-footer {
+  margin-top: 24px;
+  text-align: center;
+  color: var(--tx-text-color-placeholder, #8a90b0);
+}
+.text-xs {
+  font-size: 11.5px;
+}
+.text-muted {
+  color: var(--tx-text-color-secondary, #535b85);
 }
 </style>
