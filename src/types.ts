@@ -102,6 +102,7 @@ export type ModelIndexData = {
 export type GatewayModelAccess = 'unknown' | 'available' | 'unavailable'
 
 export type CpaVersionInfo = {
+  engine?: 'cpa' | 'magpie'
   version: string
   commit: string
   buildDate: string

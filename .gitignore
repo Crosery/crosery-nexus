@@ -15,6 +15,7 @@ data/
 *.local
 .pi-subagents/
 build/
+.cache/
 *.tar.gz
 *.patch
 

@@ -83,7 +83,7 @@ export default function App() {
     try {
       const result = await api.bootstrap<BootstrapData>()
       setBootstrap(result)
-      setGatewayState(result.degraded ? 'unavailable' : 'online')
+      setGatewayState(result.degraded || (result.versions?.cpa?.engine === 'magpie' && result.versions.cpa.version === 'offline') ? 'unavailable' : 'online')
       return !result.degraded
     } catch {
       setGatewayState('unavailable')
@@ -345,7 +345,8 @@ export default function App() {
     },
     { title: '帮助', items: [{ id: 'help' as const, label: '接入帮助', icon: CircleHelp }] },
   ]
-  const gatewayCopy = gatewayStatusCopy(gatewayState)
+  const gatewayEngine = bootstrap?.versions?.cpa?.engine || 'cpa'
+  const gatewayCopy = gatewayStatusCopy(gatewayState, gatewayEngine)
   const currentAnalyticsScope = analyticsScopeKey(days, keyId)
   const currentCacheScope = JSON.stringify([cacheHours, cacheModel, cacheClient, cacheKeyId, cacheProvider])
   const degradedNotice = bootstrap?.degraded ? (bootstrap.degradedReason || 'CPA 控制面暂不可用，分组与模型目录沿用上次结果') : ''
@@ -367,7 +368,7 @@ export default function App() {
         <div className={`gateway-status ${gatewayState}`} role="status">
           <span className={`live-dot ${gatewayState}`}/>
           <div>
-            <strong>CPA Gateway</strong>
+            <strong>{gatewayEngine === 'magpie' ? 'Magpie Kernel' : 'CPA Gateway'}</strong>
             <small>
               {gatewayCopy.short}
               {bootstrap?.versions?.cpa?.version && bootstrap.versions.cpa.version !== 'unknown' && ` · v${bootstrap.versions.cpa.version.split('-')[0].replace(/^v/, '')}`}
@@ -391,7 +392,7 @@ export default function App() {
       <div className="page-content">
         <div key={page} className="page-motion-layer">
           <Suspense fallback={<div className="empty-state" role="status"><RefreshCw className="spin" size={20}/><p>正在加载页面</p></div>}>
-            {page === 'dashboard' && <DashboardPage analytics={currentDashboard} keys={bootstrap?.keys || []} keyId={keyId} setKeyId={setKeyId} gatewayState={gatewayState} dashboardState={dashboardState} onOpenKeys={() => navigate('keys')}/>}
+            {page === 'dashboard' && <DashboardPage analytics={currentDashboard} keys={bootstrap?.keys || []} keyId={keyId} setKeyId={setKeyId} gatewayState={gatewayState} gatewayEngine={gatewayEngine} dashboardState={dashboardState} onOpenKeys={() => navigate('keys')}/>}
             {page === 'keys' && degradedNotice && <div className="warning-strip subtle degraded-notice" role="status"><TriangleAlert size={16} /><span>{degradedNotice}。Key 列表与额度仍为本地最新数据。</span></div>}
             {page === 'keys' && <KeysPage keys={bootstrap?.keys || []} groups={bootstrap?.groups || []} quotaTimeZone={bootstrap?.quotaTimeZone || ''} gatewayModelAccess={bootstrap?.gatewayModelAccess || 'unknown'} usage={currentUsageBreakdown} usageLoading={breakdownLoading} usageDays={days} onUsageDaysChange={setDays} usageKeyId={keyId} onUsageKeyChange={setKeyId} onRefresh={refresh} onSelectKey={selectKey} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }}/>}
             {page === 'channels' && <ChannelsPage data={channels} loading={channelsLoading} onRefresh={() => loadChannels(true)} onNotify={(message) => { setToast(message); setTimeout(() => setToast(''), 2200) }} onOpenOAuth={() => navigate('oauth')}/>}

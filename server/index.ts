@@ -1118,6 +1118,10 @@ app.use((_req, res) => {
 })
 
 startSync()
+if (config.gatewayEngine === 'magpie') {
+  const { startMagpieServer } = await import('./magpieRuntime.js')
+  await startMagpieServer()
+}
 if (config.nativeResponsesEnabled) startNativeResponsesServer()
 // nginx 默认 60s 空闲即断开代理连接，25s 心跳保证 SSE 长连接不被切断
 setInterval(heartbeat, 25_000).unref()

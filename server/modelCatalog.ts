@@ -127,6 +127,7 @@ function pricingKeysFor(id: string): string[] {
  */
 export async function gatewayPricingMap(): Promise<Map<string, ModelPricing>> {
   const map = new Map<string, ModelPricing>()
+  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') return map
   // available-models is the only view covering every registered model, including
   // the channels declared in config (openai-compatibility, codex-api-key) whose
   // own endpoints return raw configuration without capability metadata. Without
@@ -238,6 +239,10 @@ async function fetchJson<T>(url: string, headers: Record<string, string>, timeou
 }
 
 async function loadDefinitions(): Promise<Array<{ provider: string; models: ModelDefinition[] }>> {
+  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
+    const { readMagpieChannels } = await import('./magpieControl.js')
+    return readMagpieChannels().filter(channel => !channel.disabled).map(channel => ({ provider: channel.name, models: channel.models }))
+  }
   const headers = { Authorization: `Bearer ${config.cpaManagementKey}`, 'Content-Type': 'application/json' }
   const result: Array<{ provider: string; models: ModelDefinition[] }> = await Promise.all(definitionChannels.map(async (provider) => {
     try {
@@ -262,6 +267,13 @@ const keyValidationCache = new Map<string, { expiresAt: number; ids: string[] }>
 
 /** Validate a public gateway key and return exactly the models visible to that key. */
 export async function visibleModelIds(apiKey: string): Promise<string[] | null> {
+  if (config.gatewayEngine === 'magpie') {
+    const { db } = await import('./db.js')
+    const engine = await import('./magpieEngine.js')
+    const runtime = await import('./magpieRuntime.js')
+    const key = db.prepare('SELECT * FROM api_keys WHERE key_value=?').get(apiKey) as import('./magpieEngine.js').AdmissionKey | undefined
+    return key?.enabled ? [...new Set(engine.allowedMagpieRoutes(await runtime.magpieRoutes(), key).map(route => route.alias))] : null
+  }
   const hash = crypto.createHash('sha256').update(apiKey).digest('hex')
   const cached = keyValidationCache.get(hash)
   if (cached && cached.expiresAt > Date.now()) return cached.ids

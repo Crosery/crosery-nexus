@@ -78,6 +78,14 @@ if (dataPlaneDashboardReadMode === 'snapshot' && !dataPlaneEnabled) {
 }
 
 export const config = {
+  gatewayEngine: choiceSetting('GATEWAY_ENGINE', process.env.GATEWAY_ENGINE, 'cpa', ['cpa', 'magpie'] as const),
+  magpieControlPlane: choiceSetting('MAGPIE_CONTROL_PLANE', process.env.MAGPIE_CONTROL_PLANE, 'local', ['local', 'cpa'] as const),
+  magpiePort: positiveInteger('MAGPIE_PORT', process.env.MAGPIE_PORT, 8790, { min: 1024, max: 65535 }),
+  magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
+  magpieChannelsFile: process.env.MAGPIE_CHANNELS_FILE || path.join(dataDir, 'magpie-channels.json'),
+  magpieTimeoutMs: positiveInteger('MAGPIE_TIMEOUT_MS', process.env.MAGPIE_TIMEOUT_MS, 600_000, { min: 1000, max: 3_600_000 }),
+  magpieSourceCpaBaseUrl: internalHttpBaseUrl('MAGPIE_SOURCE_CPA_BASE_URL', process.env.MAGPIE_SOURCE_CPA_BASE_URL, false),
+  magpieSourceCpaKey: fileBackedSecret('MAGPIE_SOURCE_CPA_KEY', process.env.MAGPIE_SOURCE_CPA_KEY, process.env.MAGPIE_SOURCE_CPA_KEY_FILE) || '',
   nativeResponsesPolicySource: choiceSetting('NATIVE_RESPONSES_POLICY_SOURCE', process.env.NATIVE_RESPONSES_POLICY_SOURCE, 'cpa', ['cpa', 'console'] as const),
   nativeResponsesEnabled: booleanSetting('NATIVE_RESPONSES_ENABLED', process.env.NATIVE_RESPONSES_ENABLED, false),
   nativeResponsesPort: positiveInteger('NATIVE_RESPONSES_PORT', process.env.NATIVE_RESPONSES_PORT, 8788, { min: 1, max: 65535 }),
@@ -90,8 +98,8 @@ export const config = {
   cpaBaseUrl: (process.env.CPA_BASE_URL || 'http://127.0.0.1:8317').replace(/\/$/, ''),
   cpaManagementKey: process.env.CPA_MANAGEMENT_KEY || '',
   consoleUsername: process.env.CONSOLE_USERNAME || 'admin',
-  consolePassword: process.env.CONSOLE_PASSWORD || '',
-  sessionSecret: process.env.SESSION_SECRET || '',
+  consolePassword: fileBackedSecret('CONSOLE_PASSWORD', process.env.CONSOLE_PASSWORD, process.env.CONSOLE_PASSWORD_FILE) || '',
+  sessionSecret: fileBackedSecret('SESSION_SECRET', process.env.SESSION_SECRET, process.env.SESSION_SECRET_FILE) || '',
   cookieSecure: process.env.COOKIE_SECURE !== 'false',
   usageRetentionDays: Number(process.env.USAGE_RETENTION_DAYS || 90),
   reportReadWorkers: positiveInteger('REPORT_READ_WORKERS', process.env.REPORT_READ_WORKERS, 2, { min: 1, max: 4 }),

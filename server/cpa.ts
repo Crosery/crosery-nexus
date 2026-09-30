@@ -53,6 +53,10 @@ export const isUnsupportedManagementEndpoint = (error: unknown) =>
   error instanceof CPARequestError && error.status === 404
 
 async function cpaRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
+    const { magpieManagementRequest } = await import('./magpieControl.js')
+    return magpieManagementRequest<T>(path, init)
+  }
   if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
   const response = await fetch(`${config.cpaBaseUrl}/v0/management${path}`, {
     ...init,
@@ -129,6 +133,7 @@ export async function downloadAuthFile(name: string): Promise<Record<string, unk
 }
 
 export async function uploadAuthFile(name: string, raw: Buffer) {
+  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') throw new Error('Magpie OAuth import is not yet supported')
   if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
   const form = new FormData()
   form.set('file', new Blob([Uint8Array.from(raw)]), name)
@@ -148,7 +153,7 @@ export type CompatModel = { name?: string; alias?: string }
 export type CompatChannel = {
   name?: string
   'base-url'?: string
-  'api-key-entries'?: Array<{ 'api-key'?: string }>
+  'api-key-entries'?: Array<{ 'api-key'?: string; 'proxy-url'?: string }>
   models?: CompatModel[]
   [key: string]: unknown
 }
@@ -350,6 +355,7 @@ export async function getClaudeAccountMonitor(authIndex: string) {
 }
 
 export type CpaVersionInfo = {
+  engine?: 'cpa' | 'magpie'
   version: string
   commit: string
   buildDate: string
@@ -371,6 +377,15 @@ export type VersionsPayload = {
 let cachedCpaVersion: { info: CpaVersionInfo; time: number } | null = null
 
 export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
+  if (config.gatewayEngine === 'magpie') {
+    try {
+      const { kernelJSON } = await import('./magpieEngine.js')
+      await kernelJSON(config.magpieKernelSocket, '/internal/health')
+      return { engine: 'magpie', version: '3fe2ff9', commit: '3fe2ff99587e17dfe0ea707ffd0eccc088824433', buildDate: '' }
+    } catch {
+      return { engine: 'magpie', version: 'offline', commit: '', buildDate: '' }
+    }
+  }
   if (!force && cachedCpaVersion && Date.now() - cachedCpaVersion.time < 60_000) {
     return cachedCpaVersion.info
   }

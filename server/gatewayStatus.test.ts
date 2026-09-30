@@ -9,6 +9,11 @@ test('网关状态文案不会在不可用时声称在线', () => {
   assert.doesNotMatch(gatewayStatusCopy('unavailable').title, /正常|在线/)
 })
 
+test('Magpie mode names the kernel rather than claiming CPA is the inference engine', () => {
+  assert.match(gatewayStatusCopy('online', 'magpie').detail, /Magpie/)
+  assert.doesNotMatch(gatewayStatusCopy('unavailable', 'magpie').detail, /可访问|CPA/)
+})
+
 test('空密钥列表区分读取中、不可用和真实空集合', () => {
   assert.equal(emptyKeyListCopy('checking', 0), '正在读取密钥数据')
   assert.equal(emptyKeyListCopy('unavailable', 0), '密钥数据暂时不可用')

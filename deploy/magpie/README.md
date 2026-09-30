@@ -1,5 +1,9 @@
 # Magpie + Crosery CPA Local Deployment
 
+This document describes the earlier standalone experiment, not the requested
+Crosery Console integration. Use [CONSOLE-KERNEL.md](CONSOLE-KERNEL.md) for the
+headless inference-kernel replacement that preserves the Crosery UI.
+
 ## Decision
 
 This is an isolated, local-only integration, not a production CPA replacement.

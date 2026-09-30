@@ -120,11 +120,12 @@ npm run verify
 
 生产推荐使用 systemd 服务守护运行，并通过不可变 Release 软链机制发布。
 
-### Magpie 本地接入
+### Magpie 内核接入
 
-Magpie 接入 CPA 的隔离部署、凭据桥、可回退迁移与停止命令见
-[deploy/magpie/README.md](deploy/magpie/README.md)；协议差异、迁移边界与实测结果见
-[docs/research/magpie-cpa-integration.md](docs/research/magpie-cpa-integration.md)。
+保留 Crosery API Console，使用 Magpie 内核处理协议转换和上游转发，不使用 Magpie 界面。
+本地部署、鉴权与用量衔接、迁移待办和回退命令见
+[deploy/magpie/CONSOLE-KERNEL.md](deploy/magpie/CONSOLE-KERNEL.md)。
+默认仍为 CPA 模式，尚未切换生产流量或迁移生产 OAuth 与历史用量。
 该方案仅用于本机验证，不替换生产 CPA、数据库或真实 Agent 配置。
 
 ### 部署脚本示例（Systemd 单元）

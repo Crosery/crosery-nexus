@@ -14,6 +14,10 @@
     "nanoid": "^3.3.18"
   },
   "scripts": {
+    "magpie:build": "node scripts/build-magpie-kernel.mjs --test",
+    "magpie:prepare": "node --import tsx scripts/magpie-console.mjs prepare",
+    "magpie:install": "node --import tsx scripts/magpie-console.mjs install",
+    "test:magpie": "node --test --import tsx server/magpie*.test.ts",
     "dev": "concurrently \"npm:dev:web\" \"npm:dev:edge\"",
     "dev:all": "concurrently \"npm:dev:web\" \"npm:dev:edge\" \"npm:dev:data\"",
     "dev:web": "vite --configLoader runner",

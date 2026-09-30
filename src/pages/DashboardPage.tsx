@@ -6,12 +6,12 @@ import type { ApiKeyItem, DashboardData } from '../types'
 
 const compact = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0)
 
-export function DashboardPage({ analytics, keys, keyId, setKeyId, gatewayState, dashboardState, onOpenKeys }: { analytics: DashboardData | null; keys: ApiKeyItem[]; keyId: string; setKeyId: (id: string) => void; gatewayState: GatewayState; dashboardState: DashboardState; onOpenKeys: () => void }) {
+export function DashboardPage({ analytics, keys, keyId, setKeyId, gatewayState, gatewayEngine, dashboardState, onOpenKeys }: { analytics: DashboardData | null; keys: ApiKeyItem[]; keyId: string; setKeyId: (id: string) => void; gatewayState: GatewayState; gatewayEngine?: 'cpa' | 'magpie'; dashboardState: DashboardState; onOpenKeys: () => void }) {
   const summary = analytics?.summary
   const activeKeys = keys.filter((key) => key.enabled).length
   const selectedKey = keys.find((key) => key.id === keyId)
   const scope = selectedKey ? `仅 ${selectedKey.name}` : '全部 API Key'
-  const gatewayCopy = gatewayStatusCopy(gatewayState)
+  const gatewayCopy = gatewayStatusCopy(gatewayState, gatewayEngine)
   const analyticsMeta = dashboardState === 'loading' ? '正在读取数据' : '数据暂时不可用'
   const keysAvailable = gatewayState === 'online' || keys.length > 0
   const emptyKeysCopy = emptyKeyListCopy(gatewayState, keys.length)

@@ -46,6 +46,8 @@ export function VersionWidget({
 
   const cpa = versions?.cpa
   const consoleVer = versions?.console
+  const engineName = cpa?.engine === 'magpie' ? 'Magpie' : 'CPA'
+  const kernelUnavailable = cpa?.engine === 'magpie' && cpa.version === 'offline'
 
   const cpaShort = cpa?.version ? cpa.version.split('-')[0].replace(/^v/, '') : '未知'
   const hasUpdate = Boolean(cpa?.hasUpdate)
@@ -56,11 +58,11 @@ export function VersionWidget({
         type="button"
         className={`version-widget-trigger ${hasUpdate ? 'has-update' : ''}`}
         onClick={() => setOpen(!open)}
-        title="查看 CPA 网关与管理端系统版本"
+        title={`查看 ${engineName} 网关与管理端系统版本`}
       >
         <span className="version-trigger-tag">
           <Terminal size={13} />
-          <span>CPA v{cpaShort}</span>
+          <span>{engineName} {cpa?.engine === 'magpie' ? cpa?.version : `v${cpaShort}`}</span>
           {hasUpdate && <span className="version-dot-pulse" title={`上游发现新版本 ${cpa?.latestVersion}`} />}
         </span>
         <span className="version-trigger-divider">/</span>
@@ -76,7 +78,7 @@ export function VersionWidget({
           <div className="version-popover-head">
             <div>
               <h3>系统版本与健康监控</h3>
-              <p>小鸡云 CPA 核心网关与管理端运行版本</p>
+              <p>{engineName} 内核与 Crosery 管理端运行版本</p>
             </div>
             <button
               type="button"
@@ -94,9 +96,11 @@ export function VersionWidget({
               <div className="version-card-title">
                 <div className="title-left">
                   <Terminal size={15} />
-                  <strong>CPA Gateway 网关核心</strong>
+                  <strong>{engineName} 网关核心</strong>
                 </div>
-                {hasUpdate ? (
+                {kernelUnavailable ? (
+                  <span className="status-chip warning">内核不可用</span>
+                ) : hasUpdate ? (
                   <span className="status-chip warning">发现新版本</span>
                 ) : (
                   <span className="status-chip success">正常运行</span>
@@ -120,8 +124,8 @@ export function VersionWidget({
                   </div>
                 )}
                 <div className="prop-row">
-                  <span>上游最新 Release</span>
-                  <strong>{cpa?.latestVersion || '已是最新'}</strong>
+                  <span>{cpa?.engine === 'magpie' ? '版本策略' : '上游最新 Release'}</span>
+                  <strong>{cpa?.engine === 'magpie' ? '固定源码版本' : cpa?.latestVersion || '已是最新'}</strong>
                 </div>
               </div>
               {hasUpdate && cpa?.latestVersion && (
