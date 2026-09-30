@@ -136,6 +136,24 @@ export function ModelsPage({ data, usage, keys, days, setDays, keyId, setKeyId, 
       <div className="heading-filters">
         <Select ariaLabel="选择 API Key" value={keyId} onChange={setKeyId} options={[{ value: '', label: '全部 API Key' }, ...keys.map((key) => ({ value: key.id, label: key.name }))]} />
         <Select ariaLabel="选择费用周期" value={String(days)} onChange={(value) => setDays(Number(value))} options={[{ value: '1', label: '最近 24 小时' }, { value: '7', label: '最近 7 天' }, { value: '30', label: '最近 30 天' }, { value: '90', label: '最近 90 天' }]} />
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={async () => {
+            try {
+              const res = await api.syncUpstreamModels()
+              onNotify(`同步成功：新增 ${res.result.addedModels.length} 个模型，现共 ${res.result.totalModels} 个`)
+              await onRefresh()
+            } catch {
+              onNotify('同步上游模型失败，请检查上游连接')
+            }
+          }}
+          disabled={loading}
+          title="检测上游模型提供商及共享目录更新并同步最新模型"
+        >
+          <RefreshCw size={16} />
+          同步最新模型
+        </button>
         <button type="button" className="secondary-button" onClick={() => void onRefresh()} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''} />刷新</button>
       </div>
     </section>

@@ -21,7 +21,7 @@
     "magpie:api:verify": "node scripts/magpie-upstream.mjs verify",
     "magpie:upstream:check": "node scripts/magpie-upstream.mjs check",
     "magpie:upstream:install": "node scripts/magpie-upstream.mjs install-check",
-    "test:magpie": "node --test --import tsx server/magpie*.test.ts",
+    "test:magpie": "node --test --import tsx server/magpie*.test.ts server/rtkService.test.ts server/modelSync.test.ts",
     "dev": "concurrently \"npm:dev:web\" \"npm:dev:edge\"",
     "dev:all": "concurrently \"npm:dev:web\" \"npm:dev:edge\" \"npm:dev:data\"",
     "dev:web": "vite --configLoader runner",

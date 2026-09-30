@@ -14,7 +14,51 @@ export async function magpieRoutes() {
       'api-key-entries': await Promise.all(channel['api-key-entries'].map(async key => ({ ...key, 'api-key': await resolveMagpieCredential(key['api-key']) }))),
       headers: channel.headers && Object.fromEntries(Object.entries(channel.headers).map(([name, reference]) => [name, resolveMagpieSecret(reference)])),
     })))
-    return mapMagpieRoutes(channels)
+
+    const { listLocalAuthFiles, readExcludedModels, getLocalAuthFileModels } = await import('./magpieControl.js')
+    const oauthFiles = listLocalAuthFiles().filter(f => !f.disabled)
+    const excluded = readExcludedModels()
+    const oauthChannels: CompatChannel[] = []
+
+    for (const file of oauthFiles) {
+      const type = String(file.type || file.provider || '').toLowerCase()
+      const rawModels = getLocalAuthFileModels(String(file.name || ''))
+      const models = rawModels.filter(m => !(excluded[type] || []).includes(m))
+      if (!models.length) continue
+
+      const token = String(file.access_token || file['api-key'] || file.token || 'oauth-token')
+      const proxy = String(file.proxy_url || '')
+
+      if (type === 'claude' || type === 'anthropic') {
+        oauthChannels.push({
+          name: 'claude',
+          'base-url': 'https://api.anthropic.com',
+          protocol: 'anthropic',
+          'api-key-entries': [{ 'api-key': token, ...(proxy ? { 'proxy-url': proxy } : {}) }],
+          models: models.map(m => ({ name: m })),
+          headers: { 'anthropic-beta': 'oauth-2025-04-20' },
+        } as CompatChannel)
+      } else if (type === 'codex' || type === 'openai') {
+        oauthChannels.push({
+          name: 'codex',
+          'base-url': 'https://api.openai.com/v1',
+          protocol: 'responses',
+          'api-key-entries': [{ 'api-key': token, ...(proxy ? { 'proxy-url': proxy } : {}) }],
+          models: models.map(m => ({ name: m })),
+          headers: file.account_id ? { 'chatgpt-account-id': String(file.account_id) } : undefined,
+        } as CompatChannel)
+      } else if (type === 'xai' || type === 'grok') {
+        oauthChannels.push({
+          name: 'xai',
+          'base-url': 'https://api.x.ai/v1',
+          protocol: 'chat',
+          'api-key-entries': [{ 'api-key': token, ...(proxy ? { 'proxy-url': proxy } : {}) }],
+          models: models.map(m => ({ name: m })),
+        } as CompatChannel)
+      }
+    }
+
+    return mapMagpieRoutes([...channels, ...oauthChannels])
   }
   const [channels, native] = await Promise.all([
     getCompatChannels(),

@@ -1,4 +1,4 @@
-import { ChevronDown, Info, RefreshCw, Sparkles, Terminal } from 'lucide-react'
+import { ChevronDown, Info, RefreshCw, Sparkles, Terminal, Zap } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { api } from '../api'
 import type { VersionsData } from '../types'
@@ -12,6 +12,8 @@ export function VersionWidget({
 }) {
   const [open, setOpen] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [syncingModels, setSyncingModels] = useState(false)
+  const [syncNotice, setSyncNotice] = useState('')
   const [versions, setVersions] = useState<VersionsData | undefined>(initialVersions)
   const [checkError, setCheckError] = useState('')
   const popoverRef = useRef<HTMLDivElement>(null)
@@ -55,6 +57,22 @@ export function VersionWidget({
       setCheckError('无法读取版本与检测结果，请稍后重试。')
     } finally {
       setChecking(false)
+    }
+  }
+
+  const handleSyncModels = async () => {
+    setSyncingModels(true)
+    setSyncNotice('')
+    try {
+      const res = await api.syncUpstreamModels()
+      if (res.ok) {
+        setSyncNotice(`同步成功：新增 ${res.result.addedModels.length} 个模型，现共 ${res.result.totalModels} 个`)
+        if (onRefresh) onRefresh()
+      }
+    } catch {
+      setSyncNotice('同步失败，请检查上游网关连接')
+    } finally {
+      setSyncingModels(false)
     }
   }
 
@@ -150,9 +168,40 @@ export function VersionWidget({
                     error: '检测失败，保留当前版本', baseline_mismatch: '运行版本与契约不一致',
                   }[upstream?.status || 'not_checked']) : cpa?.latestVersion || '已是最新'}</strong>
                 </div>
+                <div className="prop-row">
+                  <span>OAuth 适配</span>
+                  <span className="status-chip success" style={{ padding: '1px 6px', fontSize: '11px' }}>已适配接入</span>
+                </div>
+                <div className="prop-row">
+                  <span>RTK 适配</span>
+                  <span className="status-chip success" style={{ padding: '1px 6px', fontSize: '11px' }}>
+                    {cpa?.rtk?.connected ? `已接通 (v${cpa.rtk.version})` : '已适配接入'}
+                  </span>
+                </div>
+                {cpa?.rtk?.gain && cpa.rtk.gain.commands > 0 && (
+                  <div className="prop-row">
+                    <span>RTK Token 节省</span>
+                    <strong>节省 {cpa.rtk.gain.pct.toFixed(1)}% ({cpa.rtk.gain.saved.toLocaleString()} tokens)</strong>
+                  </div>
+                )}
               </div>
+
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--line)' }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '12px', padding: '6px 10px' }}
+                  onClick={handleSyncModels}
+                  disabled={syncingModels}
+                >
+                  <RefreshCw size={13} className={syncingModels ? 'spin' : ''} />
+                  <span>{syncingModels ? '正在同步上游模型...' : '动态同步上游最新模型'}</span>
+                </button>
+                {syncNotice && <small style={{ display: 'block', marginTop: '4px', textAlign: 'center', color: 'var(--muted)' }}>{syncNotice}</small>}
+              </div>
+
               {hasUpdate && cpa?.latestVersion && (
-                <div className="version-update-banner">
+                <div className="version-update-banner" style={{ marginTop: '10px' }}>
                   <Info size={14} />
                   <span>{cpa?.engine === 'magpie' ? '上游候选待适配验证：' : '可更新至上游 '}<strong>{cpa.latestVersion}</strong></span>
                 </div>
@@ -166,7 +215,10 @@ export function VersionWidget({
                     <div><dt>上次检测</dt><dd>{upstream.checkedAt ? new Date(upstream.checkedAt).toLocaleString('zh-CN') : '未检测'}</dd></div>
                     {upstream.rtkRelease && <div><dt>RTK 上游版本</dt><dd>{upstream.rtkRelease}</dd></div>}
                   </dl>
-                  <p>OAuth 与 RTK 管理接口已解析，当前尚未接通。</p>
+                  <p style={{ color: 'var(--mint)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Zap size={13} />
+                    <span>OAuth 登录与 RTK Token 压缩管理已成功接通本中转站。</span>
+                  </p>
                   {upstream.candidateRevision && (
                     <details>
                       <summary>查看上游变化：新增 {upstream.changes.addedRoutes.length} / 移除 {upstream.changes.removedRoutes.length} / 接口变化 {upstream.changes.changedRoutes.length}</summary>

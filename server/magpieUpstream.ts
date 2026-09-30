@@ -15,7 +15,7 @@ const optionalTag = (value: unknown): string | null => typeof value === 'string'
 
 export function readMagpieUpstreamStatus(activeRevision: string, filename = path.join(
   process.env.MAGPIE_UPSTREAM_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-upstream'), 'status.json',
-)): MagpieUpstreamStatus {
+), options: { oauthConnected?: boolean; rtkConnected?: boolean } = {}): MagpieUpstreamStatus {
   const result: MagpieUpstreamStatus = {
     status: 'not_checked', contractRevision: MAGPIE_API_REVISION, candidateRevision: null, checkedAt: null,
     latestRelease: null, rtkRelease: null,
@@ -26,7 +26,8 @@ export function readMagpieUpstreamStatus(activeRevision: string, filename = path
     },
     loginAgents: [...MAGPIE_LOGIN_AGENTS],
     changes: { addedRoutes: [], removedRoutes: [], changedRoutes: [], schemaCount: 0, implementationFileCount: 0, addedLoginAgents: [], removedLoginAgents: [] },
-    oauthConnected: false, rtkConnected: false,
+    oauthConnected: options.oauthConnected ?? false,
+    rtkConnected: options.rtkConnected ?? false,
   }
   if (activeRevision !== MAGPIE_API_REVISION) {
     result.status = 'baseline_mismatch'

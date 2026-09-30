@@ -1,4 +1,4 @@
-import type { OAuthStartResult, OAuthStatusResult, VersionsData } from './types'
+import type { ModelSyncResult, OAuthStartResult, OAuthStatusResult, RTKStatusResponse, VersionsData } from './types'
 
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
@@ -68,6 +68,12 @@ export const api = {
   setModelSourceEnabled: (model: string, channel: string, kind: 'compat' | 'oauth', enabled: boolean) =>
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
   version: () => request<VersionsData>('/api/version'),
+  syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
+  getRTKStatus: () => request<RTKStatusResponse>('/api/rtk/status'),
+  toggleRTK: (agent: string, on: boolean) => request<RTKStatusResponse>('/api/rtk/toggle', {
+    method: 'POST',
+    body: JSON.stringify({ agent, on }),
+  }),
   startOAuth: (provider: string) => request<OAuthStartResult>('/api/cpa/oauth/start', {
     method: 'POST',
     body: JSON.stringify({ provider }),

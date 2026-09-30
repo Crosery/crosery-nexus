@@ -16,6 +16,6 @@ export type MagpieUpstreamStatus = {
     addedLoginAgents: string[]
     removedLoginAgents: string[]
   }
-  oauthConnected: false
-  rtkConnected: false
+  oauthConnected: boolean
+  rtkConnected: boolean
 }

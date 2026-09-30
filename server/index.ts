@@ -1100,6 +1100,42 @@ app.post('/api/cpa/oauth/cancel', async (req, res) => {
     res.status(500).json({ error: error instanceof Error ? error.message : '取消会话失败' })
   }
 })
+
+app.post('/api/models/sync', async (_req, res) => {
+  try {
+    const { syncUpstreamModels } = await import('./modelSync.js')
+    const result = await syncUpstreamModels({ force: true })
+    invalidateControlPlaneCaches()
+    addAudit('sync_upstream_models', 'all', `added=${result.addedModels.length}, total=${result.totalModels}`)
+    res.json({ ok: true, result })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '同步上游模型失败' })
+  }
+})
+
+app.get('/api/rtk/status', async (_req, res) => {
+  try {
+    const { readRTKStatus } = await import('./rtkService.js')
+    const status = await readRTKStatus()
+    res.json(status)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '获取 RTK 状态失败' })
+  }
+})
+
+app.post('/api/rtk/toggle', async (req, res) => {
+  try {
+    const agent = String(req.body?.agent || '').trim()
+    const on = Boolean(req.body?.on)
+    if (!agent) return res.status(400).json({ error: '缺少 agent 参数' })
+    const { setRTKAgentHook } = await import('./rtkService.js')
+    const result = await setRTKAgentHook(agent, on)
+    addAudit('toggle_rtk_hook', agent, `on=${on}`)
+    res.json(result)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '切换 RTK 挂载失败' })
+  }
+})
 app.get('/api/audit', (_req, res) => res.json({ items: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100').all() }))
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }))
 
@@ -1118,6 +1154,8 @@ app.use((_req, res) => {
 })
 
 startSync()
+const { startModelCatalogWatcher } = await import('./modelSync.js')
+startModelCatalogWatcher()
 if (config.gatewayEngine === 'magpie') {
   const { startMagpieServer } = await import('./magpieRuntime.js')
   await startMagpieServer()

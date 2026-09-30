@@ -109,6 +109,33 @@ export type CpaVersionInfo = {
   latestVersion?: string
   hasUpdate?: boolean
   upstream?: import('../packages/contracts/magpie-upstream').MagpieUpstreamStatus
+  rtk?: {
+    connected: boolean
+    path?: string | null
+    version?: string | null
+    gain?: {
+      commands: number
+      input: number
+      saved: number
+      pct: number
+    } | null
+    days?: Array<{
+      date: string
+      commands: number
+      input: number
+      saved: number
+      pct: number
+    }>
+    latest?: string | null
+    agents?: Array<{
+      id: string
+      name: string
+      icon: string
+      on: boolean
+      blocked?: string
+    }>
+    url?: string
+  }
 }
 
 export type ConsoleVersionInfo = {
@@ -120,6 +147,45 @@ export type ConsoleVersionInfo = {
 export type VersionsData = {
   cpa: CpaVersionInfo
   console: ConsoleVersionInfo
+}
+
+export type ModelSyncResult = {
+  ok: boolean
+  result: {
+    addedModels: string[]
+    totalModels: number
+    channelCount: number
+    source: string
+    syncedAt: string
+  }
+}
+
+export type RTKStatusResponse = {
+  connected: boolean
+  path: string | null
+  version: string | null
+  gain: {
+    commands: number
+    input: number
+    saved: number
+    pct: number
+  } | null
+  days: Array<{
+    date: string
+    commands: number
+    input: number
+    saved: number
+    pct: number
+  }>
+  latest: string | null
+  agents: Array<{
+    id: string
+    name: string
+    icon: string
+    on: boolean
+    blocked?: string
+  }>
+  url: string
 }
 
 export type OAuthStartResult = {

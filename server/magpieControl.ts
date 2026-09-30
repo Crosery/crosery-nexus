@@ -115,6 +115,7 @@ export function validateMagpieChannels(channels: unknown): MagpieChannel[] {
 }
 
 export function readMagpieChannels(): MagpieChannel[] {
+  if (!fs.existsSync(config.magpieChannelsFile)) return []
   const stat = fs.lstatSync(config.magpieChannelsFile)
   if (!stat.isFile() || stat.size > 4 * 1024 * 1024) throw new Error('Invalid Magpie channel registry')
   const state = JSON.parse(fs.readFileSync(config.magpieChannelsFile, 'utf8')) as State
@@ -122,13 +123,138 @@ export function readMagpieChannels(): MagpieChannel[] {
   return validateMagpieChannels(state.channels)
 }
 
-function writeChannels(channels: MagpieChannel[]) {
+export function writeChannels(channels: MagpieChannel[]) {
   channels = validateMagpieChannels(channels)
   const filename = config.magpieChannelsFile
   const temporary = `${filename}.${process.pid}.tmp`
   fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 })
   fs.writeFileSync(temporary, `${JSON.stringify({ version: 1, channels }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   fs.renameSync(temporary, filename)
+}
+
+const authFilesDir = () => path.join(config.dataDir, 'auth-files')
+const authFilesMetaFile = () => path.join(config.dataDir, 'auth-files-meta.json')
+const oauthExcludedModelsFile = () => path.join(config.dataDir, 'oauth-excluded-models.json')
+
+export function readExcludedModels(): Record<string, string[]> {
+  try {
+    const file = oauthExcludedModelsFile()
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch { /* ignore */ }
+  return {}
+}
+
+export function writeExcludedModels(map: Record<string, string[]>) {
+  const file = oauthExcludedModelsFile()
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(file, JSON.stringify(map, null, 2), { mode: 0o600 })
+}
+
+export function readAuthFilesMeta(): Record<string, { disabled?: boolean; proxy_url?: string }> {
+  try {
+    const file = authFilesMetaFile()
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch { /* ignore */ }
+  return {}
+}
+
+export function writeAuthFilesMeta(meta: Record<string, { disabled?: boolean; proxy_url?: string }>) {
+  const file = authFilesMetaFile()
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(file, JSON.stringify(meta, null, 2), { mode: 0o600 })
+}
+
+export function listLocalAuthFiles(): Array<Record<string, unknown>> {
+  const dir = authFilesDir()
+  if (!fs.existsSync(dir)) return []
+  const meta = readAuthFilesMeta()
+  const files: Array<Record<string, unknown>> = []
+
+  try {
+    const entries = fs.readdirSync(dir)
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue
+      const fullPath = path.join(dir, name)
+      try {
+        const raw = fs.readFileSync(fullPath, 'utf8')
+        const data = JSON.parse(raw) as Record<string, unknown>
+        const fileMeta = meta[name] || {}
+        files.push({
+          name,
+          filename: name,
+          type: data.type || data.provider || 'oauth',
+          provider: data.provider || data.type || 'oauth',
+          email: data.email || data.account || '',
+          account: data.account || data.email || '',
+          disabled: Boolean(fileMeta.disabled ?? data.disabled),
+          status: 'active',
+          proxy_url: fileMeta.proxy_url ?? data.proxy_url ?? '',
+          ...data,
+        })
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+
+  return files
+}
+
+export function saveLocalAuthFile(name: string, content: Buffer | string) {
+  const dir = authFilesDir()
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const filePath = path.join(dir, name)
+  fs.writeFileSync(filePath, content, { mode: 0o600 })
+}
+
+export function deleteLocalAuthFile(name: string) {
+  const dir = authFilesDir()
+  const filePath = path.join(dir, name)
+  try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath) } catch { /* ignore */ }
+  const meta = readAuthFilesMeta()
+  if (meta[name]) {
+    delete meta[name]
+    writeAuthFilesMeta(meta)
+  }
+}
+
+export function setLocalAuthFileStatus(name: string, disabled: boolean) {
+  const meta = readAuthFilesMeta()
+  meta[name] = { ...meta[name], disabled }
+  writeAuthFilesMeta(meta)
+}
+
+export function setLocalAuthFileProxy(name: string, proxyUrl: string) {
+  const meta = readAuthFilesMeta()
+  meta[name] = { ...meta[name], proxy_url: proxyUrl }
+  writeAuthFilesMeta(meta)
+}
+
+export function getLocalAuthFile(name: string): Record<string, unknown> | null {
+  const dir = authFilesDir()
+  const filePath = path.join(dir, name)
+  try {
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    }
+  } catch { /* ignore */ }
+  return null
+}
+
+const DEFAULT_TYPE_MODELS: Record<string, string[]> = {
+  claude: ['claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+  anthropic: ['claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
+  openai: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
+  antigravity: ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-3.1-pro', 'gemini-3.1-flash'],
+  gemini: ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-3.1-pro', 'gemini-3.1-flash'],
+  google: ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-3.1-pro', 'gemini-3.1-flash'],
+  xai: ['grok-4.5', 'grok-4.6'],
+  grok: ['grok-4.5', 'grok-4.6'],
+}
+
+export function getLocalAuthFileModels(name: string): string[] {
+  const file = getLocalAuthFile(name)
+  const type = String(file?.type || file?.provider || '').toLowerCase()
+  return DEFAULT_TYPE_MODELS[type] || ['default-model']
 }
 
 export class MagpieManagementError extends Error {
@@ -161,10 +287,49 @@ export async function magpieManagementRequest<T>(route: string, init: RequestIni
   } else if (/^\/(claude|codex|gemini|vertex)-api-key$/.test(url.pathname)) {
     if (method === 'GET') result = { [url.pathname.slice(1)]: [] }
     else throw new MagpieManagementError(501, 'Add a Magpie channel with an explicit protocol and credential reference')
-  } else if (url.pathname === '/auth-files' && method === 'GET') {
-    result = { files: [] }
-  } else if (url.pathname === '/oauth-excluded-models' && method === 'GET') {
-    result = { 'oauth-excluded-models': {} }
+  } else if (url.pathname === '/auth-files') {
+    if (method === 'GET') result = { files: listLocalAuthFiles() }
+    else if (method === 'DELETE') {
+      deleteLocalAuthFile(String(url.searchParams.get('name') || ''))
+      result = { ok: true }
+    }
+  } else if (url.pathname === '/auth-files/status' && method === 'PUT') {
+    const body = JSON.parse(String(init.body)) as { name: string; disabled: boolean }
+    setLocalAuthFileStatus(body.name, Boolean(body.disabled))
+    result = { ok: true }
+  } else if (url.pathname === '/auth-files/proxy' && method === 'PUT') {
+    const body = JSON.parse(String(init.body)) as { name: string; proxy_url: string }
+    setLocalAuthFileProxy(body.name, String(body.proxy_url || ''))
+    result = { ok: true }
+  } else if (url.pathname === '/auth-files/models' && method === 'GET') {
+    const name = url.searchParams.get('name') || ''
+    const models = getLocalAuthFileModels(name)
+    result = { models: models.map(id => ({ id })) }
+  } else if (url.pathname === '/auth-files/download' && method === 'GET') {
+    const name = url.searchParams.get('name') || ''
+    result = getLocalAuthFile(name)
+  } else if (url.pathname === '/oauth-excluded-models') {
+    if (method === 'GET') result = { 'oauth-excluded-models': readExcludedModels() }
+    else if (method === 'PUT') {
+      writeExcludedModels(JSON.parse(String(init.body)))
+      result = { ok: true }
+    }
+  } else if (url.pathname.endsWith('-auth-url')) {
+    const name = url.pathname.slice(1).replace(/-auth-url$/, '')
+    const { startLocalOAuth } = await import('./magpieOAuth.js')
+    result = startLocalOAuth(name)
+  } else if (url.pathname === '/get-auth-status' && method === 'GET') {
+    const state = url.searchParams.get('state') || ''
+    const { getLocalOAuthStatus } = await import('./magpieOAuth.js')
+    result = getLocalOAuthStatus(state)
+  } else if (url.pathname === '/oauth-callback' && method === 'POST') {
+    const body = JSON.parse(String(init.body)) as { provider: string; redirect_url: string; state: string }
+    const { submitLocalOAuthCallback } = await import('./magpieOAuth.js')
+    result = await submitLocalOAuthCallback(body.provider, body.redirect_url, body.state)
+  } else if (url.pathname === '/oauth-session' && method === 'DELETE') {
+    const state = url.searchParams.get('state') || ''
+    const { cancelLocalOAuthSession } = await import('./magpieOAuth.js')
+    result = cancelLocalOAuthSession(state)
   } else if (url.pathname === '/proxy-url' && method === 'GET') {
     result = { 'proxy-url': '' }
   } else if (url.pathname === '/usage-queue' && method === 'GET') {

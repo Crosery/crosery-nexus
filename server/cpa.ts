@@ -133,7 +133,11 @@ export async function downloadAuthFile(name: string): Promise<Record<string, unk
 }
 
 export async function uploadAuthFile(name: string, raw: Buffer) {
-  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') throw new Error('Magpie OAuth import is not yet supported')
+  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
+    const { saveLocalAuthFile } = await import('./magpieControl.js')
+    saveLocalAuthFile(name, raw)
+    return
+  }
   if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
   const form = new FormData()
   form.set('file', new Blob([Uint8Array.from(raw)]), name)
@@ -362,6 +366,7 @@ export type CpaVersionInfo = {
   latestVersion?: string
   hasUpdate?: boolean
   upstream?: import('../packages/contracts/magpie-upstream.js').MagpieUpstreamStatus
+  rtk?: import('./rtkService.js').RTKView
 }
 
 export type ConsoleVersionInfo = {
@@ -378,25 +383,30 @@ export type VersionsPayload = {
 let cachedCpaVersion: { info: CpaVersionInfo; time: number } | null = null
 
 export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
+  const { readRTKStatus } = await import('./rtkService.js')
+  const rtk = await readRTKStatus().catch(() => undefined)
   if (config.gatewayEngine === 'magpie') {
     try {
       const { kernelJSON } = await import('./magpieEngine.js')
       const health = await kernelJSON(config.magpieKernelSocket, '/internal/health') as { revision?: unknown }
       if (typeof health.revision !== 'string' || !/^[a-f0-9]{40}$/.test(health.revision)) throw new Error('Invalid kernel revision')
       const { readMagpieUpstreamStatus } = await import('./magpieUpstream.js')
-      const upstream = readMagpieUpstreamStatus(health.revision)
+      const upstream = readMagpieUpstreamStatus(health.revision, undefined, {
+        oauthConnected: true,
+        rtkConnected: Boolean(rtk?.connected),
+      })
       return { engine: 'magpie', version: health.revision.slice(0, 7), commit: health.revision, buildDate: '',
-        upstream, latestVersion: upstream.latestRelease || upstream.candidateRevision?.slice(0, 7),
+        upstream, rtk, latestVersion: upstream.latestRelease || upstream.candidateRevision?.slice(0, 7),
         hasUpdate: upstream.status === 'review_required' && upstream.candidateRevision !== health.revision }
     } catch {
-      return { engine: 'magpie', version: 'offline', commit: '', buildDate: '' }
+      return { engine: 'magpie', version: 'offline', commit: '', buildDate: '', rtk }
     }
   }
   if (!force && cachedCpaVersion && Date.now() - cachedCpaVersion.time < 60_000) {
-    return cachedCpaVersion.info
+    return { ...cachedCpaVersion.info, rtk }
   }
   if (!config.cpaManagementKey) {
-    return { version: 'unknown', commit: '', buildDate: '' }
+    return { version: 'unknown', commit: '', buildDate: '', rtk }
   }
   try {
     const response = await fetch(`${config.cpaBaseUrl}/v0/management/get-auth-status`, {

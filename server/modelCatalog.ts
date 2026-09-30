@@ -127,7 +127,27 @@ function pricingKeysFor(id: string): string[] {
  */
 export async function gatewayPricingMap(): Promise<Map<string, ModelPricing>> {
   const map = new Map<string, ModelPricing>()
-  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') return map
+  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
+    const { readSharedCatalog } = await import('./modelSync.js')
+    const shared = readSharedCatalog()
+    if (shared?.models) {
+      for (const m of shared.models) {
+        const pricing = getModelPricing(m.id) ?? (m.cost && typeof m.cost.input === 'number' && typeof m.cost.output === 'number' ? {
+          from: '1970-01-01',
+          input: Number(m.cost.input) || 0,
+          output: Number(m.cost.output) || 0,
+          cacheRead: Number(m.cost.cacheRead) || 0,
+          unit: 'token' as const,
+        } : null)
+        if (pricing) {
+          for (const key of pricingKeysFor(m.id)) {
+            if (!map.has(key)) map.set(key, pricing)
+          }
+        }
+      }
+    }
+    return map
+  }
   // available-models is the only view covering every registered model, including
   // the channels declared in config (openai-compatibility, codex-api-key) whose
   // own endpoints return raw configuration without capability metadata. Without
@@ -241,7 +261,23 @@ async function fetchJson<T>(url: string, headers: Record<string, string>, timeou
 async function loadDefinitions(): Promise<Array<{ provider: string; models: ModelDefinition[] }>> {
   if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
     const { readMagpieChannels } = await import('./magpieControl.js')
-    return readMagpieChannels().filter(channel => !channel.disabled).map(channel => ({ provider: channel.name, models: channel.models }))
+    const { readSharedCatalog } = await import('./modelSync.js')
+    const shared = readSharedCatalog()
+    const sharedById = new Map((shared?.models || []).map(m => [m.id.toLowerCase(), m]))
+    return readMagpieChannels().filter(channel => !channel.disabled).map(channel => ({
+      provider: channel.name,
+      models: channel.models.map(m => {
+        const s = sharedById.get(m.name.toLowerCase()) || (m.alias ? sharedById.get(m.alias.toLowerCase()) : undefined)
+        return {
+          id: m.name,
+          alias: m.alias,
+          context_length: s?.contextWindow,
+          max_completion_tokens: s?.maxTokens,
+          thinking: s?.efforts ? { levels: s.efforts } : undefined,
+          cost: s?.cost,
+        }
+      }),
+    }))
   }
   const headers = { Authorization: `Bearer ${config.cpaManagementKey}`, 'Content-Type': 'application/json' }
   const result: Array<{ provider: string; models: ModelDefinition[] }> = await Promise.all(definitionChannels.map(async (provider) => {

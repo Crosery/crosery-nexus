@@ -33,3 +33,34 @@ test('unrelated admin-input fields cannot become another persisted credential st
   }])
   assert.ok(!JSON.stringify(projected).includes('fixture-secret'))
 })
+
+test('local auth-files and excluded models management operates safely', async () => {
+  const { listLocalAuthFiles, saveLocalAuthFile, setLocalAuthFileStatus, setLocalAuthFileProxy, deleteLocalAuthFile, readExcludedModels, writeExcludedModels, magpieManagementRequest } = await import('./magpieControl.js')
+  const testFile = `test-oauth-${Date.now()}.json`
+  const testContent = JSON.stringify({ type: 'claude', provider: 'claude', email: 'test@example.com', access_token: 'tok-123' })
+  
+  deleteLocalAuthFile(testFile)
+  saveLocalAuthFile(testFile, testContent)
+  const files = listLocalAuthFiles()
+  const found = files.find(f => f.name === testFile)
+  assert.ok(found)
+  assert.equal(found.type, 'claude')
+  assert.equal(found.disabled, false)
+
+  setLocalAuthFileStatus(testFile, true)
+  assert.equal(listLocalAuthFiles().find(f => f.name === testFile)?.disabled, true)
+
+  setLocalAuthFileProxy(testFile, 'http://127.0.0.1:7890')
+  assert.equal(listLocalAuthFiles().find(f => f.name === testFile)?.proxy_url, 'http://127.0.0.1:7890')
+
+  // management request integration
+  const reqResult = await magpieManagementRequest<{ files: Array<Record<string, unknown>> }>('/auth-files')
+  assert.ok(reqResult.files.some(f => f.name === testFile))
+
+  // excluded models
+  writeExcludedModels({ claude: ['claude-haiku-4-5'] })
+  assert.deepEqual(readExcludedModels(), { claude: ['claude-haiku-4-5'] })
+
+  deleteLocalAuthFile(testFile)
+  assert.equal(listLocalAuthFiles().some(f => f.name === testFile), false)
+})
