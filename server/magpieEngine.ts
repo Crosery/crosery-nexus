@@ -4,8 +4,9 @@ import { createServer, request, type IncomingMessage, type ServerResponse } from
 import type { CompatChannel, ProviderKeyEntry, UsageRecord } from './cpa.js'
 import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
 import { DEFAULT_OPEN_MODELS } from './keyModelAccess.js'
+import { MAGPIE_API_ROUTES, type MagpieRouteId, type Magpie_provider_Provider } from '../packages/contracts/magpie-upstream.generated.js'
 
-export type KernelProvider = {
+export type KernelProvider = Magpie_provider_Provider & {
   id: string; name: string; key: string; keys: Array<{ key: string }>
   models: string[]; chat?: string; responses?: string; anthropic?: string
   proxy: string; headers?: Record<string, string>; routing: string; affinity: string
@@ -34,6 +35,25 @@ class AdmissionError extends Error {
 }
 function reject(status: number, code: string): never { throw new AdmissionError(status, code) }
 const modelId = (model: { name?: string; alias?: string }) => String(model.alias || model.name || '')
+
+const admissionRoutes = [
+  'inference GET /v1/models', 'inference GET /v1beta/models',
+  'inference POST /v1/chat/completions', 'inference POST /v1/responses',
+  'inference POST /v1/messages', 'inference POST /v1/messages/count_tokens',
+  'inference POST /v1beta/models/{call...}',
+] as const satisfies readonly MagpieRouteId[]
+const ordinaryPaths = new Set(admissionRoutes.filter(id => id.startsWith('inference POST ') && !id.includes('{'))
+  .map(id => id.slice('inference POST '.length)))
+const geminiActions = ['generateContent', 'streamGenerateContent', 'countTokens']
+
+/** Upstream changes must pass our policy adapter, not silently widen public access. */
+export function assertMagpieAdmissionContract(routes: ReadonlyArray<{ id: string; actions: readonly string[] }> = MAGPIE_API_ROUTES) {
+  const byId = new Map(routes.map(route => [route.id, route]))
+  if (admissionRoutes.some(id => !byId.has(id)) ||
+      geminiActions.some(action => !byId.get('inference POST /v1beta/models/{call...}')?.actions.includes(action))) {
+    throw new Error('Upstream inference contract changed; review the Crosery admission adapter')
+  }
+}
 
 /** Each model slot is explicit, so kernel fallback cannot cross a key's channel policy. */
 export function mapMagpieRoutes(channels: CompatChannel[], native: Array<{ endpoint: string; entry: ProviderKeyEntry; name: string }> = []): MagpieRoute[] {
@@ -161,6 +181,7 @@ async function readBody(req: IncomingMessage) {
 }
 
 export function createMagpieAdmission(deps: Dependencies) {
+  assertMagpieAdmissionContract()
   const activeKeys = new Map<string, number>()
   const activeGroups = new Map<string, number>()
   const rotation = new Map<string, number>()
@@ -225,9 +246,9 @@ export function createMagpieAdmission(deps: Dependencies) {
           : { models: ids.map(model => ({ name: `models/${model}`, supportedGenerationMethods: ['generateContent', 'countTokens'] })) }))
         return
       }
-      const gemini = /^\/v1beta\/models\/(.+):(generateContent|streamGenerateContent|countTokens)$/.exec(url.pathname)
-      const ordinary = ['/v1/chat/completions', '/v1/responses', '/v1/messages', '/v1/messages/count_tokens'].includes(url.pathname)
-      if (req.method !== 'POST' || (!ordinary && !gemini)) reject(404, 'route_not_supported')
+      const gemini = /^\/v1beta\/models\/(.+):([^/:]+)$/.exec(url.pathname)
+      const ordinary = ordinaryPaths.has(url.pathname)
+      if (req.method !== 'POST' || (!ordinary && !(gemini && geminiActions.includes(gemini[2])))) reject(404, 'route_not_supported')
       const body = await readBody(req)
       const model = gemini ? gemini[1] : body.model
       if (typeof model !== 'string' || !model || model.length > 200) reject(400, 'model_required')

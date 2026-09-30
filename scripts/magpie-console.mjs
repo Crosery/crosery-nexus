@@ -6,6 +6,7 @@ import { randomBytes, createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { DatabaseSync, backup } from 'node:sqlite'
 import { consolePasswordEnvironment } from './magpie-console-password.mjs'
+import { upstreamRevision } from '../deploy/magpie/local.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const runtime = path.resolve(process.env.MAGPIE_CONSOLE_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-console'))
@@ -57,7 +58,7 @@ if (action === 'prepare') {
     const pricing = path.join(root, 'data/gateway-pricing.json')
     if (await exists(pricing)) await fs.copyFile(pricing, path.join(runtime, 'data/gateway-pricing.json'))
     const manifest = {
-      version: 1, createdAt: new Date().toISOString(), revision: '3fe2ff99587e17dfe0ea707ffd0eccc088824433',
+      version: 1, createdAt: new Date().toISOString(), revision: upstreamRevision,
       sourceDatabase, source: process.env.MAGPIE_SOURCE_CPA_BASE_URL,
       dataDir: path.join(runtime, 'data'), consolePort: 8791, gatewayPort: 8790,
       socket: path.join(runtime, 'kernel.sock'), databaseRows: counts,

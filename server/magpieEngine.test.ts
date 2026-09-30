@@ -6,8 +6,9 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import test from 'node:test'
-import { allowedMagpieRoutes, createMagpieAdmission, kernelJSON, mapMagpieRoutes, type AdmissionKey } from './magpieEngine.js'
+import { allowedMagpieRoutes, assertMagpieAdmissionContract, createMagpieAdmission, kernelJSON, mapMagpieRoutes, type AdmissionKey } from './magpieEngine.js'
 import type { UsageRecord } from './cpa.js'
+import { MAGPIE_API_ROUTES, MAGPIE_API_REVISION } from '../packages/contracts/magpie-upstream.generated.js'
 
 const channel = (name = 'allowed', base = 'https://upstream.invalid/v1') => ({
   name, 'base-url': base, 'api-key-entries': [{ 'api-key': 'fixture-upstream-key' }],
@@ -17,6 +18,12 @@ const key: AdmissionKey = {
   key_value: 'fixture-client-key', key_hash: 'fixture-hash', enabled: 1, groups_json: '["allowed"]',
   total_concurrency: 1, group_concurrency_json: '{"allowed":1}',
 }
+
+test('admission validates the generated upstream contract without exposing new routes', () => {
+  assert.doesNotThrow(() => assertMagpieAdmissionContract())
+  assert.throws(() => assertMagpieAdmissionContract(MAGPIE_API_ROUTES.filter(route => route.path !== '/v1/responses')), /contract changed/)
+  assert.throws(() => assertMagpieAdmissionContract(MAGPIE_API_ROUTES.map(route => ({ ...route, actions: [] }))), /contract changed/)
+})
 
 test('aliases map to separate kernel slots without cross-channel fallback', () => {
   const routes = mapMagpieRoutes([channel(), channel('denied')])
@@ -90,6 +97,7 @@ test('real headless kernel: four protocols, streaming, admission and accounting'
     try { await kernelJSON(socket, '/internal/health'); ready = true; break } catch { await new Promise(resolve => setTimeout(resolve, 20)) }
   }
   assert.equal(ready, true)
+  assert.equal((await kernelJSON(socket, '/internal/health') as { revision: string }).revision, MAGPIE_API_REVISION)
   assert.equal((await fs.stat(socket)).mode & 0o777, 0o600)
   const routes = mapMagpieRoutes([channel('allowed', `http://127.0.0.1:${upstreamPort}/v1`), channel('denied', `http://127.0.0.1:${upstreamPort}/v1`)])
   const records: UsageRecord[] = []

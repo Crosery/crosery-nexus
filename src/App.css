@@ -241,7 +241,7 @@
 .channel-login-btn{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;font-size:11.5px;font-weight:500;border-radius:6px;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);cursor:pointer;transition:all .15s ease;height:24px;line-height:1}
 .channel-login-btn:hover{background:var(--bg);border-color:var(--text);color:var(--text)}
 .primary-button.tiny{padding:3px 9px;font-size:11.5px;font-weight:500;border-radius:6px;gap:5px;height:24px;line-height:1}
-.version-widget-wrap{position:relative}
+.version-widget-wrap{position:relative;pointer-events:auto}
 .version-widget-trigger{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--text);font-size:12px;cursor:pointer;transition:all .15s ease}
 .version-widget-trigger:hover{background:var(--panel-2);border-color:var(--line-strong)}
 .version-widget-trigger.has-update{border-color:color-mix(in srgb,var(--amber) 40%,var(--line))}
@@ -265,6 +265,21 @@
 .version-props .prop-row span{color:var(--muted)}
 .version-props .prop-row code{font-family:monospace;background:color-mix(in srgb,var(--panel-2) 60%,var(--bg));padding:1px 5px;border-radius:4px;color:var(--text);font-size:11px}
 .version-update-banner{display:flex;align-items:center;gap:6px;background:color-mix(in srgb,var(--amber) 12%,var(--panel));border:1px solid color-mix(in srgb,var(--amber) 30%,transparent);border-radius:6px;padding:6px 8px;font-size:11px;color:var(--text)}
+.upstream-contract-status{padding-top:10px;margin-top:8px;border-top:1px solid var(--line);font-size:11.5px;line-height:1.55;overflow-wrap:anywhere}
+.upstream-contract-status p{margin:0 0 8px;color:var(--muted)}
+.upstream-contract-status dl{margin:0 0 8px;display:grid;gap:5px}
+.upstream-contract-status dl>div{display:flex;justify-content:space-between;gap:10px}
+.upstream-contract-status dt{color:var(--muted);flex-shrink:0}
+.upstream-contract-status dd{margin:0;text-align:right}
+.upstream-contract-status summary{cursor:pointer;color:var(--text)}
+.upstream-contract-status summary:focus-visible{outline:2px solid var(--primary);outline-offset:3px}
+.upstream-contract-status details p{margin-top:8px}
+.upstream-contract-status ul{margin:8px 0 0;padding-left:16px;display:grid;gap:6px}
+.upstream-contract-status code{font-size:10.5px}
+.upstream-revision{display:block}
+.version-popover{max-height:calc(100dvh - 110px);overflow-y:auto;max-width:calc(100vw - 24px)}
+.version-props .prop-row code{overflow-wrap:anywhere;min-width:0}
+@media(max-width:768px){.version-popover{position:fixed;top:56px;right:12px;max-height:calc(100dvh - 140px)}}
 .sidebar-version-tag{padding:0 12px 4px;font-size:11px;color:var(--quiet);display:flex;align-items:center;justify-content:space-between}
 
 /* OAuth 弹窗样式打磨 */

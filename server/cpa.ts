@@ -361,6 +361,7 @@ export type CpaVersionInfo = {
   buildDate: string
   latestVersion?: string
   hasUpdate?: boolean
+  upstream?: import('../packages/contracts/magpie-upstream.js').MagpieUpstreamStatus
 }
 
 export type ConsoleVersionInfo = {
@@ -380,8 +381,13 @@ export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
   if (config.gatewayEngine === 'magpie') {
     try {
       const { kernelJSON } = await import('./magpieEngine.js')
-      await kernelJSON(config.magpieKernelSocket, '/internal/health')
-      return { engine: 'magpie', version: '3fe2ff9', commit: '3fe2ff99587e17dfe0ea707ffd0eccc088824433', buildDate: '' }
+      const health = await kernelJSON(config.magpieKernelSocket, '/internal/health') as { revision?: unknown }
+      if (typeof health.revision !== 'string' || !/^[a-f0-9]{40}$/.test(health.revision)) throw new Error('Invalid kernel revision')
+      const { readMagpieUpstreamStatus } = await import('./magpieUpstream.js')
+      const upstream = readMagpieUpstreamStatus(health.revision)
+      return { engine: 'magpie', version: health.revision.slice(0, 7), commit: health.revision, buildDate: '',
+        upstream, latestVersion: upstream.latestRelease || upstream.candidateRevision?.slice(0, 7),
+        hasUpdate: upstream.status === 'review_required' && upstream.candidateRevision !== health.revision }
     } catch {
       return { engine: 'magpie', version: 'offline', commit: '', buildDate: '' }
     }

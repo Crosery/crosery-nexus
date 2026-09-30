@@ -7,7 +7,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { pipeline, Transform } from 'node:stream'
 
-export const upstreamRevision = '3fe2ff99587e17dfe0ea707ffd0eccc088824433'
+export const upstreamRevision = JSON.parse(await fs.readFile(new URL('./upstream/api.json', import.meta.url), 'utf8')).revision
 export const defaultRuntime = path.join(os.homedir(), '.agents/crosery/magpie')
 const accountIDs = ['antigravity', 'claude', 'codex', 'commandcode-plan', 'copilot', 'cursor',
   'devin', 'dimagent', 'factory', 'gemini', 'grok', 'kiro', 'mimo', 'qoder', 'workbuddy',

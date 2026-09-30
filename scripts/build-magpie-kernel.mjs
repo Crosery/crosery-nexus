@@ -12,6 +12,7 @@ if (execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' 
     execFileSync('git', ['-C', source, 'status', '--porcelain'], { encoding: 'utf8' }).trim()) {
   throw new Error('The kernel requires the pinned, clean Magpie source')
 }
+execFileSync(process.execPath, [path.join(root, 'scripts/magpie-upstream.mjs'), 'verify', '--source', source], { stdio: 'inherit' })
 await fs.mkdir(runtime, { recursive: true, mode: 0o700 })
 await fs.mkdir(path.join(runtime, 'bin'), { recursive: true, mode: 0o700 })
 const overlayDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crosery-kernel-build-'))
@@ -70,7 +71,7 @@ func Append(r Record) {
   Replace[path.join(source, 'crosery_kernel.go')] = command
   const overlayFile = path.join(overlayDir, 'overlay.json')
   await fs.writeFile(overlayFile, JSON.stringify({ Replace }))
-  execFileSync('go', ['build', '-overlay', overlayFile, '-tags', 'nogui', '-trimpath',
+  execFileSync('go', ['build', '-overlay', overlayFile, '-tags', 'nogui', '-trimpath', '-ldflags', `-X main.revision=${upstreamRevision}`,
     '-o', path.join(runtime, 'bin/magpie-kernel'), './crosery_kernel.go'], {
     cwd: source, env: { ...process.env, CGO_ENABLED: '0' }, stdio: 'inherit',
   })

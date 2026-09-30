@@ -108,6 +108,7 @@ export type CpaVersionInfo = {
   buildDate: string
   latestVersion?: string
   hasUpdate?: boolean
+  upstream?: import('../packages/contracts/magpie-upstream').MagpieUpstreamStatus
 }
 
 export type ConsoleVersionInfo = {

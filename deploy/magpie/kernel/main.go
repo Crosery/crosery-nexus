@@ -16,6 +16,8 @@ import (
 	"github.com/yetone/magpie/internal/usage"
 )
 
+var revision = "unknown"
+
 // Only inference packages run here: no UI, agent setup, telemetry, or logins.
 func main() {
 	socket := os.Getenv("MAGPIE_KERNEL_SOCKET")
@@ -43,7 +45,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "engine": "magpie", "revision": "3fe2ff99587e17dfe0ea707ffd0eccc088824433"})
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "engine": "magpie", "revision": revision})
 	})
 	mux.HandleFunc("PUT /internal/providers", func(w http.ResponseWriter, r *http.Request) {
 		var ps []provider.Provider

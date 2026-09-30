@@ -48,6 +48,9 @@ from upstream revision `3fe2ff99587e17dfe0ea707ffd0eccc088824433`.
 It does not import the GUI, invoke agent configuration, run login refreshers,
 or start warmups, check-ins or telemetry.
 Upstream is MIT-licensed; the build retains its license alongside the binary.
+The pinned revision is read from the generated source API contract. See
+[UPSTREAM.md](UPSTREAM.md) for API analysis, contract generation, scheduled
+detection, candidate review and the remaining OAuth/RTK integration gates.
 
 The build uses an asserted Go overlay, not an untracked fork:
 
