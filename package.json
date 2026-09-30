@@ -47,6 +47,9 @@
     "pricing:update": "node scripts/build-pricing.mjs"
   },
   "dependencies": {
+    "@iconify-json/carbon": "^1.2.28",
+    "@talex-touch/tuffex": "^0.6.2",
+    "@vitejs/plugin-vue": "^6.0.9",
     "busboy": "^1.6.0",
     "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
@@ -54,6 +57,9 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "recharts": "^3.10.1",
+    "unocss": "^66.10.5",
+    "vue": "^3.5.43",
+    "vue-router": "^4.6.4",
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
