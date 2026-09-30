@@ -29,30 +29,42 @@ export async function magpieRoutes() {
       const token = String(file.access_token || file['api-key'] || file.token || 'oauth-token')
       const proxy = String(file.proxy_url || '')
 
+      const useBridge = Boolean(config.magpieSourceCpaBaseUrl && config.magpieSourceCpaKey)
+      const effectiveProxy = useBridge ? 'direct' : (proxy && !proxy.includes('127.0.0.1:179') ? proxy : 'direct')
+      const effectiveKey = useBridge ? config.magpieSourceCpaKey : token
+
       if (type === 'claude' || type === 'anthropic') {
         oauthChannels.push({
           name: 'claude',
-          'base-url': 'https://api.anthropic.com',
+          'base-url': useBridge ? `${config.magpieSourceCpaBaseUrl}/v1` : 'https://api.anthropic.com',
           protocol: 'anthropic',
-          'api-key-entries': [{ 'api-key': token, ...(proxy ? { 'proxy-url': proxy } : {}) }],
+          'api-key-entries': [{ 'api-key': effectiveKey, ...(effectiveProxy !== 'direct' ? { 'proxy-url': effectiveProxy } : {}) }],
           models: models.map(m => ({ name: m })),
           headers: { 'anthropic-beta': 'oauth-2025-04-20' },
         } as CompatChannel)
       } else if (type === 'codex' || type === 'openai') {
         oauthChannels.push({
           name: 'codex',
-          'base-url': 'https://api.openai.com/v1',
+          'base-url': useBridge ? `${config.magpieSourceCpaBaseUrl}/v1` : 'https://api.openai.com/v1',
           protocol: 'responses',
-          'api-key-entries': [{ 'api-key': token, ...(proxy ? { 'proxy-url': proxy } : {}) }],
+          'api-key-entries': [{ 'api-key': effectiveKey, ...(effectiveProxy !== 'direct' ? { 'proxy-url': effectiveProxy } : {}) }],
           models: models.map(m => ({ name: m })),
           headers: file.account_id ? { 'chatgpt-account-id': String(file.account_id) } : undefined,
+        } as CompatChannel)
+      } else if (type === 'antigravity' || type === 'gemini' || type === 'google') {
+        oauthChannels.push({
+          name: 'antigravity',
+          'base-url': useBridge ? `${config.magpieSourceCpaBaseUrl}/v1` : 'https://generativelanguage.googleapis.com',
+          protocol: 'chat',
+          'api-key-entries': [{ 'api-key': effectiveKey, ...(effectiveProxy !== 'direct' ? { 'proxy-url': effectiveProxy } : {}) }],
+          models: models.map(m => ({ name: m })),
         } as CompatChannel)
       } else if (type === 'xai' || type === 'grok') {
         oauthChannels.push({
           name: 'xai',
-          'base-url': 'https://api.x.ai/v1',
+          'base-url': useBridge ? `${config.magpieSourceCpaBaseUrl}/v1` : 'https://api.x.ai/v1',
           protocol: 'chat',
-          'api-key-entries': [{ 'api-key': token, ...(proxy ? { 'proxy-url': proxy } : {}) }],
+          'api-key-entries': [{ 'api-key': effectiveKey, ...(effectiveProxy !== 'direct' ? { 'proxy-url': effectiveProxy } : {}) }],
           models: models.map(m => ({ name: m })),
         } as CompatChannel)
       }
