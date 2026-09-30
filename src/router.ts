@@ -1,0 +1,75 @@
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import ConsoleShell from './components/ConsoleShell.vue'
+import { api } from './api'
+
+const routes: RouteRecordRaw[] = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('./pages/LoginPage.vue'),
+    meta: { public: true },
+  },
+  {
+    path: '/',
+    component: ConsoleShell,
+    children: [
+      { path: '', redirect: '/dashboard' },
+      { path: 'dashboard', name: 'dashboard', component: () => import('./pages/DashboardPage.vue') },
+      { path: 'keys', name: 'keys', component: () => import('./pages/KeysPage.vue') },
+      { path: 'channels', name: 'channels', component: () => import('./pages/ChannelsPage.vue') },
+      { path: 'oauth', name: 'oauth', component: () => import('./pages/OAuthPage.vue') },
+      { path: 'models', name: 'models', component: () => import('./pages/ModelsPage.vue') },
+      { path: 'charts', name: 'charts', component: () => import('./pages/ChartsPage.vue') },
+      { path: 'analytics', name: 'analytics', component: () => import('./pages/AnalyticsPage.vue') },
+      { path: 'usage', name: 'usage', component: () => import('./pages/UsagePage.vue') },
+      { path: 'cache', name: 'cache', component: () => import('./pages/CachePage.vue') },
+      { path: 'monitor', name: 'monitor', component: () => import('./pages/MonitorPage.vue') },
+      { path: 'help', name: 'help', component: () => import('./pages/HelpPage.vue') },
+    ],
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    redirect: '/dashboard',
+  },
+]
+
+export const router = createRouter({
+  history: createWebHistory('/'),
+  routes,
+  scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },
+})
+
+let authState: { checked: boolean; authenticated: boolean } = {
+  checked: false,
+  authenticated: false,
+}
+
+export function updateAuthState(authenticated: boolean) {
+  authState.checked = true
+  authState.authenticated = authenticated
+}
+
+router.beforeEach(async (to, _from, next) => {
+  if (to.meta.public) {
+    if (authState.checked && authState.authenticated && to.path === '/login') {
+      return next('/dashboard')
+    }
+    return next()
+  }
+
+  if (!authState.checked) {
+    try {
+      const res = await api.session()
+      authState.authenticated = Boolean(res?.authenticated)
+    } catch {
+      authState.authenticated = false
+    }
+    authState.checked = true
+  }
+
+  if (!authState.authenticated) {
+    return next('/login')
+  }
+
+  next()
+})
