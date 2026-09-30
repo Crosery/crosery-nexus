@@ -6,6 +6,7 @@ import { TxButton } from '@talex-touch/tuffex/button'
 import ConsoleNav from './ConsoleNav.vue'
 import VersionWidget from './VersionWidget.vue'
 import { api } from '../api'
+import { updateAuthState } from '../router'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,10 +19,11 @@ watch(() => route.fullPath, () => {
 async function signOut() {
   drawerOpen.value = false
   try {
-    await api.login('', '') // clear or invalidate session
+    await api.logout()
   } catch {
     // ignore
   }
+  updateAuthState(false)
   void router.replace('/login')
 }
 </script>

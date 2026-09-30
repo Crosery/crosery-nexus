@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxForm, TxFormItem } from '@talex-touch/tuffex/form'
 import { TxInput } from '@talex-touch/tuffex/input'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxAlert } from '@talex-touch/tuffex/alert'
 import { api } from '../api'
+import { updateAuthState } from '../router'
 
+const router = useRouter()
 const emit = defineEmits<{
   (e: 'success'): void
 }>()
@@ -25,7 +28,9 @@ async function handleSubmit() {
   error.value = ''
   try {
     await api.login(form.username, form.password)
+    updateAuthState(true)
     emit('success')
+    await router.replace('/dashboard')
   } catch (e) {
     error.value = e instanceof Error ? e.message : '登录失败，请检查账号密码'
   } finally {
@@ -40,7 +45,7 @@ async function handleSubmit() {
       <TxCard class="login-card" :padding="32" variant="solid" background="glass" shadow="soft" :radius="16">
         <div class="login-brand-header">
           <div class="brand-badge">
-            <span class="brand-icon">⚡</span>
+            <i class="i-carbon-cloud-services text-24 text-[var(--tx-color-primary)]" />
           </div>
           <p class="eyebrow">CROSERY CONSOLE</p>
           <h1>欢迎登录</h1>
@@ -85,7 +90,7 @@ async function handleSubmit() {
         </TxForm>
 
         <div class="login-footer text-muted text-xs">
-          <span>🔒 12 小时安全加密会话 · 本地安全防护</span>
+          <span><i class="i-carbon-locked text-xs mr-1" />12 小时安全加密会话 · 本地安全防护</span>
         </div>
       </TxCard>
     </div>

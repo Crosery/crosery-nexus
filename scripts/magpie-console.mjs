@@ -104,9 +104,9 @@ if (action === 'prepare') {
     cwd: root, env: {
       ...env, HOST: '127.0.0.1', PORT: String(manifest.consolePort), COOKIE_SECURE: 'false',
       CONSOLE_USERNAME: 'admin', ...passwordEnvironment, SESSION_SECRET: randomBytes(32).toString('hex'),
-      DATA_DIR: manifest.dataDir, GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local',
+      DATA_DIR: process.env.DATA_DIR || path.join(root, 'data'), GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local',
       MAGPIE_KERNEL_SOCKET: socket, MAGPIE_PORT: String(manifest.gatewayPort),
-      MAGPIE_CHANNELS_FILE: path.join(manifest.dataDir, 'magpie-channels.json'),
+      MAGPIE_CHANNELS_FILE: process.env.MAGPIE_CHANNELS_FILE || path.join(root, 'data/magpie-channels.json'),
       MAGPIE_SOURCE_CPA_BASE_URL: manifest.credentialSourceBaseUrl, MAGPIE_SOURCE_CPA_KEY_FILE: manifest.credentialSourceKeyFile,
     }, stdio: ['ignore', 'pipe', 'pipe'],
   })
