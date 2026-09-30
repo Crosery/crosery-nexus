@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { randomBytes, createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { DatabaseSync, backup } from 'node:sqlite'
+import { consolePasswordEnvironment } from './magpie-console-password.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const runtime = path.resolve(process.env.MAGPIE_CONSOLE_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-console'))
@@ -72,6 +73,7 @@ if (action === 'prepare') {
   } finally { database.close() }
 } else if (action === 'run') {
   const manifest = await readManifest()
+  const passwordEnvironment = consolePasswordEnvironment(manifest)
   const home = path.join(runtime, 'home')
   await fs.mkdir(home, { recursive: true, mode: 0o700 })
   const socket = manifest.socket
@@ -100,7 +102,7 @@ if (action === 'prepare') {
   const consoleServer = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
     cwd: root, env: {
       ...env, HOST: '127.0.0.1', PORT: String(manifest.consolePort), COOKIE_SECURE: 'false',
-      CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD_FILE: manifest.consolePasswordFile, SESSION_SECRET: randomBytes(32).toString('hex'),
+      CONSOLE_USERNAME: 'admin', ...passwordEnvironment, SESSION_SECRET: randomBytes(32).toString('hex'),
       DATA_DIR: manifest.dataDir, GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local',
       MAGPIE_KERNEL_SOCKET: socket, MAGPIE_PORT: String(manifest.gatewayPort),
       MAGPIE_CHANNELS_FILE: path.join(manifest.dataDir, 'magpie-channels.json'),

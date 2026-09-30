@@ -2,13 +2,16 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
+import { consolePasswordEnvironment } from './magpie-console-password.mjs'
 
 if (!process.argv.includes('--live')) throw new Error('Pass --live to opt into four tiny real upstream calls')
 const runtime = process.env.MAGPIE_CONSOLE_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-console')
 const manifest = JSON.parse(await fs.readFile(path.join(runtime, 'console-manifest.json'), 'utf8'))
 const consoleBase = `http://127.0.0.1:${manifest.consolePort}`
 const gateway = `http://127.0.0.1:${manifest.gatewayPort}`
-const password = (await fs.readFile(manifest.consolePasswordFile, 'utf8')).trim()
+const passwordEnvironment = consolePasswordEnvironment(manifest)
+const password = passwordEnvironment.CONSOLE_PASSWORD
+  ?? (await fs.readFile(passwordEnvironment.CONSOLE_PASSWORD_FILE, 'utf8')).replace(/[\r\n]+$/u, '')
 const login = await fetch(`${consoleBase}/api/login`, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password }),
 })

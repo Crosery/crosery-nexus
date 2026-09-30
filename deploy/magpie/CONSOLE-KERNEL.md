@@ -88,8 +88,9 @@ rotate at admission, and multiple keys within a slot use Magpie's key rotation.
 
 `NATIVE_RESPONSES_ENABLED` must be false in Magpie mode, and the Console and
 admission ports must be distinct. The launcher gives the kernel an isolated HOME
-and an allowlisted environment; it gives the Console credential file paths, not
-their contents. Its per-run Console session secret is memory-only.
+and an allowlisted environment. Existing file-backed credentials remain path
+references; a local Keychain password is injected into the Console environment
+in memory only. Its per-run Console session secret is memory-only.
 
 Registry example, using an environment or private file-backed credential:
 
@@ -128,9 +129,32 @@ The macOS LaunchAgent is `com.crosery.console-magpie`. Its persistent runtime is
 `~/.agents/crosery/magpie-console`, and it uses the Node binary that installed it.
 `prepare` refuses an existing manifest or data directory.
 
-Open `http://127.0.0.1:8791`. The username is `admin`; the launcher references the
-existing Crosery API Console password in the shared credential store. It does
-not print, change or copy that password.
+Open `http://127.0.0.1:8791`. The username is `admin`. By default, preparation
+references the existing Crosery API Console password without changing it.
+For an independent local password, replace `consolePasswordFile` in the runtime
+manifest with a macOS Keychain reference:
+
+```json
+{
+  "consolePasswordKeychain": {
+    "service": "com.crosery.console-magpie.local",
+    "account": "admin"
+  }
+}
+```
+
+Create that item with an interactive hidden prompt, never a password argument:
+
+```sh
+security add-generic-password -a admin -s com.crosery.console-magpie.local -w
+```
+
+Keep exactly one password reference. A missing or unreadable Keychain item fails
+startup without falling back to shared credentials. Restart the local service
+after changing the reference; existing sessions are invalidated on restart.
+A simple local password must remain loopback-only and must not be reused for
+production. To revert, restore the original `consolePasswordFile` reference,
+remove `consolePasswordKeychain`, and restart. Never overwrite the shared file.
 
 The model-client base is `http://127.0.0.1:8790/v1`; use a key created by this
 local Crosery Console, not `magpie` or a shared upstream key.
