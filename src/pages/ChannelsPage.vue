@@ -305,10 +305,14 @@ async function submitCreateChannel() {
     </PageHeader>
 
     <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->
-    <ErrorPanel v-if="res.error.value" :error="res.error.value" :retry="reloadChannels" />
+    <ErrorPanel v-if="res.error.value && !res.data.value" :error="res.error.value" :retry="reloadChannels" />
     <LoadingBlock v-else-if="!res.data.value" :lines="6" label="正在读取渠道列表" />
 
     <template v-else>
+    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->
+    <ErrorPanel v-if="res.error.value" inline :error="res.error.value" :retry="reloadChannels"
+      stale-hint="下方仍是最近一次成功读取的渠道列表，可以继续查看。" />
+
     <!-- 过滤器与概览 -->
     <div class="channels-toolbar">
       <TxFilterChips
@@ -509,7 +513,7 @@ async function submitCreateChannel() {
           <small class="field-hint">已选中 {{ selectedModelIds.size }} / {{ discoveredModels.length }} 个模型</small>
         </TxFormItem>
 
-        <TxAlert v-if="createError" variant="danger" :description="createError" />
+        <TxAlert v-if="createError" type="error" :message="createError" />
       </TxForm>
 
       <template #footer>

@@ -382,17 +382,21 @@ async function copyNewKey() {
     <!-- 网关限制提示 -->
     <TxAlert
       v-if="gatewayModelAccess === 'unavailable'"
-      variant="warning"
+      type="warning"
       title="网关白名单提示"
-      description="当前网关暂不支持 Key 级模型直通白名单。下方配置的分组将用于并发与计费隔离。"
+      message="当前网关暂不支持 Key 级模型直通白名单。下方配置的分组将用于并发与计费隔离。"
     />
-    <TxAlert v-if="degradedReason" variant="warning" title="控制面降级" :description="degradedReason" />
+    <TxAlert v-if="degradedReason" type="warning" title="控制面降级" :message="degradedReason" />
 
     <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->
-    <ErrorPanel v-if="res.error.value" :error="res.error.value" :retry="reloadData" />
+    <ErrorPanel v-if="res.error.value && !res.data.value" :error="res.error.value" :retry="reloadData" />
     <LoadingBlock v-else-if="!res.data.value" :lines="7" label="正在读取 API Key 列表" />
 
     <template v-else>
+    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->
+    <ErrorPanel v-if="res.error.value" inline :error="res.error.value" :retry="reloadData"
+      stale-hint="下方仍是最近一次成功读取的API Key 列表，可以继续查看。" />
+
     <!-- 工具条与筛选 -->
     <div class="keys-toolbar">
       <div class="search-input-wrap">
@@ -674,7 +678,7 @@ async function copyNewKey() {
           </div>
         </div>
 
-        <TxAlert v-if="editorError" variant="danger" :description="editorError" />
+        <TxAlert v-if="editorError" type="error" :message="editorError" />
       </TxForm>
 
       <template #footer>
@@ -787,7 +791,7 @@ async function copyNewKey() {
           </div>
         </div>
 
-        <TxAlert v-if="quotaError" variant="danger" :description="quotaError" />
+        <TxAlert v-if="quotaError" type="error" :message="quotaError" />
       </div>
 
       <template #footer>
@@ -802,9 +806,9 @@ async function copyNewKey() {
     <TxModal v-model="showRevealModal" title="密钥创建成功" width="500px">
       <div class="reveal-content">
         <TxAlert
-          variant="warning"
+          type="warning"
           title="请妥善保管"
-          description="完整的 API Key 仅在此处展示一次，窗口关闭后将无法再次直接查看明文！"
+          message="完整的 API Key 仅在此处展示一次，窗口关闭后将无法再次直接查看明文！"
         />
         <div class="reveal-box">
           <code class="mono">{{ newlyCreatedKey }}</code>

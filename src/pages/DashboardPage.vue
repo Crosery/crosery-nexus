@@ -134,22 +134,26 @@ const chartPath = computed(() => {
     </PageHeader>
 
     <!-- 失败给可读原因 + 重试；首次加载给骨架；其余情况保留旧数据继续渲染（不闪空） -->
-    <ErrorPanel v-if="error" :error="error" :retry="reloadAll" />
+    <ErrorPanel v-if="error && !analytics" :error="error" :retry="reloadAll" />
     <LoadingBlock v-else-if="showSkeleton" :lines="6" label="正在读取运行概览" />
 
     <template v-else>
+    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->
+    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"
+      stale-hint="下方仍是最近一次成功读取的运行概览，可以继续查看。" />
+
     <!-- 告警提示 -->
     <TxAlert
       v-if="dashboardState === 'unavailable'"
-      variant="warning"
+      type="warning"
       title="网关数据提示"
-      description="控制台暂时无法直接读取实时网关用量，当前显示最后一次成功缓存结果。"
+      message="控制台暂时无法直接读取实时网关用量，当前显示最后一次成功缓存结果。"
     />
     <TxAlert
       v-else-if="(summary?.errorRate || 0) > 0.1"
-      variant="danger"
+      type="error"
       title="高错误率预警"
-      :description="`当前错误率为 ${fmtPercent(summary?.errorRate)}，建议前往账号监控或请求明细页排查。`"
+      :message="`当前错误率为 ${fmtPercent(summary?.errorRate)}，建议前往账号监控或请求明细页排查。`"
     />
 
     <!-- 四项核心指标卡片 -->

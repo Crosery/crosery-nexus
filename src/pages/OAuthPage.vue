@@ -117,7 +117,16 @@ type SessionState = {
   error?: string
   callbackUrl: string
   submittingCallback: boolean
+  /** 本轮轮询开始时刻：用来实施 5 分钟上限（原来无上限，会无限期挂着）。 */
+  pollStartedAt?: number
+  /** 连续网络失败次数：不再 catch{} 静默吞，累计到阈值就停下报错。 */
+  consecutiveErrors?: number
 }
+
+const POLL_INTERVAL_MS = 3000
+/** 与页面文案一致：请在 5 分钟内完成授权；超过就停止轮询并给出「重新发起」。 */
+const POLL_MAX_MS = 5 * 60 * 1000
+const POLL_MAX_CONSECUTIVE_ERRORS = 3
 
 const sessions = ref<Record<string, SessionState>>({})
 const pollTimers = ref<Record<string, number>>({})
@@ -147,6 +156,8 @@ async function startLogin(item: ProviderItem) {
   s.status = 'waiting'
   s.error = ''
   s.callbackUrl = ''
+  s.pollStartedAt = Date.now()
+  s.consecutiveErrors = 0
 
   try {
     const res = await api.startOAuth(item.id)
@@ -159,22 +170,43 @@ async function startLogin(item: ProviderItem) {
 
     // Start polling
     pollTimers.value[item.id] = window.setInterval(async () => {
+      const live = sessions.value[item.id]
+      if (!live || live.status !== 'waiting') {
+        clearPoll(item.id)
+        return
+      }
+      // 上限 1/2：总时长超过 5 分钟就停止，别让「等待授权」无限期挂着。
+      if (live.pollStartedAt && Date.now() - live.pollStartedAt > POLL_MAX_MS) {
+        clearPoll(item.id)
+        live.status = 'error'
+        live.error = '授权超时：5 分钟内没有收到回调结果，已停止轮询。可以点「重新发起」，或改用下方的回调链接手动提交。'
+        toast({ title: '授权超时', description: live.error, variant: 'warning' })
+        return
+      }
       try {
         const statusRes = await api.getOAuthStatus(res.state)
+        live.consecutiveErrors = 0
         if (statusRes.status === 'ok') {
           clearPoll(item.id)
-          s.status = 'success'
+          live.status = 'success'
           toast({ title: '授权成功', description: `${item.name} 凭据已安全保存`, variant: 'success' })
         } else if (statusRes.status === 'error') {
           clearPoll(item.id)
-          s.status = 'error'
-          s.error = statusRes.error || '授权失败，会话已终止'
-          toast({ title: '授权失败', description: s.error, variant: 'danger' })
+          live.status = 'error'
+          live.error = statusRes.error || '授权失败，会话已终止'
+          toast({ title: '授权失败', description: live.error, variant: 'danger' })
         }
-      } catch {
-        // network jitter during polling
+      } catch (err) {
+        // 上限 2/2：网络失败不再静默吞掉，连续 3 次就停下来说清楚。
+        live.consecutiveErrors = (live.consecutiveErrors || 0) + 1
+        if (live.consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) {
+          clearPoll(item.id)
+          live.status = 'error'
+          live.error = `轮询授权状态连续失败 ${POLL_MAX_CONSECUTIVE_ERRORS} 次（${err instanceof Error ? err.message : '网络错误'}），已停止轮询。可以点「重新发起」，或改用下方的回调链接手动提交。`
+          toast({ title: '授权状态轮询失败', description: live.error, variant: 'danger' })
+        }
       }
-    }, 3000)
+    }, POLL_INTERVAL_MS)
   } catch (err) {
     s.status = 'error'
     s.error = err instanceof Error ? err.message : '发起登录失败'
@@ -295,6 +327,9 @@ onUnmounted(() => {
 
         <!-- 等待授权状态 -->
         <div v-else-if="getSession(item.id).status === 'waiting'" class="card-waiting-body">
+          <p class="muted text-11 polling-hint">
+            正在每 3 秒检查授权结果，最多等待 5 分钟；超时或连续 3 次轮询失败会自动停止并在这里提示。
+          </p>
           <!-- 设备码展示 -->
           <div v-if="item.isDeviceFlow && getSession(item.id).session?.user_code" class="device-code-box">
             <span class="muted text-11">请在授权页中输入此设备码：</span>
@@ -372,9 +407,9 @@ onUnmounted(() => {
         <!-- 失败状态 -->
         <div v-else-if="getSession(item.id).status === 'error'" class="card-error-body">
           <TxAlert
-            variant="danger"
+            type="error"
             title="授权未完成"
-            :description="getSession(item.id).error || '遇到错误，请重新尝试'"
+            :message="getSession(item.id).error || '遇到错误，请重新尝试'"
           />
           <div class="error-actions-row">
             <TxButton variant="secondary" size="sm" @click="getSession(item.id).status = 'idle'">返回</TxButton>
@@ -387,6 +422,9 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.polling-hint {
+  margin: 0 0 8px;
+}
 .oauth-section-title {
   display: flex;
   align-items: center;

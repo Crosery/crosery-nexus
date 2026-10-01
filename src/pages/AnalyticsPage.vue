@@ -146,10 +146,14 @@ function clearFilters() {
     </PageHeader>
 
     <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->
-    <ErrorPanel v-if="error" :error="error" :retry="reloadAll" />
+    <ErrorPanel v-if="error && !analytics" :error="error" :retry="reloadAll" />
     <LoadingBlock v-else-if="showSkeleton" :lines="8" label="正在读取使用统计" />
 
     <template v-else>
+    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->
+    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"
+      stale-hint="下方仍是最近一次成功读取的请求明细，可以继续查看。" />
+
 
     <!-- 汇总指标卡 -->
     <div class="metric-row">

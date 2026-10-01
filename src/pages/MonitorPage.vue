@@ -118,11 +118,16 @@ async function resetQuota(account: any) {
     </TxAlert>
 
     <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染 -->
-    <ErrorPanel v-if="res.error.value" :error="res.error.value" :retry="loadMonitor" />
+    <ErrorPanel v-if="res.error.value && !currentData" :error="res.error.value" :retry="loadMonitor" />
     <LoadingBlock v-else-if="!currentData" :lines="6" label="正在读取上游账号状态" />
 
+    <template v-else>
+    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->
+    <ErrorPanel v-if="res.error.value" inline :error="res.error.value" :retry="loadMonitor"
+      stale-hint="下方仍是最近一次成功读取的账号状态，可以继续查看。" />
+
     <!-- 账号分组 -->
-    <div v-else-if="providerGroups.length" class="provider-groups-stack">
+    <div v-if="providerGroups.length" class="provider-groups-stack">
       <div v-for="g in providerGroups" :key="g.type" class="group-section">
         <div class="group-header">
           <div class="group-title-line">
@@ -157,7 +162,7 @@ async function resetQuota(account: any) {
                   size="sm"
                   variant="outline"
                   :disabled="acc.normalizedQuota.resetCredits.available <= 0 || resetting"
-                  :aria-label="`重置账号 ${acc.email || acc.name} 的窗口配额`"
+                  :aria-label="`重置额度：${acc.email || acc.name} 的窗口配额`"
                   @click="resetQuota(acc)"
                 >
                   重置额度
@@ -221,6 +226,7 @@ async function resetQuota(account: any) {
         @primary="$router.push('/oauth')"
       />
     </TxCard>
+    </template>
   </div>
 </template>
 

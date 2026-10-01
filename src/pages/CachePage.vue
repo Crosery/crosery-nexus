@@ -201,10 +201,14 @@ const liveColumns = [
     </PageHeader>
 
     <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染 -->
-    <ErrorPanel v-if="error" :error="error" :retry="reloadAll" />
+    <ErrorPanel v-if="error && !internalTrend" :error="error" :retry="reloadAll" />
     <LoadingBlock v-else-if="!internalTrend" :lines="7" label="正在读取缓存命中率" />
 
     <template v-else>
+    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->
+    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"
+      stale-hint="下方仍是最近一次成功读取的缓存命中率，可以继续查看。" />
+
     <!-- 顶部汇总指标卡 -->
     <div class="metric-row">
       <TxCard class="stat-box">

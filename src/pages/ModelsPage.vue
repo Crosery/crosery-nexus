@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxDataTable } from '@talex-touch/tuffex/data-table'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -7,82 +7,100 @@ import { TxButton } from '@talex-touch/tuffex/button'
 import { TxSearchInput } from '@talex-touch/tuffex/search-input'
 import { TxFilterChips } from '@talex-touch/tuffex/filter-chips'
 import { TxAlert } from '@talex-touch/tuffex/alert'
-import { TxEmptyState } from '@talex-touch/tuffex/empty-state'
 import { TxSelect, TxSelectItem } from '@talex-touch/tuffex/select'
+import { TxPagination } from '@talex-touch/tuffex/pagination'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
-import type { ApiKeyItem, ModelCost, ModelEntry, ModelIndexData, ModelPricing, ModelSource, UsageBreakdownData } from '../types'
+import { confirm } from '../lib/confirm'
+import { debounce, paginate, useQueryState } from '../lib/listState'
+import { useResource } from '../lib/resource'
+import { fmtCompact, fmtInt, fmtUsd } from '../lib/format'
+import type { ApiKeyItem, ModelCost, ModelEntry, ModelIndexData, ModelSource, UsageBreakdownData } from '../types'
 
-const props = withDefaults(defineProps<{
-  data?: ModelIndexData | null
-  usage?: UsageBreakdownData | null
-  keys?: ApiKeyItem[]
-  days?: number
-  keyId?: string
-  loading?: boolean
-}>(), {
-  data: null,
-  usage: null,
-  keys: () => [],
-  days: 7,
+/** 服务端 model-index 会带上 thinking（effort 档位），但 client types 里还没声明，这里就地补一层。 */
+type ModelEntryRuntime = ModelEntry & { thinking?: { levels?: string[]; min?: number } }
+
+const PAGE_SIZES = [25, 50, 100]
+const SORTS = [
+  { value: 'name', label: '按名称' },
+  { value: 'input', label: '按输入单价' },
+  { value: 'output', label: '按输出单价' },
+  { value: 'usage', label: '按用量' },
+  { value: 'sources', label: '按渠道数' },
+]
+
+/**
+ * D12：527 行裸渲染 → 分页 + 搜索 + 排序 + 筛选，全部写进 URL。
+ * 深链示例：`/models?q=claude&kind=oauth&filter=contested&sort=usage&dir=desc&size=50&page=2&days=30`
+ * （`src/lib/listState.ts` 的 useQueryState：默认值不写进 URL，分享链接/刷新/后退都保持同一视图）
+ */
+const scope = useQueryState({
+  q: '',
+  filter: 'all',
+  channel: '',
+  kind: 'all',
+  sort: 'name',
+  dir: 'asc',
+  size: '25',
+  page: '1',
+  days: '7',
   keyId: '',
-  loading: false,
 })
 
-const emit = defineEmits<{
-  (e: 'update:days', days: number): void
-  (e: 'update:keyId', keyId: string): void
-  (e: 'refresh'): void
-  (e: 'notify', message: string): void
-}>()
+const days = computed(() => {
+  const value = Number(scope.state.days)
+  return [1, 7, 30, 90].includes(value) ? value : 7
+})
+const pageSize = computed(() => {
+  const value = Number(scope.state.size)
+  return PAGE_SIZES.includes(value) ? value : 25
+})
+const filter = computed(() => scope.state.filter)
+const sortKey = computed(() => (SORTS.some((item) => item.value === scope.state.sort) ? scope.state.sort : 'name'))
+const dir = computed<'asc' | 'desc'>(() => (scope.state.dir === 'desc' ? 'desc' : 'asc'))
 
-const internalData = ref<ModelIndexData | null>(props.data)
-const internalUsage = ref<UsageBreakdownData | null>(props.usage)
-const internalKeys = ref<ApiKeyItem[]>(props.keys)
-const internalDays = ref(props.days)
-const internalKeyId = ref(props.keyId)
-const internalLoading = ref(props.loading)
+// 搜索框用本地 draft，300ms 后才写 URL（避免每击键都改地址栏）。
+const searchInput = ref(scope.state.q)
+const applySearch = debounce(() => scope.patch({ q: searchInput.value.trim(), page: '1' }), 300)
+watch(searchInput, () => applySearch())
+watch(
+  () => scope.state.q,
+  (value) => {
+    if (value !== searchInput.value.trim()) searchInput.value = value
+  },
+)
 
-const query = ref('')
-const filter = ref<'all' | 'contested' | 'off'>('all')
+type BootstrapPayload = { keys?: ApiKeyItem[] }
+const indexRes = useResource(() => api.modelIndex<ModelIndexData>(true), [])
+const usageRes = useResource(
+  () => api.usageBreakdown<UsageBreakdownData>(days.value, scope.state.keyId),
+  [() => scope.state.days, () => scope.state.keyId],
+)
+const keysRes = useResource(() => api.bootstrap<BootstrapPayload>(), [])
+
+const models = computed<ModelEntryRuntime[]>(() => indexRes.data.value?.models ?? [])
+const channels = computed(() => indexRes.data.value?.channels ?? [])
+const keys = computed(() => keysRes.data.value?.keys ?? [])
+/** 汇总卡与表格同源：usage 失败不该把模型目录一起顶掉（R2）。 */
+const usage = computed(() => usageRes.data.value)
+const error = computed(() => indexRes.error.value ?? usageRes.error.value)
+const reloadAll = () => Promise.all([indexRes.reload(), usageRes.reload(), keysRes.reload()])
+const showSkeleton = computed(() => !models.value.length && !error.value)
+
 const busyToken = ref('')
 const syncing = ref(false)
+/** 持久提示：同步与单渠道开关的结果都落在这里（原来 emit('notify') 全仓无人监听 + catch{} 吞错）。 */
+const notice = ref<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null)
 
 const kindLabel: Record<string, string> = { compat: '兼容渠道', oauth: '账号池' }
-
-const compactNum = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0)
-const moneyFmt = (value: number | null) => value === null ? '未定价' : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`
-const priceFmt = (value: number | null | undefined) => value === null || value === undefined ? '—' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}`
-const publicModelId = (model: string) => model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model
-
-async function loadData() {
-  internalLoading.value = true
-  try {
-    const [indexRes, usageRes, bootstrapRes] = await Promise.all([
-      api.modelIndex<ModelIndexData>(true),
-      api.usageBreakdown<UsageBreakdownData>(internalDays.value, internalKeyId.value),
-      api.bootstrap().catch(() => null),
-    ])
-    internalData.value = indexRes
-    internalUsage.value = usageRes
-    if (bootstrapRes?.keys) internalKeys.value = bootstrapRes.keys
-  } catch {
-    emit('notify', '读取模型总览数据失败')
-  } finally {
-    internalLoading.value = false
-  }
-}
-
-onMounted(() => {
-  if (!props.data) loadData()
-})
-
-const currentModels = computed(() => props.data?.models || internalData.value?.models || [])
-const currentUsage = computed(() => props.usage || internalUsage.value)
-const currentLoading = computed(() => props.loading || internalLoading.value)
+const publicModelId = (model: string) => (model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model)
 
 const usageByModel = computed(() => {
   const result = new Map<string, ModelCost>()
-  for (const row of currentUsage.value?.models || []) {
+  for (const row of usage.value?.models || []) {
     const id = publicModelId(row.model)
     const current = result.get(id)
     if (!current) {
@@ -110,29 +128,104 @@ const usageByModel = computed(() => {
   return result
 })
 
-const contestedCount = computed(() => currentModels.value.filter(m => m.contested).length)
+const contestedCount = computed(() => models.value.filter((m) => m.contested).length)
+const channelOptions = computed(() =>
+  channels.value
+    .map((channel) => ({ value: channel.name, label: channel.name }))
+    .sort((a, b) => a.label.localeCompare(b.label)),
+)
 
 const filterChips = computed(() => [
-  { value: 'all', label: `全部 (${currentModels.value.length})` },
+  { value: 'all', label: `全部 (${models.value.length})` },
+  { value: 'enabled', label: `在用 (${models.value.filter((m) => m.enabledSources > 0).length})` },
   { value: 'contested', label: `多渠道 (${contestedCount.value})` },
-  { value: 'off', label: '已停用' },
+  { value: 'off', label: `已停用 (${models.value.filter((m) => m.enabledSources === 0).length})` },
 ])
 
 const filteredModels = computed(() => {
-  return currentModels.value.filter(model => {
+  const needle = scope.state.q.trim().toLowerCase()
+  return models.value.filter((model) => {
+    if (filter.value === 'enabled' && model.enabledSources === 0) return false
     if (filter.value === 'contested' && !model.contested) return false
     if (filter.value === 'off' && model.enabledSources > 0) return false
-    if (!query.value.trim()) return true
-    const haystack = `${model.id} ${model.sources.map(s => s.channel).join(' ')}`.toLowerCase()
-    return haystack.includes(query.value.trim().toLowerCase())
+    if (scope.state.channel && !model.sources.some((source) => source.channel === scope.state.channel)) return false
+    if (scope.state.kind !== 'all' && !model.sources.some((source) => source.kind === scope.state.kind)) return false
+    if (!needle) return true
+    const haystack = [model.id, publicModelId(model.id), ...model.sources.map((s) => s.channel)].join(' ').toLowerCase()
+    return haystack.includes(needle)
   })
 })
 
+/** 排序：未定价的模型永远排在最后（无论升序降序），免得「最便宜」被一堆未定价占满。 */
+const sortedModels = computed(() => {
+  const direction = dir.value === 'desc' ? -1 : 1
+  const number = (value: number | null | undefined) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+  const nullable = (a: number | null, b: number | null) => {
+    if (a === null && b === null) return 0
+    if (a === null) return 1
+    if (b === null) return -1
+    return (a - b) * direction
+  }
+  const list = [...filteredModels.value]
+  list.sort((a, b) => {
+    switch (sortKey.value) {
+      case 'input':
+        return nullable(number(a.pricing?.input), number(b.pricing?.input)) || a.id.localeCompare(b.id)
+      case 'output':
+        return nullable(number(a.pricing?.output), number(b.pricing?.output)) || a.id.localeCompare(b.id)
+      case 'usage':
+        return nullable(
+          usageByModel.value.get(a.id)?.totalTokens ?? 0,
+          usageByModel.value.get(b.id)?.totalTokens ?? 0,
+        ) || a.id.localeCompare(b.id)
+      case 'sources':
+        return (a.sources.length - b.sources.length) * direction || a.id.localeCompare(b.id)
+      default:
+        return a.id.localeCompare(b.id) * direction
+    }
+  })
+  return list
+})
+
+const paged = computed(() => paginate(sortedModels.value, Number(scope.state.page), pageSize.value))
+watch(
+  () => paged.value.page,
+  (page) => {
+    if (String(page) !== scope.state.page) scope.state.page = String(page)
+  },
+)
+const hasFilter = computed(() =>
+  Boolean(scope.state.q.trim()) ||
+  scope.state.filter !== 'all' ||
+  Boolean(scope.state.channel) ||
+  scope.state.kind !== 'all',
+)
+
+function clearFilters() {
+  scope.patch({ q: '', filter: 'all', channel: '', kind: 'all', page: '1' })
+  searchInput.value = ''
+}
+
+function setDays(value: string | number) {
+  scope.patch({ days: String(value), page: '1' })
+}
+
+function setKey(value: string | number) {
+  scope.patch({ keyId: String(value), page: '1' })
+}
+
+function toggleDir() {
+  scope.state.dir = dir.value === 'asc' ? 'desc' : 'asc'
+}
+
+const priceFmt = (value: number | null | undefined) => (value === null || value === undefined ? '—' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}`)
+const moneyFmt = (value: number | null) => (value === null ? '未定价' : fmtUsd(value))
+
 const columns = [
-  { key: 'model', title: '模型名称', width: 240 },
-  { key: 'sources', title: '服务渠道映射', minWidth: 260 },
+  { key: 'model', title: '模型名称', width: 260 },
+  { key: 'sources', title: '服务渠道映射', width: 300 },
   { key: 'pricing', title: '每 1M Token 定价', width: 260 },
-  { key: 'usage', title: '用量与花费', width: 220, align: 'right' as const },
+  { key: 'usage', title: '用量与花费', width: 200, align: 'right' as const },
 ]
 
 async function toggleSource(model: ModelEntry, source: ModelSource) {
@@ -140,59 +233,82 @@ async function toggleSource(model: ModelEntry, source: ModelSource) {
   busyToken.value = token
   try {
     await api.setModelSourceEnabled(model.id, source.channel, source.kind, !source.enabled)
-    emit('refresh')
-    await loadData()
-    emit('notify', `${model.id} 在「${source.channel}」已${source.enabled ? '停用' : '启用'}`)
-  } catch (e) {
-    emit('notify', e instanceof Error ? e.message : '操作失败')
+    notice.value = { type: 'success', message: `${model.id} 在「${source.channel}」已${source.enabled ? '停用' : '启用'}。` }
+    await indexRes.reload()
+  } catch (err) {
+    notice.value = {
+      type: 'error',
+      message: `${model.id} 在「${source.channel}」切换失败：${err instanceof Error ? err.message : '未知错误'}。`,
+    }
   } finally {
     busyToken.value = ''
   }
 }
 
-async function handleSyncUpstream() {
+/** 真正的同步动作（重试按钮直接复用它，不再弹一次确认）。 */
+async function performSync() {
   syncing.value = true
+  notice.value = null
   try {
     const res = await api.syncUpstreamModels()
-    emit('notify', `同步成功：新增 ${res.result.addedModels.length} 个模型，现共 ${res.result.totalModels} 个`)
-    emit('refresh')
-    await loadData()
-  } catch {
-    emit('notify', '同步上游最新模型失败，请检查网络或网关连接')
+    notice.value = {
+      type: 'success',
+      message: `同步成功：新增 ${res.result.addedModels.length} 个模型，现共 ${res.result.totalModels} 个。`,
+    }
+    await Promise.all([indexRes.reload(), usageRes.reload()])
+  } catch (err) {
+    notice.value = {
+      type: 'error',
+      message: `同步失败：${err instanceof Error ? err.message : '未知错误'}。上游目录未被修改，可稍后重试。`,
+    }
   } finally {
     syncing.value = false
   }
 }
 
-function handleDaysChange(val: string | number) {
-  const d = Number(val)
-  internalDays.value = d
-  emit('update:days', d)
-  loadData()
-}
-
-function handleKeyChange(val: string | number) {
-  const k = String(val)
-  internalKeyId.value = k
-  emit('update:keyId', k)
-  loadData()
+/**
+ * N1：「动态同步最新模型」是全局写操作（重写模型目录，会影响正在路由的请求），
+ * 先 `await confirm({danger:true})`；结果用持久提示，不再走无人监听的 `emit('notify')`。
+ */
+async function handleSyncUpstream() {
+  const ok = await confirm({
+    title: '同步上游最新模型',
+    body: '这会向上游网关拉取最新模型列表并重写本地模型目录：可能新增、更新或下线模型与渠道映射，进而影响正在路由的请求。',
+    confirmText: '开始同步',
+    danger: true,
+  })
+  if (!ok) return
+  await performSync()
 }
 </script>
 
 <template>
   <div class="page-stack models-page">
-    <section class="page-head">
-      <div class="page-head__text">
-        <p class="eyebrow">MODELS</p>
-        <h1>模型总览</h1>
-        <p>查看实时渠道状态、每百万 token 单价，以及输入、输出、缓存的实际用量与花费。随上游提供商动态更新。</p>
-      </div>
-      <div class="page-head__actions">
-        <TxSelect :model-value="internalKeyId" placeholder="选择 API Key" class="w-180px" @update:model-value="handleKeyChange">
-          <TxSelectItem value="" label="全部 API Key" />
-          <TxSelectItem v-for="k in (props.keys.length ? props.keys : internalKeys)" :key="k.id" :value="k.id" :label="k.name" />
+    <PageHeader
+      title="模型总览"
+      description="实时渠道状态、每百万 token 单价与用量花费；搜索、筛选、排序与页码都写在地址栏里，方便直接分享某个模型的定位链接。"
+    >
+      <template #actions>
+        <TxSearchInput
+          v-model="searchInput"
+          placeholder="搜索模型名 / 别名 / 渠道"
+          class="search-input"
+          aria-label="搜索模型"
+        />
+        <TxSelect :model-value="scope.state.channel" placeholder="全部渠道" class="w-180px" @update:model-value="v => scope.patch({ channel: String(v), page: '1' })">
+          <TxSelectItem value="" label="全部渠道" />
+          <TxSelectItem v-for="c in channelOptions" :key="c.value" :value="c.value" :label="c.label" />
         </TxSelect>
-        <TxSelect :model-value="String(internalDays)" placeholder="选择时间跨度" class="w-130px" @update:model-value="handleDaysChange">
+        <TxSelect :model-value="scope.state.kind" placeholder="全部协议" class="w-140px" @update:model-value="v => scope.patch({ kind: String(v), page: '1' })">
+          <TxSelectItem value="all" label="全部协议" />
+          <TxSelectItem value="compat" label="兼容渠道" />
+          <TxSelectItem value="oauth" label="账号池" />
+        </TxSelect>
+        <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="setKey">
+          <TxSelectItem value="" label="全部 API Key" />
+          <TxSelectItem v-for="k in keys" :key="k.id" :value="k.id" :label="k.name" />
+        </TxSelect>
+        <TxSelect :model-value="scope.state.days" placeholder="时间跨度" class="w-130px" @update:model-value="setDays">
           <TxSelectItem value="1" label="最近 24 小时" />
           <TxSelectItem value="7" label="最近 7 天" />
           <TxSelectItem value="30" label="最近 30 天" />
@@ -201,171 +317,193 @@ function handleKeyChange(val: string | number) {
         <TxButton variant="primary" :loading="syncing" @click="handleSyncUpstream">
           动态同步最新模型
         </TxButton>
-        <TxButton variant="secondary" :loading="currentLoading" @click="() => { emit('refresh'); loadData() }">
+        <TxButton variant="secondary" :loading="indexRes.loading.value || usageRes.loading.value" @click="reloadAll">
           刷新
         </TxButton>
+      </template>
+    </PageHeader>
+
+    <!-- N1：同步 / 开关渠道的持久结果提示（closable，不会 7 秒后消失） -->
+    <TxAlert v-if="notice" :type="notice.type" :closable="true" @close="notice = null">
+      <div class="notice-body">
+        <span>{{ notice.message }}</span>
+        <TxButton v-if="notice.type === 'error' && notice.message.startsWith('同步失败')" variant="secondary" size="sm" @click="performSync">
+          重试同步
+        </TxButton>
       </div>
-    </section>
-
-    <!-- 顶部汇总指标卡 -->
-    <div class="metric-row">
-      <TxCard class="stat-box">
-        <span class="stat-label">总花费</span>
-        <strong class="stat-value">{{ moneyFmt(currentUsage?.totals?.totalCostUsd ?? 0) }}</strong>
-        <small class="stat-sub">{{ compactNum(currentUsage?.totals?.totalTokens || 0) }} tokens</small>
-      </TxCard>
-      <TxCard class="stat-box">
-        <span class="stat-label">输入花费</span>
-        <strong class="stat-value">{{ moneyFmt(currentUsage?.totals?.inputCostUsd ?? 0) }}</strong>
-        <small class="stat-sub">{{ (currentUsage?.totals?.requests || 0).toLocaleString('zh-CN') }} 次请求</small>
-      </TxCard>
-      <TxCard class="stat-box">
-        <span class="stat-label">输出花费</span>
-        <strong class="stat-value">{{ moneyFmt(currentUsage?.totals?.outputCostUsd ?? 0) }}</strong>
-        <small class="stat-sub">近 {{ internalDays }} 天统计</small>
-      </TxCard>
-      <TxCard class="stat-box">
-        <span class="stat-label">缓存节省</span>
-        <strong class="stat-value">{{ moneyFmt(currentUsage?.totals?.cacheCostUsd ?? 0) }}</strong>
-        <small class="stat-sub">读写缓存命中支持</small>
-      </TxCard>
-    </div>
-
-    <TxAlert v-if="contestedCount > 0" type="warning" title="存在多渠道提供模型" :closable="false">
-      有 {{ contestedCount }} 个模型名同时由多个渠道提供。请求会在启用渠道间自动轮询/路由；只选择特定渠道的 Key 不会发生跨渠道溢出。
     </TxAlert>
 
-    <!-- 筛选工具栏 -->
-    <TxCard :padding="14">
-      <div class="table-toolbar">
-        <TxSearchInput v-model="query" placeholder="搜索模型名称或渠道标识..." class="search-input" />
-        <TxFilterChips :model-value="filter" :items="filterChips" @update:model-value="v => filter = (v as any)" />
+    <!-- R2：失败但没有旧数据 → 阻断式错误面；有旧数据 → 顶部非阻断横幅，数据留在原地 -->
+    <ErrorPanel v-if="error && !models.length" :error="error" :retry="reloadAll" />
+    <LoadingBlock v-else-if="showSkeleton" :lines="8" label="正在读取模型目录" />
+
+    <template v-else>
+      <ErrorPanel
+        v-if="error"
+        inline
+        :error="error"
+        :retry="reloadAll"
+        stale-hint="下方仍是最近一次成功读取的模型目录，可以继续查看。"
+      />
+
+      <!-- 顶部汇总指标卡 -->
+      <div class="metric-row">
+        <TxCard class="stat-box">
+          <span class="stat-label">总花费</span>
+          <strong class="stat-value">{{ moneyFmt(usage?.totals?.totalCostUsd ?? 0) }}</strong>
+          <small class="stat-sub">{{ fmtCompact(usage?.totals?.totalTokens || 0) }} tokens</small>
+        </TxCard>
+        <TxCard class="stat-box">
+          <span class="stat-label">输入花费</span>
+          <strong class="stat-value">{{ moneyFmt(usage?.totals?.inputCostUsd ?? 0) }}</strong>
+          <small class="stat-sub">{{ fmtInt(usage?.totals?.requests || 0) }} 次请求</small>
+        </TxCard>
+        <TxCard class="stat-box">
+          <span class="stat-label">输出花费</span>
+          <strong class="stat-value">{{ moneyFmt(usage?.totals?.outputCostUsd ?? 0) }}</strong>
+          <small class="stat-sub">近 {{ days }} 天统计</small>
+        </TxCard>
+        <TxCard class="stat-box">
+          <span class="stat-label">缓存节省</span>
+          <strong class="stat-value">{{ moneyFmt(usage?.totals?.cacheCostUsd ?? 0) }}</strong>
+          <small class="stat-sub">读写缓存命中支持</small>
+        </TxCard>
       </div>
 
-      <!-- 模型数据表格 -->
-      <TxDataTable
-        :columns="columns"
-        :data="filteredModels"
-        row-key="id"
-        striped
-        bordered
-        :loading="currentLoading"
-        class="models-table"
-      >
-        <template #cell-model="{ row }: { row: ModelEntry }">
-          <div class="model-cell">
-            <div class="model-title-line">
-              <strong class="model-id mono">{{ row.id }}</strong>
-              <TxTag v-if="row.contested" label="多渠道" size="sm" variant="soft" color="#d49a29" />
-            </div>
-            <div class="model-meta">
-              <span class="source-count">{{ row.enabledSources }}/{{ row.sources.length }} 渠道启用</span>
-              <div v-if="row.thinking?.levels?.length" class="thinking-levels">
-                <TxTag v-for="lvl in row.thinking.levels" :key="lvl" :label="lvl" size="sm" variant="outline" color="#3346c8" />
+      <TxAlert v-if="contestedCount > 0" type="warning" title="存在多渠道提供模型" :closable="false">
+        有 {{ contestedCount }} 个模型名同时由多个渠道提供。请求会在启用渠道间自动轮询/路由；只选择特定渠道的 Key 不会发生跨渠道溢出。
+      </TxAlert>
+
+      <!-- 筛选工具栏 -->
+      <TxCard :padding="14">
+        <div class="table-toolbar">
+          <TxFilterChips
+            :model-value="filter"
+            :items="filterChips"
+            aria-label="按模型状态过滤"
+            @update:model-value="v => scope.patch({ filter: String(v), page: '1' })"
+          />
+          <div class="toolbar-end">
+            <span class="muted text-12">排序</span>
+            <TxSelect :model-value="sortKey" :options="SORTS" class="w-140px" aria-label="排序字段" @update:model-value="v => scope.patch({ sort: String(v), page: '1' })" />
+            <TxButton variant="secondary" size="sm" :aria-label="dir === 'asc' ? '当前升序，切换为降序' : '当前降序，切换为升序'" @click="toggleDir">
+              {{ dir === 'asc' ? '升序 ↑' : '降序 ↓' }}
+            </TxButton>
+            <TxSelect
+              :model-value="scope.state.size"
+              :options="PAGE_SIZES.map(n => ({ value: String(n), label: `每页 ${n} 条` }))"
+              class="w-140px"
+              aria-label="每页条数"
+              @update:model-value="v => scope.patch({ size: String(v), page: '1' })"
+            />
+            <TxButton v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">清除筛选</TxButton>
+          </div>
+        </div>
+
+        <p class="muted text-12 table-count">
+          共 {{ sortedModels.length }} 个模型<template v-if="hasFilter">（已筛选，原 {{ models.length }} 个）</template>，第 {{ paged.page }} / {{ paged.totalPages }} 页
+        </p>
+
+        <!-- 模型数据表格 -->
+        <TxDataTable
+          :columns="columns"
+          :data="paged.rows"
+          row-key="id"
+          striped
+          bordered
+          scroll-x
+          :style="{ '--table-min': '1060px' }"
+          :loading="indexRes.loading.value"
+          aria-label="模型目录"
+          class="models-table"
+        >
+          <template #cell-model="{ row }: { row: ModelEntryRuntime }">
+            <div class="model-cell">
+              <div class="model-title-line">
+                <strong class="model-id mono">{{ row.id }}</strong>
+                <TxTag v-if="row.contested" label="多渠道" size="sm" variant="soft" color="#d49a29" />
+              </div>
+              <div class="model-meta">
+                <span class="source-count">{{ row.enabledSources }}/{{ row.sources.length }} 渠道启用</span>
+                <div v-if="row.thinking?.levels?.length" class="thinking-levels">
+                  <TxTag v-for="lvl in row.thinking.levels" :key="lvl" :label="lvl" size="sm" variant="outline" color="#3346c8" />
+                </div>
               </div>
             </div>
-          </div>
-        </template>
+          </template>
 
-        <template #cell-sources="{ row }: { row: ModelEntry }">
-          <div class="channel-chips">
-            <button
-              v-for="s in row.sources"
-              :key="`${s.channel}:${s.kind}`"
-              type="button"
-              class="channel-chip-btn"
-              :class="{ active: s.enabled, disabled: !s.channelEnabled && !s.enabled }"
-              :disabled="busyToken === `${row.id}@${s.channel}` || (!s.channelEnabled && !s.enabled)"
-              :title="`${kindLabel[s.kind] || s.kind}${s.channelEnabled ? '' : ' (渠道不可用)'}`"
-              @click="toggleSource(row, s)"
-            >
-              <span class="chip-dot" :class="{ 'chip-dot--active': s.enabled }" />
-              <span>{{ s.channel }}</span>
-              <em v-if="s.upstreams > 1" class="chip-mult">×{{ s.upstreams }}</em>
-            </button>
-          </div>
-        </template>
-
-        <template #cell-pricing="{ row }: { row: ModelEntry }">
-          <div v-if="row.pricing" class="pricing-cell">
-            <div class="pricing-main">
-              <span>输入: <strong>{{ priceFmt(row.pricing.input) }}</strong></span>
-              <span>输出: <strong>{{ priceFmt(row.pricing.output) }}</strong></span>
+          <template #cell-sources="{ row }: { row: ModelEntryRuntime }">
+            <div class="channel-chips">
+              <button
+                v-for="s in row.sources"
+                :key="`${s.channel}:${s.kind}`"
+                type="button"
+                class="channel-chip-btn"
+                :class="{ active: s.enabled, disabled: !s.channelEnabled && !s.enabled }"
+                :disabled="busyToken === `${row.id}@${s.channel}` || (!s.channelEnabled && !s.enabled)"
+                :aria-label="`${s.enabled ? '停用' : '启用'} ${row.id} 在渠道 ${s.channel} 的映射`"
+                :title="`${kindLabel[s.kind] || s.kind}${s.channelEnabled ? '' : ' (渠道不可用)'}`"
+                @click="toggleSource(row, s)"
+              >
+                <span class="chip-dot" :class="{ 'chip-dot--active': s.enabled }" />
+                <span>{{ s.channel }}</span>
+                <em v-if="s.upstreams > 1" class="chip-mult">×{{ s.upstreams }}</em>
+              </button>
             </div>
-            <div class="pricing-sub">
-              <span>读缓存: {{ priceFmt(row.pricing.cacheRead) }}</span>
-              <span v-if="row.pricing.cacheWrite !== undefined">写缓存: {{ priceFmt(row.pricing.cacheWrite) }}</span>
-            </div>
-          </div>
-          <span v-else class="text-muted">单价未收录</span>
-        </template>
+          </template>
 
-        <template #cell-usage="{ row }: { row: ModelEntry }">
-          <div v-if="usageByModel.get(row.id)" class="usage-cell">
-            <div class="usage-cost mono">{{ moneyFmt(usageByModel.get(row.id)?.totalCostUsd ?? null) }}</div>
-            <div class="usage-sub text-muted">
-              {{ compactNum(usageByModel.get(row.id)?.totalTokens || 0) }} tokens · {{ usageByModel.get(row.id)?.requests }} 次
+          <template #cell-pricing="{ row }: { row: ModelEntryRuntime }">
+            <div v-if="row.pricing" class="pricing-cell">
+              <div class="pricing-main">
+                <span>输入: <strong>{{ priceFmt(row.pricing.input) }}</strong></span>
+                <span>输出: <strong>{{ priceFmt(row.pricing.output) }}</strong></span>
+              </div>
+              <div class="pricing-sub">
+                <span>读缓存: {{ priceFmt(row.pricing.cacheRead) }}</span>
+                <span v-if="row.pricing.cacheWrite !== undefined">写缓存: {{ priceFmt(row.pricing.cacheWrite) }}</span>
+              </div>
             </div>
-          </div>
-          <span v-else class="text-muted">近 {{ internalDays }} 天无用量</span>
-        </template>
+            <span v-else class="text-muted">单价未收录</span>
+          </template>
 
-        <template #empty>
-          <TxEmptyState
-            title="未找到匹配的模型"
-            description="请尝试调整搜索关键字或筛选条件"
-            size="small"
+          <template #cell-usage="{ row }: { row: ModelEntryRuntime }">
+            <div v-if="usageByModel.get(row.id)" class="usage-cell">
+              <div class="usage-cost mono">{{ moneyFmt(usageByModel.get(row.id)?.totalCostUsd ?? null) }}</div>
+              <div class="usage-sub text-muted">
+                {{ fmtCompact(usageByModel.get(row.id)?.totalTokens || 0) }} tokens · {{ usageByModel.get(row.id)?.requests }} 次
+              </div>
+            </div>
+            <span v-else class="text-muted">近 {{ days }} 天无用量</span>
+          </template>
+
+          <template #empty>
+            <EmptyState
+              :variant="hasFilter ? 'search-empty' : 'no-data'"
+              :title="hasFilter ? '没有匹配的模型' : '模型目录为空'"
+              :description="hasFilter ? '换个关键词，或清除筛选后查看全部模型。' : '点右上角「动态同步最新模型」从上游拉取一次目录。'"
+              :action-label="hasFilter ? '清除筛选' : undefined"
+              size="small"
+              @action="clearFilters"
+            />
+          </template>
+        </TxDataTable>
+
+        <div v-if="paged.totalPages > 1" class="models-pager">
+          <TxPagination
+            :current-page="paged.page"
+            :page-size="paged.pageSize"
+            :total="paged.total"
+            show-info
+            aria-label="模型目录分页"
+            @update:current-page="scope.state.page = String($event)"
           />
-        </template>
-      </TxDataTable>
-    </TxCard>
+        </div>
+      </TxCard>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.models-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  width: 100%;
-}
-.page-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-.page-head__text h1 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--tx-text-color-primary, #151b45);
-}
-.page-head__text p {
-  margin: 4px 0 0;
-  color: var(--tx-text-color-secondary, #535b85);
-  font-size: 13.5px;
-}
-.eyebrow {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--tx-color-primary, #3346c8);
-  margin-bottom: 2px;
-}
-.page-head__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-.w-180px {
-  width: 180px;
-}
-.w-130px {
-  width: 130px;
-}
 .metric-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -510,5 +648,45 @@ function handleKeyChange(val: string | number) {
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.notice-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.toolbar-end {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.table-count {
+  margin: 10px 0 6px;
+}
+.models-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.search-input {
+  width: min(260px, 60vw);
+}
+.w-140px {
+  width: min(140px, 42vw);
+}
+.w-180px {
+  width: min(180px, 46vw);
+}
+.w-130px {
+  width: min(130px, 40vw);
 }
 </style>

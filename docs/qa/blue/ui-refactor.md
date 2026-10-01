@@ -164,3 +164,89 @@ $ npm run test:magpie  # node --test server/magpie*.test.ts server/rtkService.te
 
 改动文件全部落在 task-4 写范围内：`src/lib/**`（新）、`src/components/{PageHeader,ConfirmHost,ErrorPanel,LoadingBlock,EmptyState}.vue`（新）、`src/App.vue`、`src/components/{ConsoleShell,VersionWidget}.vue`、`src/pages/{Dashboard,Analytics,Usage,Keys,Channels,Charts,Monitor,Cache}Page.vue`、`docs/qa/blue/**`。
 未触碰：`src/router.ts`、`src/components/ConsoleNav.vue`、`src/api.ts`、`src/types.ts`、`server/**`、`src/pages/{HelpPage,RtkPage}.vue`、`src/ab/**`。
+
+---
+
+# 第三轮（task-14，2026-10-01 09:2x）
+
+构建：`npm run build` → `dist/assets/console-jxUk9Cyl.js`（09:26）；本轮全部 `r3-*` 截图摄于 09:26–09:31，与最终产物同批（09:23–09:24 的首批截图已在 09:30–09:31 用同一构建重拍，避免「截图与产物不一致」）。
+
+## 1. D12 `/models` 527 行裸渲染 → 分页 + 搜索 + 排序 + 筛选（全部进 URL）
+
+- **改前**：`/models` 一次渲染 527 行 DOM，无分页/排序/批量（红队 D12，`docs/qa/red-team/shots/models-列表-桌面.png`）。
+- **改后**（`src/pages/ModelsPage.vue` 重写 script + 工具栏/分页；复用 `src/lib/listState.ts` 的 `useQueryState` / `paginate` / `debounce`）：
+  - 分页：默认 25/页（可选 25/50/100），底部 `TxPagination`；
+  - 搜索：模型名 / 别名（`publicModelId`）/ 渠道名，300ms 防抖后才写 URL；
+  - 排序：名称 / 输入单价 / 输出单价 / 用量 / 渠道数 + 升降序切换；**未定价模型恒排最后**（不被「最便宜」占满首屏）；
+  - 筛选：状态 chips（全部/在用/多渠道/已停用）+ 渠道下拉 + 协议下拉（兼容渠道/账号池）；
+  - URL 深链示例：
+    - `/models?q=claude&sort=name&dir=asc&size=25&page=2` → 共 43 个匹配，第 2/2 页（实测 18 行）
+    - `/models?q=claude&kind=oauth&sort=usage&dir=desc&size=50&page=1` → 1 个匹配，搜索框回填 `claude`
+    - `/models?sort=input&dir=desc&size=25` → 顶部为 `输入 $30 / 输出 $180`
+  - 实测：首屏 `共 527 个模型，第 1 / 22 页`，只渲染 **25 行**（改前 527 行）；`document.scrollWidth === 1557 === innerWidth`（表格 `scroll-x` + 单 `--table-min`，无页面级横向溢出）。
+- 截图：`r3-models-page1.png`、`r3-models-deeplink.png`
+
+## 2. N1 「动态同步最新模型」无确认 + 反馈丢失
+
+- **改前**：`ModelsPage.vue` 直接调用全局写接口；`emit('notify')` 全仓无人监听（`router.ts` 不接事件），`:160` 还有 `catch {}` → 成功/失败都没有反馈。
+- **改后**：`await confirm({ title: '同步上游最新模型', body: '…重写本地模型目录：可能新增、更新或下线模型与渠道映射…', confirmText: '开始同步', danger: true })`；结果落到**持久** `TxAlert`（可手动关闭，不会 7 秒消失），失败文案写明「上游目录未被修改，可稍后重试」并给「重试同步」按钮（复用 `performSync()`，不再重复弹确认）。渠道开关的成败也走同一条持久提示。
+- 实测：确认框标题/正文正确、初始焦点在「取消」、Esc 取消后行数不变（25）；mock 502 后提示为「同步失败：上游网关连接超时（mock）。上游目录未被修改，可稍后重试。 重试同步」。
+- 截图：`r3-models-sync-confirm.png`、`r3-models-sync-failure.png`
+
+## 3. R2 陈旧数据：保留旧数据 + 顶部非阻断横幅（**有意偏离 TUF**）
+
+- **改前**：有旧数据时刷新失败 → `ErrorPanel` 把内容整体顶掉（阻断式，与 TUF 一致）。
+- **改后**：`ErrorPanel` 新增 `inline` 变体；9 个页面统一为「无数据才阻断，有旧数据只在顶部给横幅」：
+  `ErrorPanel v-if="error && !hasData"` → `LoadingBlock v-else-if` → `<template v-else>` 内 `ErrorPanel inline + stale-hint`。
+- **偏离理由（Lead 决定，记录在案）**：这是运维面板。瞬时刷新失败时把「最后一次已知良好数据」藏起来，比展示一份明确标注为陈旧的旧数据**更危险**——值班时看不到上一分钟的错误率，会误判为「系统没有数据」而放行。因此这里刻意不照抄 TUF 的阻断式写法：数据留在原地，横幅说清「本次刷新失败 + 数据是旧的 + 可重试」。
+- 实测（`/analytics?days=7`，先加载成功，再 `Network.setBlockedURLs(["*/api/analytics*"])` 并点刷新）：**20 行请求明细仍在**，四张指标卡仍是真实值（214 / 7.7万 / 41.6% / 4.8s），顶部横幅「本次刷新失败：连不上服务器…下方仍是最近一次成功读取的请求明细，可以继续查看。」+「重试」；解除屏蔽点重试后横幅消失、数据不变。
+- 截图：`r3-analytics-stale-banner.png`
+
+## 4. D24 OAuth 轮询无上限、catch 吞错
+
+- **改后**（`src/pages/OAuthPage.vue`）：
+  - 总时长上限 `POLL_MAX_MS = 5 分钟`（与页面自述「请在 5 分钟内完成授权」一致），到点停止轮询并把卡片切到错误态，文案给出「重新发起」与「手动提交回调链接」两条出路；
+  - 连续网络失败 `POLL_MAX_CONSECUTIVE_ERRORS = 3` 即停止并报错（不再 `catch {}` 静默）；
+  - 等待态加了一行说明「每 3 秒检查一次，最多 5 分钟，超时/连续 3 次失败会自动停止并提示」；
+  - 卸载清理保持原有 `onUnmounted → clearPoll()`（本轮复核仍在）。
+- 实测（**全程 mock `/api/cpa/oauth/start|status`，`window.open` 置空，不碰真实第三方、不改服务端状态**）：
+  - 失败分支：`status` 恰好调用 **3 次**后停止，卡片显示「轮询授权状态连续失败 3 次（mock 上游 502），已停止轮询。可以点「重新发起」…」+「返回 / 重新发起」；
+  - 超时分支：把 `Date.now` 推后 6 分钟后，下一次轮询直接命中上限，`status` 调用 **0 次**，卡片显示「授权超时：5 分钟内没有收到回调结果，已停止轮询…」。
+- 截图：`r3-oauth-poll-failure.png`、`r3-oauth-timeout.png`
+
+## 5. MonitorPage 重置按钮 label-in-name（WCAG 2.5.3）
+
+- **改前**：`aria-label="重置账号 X 的窗口配额"`，可访问名不含可见文案「重置额度」。
+- **改后**：`aria-label="重置额度：X 的窗口配额"`。实测（mock 一个账号让按钮出现）：`ariaLabel = 重置额度：mock-codex@example.com 的窗口配额`，`visibleText = 重置额度`，可见文案是可访问名的前缀 ✅。
+- 截图：`r3-monitor-label-in-name.png`
+
+## 6. 顺带修掉的系统性缺陷：`TxAlert` 的 `description` / `variant` 从来不存在
+
+- 现象：Tuffex 0.6.2 的 `TxAlert` props 只有 `type / title / message / closable / showIcon`（`dist/es/alert/src/types.d.ts`），**没有 `description`，也没有 `variant`**。本仓 11 处 `TxAlert` 用了 `:description=` / `variant=`，于是**正文一直没渲染、危险色一直没生效**（例如 OAuth「授权未完成」卡片只剩标题）。
+- 改后：`variant="danger"` → `type="error"`，其余 `variant="X"` → `type="X"`，`:description=` → `:message=`（组件内部就是渲染 `props.message`，默认插槽同理）。覆盖 Dashboard / Keys / Channels / OAuth / Monitor 等页面；已用脚本核对「`TxAlert` 标签内不再出现 `variant=`/`description=`」（残留 0）。
+- 实测：OAuth 失败卡片现在带完整正文，容器类是 `tx-alert--error`；Monitor 降级提示同理。
+- 说明：这不在 task-14 的 5 项里，是验证第 4 项时顺手发现的；属于「文案与配色没生效」而非新功能。
+
+## 7. 本轮未修 / 未验证
+
+- **未修**：D12 的**批量操作与列显隐/列宽拖拽**（分页/搜索/排序/筛选已做）；`aria-sort`（Tuffex 表格排序在客户端 `sortOnClient`，未接）；D16/D17/D22 里 `OAuthPage` 的 format/PageHeader 收口（本轮只动了轮询与 alert）；D25 字段级校验；D28 表格语义；D29 `.tsx` 死树（按 Lead 指示不动）。
+- **未验证**：`/models` 的 527 行数据量下**首屏滚动性能**未量化（只验证了 DOM 行数从 527 → 25）；OAuth **真实第三方授权回路**未测（全程 mock）；`TxAlert` 修复对**深色模式/其它告警**的视觉影响未逐页截图（只验证了 OAuth 与 Models 两处）；「每页 100 条」档未实测渲染。
+- **只走到确认框的破坏性操作**：`/models` 的「动态同步最新模型」只验证到确认框 + 取消（未真正执行同步）；OAuth 的 `start/status` 全程 mock。
+
+## 8. 命令证据（第三轮）
+
+```
+$ npx tsc -p tsconfig.app.json --noEmit    # 排除 src/ab（他人实验台）
+(0 行输出)
+
+$ npm run build
+✓ built in 586ms   # dist/assets/console-jxUk9Cyl.js（09:26）
+
+$ npm run lint
+(仅既存 2 条 server/nativeResponses.ts no-control-regex warning)
+
+$ 12 条路由 smoke（/dashboard /keys /channels /oauth /models /charts /analytics /usage /cache /monitor /rtk /ab）
+每条 h1 正确、无 blocking error 面板、window.onerror/unhandledrejection 0 条
+```
+
+改动文件（第三轮）：`src/pages/ModelsPage.vue`（重写）、`src/pages/OAuthPage.vue`、`src/pages/MonitorPage.vue`、`src/components/ErrorPanel.vue`（inline 变体），以及 R2/alert 修复涉及的 `src/pages/{Dashboard,Analytics,Usage,Charts,Cache,Keys,Channels}Page.vue`；截图 `docs/qa/blue/shots/r3-*.png`（8 张）。未触碰 `src/router.ts`、`src/components/ConsoleNav.vue`、`src/api.ts`、`src/types.ts`、`server/**`、`src/ab/**`、`HelpPage/RtkPage/AbLabPage`。
