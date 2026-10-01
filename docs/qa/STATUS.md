@@ -1,6 +1,6 @@
 # crosery-api-console 红蓝对抗进度总表
 
-最后更新：2026-10-01（第 8 轮结束）｜维护：Lead ｜约定见 [COORDINATION.md](COORDINATION.md)
+最后更新：2026-10-01（第 13 轮结束）｜维护：Lead ｜约定见 [COORDINATION.md](COORDINATION.md)
 
 ## 一句话现状
 
@@ -27,18 +27,19 @@
 
 ## 主线 B：按 TUF 交互逻辑重构
 
-- 共享原语已落地并被复用：`useResource` / `confirm()`+`ConfirmHost` / `PageHeader` / `ErrorPanel`（含 `inline` 陈旧数据横幅）/ `LoadingBlock` / `EmptyState` / `format` / `listState`（URL 状态）/ `validation`（字段级校验）。
-- 已迁移 9 个数据页：Dashboard、Keys、Channels、Models、Analytics、Usage、Cache、Charts、Monitor。
-- **尚未迁移：`OAuthPage`**（唯一仍是手写弹窗/无 URL 状态的数据页）。
-- 已修的代表性缺陷：观测页把真实 41.6% 错误率显示成「0.0% 健康稳定」（调错接口 + 类型断言说谎）、接口失败退化成 7 秒消失的 toast、`/charts` 永久加载、390px 表格列宽塌成 0、6 处破坏性操作零确认、`/models` 527 行裸渲染（→ 分页/搜索/排序/列显隐/批量）、确认框 Escape 不稳定、导航幻影高亮。
-- **排版角色单一真源**（第 7–8 轮）：`h1`/`h2`、`.muted`、行内 `code`、表格单元格（含**空表**）、代码块五组角色收口到 `layout.css`/`theme.css`，三个手写页头（/rtk、/help、/ab）迁到共享 `PageHeader`（22px/600/30px，与 TUF `styles/layout.css:27-33` 一致）。`.mono` 的 0.93em 经核实**与参考实现逐字节相同、不该改**（等宽字身补偿）。
-- **两个可复跑的 QA 脚本**（`scripts/qa-contrast.mjs`、`scripts/qa-viewports.mjs`）：带非 0 退出码、登录后断言、渲染完成判据（失败即算失败）、容器内部裁剪检测（区分有意省略与静默截断）。**写这三个脚本时被红队连续抓到 3 轮假绿**（`color(srgb …)` 解析盲区、失败也 exit 0、渲染判据从未真正执行、豁免了最容易被裁的容器）——现已修到能报出真缺陷（`/cache`@390 静默裁表 378px 就是它报出来的）。
-- 删掉整套 React 死树（27 → 2 个 `.tsx`，只留 `/docs` 入口），并把「读源码文本」的守卫测试改为**行为级测试**。
+- 共享原语已落地并被复用：`useResource` / `confirm()`+`ConfirmHost` / `PageHeader`（含内嵌降级 `level`）/ `ErrorPanel`（含 `inline` 陈旧数据横幅）/ `LoadingBlock` / `EmptyState` / `format` / `listState`（URL 状态）/ `validation`（字段级校验）。
+- **13 个页面全部迁移完毕**（含最后两个：`OAuthPage` 与独立页 `/docs`）。
+- 已修的代表性缺陷：观测页把真实 41.6% 错误率显示成「0.0% 健康稳定」（调错接口 + 类型断言说谎）、接口失败退化成 7 秒消失的 toast、`/charts` 永久加载、390px 表格列宽塌成 0、6 处破坏性操作零确认、`/models` 527 行裸渲染（→ 分页/搜索/排序/列显隐/批量）、确认框 Escape 不稳定、导航幻影高亮、表单错误汇总不消失、客户端校验与服务端契约不一致（并发 1–1000 vs 1–500）。
+- **排版角色单一真源**：`h1`/`h2`、`.muted`、行内 `code`、表格单元格（含**空表**）、代码块收口到 `layout.css`/`theme.css`；三个手写页头（/rtk、/help、/ab）迁到共享 `PageHeader`（22px/600/30px，与 TUF `styles/layout.css:27-33` 一致）。`.mono` 的 0.93em 经核实**与参考实现逐字节相同、不该改**（等宽字身补偿）。
+- **React 彻底移除**：`/docs` 迁到 Vue 后，6 个直接依赖 + 未被使用的 `recharts`（它传递引入 react + redux 系）一并删掉；`npm ls react --all` 为空、产物里 React 运行时计数 0。控制台现在是**单一技术栈、单一构建入口**。
+- **四个可复跑的 QA 脚本**（`scripts/qa-{contrast,viewports,smoke}.mjs` + RTK 锁的独立 harness）：都带**非 0 退出码**、登录后断言、渲染完成判据（失败即算失败）、容器内部裁剪检测（区分有意省略与静默截断）。**写这些脚本时被红队连续 4 轮抓到假绿**（`color(srgb …)` 解析盲区、失败也 exit 0、渲染判据因参数顺序写错而从未执行、豁免了最容易被裁的容器、退避 `.unref()`）——现已修到能报出真缺陷（`/cache`@390 静默裁表 378px 就是它报出来的），红队第 11 轮首次写下"未发现新的假绿"。
+- 删掉整套 React 死树，并把「读源码文本」的守卫测试改为**行为级测试**（红队用"保留全部被断言的文本、只在语义上打瘫竞态守卫"的手法证明过：旧守卫会让 546 个测试全绿而功能已坏）。
 
-审计与验证：[red-team/ui-interaction-audit.md](red-team/ui-interaction-audit.md)（32 条缺陷）、[ui-round2](red-team/ui-round2-verification.md)～[ui-round6](red-team/ui-round6-verification.md)；A/B 对照：[ab/comparison.md](ab/comparison.md)。
+审计与验证：[red-team/ui-interaction-audit.md](red-team/ui-interaction-audit.md)（32 条缺陷）、[ui-round2](red-team/ui-round2-verification.md)～[round13](red-team/round13-verification.md)；A/B 对照：[ab/comparison.md](ab/comparison.md)。
 
 ## 顺带修掉的生产级问题（超出原诉求但更要紧）
 
+- **性能（第 13 轮首次测量）**：服务端此前**不做任何压缩**——客户端要 gzip 仍拿到 640,500 字节的 identity CSS，而这份 CSS 每页都加载。已用 Node 内置 `zlib` 加上协商压缩（零新增依赖）：**640,500 → gzip 94,463 / br 78,047**，整页上线字节降到 48–94 KB；`Range` 仍 206、`/docs` 仍 `max-age=300`、深链接仍 `no-cache`、<1KB 与二进制不进压缩层。同轮验证 **SSE/轮询页无内存泄漏**（4 轮循环强制 GC 后堆恒定 26 MB）。
 - **可读性（WCAG AA 对比度）**：红队连续四轮把对比度排除在结论外，等于没人量过。Lead 做了一次自动扫描，实测**帮助页的代码示例是近白文字落在浅色底上（1.18:1，命令几乎不可见）**——而那正是教人怎么接入的页面；`/cache` 78 个、`/analytics` 64 个、`/models` 54 个文本节点不达标。已按 TUF 参考实现（`.pre` 用浅底 + 正文色）修帮助页，并把状态文字用的原始调色板色（绿 2.54 / 琥珀 2.15 / 红 3.76 / 灰 2.56）换成达标深色（5.0–6.5）；现网复测：**除 `/channels` 的 5 个「禁用态」标签（WCAG 对不可用组件豁免）外，所有路由 0 个不达标节点**。详见 `8478022`。
 
 - **本地跑的是未收口的凭据导入**（生产 20260926 安全补丁：xAI/Antigravity 端点必须官方 https 域名）→ 已回移，与生产**逐字节一致**。
