@@ -849,12 +849,23 @@ test('P0-1（次要）孤儿备份目录：过保护窗口后清理，status 期
   fs.mkdirSync(path.join(root, recentId), { recursive: true })
   process.env.RTK_BACKUP_DIR = root
   try {
-    assert.equal(service.countRtkBackupOrphans(home), 2)
+    // 红队 ⑦ 的复现形状：空目录 zzz-orphan（崩溃/中断残留，改老 mtime 模拟历史遗留）；
+    // 另有「不认识的目录」只计数不删
+    const old = new Date('2020-01-01T00:00:00Z')
+    fs.mkdirSync(path.join(root, 'zzz-orphan'), { recursive: true })
+    fs.utimesSync(path.join(root, 'zzz-orphan'), old, old)
+    fs.mkdirSync(path.join(root, 'someone-elses-dir'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'someone-elses-dir', 'keep.txt'), 'do not delete\n')
+    fs.utimesSync(path.join(root, 'someone-elses-dir'), old, old)
+    assert.equal(service.countRtkBackupOrphans(home), 3)
+    assert.equal(service.countRtkBackupForeign(home), 1)
     const removed = service.pruneRtkBackups(home, 10)
-    assert.deepEqual(removed, ['2020-01-01T00-00-00-000Z'], '只有过了保护窗口的孤儿才清')
+    assert.deepEqual(removed.sort(), ['2020-01-01T00-00-00-000Z', 'zzz-orphan'], '过窗口的孤儿/空目录清理')
+    assert.equal(fs.existsSync(path.join(root, 'someone-elses-dir', 'keep.txt')), true, '不认识的目录不能删')
     assert.equal(service.countRtkBackupOrphans(home), 1)
     const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
     assert.equal(status.backupOrphans, 1)
+    assert.equal(status.backupForeign, 1)
     assert.ok(status.backupGraceMs > 0)
   } finally {
     process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
@@ -993,4 +1004,22 @@ test('P2 同一 agent 不会同时出现在 reverted 与 restored，collateral �
   const settings = fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8')
   assert.match(settings, /rtk hook claude/)
   assert.equal(fs.existsSync(path.join(home, '.claude/RTK.md')), false)
+})
+
+test('红队 ⑥ 宽并发下 rtk CLI 不再互相干扰：6 个 agent × 2 次并发 ON 全部成功', { skip: !rtkBinary }, async () => {
+  const home = tempHome('r3-wide-concurrency')
+  const agents = ['codex', 'claude', 'cursor', 'gemini', 'copilot', 'pi']
+  const requests = [...agents, ...agents].map(agent =>
+    service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets }),
+  )
+  const results = await Promise.allSettled(requests)
+  const failures = results
+    .map((result, index) => ({ result, agent: [...agents, ...agents][index] }))
+    .filter(item => item.result.status === 'rejected')
+    .map(item => `${item.agent}: ${String((item.result as PromiseRejectedResult).reason).slice(0, 120)}`)
+  assert.deepEqual(failures, [], `宽并发下不应有 502：${failures.join(' | ')}`)
+  for (const agent of agents) {
+    const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+    assert.equal(status.localAgents.find(item => item.id === agent)?.on, true, `${agent} 应已挂载`)
+  }
 })

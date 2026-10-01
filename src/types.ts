@@ -220,6 +220,8 @@ export type RTKStatusResponse = {
   backupGraceMs: number
   /** 没有 manifest 的孤儿备份目录数量。 */
   backupOrphans: number
+  /** 备份根目录里不认识的目录数量（只计数不删）。 */
+  backupForeign: number
   writeMode: 'local' | 'confirm' | 'off'
   remoteWriteEnabled: boolean
   kernelWriteEnabled: boolean

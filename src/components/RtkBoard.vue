@@ -199,6 +199,7 @@ const authorityHint = computed(() => {
             每次写入前把目标文件原样备份，失败自动回填；只保留最近 {{ status?.backupKeep ?? 10 }} 份（RTK_BACKUP_KEEP 可调），
             超出自动轮转，但 {{ Math.round((status?.backupGraceMs ?? 120000) / 1000) }} 秒内新建的备份受保护、不会被轮转删掉（并发写入时刚返回的 backupId 仍可回退）。
             <template v-if="status?.backupOrphans">另有 {{ status.backupOrphans }} 个无 manifest 的孤儿目录，过保护窗口后自动清理。</template>
+            <template v-if="status?.backupForeign">备份目录里还有 {{ status.backupForeign }} 个不认识的目录，控制台只计数不删（避免误删你自己的东西）。</template>
           </p>
         </div>
       </div>

@@ -70,6 +70,8 @@ export type RTKStatusView = {
   backupGraceMs: number
   /** 没有 manifest 的孤儿备份目录数量（如实计数，过保护窗口后自动清）。 */
   backupOrphans: number
+  /** 备份根目录里不认识的目录数量（只计数不删，避免误删用户的东西）。 */
+  backupForeign: number
   install?: string
   url: string
   writeMode: RtkWriteMode
@@ -250,7 +252,7 @@ export function endRtkBackupUse(id: string): void {
 
 const BACKUP_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(-[0-9a-f]{6})?$/
 
-type BackupEntry = { id: string; hasManifest: boolean }
+type BackupEntry = { id: string; hasManifest: boolean; recognized: boolean; empty: boolean }
 
 /** 备份根目录下的条目（**含没有 manifest 的孤儿目录**），按 id 倒序。 */
 function backupEntries(home: string): BackupEntry[] {
@@ -262,7 +264,6 @@ function backupEntries(home: string): BackupEntry[] {
     return []
   }
   return names
-    .filter(name => BACKUP_ID_PATTERN.test(name))
     .filter(name => {
       try {
         return fs.statSync(path.join(root, name)).isDirectory()
@@ -272,7 +273,20 @@ function backupEntries(home: string): BackupEntry[] {
     })
     .sort()
     .reverse()
-    .map(id => ({ id, hasManifest: fs.existsSync(path.join(root, id, 'manifest.json')) }))
+    .map(id => {
+      let empty = false
+      try {
+        empty = fs.readdirSync(path.join(root, id)).length === 0
+      } catch {
+        // 读不到就当非空，保守不删
+      }
+      return {
+        id,
+        hasManifest: fs.existsSync(path.join(root, id, 'manifest.json')),
+        recognized: BACKUP_ID_PATTERN.test(id),
+        empty,
+      }
+    })
 }
 
 function backupAgeMs(root: string, id: string, now: number): number | null {
@@ -305,6 +319,8 @@ export function pruneRtkBackups(
   for (const entry of backupEntries(home)) {
     const age = backupAgeMs(root, entry.id, now)
     const isProtected = protectedIds.has(entry.id) || (age !== null && age < grace)
+    // 不认识的目录（既不是备份 id 形状、也不空）只保留并计数：宁可留垃圾，也不删用户的东西
+    if (!entry.recognized && !entry.empty) continue
     if (!entry.hasManifest) {
       if (!isProtected) {
         try {
@@ -330,9 +346,14 @@ export function pruneRtkBackups(
   return removed
 }
 
-/** 无 manifest 的孤儿备份目录数量（status 如实计数）。 */
+/** 无 manifest 的孤儿备份目录数量（过保护窗口后会被清理）。 */
 export function countRtkBackupOrphans(home: string = resolveHome()): number {
-  return backupEntries(home).filter(entry => !entry.hasManifest).length
+  return backupEntries(home).filter(entry => !entry.hasManifest && (entry.recognized || entry.empty)).length
+}
+
+/** 备份根目录里「不认识的目录」数量：只计数、不删除（避免误删用户的东西）。 */
+export function countRtkBackupForeign(home: string = resolveHome()): number {
+  return backupEntries(home).filter(entry => !entry.recognized && !entry.empty).length
 }
 
 export function listRtkBackups(home: string = resolveHome(), limit = rtkBackupKeep()): RtkBackupSummary[] {
@@ -574,6 +595,7 @@ export function toStatusView(read: AuthoritativeRead, policy: RtkWritePolicy = r
     backupKeep: rtkBackupKeep(),
     backupGraceMs: rtkBackupGraceMs(),
     backupOrphans: countRtkBackupOrphans(home),
+    backupForeign: countRtkBackupForeign(home),
     ...(read.payload.install ? { install: read.payload.install } : {}),
     url: read.payload.url,
     ...policyFields(policy),
@@ -1034,6 +1056,17 @@ function runRtkCli(bin: string, args: string[], home: string, timeoutMs: number)
   })
 }
 
+/**
+ * rtk CLI 在同一 HOME 上并发跑会互相干扰（红队第三轮 ⑥：宽并发下某个 agent 稳定
+ * 「exit 0 但目标状态未生效」）。per-agent 文件锁只序列化同一 agent，这里再加一个
+ * 进程级串行闸，让所有 `rtk init -g` 一次只跑一个。
+ */
+const RTK_CLI_GATE = 'rtk-cli-gate'
+
+function runRtkCliSerialized(bin: string, args: string[], home: string, timeoutMs: number): Promise<RtkCliAttempt> {
+  return withFileLock(RTK_CLI_GATE, () => runRtkCli(bin, args, home, timeoutMs))
+}
+
 function verifyLocalHook(spec: RtkAgentSpec, on: boolean, home: string): boolean {
   const agent = detectAgentHooks(home).find(item => item.id === spec.id)
   return Boolean(agent) && agent!.on === on
@@ -1058,7 +1091,11 @@ export async function applyLocalAgentHook(
       `未找到 rtk 可执行文件，无法安全写入 ${spec.name} 钩子；请先安装：${RTK_INSTALL_HINT}`)
   }
 
-  return withFileLock(path.join(home, spec.dir), async () => {
+  // 关键：整个「快照 → CLI → 连带还原 → 校验」必须相对本进程内其它本机写操作原子。
+  // 否则并发 toggle 时，A 的合法写入会被 B 当成「rtk 的连带改动」还原掉：红队第三轮
+  // 复现是 12 路并发全部返回 200，但最终只有最后一个 agent 还是挂载状态。
+  // 进程内全局闸（按 home 区分）；跨进程并发仍不安全，见交付文档「未验证」。
+  return withFileLock(`rtk-local-write:${home}`, async () => {
     // 目标文件自己的 .bak 也纳管：rtk CLI 会覆写 <file>.bak，用户原件不能被静默吞掉（P1）。
     const hookBak = spec.hookFile ? `${spec.hookFile}.bak` : null
     const targets = [spec.hookFile, hookBak, ...(spec.extraFiles || [])].filter((rel): rel is string => Boolean(rel))
@@ -1111,9 +1148,15 @@ export async function applyLocalAgentHook(
       const args = on ? spec.initFlags! : [...spec.initFlags!, '--uninstall']
       let cli: RtkCliAttempt
       if (fs.existsSync(bin)) {
-        cli = await runRtkCli(bin, args, home, options.timeoutMs ?? 20_000)
+        const runOnce = () => runRtkCliSerialized(bin, args, home, options.timeoutMs ?? 20_000)
+        cli = await runOnce()
         // ON / OFF 共用同一套写后校验：目标状态 + 文件仍是合法 JSON（P0-2）
-        const integrity = hookFileIntegrity(spec, home)
+        let integrity = hookFileIntegrity(spec, home)
+        if (!integrity && cli.ok && !verifyLocalHook(spec, on, home)) {
+          // 「exit 0 但状态没生效」是并发干扰的典型症状：串行重试一次再判定（红队 ⑥）
+          cli = await runOnce()
+          integrity = hookFileIntegrity(spec, home)
+        }
         if (integrity) {
           restoreTargets()
           reconcileCollateral(home, snapshot, guards)
