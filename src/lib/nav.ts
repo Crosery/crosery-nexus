@@ -28,7 +28,6 @@ export const NAV_GROUPS: SidebarNavGroup[] = [
   { key: 'analytics', label: '用量分析' },
   { key: 'monitor', label: '运行监控' },
   { key: 'help', label: '帮助' },
-  { key: 'lab', label: '实验' },
 ]
 
 export const NAV_ITEMS: NavItem[] = [
@@ -47,8 +46,12 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'cache', label: '缓存命中率', group: 'analytics', icon: 'i-carbon-flash', to: '/cache' },
   { id: 'monitor', label: '账号监控', group: 'monitor', icon: 'i-carbon-activity', to: '/monitor' },
   { id: 'help', label: '接入帮助', group: 'help', icon: 'i-carbon-help', to: '/help' },
-  // A/B 实验台是给"新旧界面投票"用的内部工具，不属于任何业务分组，单独一组放最后。
-  { id: 'ab', label: 'A/B 实验台', group: 'lab', icon: 'i-carbon-chemistry', to: '/ab' },
+  /*
+   * A/B 实验台**不放进侧边栏**：它是给我们自己看新旧交互、投一票用的内部工具，
+   * 不是这个控制台的产品功能。放进产品导航会让用户问"这是干什么的"（用户原话：
+   * "还有这几个何以为"）。路由 `/ab` 保留，入口在运行概览底部那条"对比新旧界面"。
+   * 见 navRoutes.test.ts 的 NAV_EXEMPT_ROUTES——豁免必须显式声明，不能靠漏掉。
+   */
 ]
 
 export const NAV_AS_SIDEBAR_ITEMS: SidebarNavItem[] = NAV_ITEMS.map(item => ({

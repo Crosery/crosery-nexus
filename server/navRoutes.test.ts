@@ -13,6 +13,15 @@ import test from 'node:test'
 
 const SRC = new URL('../src/', import.meta.url)
 
+/**
+ * **显式豁免**：这些路由有页面、可以访问，但**故意不放进侧边栏**。
+ * 目前只有 A/B 实验台——它是内部 QA 工具（看新旧交互、投一票），不是产品功能，
+ * 入口在运行概览底部；放进产品导航会让用户问"这是干什么的"。
+ * 豁免必须写在这里：漏加导航项仍然会让上面的差集断言变红，不会静默通过。
+ * 同时下面会断言豁免项**确实还在路由表里**——豁免不能用来藏一个已被删掉的路由。
+ */
+const NAV_EXEMPT_ROUTES = ['ab']
+
 /** 从 router.ts 里取「有 name 的子路由」（即真正挂载页面的那些）。 */
 function mountedChildRoutes(): string[] {
   const source = fs.readFileSync(new URL('router.ts', SRC), 'utf8')
@@ -40,7 +49,8 @@ function navTargets(): string[] {
 test('路由表与侧栏导航一一对应（差集为空）', () => {
   const routes = mountedChildRoutes()
   const nav = new Set(navTargets())
-  const missing = routes.filter((path) => !nav.has(path))
+  const exempt = new Set(NAV_EXEMPT_ROUTES)
+  const missing = routes.filter((path) => !nav.has(path) && !exempt.has(path))
   assert.deepEqual(
     missing,
     [],
@@ -51,6 +61,10 @@ test('路由表与侧栏导航一一对应（差集为空）', () => {
   const routeSet = new Set(routes)
   const dangling = [...nav].filter((path) => !routeSet.has(path))
   assert.deepEqual(dangling, [], `这些导航项指向不存在的路由：${dangling.join('、')}`)
+
+  // 豁免项必须真的还存在：否则"豁免"就成了藏已删路由的地方
+  const ghostExempt = NAV_EXEMPT_ROUTES.filter((path) => !routeSet.has(path))
+  assert.deepEqual(ghostExempt, [], `豁免名单里的路由已不存在（要么删掉豁免，要么恢复路由）：${ghostExempt.join('、')}`)
 })
 
 test('解析守卫有牙齿：合成样本里漏一个导航项必须被抓出来（不读生产文件的差集逻辑自检）', () => {

@@ -207,7 +207,35 @@ a:hover {
  * 兜底：焦点可见性是硬性可访问性要求，组件库的 `outline:none` 不该赢。
  * 颜色用专用 token（不是半透明 mix），保证对相邻背景 ≥3:1 可实测。
  */
-html :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+/*
+ * 环的画法按控件形状分两种——这是"方方的很丑、很突兀"的根因：
+ * 输入框/按钮**自己就有边框**，再在 2px 外画一圈 outline 就变成"边框 + 外圈"两重方框
+ * （对话框一打开自动聚焦第一个字段，用户每次都先看到这个双框）。
+ * ⇒ 自带边框的控件把环**贴着边**画（offset 0），看起来就是加粗了一档的边框；
+ * ⇒ 纯文本链接没有边框，才需要离一点空隙（offset 2）。
+ */
+html :is(input, select, textarea, button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--console-focus-ring) !important;
+  outline-offset: 0 !important;
+}
+
+/*
+ * 组件库的输入类控件是「外层画边框 + 内层透明 field」的结构
+ * （`.tx-textarea` 有 1px 边框与 12px 圆角，`.tx-textarea__field` 是 border:0/outline:0）。
+ * 于是环画在**内层 field** 上时是一个**方角矩形**，和外面圆角边框叠在一起又变成"方方的"。
+ * ⇒ 这类控件把环交给**外层容器**画（` :has(:focus-visible)`，圆角自然吻合），内层不画。
+ */
+html :is(.tx-input, .tx-textarea, .tx-select):has(:focus-visible) {
+  outline: 2px solid var(--console-focus-ring) !important;
+  outline-offset: 0 !important;
+  border-color: var(--console-focus-ring) !important;
+}
+
+html :is(.tx-input__inner, .tx-textarea__field, .tx-select__inner):focus-visible {
+  outline: none !important;
+}
+
+html a:focus-visible {
   outline: 2px solid var(--console-focus-ring) !important;
   outline-offset: 2px !important;
 }

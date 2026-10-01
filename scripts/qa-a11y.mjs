@@ -76,6 +76,8 @@ try {
       return getComputedStyle(document.body).backgroundColor;
     };
     window.__focusSnapshot = () => {
+      /* 输入类控件的环画在**外层容器**上（内层 field 是方角，会变成"方方的"双框），
+         所以这里一并取外层容器的环；两者取其一有环即视为"已绘制"。 */
       const el = document.activeElement;
       if (!el || el === document.body) return { el: "body", focusVisible: false, outlineStyle: "none" };
       const cs = getComputedStyle(el);
@@ -87,6 +89,10 @@ try {
         outlineStyle: cs.outlineStyle,
         outlineWidth: cs.outlineWidth,
         outlineColor: cs.outlineColor,
+        wrapperOutlineStyle: (() => {
+          const wrapper = el.closest(".tx-input, .tx-textarea, .tx-select");
+          return wrapper ? getComputedStyle(wrapper).outlineStyle : "none";
+        })(),
         adjacentBg: bg,
         contrast: contrast(cs.outlineColor, bg),
       };
@@ -122,8 +128,10 @@ try {
 
   await page.keyboard.press("Tab");
   const kbInput = await focusNow();
-  check("登录页：键盘 Tab 到输入框时焦点环已绘制（outline-style 不是 none）",
-    kbInput.focusVisible && kbInput.outlineStyle === "solid" && kbInput.outlineWidth !== "0px", kbInput);
+  check("登录页：键盘 Tab 到输入框时焦点环已绘制（内层或外层容器画出实线环）",
+    kbInput.focusVisible
+      && (kbInput.outlineStyle === "solid" || kbInput.wrapperOutlineStyle === "solid")
+      && kbInput.outlineWidth !== "0px", kbInput);
   check("登录页：输入框焦点环对相邻背景对比度 ≥ 3:1（非文本对比度要求）",
     kbInput.contrast >= 3, { contrast: kbInput.contrast, ring: kbInput.outlineColor, bg: kbInput.adjacentBg });
 

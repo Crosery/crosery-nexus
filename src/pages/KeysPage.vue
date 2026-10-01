@@ -1097,21 +1097,34 @@ async function copyNewKey() {
   margin-top: 4px;
 }
 
+/*
+ * 渠道分组 chip：原来用「1px 实边 + 白底」，在窄格里看就是一个**空心方框**（用户实测
+ * "方方的很丑、很突兀"）。改成软填充 + 无边框，选中态用底色 + 主色文字表达，
+ * 与同屏的输入框、开关的"软"质感统一；边框只在 hover 时出现，提示可点。
+ */
 .group-select-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
-  border-radius: var(--tx-border-radius-base);
-  border: 1px solid var(--tx-border-color);
-  background: var(--tx-bg-color);
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: var(--tx-fill-color-light);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.group-select-btn:hover {
+  background: var(--tx-fill-color);
 }
 
 .group-select-btn.selected {
-  border-color: var(--tx-color-primary);
-  background: color-mix(in srgb, var(--tx-color-primary) 8%, var(--tx-bg-color));
+  border-color: color-mix(in srgb, var(--tx-color-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--tx-color-primary) 10%, var(--tx-bg-color));
+}
+
+.group-select-btn.selected strong {
+  color: var(--tx-color-primary);
 }
 
 .group-dot {
