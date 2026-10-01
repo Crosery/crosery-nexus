@@ -108,6 +108,14 @@ body {
   background-position: -1px -1px;
 }
 
+/*
+ * `.mono` 的 0.93em **是参考实现的做法，不是漂移**，请勿"统一"掉：
+ * `geek_main/app/console/src/styles/theme.css:110-114` 与此逐字节相同（本文件即由 TUF 主题派生，
+ * diff 只差注释）。等宽字体的字身比无衬线宽，0.93em 是补偿；代价是等宽文本会落在
+ * 12.09px（父 13px）/13.02px（父 14px）/11.16px（父 12px）这类非整数值。
+ * 需要"角色唯一"的地方（`.muted`、行内 `code`）已在 layout.css 里用同等特异度的规则摘出来，
+ * 其余 80 余处等宽文本保持与 TUF 一致。
+ */
 .mono {
   font-family: var(--console-mono);
   font-size: 0.93em;
