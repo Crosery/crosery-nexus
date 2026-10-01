@@ -144,7 +144,7 @@ launchctl print … | grep -c RTK_LOCK_DISABLED → 0（生产未开旁路）
 | 开关 | 作用 | 默认 | 生产 |
 | --- | --- | --- | --- |
 | `RTK_LOCK_DISABLED` | 旁路跨进程锁，**同时关闭 fencing** | 未设 | **不得设置** |
-| `RTK_TEST_LOCK_HOLD_MS` | 在 `acquireRtkFileLock` 创建锁之后、返回之前插入等待，供测试把篡改确定性地排进窗口（用途、接线点、登记位置见本文件 §2.2 / §5） | `0`（不生效） | **不得设置** |
+| `RTK_TEST_LOCK_HOLD_MS` | 在 `acquireRtkFileLock` 创建锁之后、返回之前插入等待，供测试把篡改确定性地排进窗口（用途、接线点、登记位置见本文件 §2.2 / §5）。**生效时打一次性 `console.warn`**（写明"生产不得设置 + 额外持锁 N ms"）并透出 `info.testHoldMs`（响应 `lock.testHoldMs`） | `0`（不生效，无告警、无该字段） | **不得设置** |
 
 **默认零行为差异（Lead 要求 ①，已有测试钉住）**：`RTK_TEST_LOCK_HOLD_MS` 未设置 / `0` / 负数 / 非数字 / 空串 / 超上限（>10000）
 一律返回 **0**；用例 `RTK_TEST_LOCK_HOLD_MS：不设置时零行为差异…` 做了差分验证——「未设置」与「显式 0」两次获取锁的行为字段
@@ -221,3 +221,62 @@ Lead 在 `server/index.ts` 补的 5 处 `lockLost` 传播原本零测试覆盖�
 单条新用例            : 1.01s（≤3s 要求）
 server/rtkLock.test.ts: 7.9s（20 用例）
 ```
+
+---
+
+## 8. 收尾加固（task-48 / task-49）
+
+### 8.1 task-48：`RTK_TEST_LOCK_HOLD_MS` 生效时必须可观测（与 `RTK_LOCK_DISABLED` 对称）
+
+红队 R13-A：`RTK_TEST_LOCK_HOLD_MS` 是当时**唯一"生效后完全静默"的后门** —— 生产被误设会表现为静默变慢（每次获取多持锁至多 10s），排障时看不出原因。
+
+**修前/修后**（同一条用例）：
+
+```
+修前（去掉告警与字段）: ✖ ℹ pass 0 · fail 1
+修后                  : ✔ ℹ pass 1 · fail 0
+```
+
+修后行为：
+
+| 场景 | 观测 |
+| --- | --- |
+| 不设置 | `info` 里**没有** `testHoldMs` 字段、**不打印**任何告警（差分用例同时验证零行为差异） |
+| 设为 150 | `info.testHoldMs === 150`（响应里 `lock.testHoldMs`）、**恰好一次** `console.warn`：`[rtk] RTK_TEST_LOCK_HOLD_MS 已生效：每次获取写入锁后会额外持锁 150ms（测试专用同步点，生产环境不得设置；上界 10000ms）。排障提示：写入变慢可能来自这里。锁文件：…` |
+| 同进程第二次获取 | **不再告警**（一次性，不刷屏） |
+
+### 8.2 task-49-1：固定 sleep 的前提等待全部标注（并把能轮询的改成轮询）
+
+| 位置 | 修前 | 处理 |
+| --- | --- | --- |
+| `rtkLock.test.ts` 心跳用例 800ms（staleMs=400） | 固定等待 | 标注为**前提等待**：等「已远超 staleMs」成立；余量 2 倍（约 4 次心跳续期）；失败模式 = 下面 `stale === false` 断言失败 |
+| `rtkLock.test.ts` 周期用例 800ms | 固定等待 | 同上 |
+| `rtkLock.test.ts` SIGSTOP 用例「等锁变陈旧」1300ms | 固定等待 | **改成 poll-until**：`waitUntil(() => inspectRtkLock(...).stale === true, 15_000, 10)`，条件成立立刻继续（实测 ~1s），15s 未成立**直接断言失败**（响亮，不空过）；用例耗时 4.13s → 1.9s |
+| `rtkService.test.ts` 两处实例退出等待 400/300ms | 固定等待 | 标注为**前提等待**：等实例退出后清场稳定；余量 = 数倍于 SIGTERM 处理时间；失败模式 = 后续断言失败 |
+
+### 8.3 task-49-2：`success()` 收尾校验(D) + `preserveUserBaks` 守卫(C) 的 e2e —— **补上了**
+
+红队此前只做了代码级验证，并指出它与落盘点 #3/#4 是同一个夹具缺口（A=入口校验会先把「CLI 后被夺锁」拦掉，C/D 因此不可达）。本轮用**构造出的确定性窗口**把它补上了：
+
+```
+✔ 落盘点 e2e：success() 收尾校验(D) 与 preserveUserBaks(C) 的被夺锁路径   ~0.2s
+```
+
+夹具与机制（不靠 sleep 赌窗口）：
+
+1. CLI 把两个 guard 钩子文件改成「被 rtk 连带改动」的版本：`.claude/settings.json`（小）与 `.cursor/hooks.json`（**32MB** padding）；
+2. `reconcileCollateral`（B）按快照顺序处理：claude 先、cursor 后；
+3. 测试进程**两阶段轮询**：先等 claude 出现 `rtk hook claude`（CLI 已生效），再等它**被撤掉**（= B 已开始 ⇒ **A 早已通过**）；此刻 cursor 那 32MB 还没解析完；
+4. 篡改锁 token + 把 `.bak` 写成 `THIEF-BAK` ⇒ 篡改**必然**落在 B 内部（A 之后、D 之前）。
+
+断言与各自的判别力（**两个负向对照都实测过**）：
+
+| 断言 | 证明什么 | 去掉对应代码的对照 |
+| --- | --- | --- |
+| 返回 409 `lock_lost_during_write` + `lockLost:true` | **D（收尾校验）** 把「本次没生效」如实报出 | 临时去掉 D → 用例**红**（会返回 `ok:true`） |
+| `.codex/hooks.json.bak === 'THIEF-BAK\n'` | **C（`.bak` 守卫）** 跳过还原、没有盖掉接管者的写入 | 临时去掉 C 的守卫 → 用例**红**（`.bak` 变成 `USER-BAK`） |
+| `.claude/settings.json` 里 `rtk hook claude` 已被撤掉 | 篡改发生在 **A 之后**（B 能正常开始） | —— |
+| `.cursor/hooks.json` 里 `rtk hook cursor` 已被撤掉 | B **在被篡改之后**仍完成了 cursor 的还原 ⇒ 篡改落在 B 内部 | 篡改若早于 B 的 fence，这里会保留 marker → **大声失败** |
+
+⇒ 落盘点 #3/#4/#5 与收尾校验（D）**不再是缺口**：C 与 D 各自由 e2e 守住，且都有「去掉即红」的对照。
+（唯一仍未单独覆盖的是 `restoreTargets` 的**内层**调用点，但它的可观察行为由 §4.1 的 `.bak`/hook 判别式 e2e 覆盖，理由见 §4.3。）

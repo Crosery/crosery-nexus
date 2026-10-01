@@ -40,6 +40,14 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 10_000, stepMs = 
   return predicate()
 }
 
+const readFileIfExistsSafe = (file: string): string => {
+  try {
+    return fs.readFileSync(file, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
 const realHome = os.userInfo().homedir
 const watched = [
   '.codex/hooks.json', '.claude/settings.json', '.cursor/hooks.json',
@@ -153,8 +161,9 @@ test('R9-C 心跳：临界区超过 staleMs 也不会被夺走，释放后下一
   const staleMs = 400
   const lock = await service.acquireRtkFileLock({ home, purpose: 'long-holder', env: { ...env }, staleMs })
   assert.equal(lock.info.waitedMs >= 0, true)
-  // 这里的等待本身就是断言的一部分（必须等远超 staleMs，看心跳有没有把锁续住）：
-  // staleMs=400、心跳下限 200ms ⇒ 0.8s 内约 4 次续期（2 倍余量）；只有事件循环被阻塞 ≥0.8s 才会失真。
+  // 【前提等待】等「已远超 staleMs」这个状态成立（等待本身是断言的一部分：看心跳有没有把锁续住）。
+  // 余量 = 2 倍（staleMs=400、心跳下限 200ms ⇒ 0.8s 内约 4 次续期）。
+  // 失败模式：若事件循环被阻塞 ≥0.8s，下面的 `stale === false` 断言会**失败**（不会随机通过）。
   await new Promise(resolve => setTimeout(resolve, 800))
   const probe = service.inspectRtkLock(lockPath(), Date.now(), staleMs, home)
   assert.equal(probe.stale, false, '有心跳时不该被判陈旧')
@@ -302,7 +311,8 @@ test('心跳周期断言：interval ≤ staleMs 且 ≥ 200ms（staleMs 很小�
   // 端到端：staleMs=600 时持有者持续续期，等待者只能超时，不能接管
   return (async () => {
     const lock = await service.acquireRtkFileLock({ home, purpose: 'period', env: { ...env }, staleMs: 400 })
-    // staleMs=400、心跳下限 200ms ⇒ 0.8s 内约 4 次续期（属于「等到远超阈值」语义）
+    // 【前提等待】等「已远超 staleMs」成立（余量 2 倍：staleMs=400、心跳下限 200ms ⇒ 约 4 次续期）。
+    // 失败模式：阻塞 ≥0.8s 时下面的 `stale === false` 断言失败，不会随机通过。
     await new Promise(resolve => setTimeout(resolve, 800))
     assert.equal(service.inspectRtkLock(lockPath(), Date.now(), 400, home).stale, false)
     await assert.rejects(
@@ -406,8 +416,15 @@ test('R11-C 跨进程时序 SIGSTOP → 接管 → 恢复：不会「双方都�
   assert.equal(fs.existsSync(startedFlag), true, '子进程没能进入 CLI 阶段')
   // 2) SIGSTOP 停顿（心跳也冻住，H 无从察觉）
   child.kill('SIGSTOP')
-  // 3) 等锁过期后「合法接管」：T 拿到锁并写自己的状态
-  await new Promise(r => setTimeout(r, 1_300))
+  // 3) 【前提等待】轮询到「锁真的过期」（RTK_LOCK_STALE_MS=1000）为止 —— 不写固定 sleep：
+  //    条件一旦成立立刻继续（通常 ~1s），上限 15s；子进程被 SIGSTOP 冻住、心跳不会续期。
+  //    失败模式：15s 内都没变陈旧 ⇒ 直接断言失败（响亮），不会随机通过。
+  const staleLockPath = service.rtkLockPath(fenceHome, { ...process.env, RTK_BACKUP_DIR: fenceBackups } as NodeJS.ProcessEnv)
+  const becameStale = await waitUntil(
+    () => service.inspectRtkLock(staleLockPath, Date.now(), 1_000, fenceHome).stale === true, 15_000, 10,
+  )
+  assert.equal(becameStale, true, '前提不成立：锁在 15s 内没有变陈旧')
+  // T 拿到锁并写自己的状态
   const taker = await service.acquireRtkFileLock({ home: fenceHome, purpose: 'taker', env: { ...process.env, RTK_BACKUP_DIR: fenceBackups }, staleMs: 1_000, timeoutMs: 5_000 })
   assert.equal(taker.info.stolen, true, '接管者应当以「陈旧锁接管」的方式拿到锁')
   const thiefContent = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'THIEF', hooks: [{ type: 'command', command: 'taker wrote this' }] }] } })}\n`
@@ -579,6 +596,47 @@ test('落盘点 e2e：rollbackRTK 的被夺锁路径（确定性同步点，不�
 
 /* ---------------- 测试专用同步点：默认零行为差异（Lead 要求 ①/②） ---------------- */
 
+test('RTK_TEST_LOCK_HOLD_MS：生效时恰好告警一次 + info.testHoldMs 透出；不设时无字段无告警', async () => {
+  // 本用例必须排在「默认零行为差异」那条之前：告警是**每进程一次**，先跑才能观察到「第一次」。
+  const dir = path.join(workspace, 'hold-warn')
+  const holdHome = path.join(dir, 'home')
+  const holdBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const baseEnv = { ...process.env, RTK_HOME: holdHome, RTK_BACKUP_DIR: holdBackups } as NodeJS.ProcessEnv
+
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(value => String(value)).join(' ')) }
+  const holdWarnings = () => warnings.filter(line => line.includes('RTK_TEST_LOCK_HOLD_MS'))
+  try {
+    // ① 不设：info 里不出现 testHoldMs，也不告警
+    const off = await service.acquireRtkFileLock({ home: holdHome, purpose: 'hold-warn-off', env: baseEnv })
+    assert.equal('testHoldMs' in off.info, false, `不设时 info 不应出现 testHoldMs：${JSON.stringify(off.info)}`)
+    off.release()
+    assert.equal(holdWarnings().length, 0, `不设时不应告警：${JSON.stringify(warnings)}`)
+
+    // ② 设 150：字段透出；两次获取只告警一次（一次性、不刷屏）
+    const onEnv = { ...baseEnv, RTK_TEST_LOCK_HOLD_MS: '150' }
+    const first = await service.acquireRtkFileLock({ home: holdHome, purpose: 'hold-warn-on-1', env: onEnv })
+    first.release()
+    const afterFirst = holdWarnings().length
+    const second = await service.acquireRtkFileLock({ home: holdHome, purpose: 'hold-warn-on-2', env: onEnv })
+    second.release()
+    const afterSecond = holdWarnings().length
+
+    assert.equal(first.info.testHoldMs, 150)
+    assert.equal(second.info.testHoldMs, 150, '第二次获取也要透出（响应里 lock.testHoldMs 能看到）')
+    assert.equal(afterFirst, 1, `生效时必须告警一次：${JSON.stringify(holdWarnings())}`)
+    assert.equal(afterSecond, afterFirst, '一次性：第二次获取不得再告警')
+    const line = holdWarnings()[0]
+    assert.match(line, /RTK_TEST_LOCK_HOLD_MS/)
+    assert.match(line, /150ms/, '告警要写明额外持锁多少毫秒')
+    assert.match(line, /生产/, '告警要写明生产不得设置')
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
 test('RTK_TEST_LOCK_HOLD_MS：不设置时零行为差异，非法值一律视为 0，合法值才生效', async () => {
   // ① 取值：未设置 / 0 / 负数 / 非数字 / 超上限 → 0；合法值 → 原值
   const cases: Array<[string | undefined, number]> = [
@@ -745,4 +803,104 @@ test('HTTP 层：锁被夺时 toggle 与 rollback 的 409 都带 reason 与 lock
     instance.stop()
     await new Promise(resolve => setTimeout(resolve, 200))
   }
+})
+
+test('落盘点 e2e：success() 收尾校验(D) 与 preserveUserBaks(C) 的被夺锁路径', { timeout: 90_000 }, async () => {
+  // 这是 red team 指出的「同一夹具缺口」：C（.bak 还原）与 D（success() 收尾校验）都在
+  // reconcileCollateral 之后，而 A（success() 入口校验）会先把「CLI 后被夺锁」拦掉。
+  // 要让篡改**必然**落在 A 之后、D 之前，夹具这样构造（不靠 sleep 赌）：
+  //   1) 让 CLI 改两个 guard 钩子文件：claude（小）与 cursor（十几 MB）；
+  //   2) reconcileCollateral 按快照顺序处理：claude 先、cursor 后；
+  //   3) 测试进程**轮询到 claude 里的 rtk 条目被撤掉**（= B 已开始 ⇒ A 已通过）才篡改，
+  //      此刻 cursor 那十几 MB 还没解析完 ⇒ 篡改必然落在 B 内部、A 之后。
+  // 断言各字段分别证明 C、D 以及「篡改确实落在 A 之后」。
+  const dir = path.join(workspace, 'commit-tail-e2e')
+  const tailHome = path.join(dir, 'home')
+  const tailBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const hookFile = path.join(tailHome, '.codex/hooks.json')
+  const bakFile = `${hookFile}.bak`
+  const claudeHook = path.join(tailHome, '.claude/settings.json')
+  const cursorHook = path.join(tailHome, '.cursor/hooks.json')
+  for (const file of [hookFile, claudeHook, cursorHook]) fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(hookFile, `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+  fs.writeFileSync(bakFile, 'USER-BAK\n')
+  fs.writeFileSync(claudeHook, `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo user-claude' }] }] } })}\n`)
+  fs.writeFileSync(cursorHook, `${JSON.stringify({ version: 1, hooks: { preToolUse: [{ command: 'echo user-cursor', matcher: 'Shell' }] } })}\n`)
+
+  // CLI 会把这两个 guard 文件换成「被 rtk 连带改动」的版本：claude 小、cursor 带巨大 padding
+  const afterClaudeFile = path.join(dir, 'after-claude.json')
+  const afterCursorFile = path.join(dir, 'after-cursor.json')
+  fs.writeFileSync(afterClaudeFile, `${JSON.stringify({ hooks: { PreToolUse: [
+    { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo user-claude' }] },
+    { matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook claude' }] },
+  ] } })}\n`)
+  // 32MB：让 B 解析 cursor 的耗时足够宽（实测 ~50-100ms），篡改 2ms 轮询必然落在这段窗口里
+  const padding = 'x'.repeat(32 * 1024 * 1024)
+  fs.writeFileSync(afterCursorFile, `${JSON.stringify({ version: 1, hooks: { preToolUse: [
+    { command: 'rtk hook cursor', matcher: 'Shell' },
+    { command: 'echo user-cursor', matcher: 'Shell', note: padding },
+  ] } })}\n`)
+
+  const cliDoneFlag = path.join(dir, 'cli-done')
+  const fakeCli = path.join(dir, 'fake-rtk.sh')
+  fs.writeFileSync(fakeCli, `#!/bin/sh
+[ "$1" = "init" ] || exit 0
+if [ ! -f "${cliDoneFlag}" ]; then
+  cp "${afterClaudeFile}" "${claudeHook}"
+  cp "${afterCursorFile}" "${cursorHook}"
+  printf 'CLI-BAK\\n' > "${bakFile}"
+  touch "${cliDoneFlag}"
+fi
+exit 0
+`, { mode: 0o755 })
+
+  const childScript = `
+    const service = await import(${JSON.stringify(new URL('./rtkService.ts', import.meta.url).pathname)})
+    const targets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
+    try {
+      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(tailHome)}, bin: ${JSON.stringify(fakeCli)}, ...targets })
+      console.log('RESULT ' + JSON.stringify({ ok: true, lockLost: result.lockLost ?? false, preservedBak: result.preservedBak ?? null }))
+      process.exit(0)
+    } catch (error) {
+      console.log('RESULT ' + JSON.stringify({ ok: false, reason: error?.reason, lockLost: error?.lockLost ?? null }))
+      process.exit(4)
+    }
+  `
+  const child = spawn(process.execPath, ['--import', 'tsx', '-e', childScript], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, RTK_HOME: tailHome, RTK_BACKUP_DIR: tailBackups },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let childOut = ''
+  child.stdout.on('data', chunk => { childOut += chunk })
+  child.stderr.on('data', chunk => { childOut += chunk })
+
+  const lockFile = service.rtkLockPath(tailHome, { ...process.env, RTK_HOME: tailHome, RTK_BACKUP_DIR: tailBackups } as NodeJS.ProcessEnv)
+  // 触发点分两步（否则初始状态就不含 claude 的 rtk 条目，条件会「立刻为真」→ 篡改过早）：
+  const cliApplied = await waitUntil(() => readFileIfExistsSafe(claudeHook).includes('rtk hook claude'), 40_000, 2)
+  assert.equal(cliApplied, true, '前提不成立：CLI 没有把 claude 改成被连带改动的版本')
+  // ② B 把 claude 的 rtk 条目撤掉 ⇒ A 早已通过；cursor 那十几 MB 此时还没解析完
+  const bStarted = await waitUntil(() => !readFileIfExistsSafe(claudeHook).includes('rtk hook claude'), 40_000, 2)
+  assert.equal(bStarted, true, '前提不成立：reconcileCollateral（B）从未撤掉 claude 的连带改动')
+  fs.writeFileSync(lockFile, JSON.stringify({ token: 'THIEF-TOKEN', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home: tailHome }))
+  fs.writeFileSync(bakFile, 'THIEF-BAK\n') // 接管者的写入：C 若执行会把它还原成 USER-BAK
+
+  const exitDeadline = Date.now() + 40_000
+  while (child.exitCode === null && Date.now() < exitDeadline) await new Promise(resolve => setTimeout(resolve, 20))
+  if (child.exitCode === null) child.kill('SIGKILL')
+  const parsed = JSON.parse((childOut.split('\n').find(line => line.startsWith('RESULT ')) || 'RESULT {}').replace('RESULT ', ''))
+
+  // D：success() 收尾校验必须把「本次没生效」报出来（没有 D 就会返回 ok:true）
+  assert.equal(parsed.ok, false, `D（收尾校验）必须拒绝把这次操作报成成功：${JSON.stringify(parsed)}`)
+  assert.equal(parsed.reason, 'lock_lost_during_write')
+  assert.equal(parsed.lockLost, true)
+  // C：preserveUserBaks 的守卫必须跳过还原（否则 .bak 会变成 USER-BAK）
+  assert.equal(fs.readFileSync(bakFile, 'utf8'), 'THIEF-BAK\n', 'C（.bak 守卫）必须跳过还原，不得盖掉接管者的写入')
+  // 篡改确实落在 A 之后：B 已经把 claude 的连带改动撤掉，并且**在被篡改之后**仍完成了 cursor 的还原
+  assert.equal(fs.readFileSync(claudeHook, 'utf8').includes('rtk hook claude'), false)
+  assert.equal(fs.readFileSync(cursorHook, 'utf8').includes('rtk hook cursor'), false,
+    'B 必须已完成 cursor 的连带还原 ⇒ 证明篡改发生在 B 内部（A 之后）')
+  // 目标文件仍是成功路径写入的 codex 钩子（没有被后续任何写入破坏）
+  assert.equal(fs.readFileSync(hookFile, 'utf8').includes('rtk hook codex'), true)
 })

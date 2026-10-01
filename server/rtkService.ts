@@ -227,6 +227,8 @@ export type RtkLockInfo = {
   path: string
   /** 是否走了 RTK_LOCK_DISABLED 旁路（此时没有创建任何锁文件，必须能观测到）。 */
   disabled: boolean
+  /** RTK_TEST_LOCK_HOLD_MS 生效时的额外持锁毫秒数（不设置时该字段不存在）。 */
+  testHoldMs?: number
   /** 为了拿到锁等了多久（毫秒）；0 表示一次就拿到 */
   waitedMs: number
   /** 本次是否接管了一个陈旧锁 */
@@ -287,6 +289,17 @@ function warnLockBypass(lockPath: string): void {
 export function rtkTestLockHoldMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.RTK_TEST_LOCK_HOLD_MS)
   return Number.isFinite(raw) && raw > 0 && raw <= 10_000 ? Math.floor(raw) : 0
+}
+
+let testHoldWarned = false
+
+/** 测试专用同步点生效必须可观测：与 RTK_LOCK_DISABLED 对称，一次性告警 + info.testHoldMs。 */
+function warnTestHold(lockPath: string, holdMs: number): void {
+  if (testHoldWarned) return
+  testHoldWarned = true
+  console.warn(`[rtk] RTK_TEST_LOCK_HOLD_MS 已生效：每次获取写入锁后会额外持锁 ${holdMs}ms`
+    + '（测试专用同步点，生产环境不得设置；上界 10000ms）。排障提示：写入变慢可能来自这里。'
+    + `锁文件：${lockPath}`)
 }
 
 /** 陈旧锁判定阈值（默认 60s，可配 1s–3600s）：持锁进程还活着但超过这个时间也算陈旧。 */
@@ -651,7 +664,11 @@ export async function acquireRtkFileLock(options: {
       })
       // 测试专用同步点（默认 0，不生效）：见 rtkTestLockHoldMs()。生产路径无业务分支。
       const testHoldMs = rtkTestLockHoldMs(env)
-      if (testHoldMs > 0) await sleep(testHoldMs)
+      if (testHoldMs > 0) {
+        info.testHoldMs = testHoldMs       // 透出：响应里的 lock.testHoldMs 能看到
+        warnTestHold(lockPath, testHoldMs) // 一次性告警：静默变慢必须能被排障发现
+        await sleep(testHoldMs)
+      }
       info.waitedMs = Date.now() - startedAt
       info.stolen = stolen
       if (stolenFromPid !== undefined) info.stolenFromPid = stolenFromPid

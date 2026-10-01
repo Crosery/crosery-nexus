@@ -1298,6 +1298,8 @@ async function runCrossProcessToggle(options: { lockDisabled?: boolean; rounds?:
     clearInterval(sampler)
     a.stop()
     b.stop()
+    // 【前提等待】等两个实例退出后清场稳定（等待本身不产生断言）：
+    // 余量 = 数倍于 SIGTERM 处理时间；失败模式是后续断言（最终状态 / 残余锁）失败，而不是随机通过。
     await new Promise(resolve => setTimeout(resolve, 400))
   }
   const ok = results.filter(result => result.status === 200).sort((left, right) => left.completedAt - right.completedAt)
@@ -1370,6 +1372,7 @@ test('双实例跨进程「连带还原」竞态：A 的 cursor ON 不得被 B �
     } finally {
       a.stop()
       b.stop()
+      // 【前提等待】等两个实例退出后清场稳定（同 §双实例并发：余量数倍、失败模式为断言失败）。
       await new Promise(resolve => setTimeout(resolve, 300))
     }
     assert.equal(results[0].status, 200, `round ${round}: cursor ON 应成功`)
