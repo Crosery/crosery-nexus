@@ -41,12 +41,12 @@ const STATE_LABEL: Record<RtkPlaneState, string> = {
 }
 
 const STATE_COLOR: Record<RtkPlaneState, string> = {
-  available: '#10b981',
-  degraded: '#f59e0b',
-  not_configured: '#94a3b8',
-  unreachable: '#f59e0b',
+  available: '#047857',
+  degraded: '#92400e',
+  not_configured: '#5b6b85',
+  unreachable: '#92400e',
   unauthorized: '#ef4444',
-  not_supported: '#f59e0b',
+  not_supported: '#92400e',
 }
 
 const planes = computed<RtkPlaneProbe[]>(() => props.status?.planes || [])
@@ -76,7 +76,7 @@ const authorityHint = computed(() => {
           <p class="hint">{{ authorityHint }}</p>
         </div>
         <div class="head-actions">
-          <TxTag v-if="status" :label="`权威平面：${PLANE_LABEL[status.plane]}${status.plane === 'local' ? '（回退）' : ''}`" :color="status.plane === 'local' ? '#f59e0b' : '#3346c8'" size="sm" />
+          <TxTag v-if="status" :label="`权威平面：${PLANE_LABEL[status.plane]}${status.plane === 'local' ? '（回退）' : ''}`" :color="status.plane === 'local' ? '#92400e' : '#3346c8'" size="sm" />
           <TxButton size="sm" variant="ghost" :disabled="loading" @click="emit('refresh')">{{ loading ? '刷新中…' : '刷新' }}</TxButton>
         </div>
       </div>
@@ -134,9 +134,9 @@ const authorityHint = computed(() => {
           <div class="agent-main">
             <span class="agent-name">{{ agent.name }}</span>
             <code class="mono agent-id">{{ agent.id }}</code>
-            <TxTag v-if="!agent.supported" label="仅项目级" color="#94a3b8" size="sm" />
-            <TxTag v-else-if="agent.installed === false" label="未检测到安装目录" color="#94a3b8" size="sm" />
-            <TxTag v-if="agent.on" label="已挂载" color="#10b981" size="sm" />
+            <TxTag v-if="!agent.supported" label="仅项目级" color="#5b6b85" size="sm" />
+            <TxTag v-else-if="agent.installed === false" label="未检测到安装目录" color="#5b6b85" size="sm" />
+            <TxTag v-if="agent.on" label="已挂载" color="#047857" size="sm" />
           </div>
           <div class="agent-action">
             <span v-if="busy === `local:${agent.id}`" class="busy">处理中…</span>
@@ -183,8 +183,8 @@ const authorityHint = computed(() => {
           <div class="agent-main">
             <span class="agent-name">{{ agent.name }}</span>
             <code class="mono agent-id">{{ agent.id }}</code>
-            <TxTag v-if="agent.on" label="已挂载" color="#10b981" size="sm" />
-            <TxTag v-else label="未挂载" color="#94a3b8" size="sm" />
+            <TxTag v-if="agent.on" label="已挂载" color="#047857" size="sm" />
+            <TxTag v-else label="未挂载" color="#5b6b85" size="sm" />
           </div>
         </div>
         <p v-if="!authorityAgents.length" class="hint">该平面没有上报 agent 列表。</p>
@@ -297,7 +297,7 @@ const authorityHint = computed(() => {
   line-height: 1.45;
 }
 .plane-detail {
-  color: #b45309;
+  color: #92400e;
 }
 .authority {
   display: grid;
@@ -318,7 +318,7 @@ const authorityHint = computed(() => {
 .warn-line {
   margin: 0;
   font-size: 12px;
-  color: #b45309;
+  color: #92400e;
   line-height: 1.5;
 }
 .agent-list {

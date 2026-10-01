@@ -379,7 +379,7 @@ function handleKeyChange(val: string | number) {
 }
 .stat-sub {
   font-size: 11.5px;
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
 }
 .usage-charts-grid {
   display: grid;

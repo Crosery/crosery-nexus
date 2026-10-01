@@ -344,11 +344,11 @@ async function resetQuota(account: any) {
   gap: 5px;
 }
 .window-item.sev-critical {
-  border-color: #ef4444;
+  border-color: #b91c1c;
   background: rgba(239, 68, 68, 0.05);
 }
 .window-item.sev-warning {
-  border-color: #f59e0b;
+  border-color: #b45309;
   background: rgba(245, 158, 11, 0.05);
 }
 .window-head {

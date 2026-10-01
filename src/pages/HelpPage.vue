@@ -159,7 +159,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 2. crapi 一键接入 -->
         <TxCard id="crapi" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="02" color="#10b981" size="sm" />
+            <TxTag label="02" color="#047857" size="sm" />
             <h2>crapi 一键接入 CLI (推荐)</h2>
           </div>
           <p class="section-desc"><strong>crapi</strong> 是专为 Crosery 渠道打造的一键配置命令行工具，自动识别并配置 Claude Code、Codex CLI、Cursor、Windsurf、Cline、Aider 等常见开发工具。</p>
@@ -206,7 +206,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 4. Anthropic 原生协议 -->
         <TxCard id="anthropic" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="04" color="#d97757" size="sm" />
+            <TxTag label="04" color="#a4491f" size="sm" />
             <h2>Anthropic 原生协议调用</h2>
           </div>
           <p class="section-desc">支持 Claude Code 与 Anthropic 官方 SDK 原生直通，包含提示词缓存与思考档位参数。</p>
@@ -224,7 +224,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 5. Responses / Codex -->
         <TxCard id="responses" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="05" color="#10b981" size="sm" />
+            <TxTag label="05" color="#047857" size="sm" />
             <h2>Responses / Codex 接口</h2>
           </div>
           <p class="section-desc">用于 Codex CLI 或 OpenAI 新版 Responses 协议调用的原生端点。</p>
@@ -242,7 +242,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 6. 图片生成 -->
         <TxCard id="images" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="06" color="#8b5cf6" size="sm" />
+            <TxTag label="06" color="#6d28d9" size="sm" />
             <h2>图片生成接口</h2>
           </div>
           <p class="section-desc">通过 <code>/v1/images/generations</code> 调用 gpt-image 系列视觉绘图模型。</p>
@@ -260,7 +260,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 7. 常见客户端 -->
         <TxCard id="clients" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="07" color="#f59e0b" size="sm" />
+            <TxTag label="07" color="#b45309" size="sm" />
             <h2>常见客户端环境变量配置</h2>
           </div>
           <div class="client-grid">
@@ -457,8 +457,11 @@ rtk init -g --agent claude --uninstall`
   font-size: 12px;
   color: var(--tx-text-color-primary, #151b45);
 }
+/* 代码块按 TUF 参考实现的做法：**浅色底 + 正文色**（geek_main/app/console/src/styles/layout.css:212-222 的 .pre）。
+   原来写的是深色底 + 近白文字，但主题里 --tx-fill-color-darker 在浅色主题下是浅色（#e2e6f3），
+   于是近白文字落在浅底上——实测对比度 1.18:1，命令几乎看不见（Lead 对比度审计发现）。 */
 .code-wrapper {
-  background: var(--tx-fill-color-darker, #151b45);
+  background: var(--tx-fill-color-lighter, #f8f9fd);
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--tx-border-color, #d5daec);
@@ -468,14 +471,15 @@ rtk init -g --agent claude --uninstall`
   justify-content: space-between;
   align-items: center;
   padding: 6px 12px;
-  background: rgba(0, 0, 0, 0.25);
-  color: #a9aec8;
+  background: var(--tx-fill-color-light, #f3f5fb);
+  border-bottom: 1px solid var(--tx-border-color-lighter, #eaedf6);
+  color: var(--tx-text-color-secondary, #535b85);
   font-size: 11.5px;
 }
 .code-block {
   margin: 0;
   padding: 12px;
-  color: #f8f9fd;
+  color: var(--tx-text-color-regular, #353d68);
   font-size: 12px;
   line-height: 1.5;
   overflow-x: auto;

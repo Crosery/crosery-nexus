@@ -389,7 +389,7 @@ const liveColumns = [
 }
 .stat-sub {
   font-size: 11.5px;
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
 }
 .card-head {
   display: flex;
@@ -417,6 +417,6 @@ const liveColumns = [
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 .text-xs { font-size: 11.5px; }
-.text-muted { color: var(--tx-text-color-placeholder, #8a90b0); }
+.text-muted { color: var(--tx-text-color-secondary, #535b85); }
 .font-semibold { font-weight: 600; }
 </style>

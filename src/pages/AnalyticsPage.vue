@@ -340,7 +340,7 @@ function clearFilters() {
   gap: 4px;
 }
 .stat-box--alert {
-  border-color: #ef4444 !important;
+  border-color: #b91c1c !important;
 }
 .stat-label {
   font-size: 12px;
@@ -353,7 +353,7 @@ function clearFilters() {
 }
 .stat-sub {
   font-size: 11.5px;
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
 }
 .ranking-grid {
   display: grid;
@@ -384,7 +384,7 @@ function clearFilters() {
   font-size: 12px;
 }
 .rank-idx {
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
 }
 .rank-name {
   color: var(--tx-text-color-primary, #151b45);
@@ -412,10 +412,10 @@ function clearFilters() {
 }
 .rank-err {
   text-align: right;
-  color: #10b981;
+  color: #047857;
 }
 .rank-err.bad {
-  color: #ef4444;
+  color: #b91c1c;
   font-weight: 600;
 }
 .requests-card {
@@ -442,7 +442,7 @@ function clearFilters() {
   text-align: left;
 }
 .text-muted {
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
 }
 .text-xs {
   font-size: 11.5px;

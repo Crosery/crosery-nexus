@@ -552,7 +552,7 @@ async function handleSyncUpstream() {
             <div class="model-cell">
               <div class="model-title-line">
                 <strong class="model-id mono">{{ row.id }}</strong>
-                <TxTag v-if="row.contested" label="多渠道" size="sm" variant="soft" color="#d49a29" />
+                <TxTag v-if="row.contested" label="多渠道" size="sm" variant="soft" color="#8a5a00" />
               </div>
               <div class="model-meta">
                 <span class="source-count">{{ row.enabledSources }}/{{ row.sources.length }} 渠道启用</span>
@@ -656,7 +656,7 @@ async function handleSyncUpstream() {
 }
 .stat-sub {
   font-size: 11.5px;
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
 }
 .table-toolbar {
   display: flex;
@@ -721,7 +721,7 @@ async function handleSyncUpstream() {
   color: var(--tx-color-primary, #3346c8);
 }
 .channel-chip-btn.active {
-  border-color: #10b981;
+  border-color: #047857;
   background: rgba(16, 185, 129, 0.08);
   color: #065f46;
   font-weight: 600;
@@ -774,7 +774,7 @@ async function handleSyncUpstream() {
   font-size: 11px;
 }
 .text-muted {
-  color: var(--tx-text-color-placeholder, #8a90b0);
+  color: var(--tx-text-color-secondary, #535b85);
   font-size: 12px;
 }
 .mono {
