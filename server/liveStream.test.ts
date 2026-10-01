@@ -68,12 +68,13 @@ test('anthropic 请求的单次命中率与成本', () => {
 })
 
 test('openai 请求的 cached 内含于 input，不重复计费', () => {
-  const event = toLiveEvent(raw({ model: 'gpt-5.6-sol', inputTokens: 1_000_000, cachedTokens: 900_000 }))
-  assert.equal(event.freshInputTokens, 100_000)
-  assert.equal(event.promptTokens, 1_000_000)
+  // 20 万输入低于 272K 长上下文阈值，走基础价（夹具时间 2026-08-10）
+  const event = toLiveEvent(raw({ model: 'gpt-5.6-sol', inputTokens: 200_000, cachedTokens: 180_000 }))
+  assert.equal(event.freshInputTokens, 20_000)
+  assert.equal(event.promptTokens, 200_000)
   assert.equal(event.hitRate, 0.9)
-  // 只有 10 万按 input 全价：100000*5/1e6 + 900000*0.5/1e6
-  assert.equal(event.costUsd, 0.95)
+  // 只有 2 万按 input 全价：20000*5/1e6 + 180000*0.5/1e6
+  assert.equal(event.costUsd, 0.19)
 })
 
 test('未定价模型成本为 null 而不是 0', () => {

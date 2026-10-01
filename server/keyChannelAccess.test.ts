@@ -21,12 +21,12 @@ const configured = (...keys: string[]) => new Set(keys)
 
 test('面板开了 codex 组，渠道白名单就补上 codex', () => {
   const plan = buildKeyChannelAccessPlan(GROUPS, [row('sk-feiyu', ['antigravity', 'codex'])], { 'sk-feiyu': ['antigravity'] }, configured('sk-feiyu'))
-  assert.deepEqual(plan['sk-feiyu'], ['antigravity', 'codex'])
+  assert.deepEqual(plan['sk-feiyu'], ['antigravity', 'claude', 'codex'])
 })
 
 test('分组与网关不一致时以分组为准，多余渠道被收回', () => {
   const plan = buildKeyChannelAccessPlan(GROUPS, [row('sk-zixian', ['antigravity', 'codex'])], { 'sk-zixian': ['claude', 'minimax'] }, configured('sk-zixian'))
-  assert.deepEqual(plan['sk-zixian'], ['antigravity', 'codex'])
+  assert.deepEqual(plan['sk-zixian'], ['antigravity', 'claude', 'codex'])
 })
 
 test('未明确授权的渠道必须移除，旧 Mox 条目不能进入独立候选池', () => {
@@ -43,7 +43,7 @@ test('未明确授权的渠道必须移除，旧 Mox 条目不能进入独立候
  */
 test('网关里没有条目的 Key 也要按分组写入，不能留成不限渠道', () => {
   const plan = buildKeyChannelAccessPlan(GROUPS, [row('sk-feiyu', ['antigravity', 'codex'])], {}, configured('sk-feiyu'))
-  assert.deepEqual(plan['sk-feiyu'], ['antigravity', 'codex'])
+  assert.deepEqual(plan['sk-feiyu'], ['antigravity', 'claude', 'codex'])
 })
 
 test('停用的 Key 不写入，避免整份 PUT 被网关 400 掉', () => {
@@ -56,16 +56,22 @@ test('网关 api-keys 里没有的 Key 不写入', () => {
   assert.equal('sk-ghost' in plan, false)
 })
 
-test('空候选池必须独立拒绝，不能写会被网关归一化为不限渠道的空数组', () => {
+test('没勾任何分组的 Key 只拿到默认开放渠道，旧 Mox 条目被收回', () => {
   const plan = buildKeyChannelAccessPlan(GROUPS, [row('sk-empty', [])], { 'sk-empty': ['codex', 'mox-aigw'] }, configured('sk-empty'))
-  assert.deepEqual(plan['sk-empty'], ['__console_no_channels_allowed__'])
+  assert.deepEqual(plan['sk-empty'], ['claude', 'codex'])
 })
 
 test('只有明确开启 Mox 的 Key 才能把 Mox 放进候选池', () => {
   const groups: ConsoleGroup[] = [...GROUPS, { id: 'mox-aigw', name: 'Mox', color: '#fff', kind: 'compat', models: ['gpt-6-astra'] }]
   const plan = buildKeyChannelAccessPlan(groups, [row('sk-codex', ['codex']), row('sk-both', ['codex', 'mox-aigw'])], {}, configured('sk-codex', 'sk-both'))
-  assert.deepEqual(plan['sk-codex'], ['codex'])
-  assert.deepEqual(plan['sk-both'], ['codex', 'mox-aigw'])
+  assert.deepEqual(plan['sk-codex'], ['claude', 'codex'])
+  assert.deepEqual(plan['sk-both'], ['claude', 'codex', 'mox-aigw'])
+})
+
+/** gpt-image 全系默认开放（2026-09-26）：模型闸放行之外，渠道闸也要让没勾 codex 的 Key 进得了 codex。 */
+test('没勾 codex 组的 Key 也能进 codex 渠道，供默认开放的 gpt-image 使用', () => {
+  const plan = buildKeyChannelAccessPlan(GROUPS, [row('sk-gemini', ['antigravity'])], {}, configured('sk-gemini'))
+  assert.deepEqual(plan['sk-gemini'], ['antigravity', 'claude', 'codex'])
 })
 
 test('整份替换时未接管的 Key 原样带上', () => {
@@ -75,7 +81,7 @@ test('整份替换时未接管的 Key 原样带上', () => {
 })
 
 test('已经一致时不产生写操作', () => {
-  const current = { 'sk-feiyu': ['antigravity', 'codex'] }
+  const current = { 'sk-feiyu': ['antigravity', 'claude', 'codex'] }
   const merged = mergeChannelAccess(current, buildKeyChannelAccessPlan(GROUPS, [row('sk-feiyu', ['codex', 'antigravity'])], current, configured('sk-feiyu')))
   assert.equal(sameKeyAccess(current, merged), true)
 })

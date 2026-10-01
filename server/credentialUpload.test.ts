@@ -54,7 +54,7 @@ test('rejects duplicate basenames in one upload', async () => {
   )
 })
 
-test('rejects non-xAI JSON and missing refresh tokens', async () => {
+test('rejects files whose type contradicts an xAI endpoint and xAI files missing refresh tokens', async () => {
   await assert.rejects(
     () => prepareCredentialUpload({ filename: 'codex.json', data: credential({ type: 'codex', token_endpoint: 'https://auth.x.ai/oauth/token', auth_kind: 'grok' }) }),
     (error: unknown) => error instanceof CredentialUploadError && error.code === 'UPLOAD_PROVIDER_NOT_ALLOWED',
@@ -74,6 +74,32 @@ test('rejects JSON null and xAI lookalike endpoints', async () => {
     () => prepareCredentialUpload({ filename: 'lookalike.json', data: credential({ token_endpoint: 'https://notx.ai/oauth/token' }) }),
     (error: unknown) => error instanceof CredentialUploadError && error.code === 'UPLOAD_PROVIDER_NOT_ALLOWED',
   )
+})
+
+/** 2026-09-25 起支持通用 CPA 凭据；只对网关会信任文件内端点的渠道收口。 */
+test('accepts generic CPA credentials for providers that never read endpoints from the file', async () => {
+  const codex = Buffer.from(JSON.stringify({ type: 'codex', email: 'dev@example.com', access_token: 'a', refresh_token: 'r' }))
+  const result = await prepareCredentialUpload({ filename: 'codex.json', data: codex })
+  assert.equal(result[0].provider, 'codex')
+  assert.equal(result[0].label, 'dev@example.com')
+})
+
+test('rejects plain-http or off-domain endpoints that would leak tokens and prompts', async () => {
+  await assert.rejects(
+    () => prepareCredentialUpload({ filename: 'http.json', data: credential({ token_endpoint: 'http://auth.x.ai/oauth/token' }) }),
+    (error: unknown) => error instanceof CredentialUploadError && error.code === 'UPLOAD_PROVIDER_NOT_ALLOWED',
+  )
+  await assert.rejects(
+    () => prepareCredentialUpload({ filename: 'base.json', data: credential({ base_url: 'https://api.x.ai.evil.example/v1' }) }),
+    (error: unknown) => error instanceof CredentialUploadError && error.code === 'UPLOAD_PROVIDER_NOT_ALLOWED',
+  )
+  const agy = (base_url: string) => Buffer.from(JSON.stringify({ type: 'antigravity', email: 'g@example.com', access_token: 'a', refresh_token: 'r', base_url }))
+  await assert.rejects(
+    () => prepareCredentialUpload({ filename: 'agy-evil.json', data: agy('https://cloudcode-pa.googleapis.com.evil.example') }),
+    (error: unknown) => error instanceof CredentialUploadError && error.code === 'UPLOAD_PROVIDER_NOT_ALLOWED',
+  )
+  const ok = await prepareCredentialUpload({ filename: 'agy.json', data: agy('https://daily-cloudcode-pa.googleapis.com') })
+  assert.equal(ok[0].provider, 'antigravity')
 })
 
 test('counts directory entries toward the ZIP entry limit', async () => {

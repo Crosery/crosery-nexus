@@ -88,5 +88,9 @@ test('keeps per-channel upstream counts', () => {
 
 test('attaches public per-million pricing to a model even without recorded usage', () => {
   const index = buildModelIndex([channel('claude', true, [['claude-opus-5', true, 1]])], [])
-  assert.deepEqual(index[0].pricing, { input: 5, output: 25, cacheRead: 0.5, unit: 'token' })
+  // 只断言计价字段；价格段的 from/until/note 随价格表更新变化，不属于本测试的契约。
+  const pricing = index[0].pricing
+  assert.ok(pricing)
+  const { input, output, cacheRead, cacheWrite, unit } = pricing
+  assert.deepEqual({ input, output, cacheRead, cacheWrite, unit }, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, unit: 'token' })
 })

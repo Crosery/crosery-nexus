@@ -34,8 +34,13 @@ import type { KeyAccessRow } from './keyModelAccess.js'
  * claude 渠道在这里只为「默认开放模型」（见 keyModelAccess.ts 的 DEFAULT_OPEN_MODELS，
  * 目前是 claude haiku）开路：它不会把该渠道的其它模型带进 Key 的模型白名单，
  * 那些模型仍然要 Key 显式勾选 claude 组才会开放。
+ *
+ * codex 渠道同理，只为 gpt-image 全系（DEFAULT_OPEN_MODEL_PREFIXES，2026-09-26）开路。
+ * 这里刻意写死而不是按「哪些渠道有 gpt-image」推导：渠道闸不分模型，若日后 mox-aigw
+ * 之类中转也挂上 gpt-image，推导会把中转对所有 Key 放开，gpt-6 等模型随之被路由过去。
+ * 反过来要留意：某渠道若与 codex 提供同名非图片模型，勾了该渠道的 Key 也会被路由到 codex。
  */
-export const DEFAULT_OPEN_CHANNELS = ['claude'] as const
+export const DEFAULT_OPEN_CHANNELS = ['claude', 'codex'] as const
 
 export function buildKeyChannelAccessPlan(
   groups: ConsoleGroup[],

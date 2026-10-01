@@ -56,15 +56,24 @@ test('回归：旧 SQL 把 claude 新输入夹成 0', () => {
   assert.equal(t.freshInputTokens, 260, '归一化后不再被夹成 0')
 })
 
-test('gpt 缓存段不再重复计费', () => {
-  const t = normalizeTokens({ model: 'gpt-5.6-sol', inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 900_000 })
-  // gpt-5.6-sol: input 5 / cacheRead 0.5 per 1M；只有 10 万是新输入
-  const expected = (100_000 * 5 + 900_000 * 0.5) / 1_000_000
-  assert.equal(costForTokens('gpt-5.6-sol', t), expected)
+// 价格表按日期分段且有长上下文阶梯价，断言必须钉住日期、并区分阶梯内外，否则会随「今天」漂移。
+const BASE_PRICE_DAY = '2026-08-10'
 
-  // 旧口径会把整个 100 万按 input 全价计，明显偏高
-  const legacy = (1_000_000 * 5 + 900_000 * 0.5) / 1_000_000
+test('gpt 缓存段不再重复计费', () => {
+  const t = normalizeTokens({ model: 'gpt-5.6-sol', inputTokens: 200_000, outputTokens: 0, cachedTokens: 180_000 })
+  // gpt-5.6-sol 基础价（≤272K）: input 5 / cacheRead 0.5 per 1M；只有 2 万是新输入
+  const expected = (20_000 * 5 + 180_000 * 0.5) / 1_000_000
+  assert.equal(costForTokens('gpt-5.6-sol', t, BASE_PRICE_DAY), expected)
+
+  // 旧口径会把整个 20 万按 input 全价计，明显偏高
+  const legacy = (200_000 * 5 + 180_000 * 0.5) / 1_000_000
   assert.ok(legacy > expected * 3, '旧口径确实高估')
+})
+
+test('gpt 超过 272K 输入整单走长上下文阶梯价', () => {
+  const t = normalizeTokens({ model: 'gpt-5.6-sol', inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 900_000 })
+  // 阶梯价: input 10 / cacheRead 1 per 1M
+  assert.equal(costForTokens('gpt-5.6-sol', t, BASE_PRICE_DAY), (100_000 * 10 + 900_000 * 1) / 1_000_000)
 })
 
 test('claude 三段计价按并列口径', () => {

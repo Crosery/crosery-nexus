@@ -23,7 +23,63 @@ type CredentialRecord = {
   access_token?: unknown
   refresh_token?: unknown
   token_endpoint?: unknown
+  base_url?: unknown
   auth_kind?: unknown
+}
+
+const XAI_PROVIDERS = new Set(['xai', 'grok'])
+const XAI_AUTH_KINDS = new Set(['', 'oauth', 'grok'])
+
+/**
+ * 通用导入（2026-09-25）只放开了渠道类型，端点仍必须按渠道收口：网关会原样信任凭据文件里的端点——
+ * xAI 刷新时把 refresh_token POST 到 `token_endpoint`、请求发往 `base_url`，Antigravity 请求发往
+ * `base_url`。放任不管，一个伪造文件就能把 token 和用户请求转去任意域名。
+ * Codex/Claude 的 base_url 只来自网关配置、Kimi 固定官方地址，不读文件，这里不设限。
+ */
+const OFFICIAL_ENDPOINT_HOSTS: Record<string, string> = {
+  xai: 'x.ai',
+  grok: 'x.ai',
+  antigravity: 'googleapis.com',
+}
+
+/** 仅接受 https 且主机为官方域名或其子域；`notx.ai` 这类后缀相似的域名不算。 */
+function onOfficialHost(raw: unknown, domain: string) {
+  if (typeof raw !== 'string') return false
+  let parsed: URL
+  try {
+    parsed = new URL(raw.trim())
+  } catch {
+    return false
+  }
+  const host = parsed.hostname.toLowerCase()
+  return parsed.protocol === 'https:' && (host === domain || host.endsWith(`.${domain}`))
+}
+
+const present = (value: unknown) => value !== undefined && value !== null && value !== ''
+
+function assertTrustedCredential(name: string, provider: string, record: CredentialRecord) {
+  // 带 token_endpoint 的只有 xAI 凭据；类型对不上说明文件被拼接过，按伪造处理。
+  const claimsXai = XAI_PROVIDERS.has(provider) || present(record.token_endpoint)
+  if (claimsXai) {
+    const authKind = String(record.auth_kind || '').trim().toLowerCase()
+    if (!XAI_PROVIDERS.has(provider) || !XAI_AUTH_KINDS.has(authKind)) {
+      throw new CredentialUploadError('UPLOAD_PROVIDER_NOT_ALLOWED', `“${name}”的凭据类型与 xAI 端点不一致`)
+    }
+    // 留空时网关走 OIDC discovery，discovery 结果网关自己会校验域名。
+    for (const field of ['token_endpoint', 'base_url'] as const) {
+      if (present(record[field]) && !onOfficialHost(record[field], 'x.ai')) {
+        throw new CredentialUploadError('UPLOAD_PROVIDER_NOT_ALLOWED', `“${name}”的 ${field} 不是 xAI 官方 https 地址`)
+      }
+    }
+    if (typeof record.access_token !== 'string' || !record.access_token.trim() || typeof record.refresh_token !== 'string' || !record.refresh_token.trim()) {
+      throw new CredentialUploadError('UPLOAD_CREDENTIAL_INVALID', `“${name}”缺少 access_token 或 refresh_token`)
+    }
+    return
+  }
+  const domain = OFFICIAL_ENDPOINT_HOSTS[provider]
+  if (domain && present(record.base_url) && !onOfficialHost(record.base_url, domain)) {
+    throw new CredentialUploadError('UPLOAD_PROVIDER_NOT_ALLOWED', `“${name}”的 base_url 不是 ${provider} 官方 https 地址`)
+  }
 }
 
 export type PreparedCredential = {
@@ -68,6 +124,7 @@ function parseCredential(name: string, raw: Buffer): PreparedCredential {
   }
   const record = parsed as CredentialRecord
   const provider = String(record.type || record.provider || '').trim().toLowerCase()
+  assertTrustedCredential(name, provider, record)
   const label = typeof record.email === 'string' && record.email.trim()
     ? record.email.trim()
     : typeof record.sub === 'string' && record.sub.trim()

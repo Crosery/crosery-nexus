@@ -12,7 +12,10 @@ const originalFetch = globalThis.fetch
 const { db } = await import('./db.js')
 const { reconcileKeyModelAccess } = await import('./sync.js')
 const { hashKey } = await import('./cpa.js')
+const { DEFAULT_OPEN_CHANNELS } = await import('./keyChannelAccess.js')
 const key = 'fixture-pool-key'
+/** 撤权后只剩 codex 与默认对所有 Key 开放的渠道，mox-aigw 必须消失。 */
+const revoked = [...new Set(['codex', ...DEFAULT_OPEN_CHANNELS])].sort()
 const now = new Date().toISOString()
 db.prepare('INSERT INTO api_keys (key_hash,key_value,name,enabled,groups_json,created_at,updated_at) VALUES (?,?,?,1,?,?,?)').run(hashKey(key), key, 'fixture', '["codex"]', now, now)
 
@@ -46,7 +49,8 @@ function gateway(options: { modelError?: boolean; pauseChannelRead?: () => Promi
 test('模型权限接口故障不能阻止撤销 Mox 渠道权限', async () => {
   const mock = gateway({ modelError: true })
   await assert.rejects(reconcileKeyModelAccess, /CPA 503/)
-  assert.deepEqual(mock.access()[key], ['codex'])
+  assert.deepEqual(mock.access()[key], revoked)
+  assert.ok(!mock.access()[key].includes('mox-aigw'))
 })
 
 test('并发对账排队后重读授权，旧快照不能在撤权完成后写回 Mox', async () => {
@@ -65,7 +69,8 @@ test('并发对账排队后重读授权，旧快照不能在撤权完成后写�
   await new Promise<void>((resolve) => setImmediate(resolve))
   release()
   await Promise.all([old, revoke])
-  assert.deepEqual(mock.access()[key], ['codex'])
+  assert.deepEqual(mock.access()[key], revoked)
+  assert.ok(!mock.access()[key].includes('mox-aigw'))
 })
 
 test.after(() => {

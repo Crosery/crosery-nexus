@@ -17,6 +17,28 @@ export const DENY_ALL_MODEL = '__console_no_models_allowed__'
  */
 export const DEFAULT_OPEN_MODELS = ['claude-haiku-4-5-20251001'] as const
 
+/**
+ * 按前缀默认对所有 Key 开放的模型族（2026-09-26 用户要求：gpt-image 全系默认开放）。
+ * 从实时分组里展开而不是写死型号：上游新增 gpt-image-* 自动跟上，渠道下线则自动消失。
+ * 只放开这一族，同渠道（codex）的其它模型仍要 Key 显式勾选 codex 组。
+ */
+export const DEFAULT_OPEN_MODEL_PREFIXES = ['gpt-image-'] as const
+
+/**
+ * 默认开放项只取实时目录里真实存在的模型。网关查不到模型且没有兜底目录时必须如实降级为
+ * DENY_ALL（2026-08-20 事故约束），不能靠写死的默认项假装还有模型可用。
+ */
+export function defaultOpenModels(groups: ConsoleGroup[]) {
+  const exact = new Set<string>(DEFAULT_OPEN_MODELS)
+  const models = new Set<string>()
+  for (const group of groups) {
+    for (const model of group.models) {
+      if (exact.has(model) || DEFAULT_OPEN_MODEL_PREFIXES.some((prefix) => model.startsWith(prefix))) models.add(model)
+    }
+  }
+  return [...models].sort()
+}
+
 export type KeyAccessRow = {
   keyValue: string
   enabled: boolean
@@ -47,12 +69,13 @@ export function buildKeyAccessPlan(groups: ConsoleGroup[], rows: KeyAccessRow[])
   const knownGroups = new Set(groups.map((group) => group.id))
   const access: Record<string, string[]> = {}
   const normalizedGroups = new Map<string, string[]>()
+  const defaults = defaultOpenModels(groups)
 
   for (const row of rows) {
     const selected = [...new Set(row.groups.filter((group) => knownGroups.has(group)))].sort()
     normalizedGroups.set(row.keyValue, selected)
     if (!row.enabled) continue
-    const models = [...new Set([...modelsForGroups(groups, selected), ...DEFAULT_OPEN_MODELS])].sort()
+    const models = [...new Set([...modelsForGroups(groups, selected), ...defaults])].sort()
     access[row.keyValue] = models.length ? models : [DENY_ALL_MODEL]
   }
 
