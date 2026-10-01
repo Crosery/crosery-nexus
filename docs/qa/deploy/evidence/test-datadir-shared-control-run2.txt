@@ -1,0 +1,1208 @@
+
+> crosery-cpe-console@0.1.0 test
+> node --test --import tsx server/*.test.ts apps/data/src/*.test.ts packages/contracts/*.test.ts scripts/*.test.mjs
+
+✔ parseIngestUsageRequest normalizes timestamps and defaults optional strings (8.663334ms)
+✔ parseIngestUsageRequest rejects unsafe batch and field sizes (0.469417ms)
+✔ period and query parsing only accepts bounded values (0.396708ms)
+✔ ingest response parser enforces batch identity and count conservation (0.132084ms)
+✔ snapshot parsers reject version drift, non-finite metrics, and mismatched envelopes (0.384208ms)
+✔ backfills an immutable SQLite snapshot in id order and safely replays an ambiguous batch (45.93675ms)
+✔ does not advance the atomic checkpoint until a complete v1 acknowledgement arrives (26.740292ms)
+✔ binds a checkpoint to one source identity and fixed maximum id (15.129084ms)
+✔ enforces row and byte bounds before sending and uses stable fallback identities (0.263875ms)
+✔ reconstructs the live outbox key hash from the durable quota row when SQLite reconciliation lagged (23.276667ms)
+✔ loads a Bearer token from either environment or a private file without accepting ambiguity (0.699541ms)
+✔ runs the CLI when invoked through the production current-release symlink (90.844417ms)
+✔ existing private-file references are passed through without reading or copying them (0.623375ms)
+✔ a local Keychain password is injected only into the child environment (0.125292ms)
+✔ ambiguous references fail without falling back to the shared password (0.161542ms)
+✔ a Keychain read error is redacted and never falls back to shared credentials (0.3115ms)
+✔ empty and invalid Keychain values fail closed (0.103334ms)
+✔ invalid password references are rejected (0.092708ms)
+✔ Keychain references cannot silently run on another platform (0.048083ms)
+✔ migration preserves ids, groups and history without copying credentials or changing originals (121.202291ms)
+✔ catalog mapping preserves audited metadata without declaring unverified protocol capabilities (0.211375ms)
+✔ migration refuses sensitive profiles and never follows snapshot symlinks (51.314375ms)
+✔ endpoint validation rejects embedded credentials, unsafe HTTP, query and non-HTTP schemes (0.217417ms)
+✔ child HOME and config directories are isolated and environment secrets are not forwarded (0.262541ms)
+✔ runtime credentials resolve from private originals/injected env, never the generated configuration (41.165208ms)
+✔ bridge preserves native paths, bodies, reasoning, tools and statuses across three protocols (42.982417ms)
+✔ bridge delivers streaming SSE before upstream completes and serves models without external requests (6.745583ms)
+✔ bridge rejects foreign origin/host, key slots, arbitrary routes and oversized uploads (7.176375ms)
+✔ bridge aborts a stalled upstream and does not expose its errors (33.67975ms)
+✔ detects route, schema and login changes rather than only a version number (0.766625ms)
+✔ body-only fixes are reported even if every route and schema stays the same (0.085709ms)
+✔ generated types change with upstream JSON tags and exclude conditional routes (0.224125ms)
+✔ unsupported wire data remains unknown instead of a fabricated schema (0.186541ms)
+✔ overlapping checks cannot overwrite a candidate and failures release the lock (39.523125ms)
+✔ candidate publication is grouped, immutable and deduplicated across checks (81.554875ms)
+✔ scheduled checks inherit public proxy configuration but never credentials (0.5875ms)
+✔ codex reset_at is unix seconds and must become a real timestamp (2.893125ms)
+✔ codex per-model limits surface as their own windows (0.11375ms)
+✔ codex plan type becomes a readable label (0.055584ms)
+✔ null windows are dropped rather than rendered as zero (0.058291ms)
+✔ claude limits carry upstream severity and scoped model names (0.18975ms)
+✔ claude falls back to legacy fields when limits[] is absent (0.331583ms)
+✔ upstream errors pass through instead of showing an empty card (0.063958ms)
+✔ severity thresholds match across both providers (0.041083ms)
+✔ claude rate_limit_tier becomes a readable multiplier badge (0.491708ms)
+✔ claude tier is read from the organization, not the account flags (0.257666ms)
+✔ codex reset credits come from usage when the credits endpoint is unavailable (0.132ms)
+✔ the credits endpoint supplies expiry times that usage does not carry (0.087291ms)
+✔ missing reset credits stay null instead of showing zero (0.047834ms)
+✔ AntiGravity remaining fractions become used-percent windows grouped by model family (0.225ms)
+✔ account monitor includes all three OAuth provider groups and excludes unrelated credential types (0.043708ms)
+✔ claude cedar_ember grants surface as resetCredits in the codex shape (0.103958ms)
+✔ claude exposes no reset credits when the grant is missing, paused or spent (0.062875ms)
+✖ 请求明细页在 keyUsage 缺失时不解引用（活代码：AnalyticsPage.vue） (1.630625ms)
+✔ 请求明细页读的是 /api/analytics，不是 /api/usage-breakdown（D1 回归守卫） (0.151167ms)
+✔ Dashboard 与请求明细各自独立取数，互不覆盖（活代码：useResource 依赖驱动） (0.07ms)
+✔ AntiGravity project id is resolved from every credential shape CPA currently accepts (0.406292ms)
+✔ AntiGravity monitor downloads the credential only when the auth-file summary lacks project id (0.509667ms)
+✔ AntiGravity quota falls back across Google control-plane hosts (0.128625ms)
+✔ AntiGravity quota also falls back after a transport exception (0.10525ms)
+✔ accepts the configured administrator credentials (0.341875ms)
+✔ rejects a wrong administrator username or password (0.062458ms)
+✔ 两家口径混在一起时命中率各自归一化 (2.0975ms)
+✔ 超缓存上限的请求被单独计数并归入专属档位 (1.151125ms)
+✔ worstRequests 按浪费金额排序并标记越线 (0.213125ms)
+✔ 全命中的请求不进入 worstRequests (0.093792ms)
+✔ 按真实 provider 聚合渠道，不把 keyName 或 source 冒充渠道 (0.454084ms)
+✔ 未定价模型不污染成本合计 (0.693625ms)
+✔ 空输入不产生除零 (0.113875ms)
+✔ anthropic cache writes count against the hit rate instead of vanishing (0.087542ms)
+✔ cache writes are billed at the 1.25x input rate rather than free (0.078833ms)
+✔ openai dialect never invents a cache write segment (0.368375ms)
+✔ cache live history runs as a bounded worker query and restores chronological order (3.097333ms)
+✔ history filters recover OMP without leaking those rows into other or legacy (1.9375ms)
+✔ cache live history filters by key hash and by provider aliases (0.2165ms)
+✔ claude 与 gpt 的 cached 口径相反 (0.469209ms)
+✔ anthropic: input 与 cached 并列，input 即新输入 (0.084959ms)
+✔ openai: cached 是 input 的子集，需扣减 (0.073ms)
+✔ 回归：旧公式把 gpt 命中率压低约一半 (0.087292ms)
+✔ 回归：旧 SQL 把 claude 新输入夹成 0 (0.051583ms)
+✔ gpt 缓存段不再重复计费 (0.201209ms)
+✔ gpt 超过 272K 输入整单走长上下文阶梯价 (0.05175ms)
+✔ claude 三段计价按并列口径 (2.227916ms)
+✔ 未定价模型返回 null 而不是 0 (0.356375ms)
+✔ 缓存写入上限：663k 内正常，越线标红 (0.134875ms)
+✔ 上下文分档把超上限单独切出来 (0.076375ms)
+✔ 浪费金额 = 新输入按全价与缓存价的差额 (0.061417ms)
+✔ 分桶粒度随跨度自适应 (0.382291ms)
+✔ 同一分钟内的请求合并为一个桶 (1.36575ms)
+✔ 跨桶的请求分开统计并按时间升序 (0.152459ms)
+✔ 两家口径在同一个桶内各自归一化 (0.100417ms)
+✔ 空桶不补零，避免画出误导性的 0% 折线 (0.081791ms)
+✔ 未定价模型不污染成本合计 (0.217333ms)
+✔ 非法时间戳被跳过而不是崩溃 (0.064667ms)
+✔ 空输入返回空点集 (0.312167ms)
+✔ 预聚合行保留请求数与归一化 token 总量 (0.093541ms)
+✔ uses /models when base url already ends in /v1 (0.653708ms)
+✔ tries both common OpenAI discovery paths from a host root (0.087ms)
+✔ Claude prefers the Anthropic /v1/models path (0.066625ms)
+✔ normalizes OpenAI and Gemini model payloads (5.9895ms)
+✔ mixed-case upstream names default to lowercase public aliases (0.065875ms)
+✔ channel names and selected aliases are validated (0.259084ms)
+✔ reports a gateway channel as enabled with its models (1.191083ms)
+✔ restores a disabled channel from its local snapshot (0.12925ms)
+✔ marks a model absent from the gateway as disabled (0.075ms)
+✔ never duplicates a model that is back in the gateway (0.061291ms)
+✔ ignores a stale snapshot once the channel is live again (0.066458ms)
+✔ folds multiple upstreams sharing one alias into a single switch (0.074958ms)
+✔ respects a disabled flag retained by CPA (6.307917ms)
+✔ sorts enabled channels ahead of disabled ones (0.171708ms)
+✔ survives a corrupted snapshot without dropping the channel (0.104667ms)
+✔ provider-endpoint channels are named after their base-url host (0.195833ms)
+✔ a channel deleted on the CPA side is excluded from the current view (0.071833ms)
+✔ a channel disabled from the panel stays restorable, not stale (0.058292ms)
+✔ a live channel is never marked stale (0.048292ms)
+✔ caches successful usage and profile independently (0.898834ms)
+✔ backs off a 429 and does not retry on every monitor refresh (1.002ms)
+✔ keeps the last successful quota while usage is rate limited (0.191083ms)
+✔ honors a near CPA next_retry_after hint and labels it as an account-level cooldown (0.149125ms)
+✔ ignores a CPA hint that reaches beyond the cooldown cap instead of freezing the panel (0.165125ms)
+✔ does not extend a stale CPA unavailable hint on every refresh (0.126041ms)
+✔ deduplicates concurrent reads for the same endpoint (0.121541ms)
+✔ every production user agent maps to a concrete client, never the catch-all (1.101041ms)
+✔ explicit Honeypot user agents stay separate from DSH and Ibuki (0.067291ms)
+✔ missing user agent stays unknown instead of being counted as a real client (0.044625ms)
+✔ product clients win over the SDK they are built on (0.042292ms)
+✔ unrecognized agents fall back to other and keep the raw string for triage (0.068042ms)
+✔ version is extracted for triage but kept out of the grouping key (0.077625ms)
+✔ forwarded address wins only when the direct peer is the local proxy (0.052834ms)
+✔ rotated-log user agents including DSH and codex-tui classify correctly (0.111917ms)
+✔ embedded host program never steals the codex classification (0.065458ms)
+✔ official OpenAI JS SDK is recognized despite the space-separated UA (0.077583ms)
+✔ AGY CLI is recognized from its real Google SDK user agent only on the AntiGravity provider (0.060083ms)
+✔ historical AntiGravity rows are reclassified at read time without rewriting production data (0.688792ms)
+✔ OMP boundaries agree between ingestion and historical reads without mutating stored types (0.201125ms)
+✔ chatgpt account id is read from the id_token payload (0.447958ms)
+✔ missing or malformed id_token yields no account id rather than throwing (0.082ms)
+✔ only available codex_rate_limits credits count as resettable (0.366ms)
+✔ a JSON string body is parsed like an object body (0.05175ms)
+✔ unparseable payloads report null instead of a fake zero (0.067959ms)
+✔ accepts bounded positive integer upload settings (0.377834ms)
+✔ fails fast for invalid upload settings (0.1845ms)
+✔ parses strict boolean settings without treating arbitrary text as enabled (0.057042ms)
+✔ parses the dashboard read kill switch as a closed choice (0.065333ms)
+✔ accepts the bounded CPA request timeout (0.059ms)
+✔ defaults the dedicated Usage Queue collector to one second (0.048584ms)
+✔ bounds the reporting read pool for memory-constrained edge hosts (0.045959ms)
+✔ validates the private data plane base URL without embedded credentials (0.092833ms)
+✔ requires a shared data plane token with at least 32 characters (0.072083ms)
+✔ data-plane token can come from one private file without exposing file errors (0.704167ms)
+✔ clearAuthFileCooldown toggles disable_cooling true then false on the same credential (19.913166ms)
+✔ the restore patch is not attempted when the clear itself fails (3.053042ms)
+✔ unwraps the management model access response and writes the complete map (20.650834ms)
+✔ reads the unrestricted management model catalog rather than a user-key catalog (2.881375ms)
+✔ marks unavailable management endpoints so callers can degrade without masking real failures (1.6595ms)
+✔ surfaces CPA failures instead of silently accepting enforced access failures (2.230875ms)
+✔ uploads one auth file as multipart without changing the credential bytes (1.664583ms)
+✔ reads only the credential proxy field through the authenticated adapter (2.275167ms)
+✔ prepares one xAI JSON without exposing credential secrets (0.53275ms)
+✔ extracts JSON credentials from a ZIP and ignores directory entries (28.205875ms)
+✔ rejects ZIP path traversal before any credential can be uploaded (1.34725ms)
+✔ rejects duplicate basenames in one upload (10.87ms)
+✔ rejects files whose type contradicts an xAI endpoint and xAI files missing refresh tokens (0.202833ms)
+✔ rejects JSON null and xAI lookalike endpoints (0.118708ms)
+✔ accepts generic CPA credentials for providers that never read endpoints from the file (0.061208ms)
+✔ rejects plain-http or off-domain endpoints that would leak tokens and prompts (0.17125ms)
+✔ counts directory entries toward the ZIP entry limit (24.286375ms)
+✔ rejects archives over the configured entry and uncompressed-size limits (19.188083ms)
+✔ uploads credentials with bounded concurrency and preserves input order (17.877167ms)
+✔ rejects invalid upload concurrency instead of returning a false success (0.377ms)
+✔ isolates failed uploads and never includes CPA response bodies or secrets (0.155375ms)
+✔ preserves input order and marks existing names as skipped (0.606875ms)
+✔ summarizes auth-files without downloading every credential (11.857084ms)
+✔ fills每个凭据的模型目录，OAuth 渠道才不会以空模型集参与授权 (0.319958ms)
+✔ 按 provider 取样，不会给每个凭据都打一次网关 (0.353125ms)
+✔ 停用的凭据不参与取样 (0.081875ms)
+✔ 网关返回空目录时沿用上一次结果，不把渠道削成 0 模型 (0.082625ms)
+✔ 没有历史目录可退时如实报空，避免凭空造出模型 (0.057625ms)
+✔ 拿到新目录时以新目录为准，不与历史合并 (0.055375ms)
+✔ active provider values come only from live groups and include CPA aliases (0.653459ms)
+✔ empty live groups fail closed (0.082166ms)
+✔ maps a validated data-plane snapshot to the existing dashboard contract (2.569584ms)
+✔ reads only supported, policy-scoped all-key dashboard snapshots (0.281208ms)
+✔ rejects snapshots that cannot preserve the active-provider or relay-watermark semantics (0.134042ms)
+✔ rechecks relay integrity after reading a snapshot (0.080833ms)
+✔ rejects a snapshot when an older failed row is backing off after a newer event was sent (4.51625ms)
+✔ returns a stale SQLite L2 snapshot without awaiting a hanging remote refresh (6.595ms)
+✔ deduplicates requestId and replays durable rows after a failed delivery (5.175333ms)
+✔ times out without losing the row and records only a bounded error code (15.404333ms)
+✔ requestFlush schedules remote work instead of running it on the caller path (2.792083ms)
+✔ keeps the whole batch when the receiver does not acknowledge every event (0.89025ms)
+▶ keeps the whole batch when any acknowledgement identity or count is invalid
+  ✔ wrong batch id (0.477375ms)
+  ✔ wrong received count (0.383292ms)
+  ✔ unbalanced inserted and duplicates (0.372208ms)
+  ✔ invalid watermark (2.698084ms)
+✔ keeps the whole batch when any acknowledgement identity or count is invalid (4.253625ms)
+✔ quarantines wrong runtime types and non-finite or inconsistent numeric fields (0.760958ms)
+✔ quarantines one corrupt outbox row and continues relaying valid rows behind it (0.628334ms)
+✔ retains contract failures with maximum backoff instead of dropping validated rows (0.426125ms)
+▶ classifies deterministic and retryable HTTP failures without losing retryable rows
+  ✔ HTTP 400 is retained (0.340083ms)
+  ✔ HTTP 404 is retained (0.269834ms)
+  ✔ HTTP 405 is retained (0.245375ms)
+  ✔ HTTP 415 is retained (0.248875ms)
+  ✔ HTTP 422 is retained (0.255958ms)
+  ✔ HTTP 408 is retried (0.272167ms)
+  ✔ HTTP 429 is retried (0.231458ms)
+  ✔ HTTP 500 is retried (0.242542ms)
+  ✔ network errors are retried (0.255459ms)
+✔ classifies deterministic and retryable HTTP failures without losing retryable rows (2.627ms)
+✔ narrows a conflicting batch and delivers every non-conflicting row (1.061083ms)
+▶ retains authentication failures and applies the maximum retry delay
+  ✔ HTTP 401 (0.958333ms)
+  ✔ HTTP 403 (0.458125ms)
+✔ retains authentication failures and applies the maximum retry delay (1.539792ms)
+✔ retains a single-event 413 with maximum backoff instead of dropping it (0.356375ms)
+✔ shrinks a 413 batch and later delivers smaller batches without dropping rows (1.664917ms)
+✔ recovers cautiously after a 413 once reduced full batches keep succeeding (44.188208ms)
+✔ resumes a persisted reduced batch cautiously after restart (1.845125ms)
+✔ a failed reduced batch resets the consecutive recovery streak (3.637958ms)
+✔ rejects relay batches larger than the shared contract maximum (0.23825ms)
+✔ snapshot client accepts only the complete shared envelope (0.694208ms)
+✔ data-plane status route remains behind the existing administrator middleware (0.161625ms)
+✔ builds a stable canonical fallback id and deduplicates replayed missing-id events (0.324667ms)
+✔ allocates distinct legacy ids transactionally for identical CPA records (0.26ms)
+✔ batch identity is unambiguous when request ids contain newlines (0.5965ms)
+✔ 网关状态文案不会在不可用时声称在线 (0.438709ms)
+✔ Magpie mode names the kernel rather than claiming CPA is the inference engine (0.08ms)
+✔ 空密钥列表区分读取中、不可用和真实空集合 (0.053834ms)
+✔ 筛选条件变化后不会把旧统计误标成新范围 (0.062ms)
+✔ groups come from upstream channels, not model name keywords (7.753875ms)
+✔ a model served by two channels belongs to both groups independently (0.11475ms)
+✔ disabled or stale channels and inactive oauth providers are not authorizable groups (0.085708ms)
+✔ disabled models and excluded oauth models stay out of their group (0.072708ms)
+✔ selecting groups yields the union of their models (0.094625ms)
+✔ usage rows resolve by provider first, then by which group serves the model (0.08775ms)
+✔ 面板开了 codex 组，渠道白名单就补上 codex (0.759833ms)
+✔ 分组与网关不一致时以分组为准，多余渠道被收回 (0.074875ms)
+✔ 未明确授权的渠道必须移除，旧 Mox 条目不能进入独立候选池 (0.056834ms)
+✔ 网关里没有条目的 Key 也要按分组写入，不能留成不限渠道 (0.051083ms)
+✔ 停用的 Key 不写入，避免整份 PUT 被网关 400 掉 (0.064375ms)
+✔ 网关 api-keys 里没有的 Key 不写入 (0.046958ms)
+✔ 没勾任何分组的 Key 只拿到默认开放渠道，旧 Mox 条目被收回 (0.051875ms)
+✔ 只有明确开启 Mox 的 Key 才能把 Mox 放进候选池 (0.057542ms)
+✔ 没勾 codex 组的 Key 也能进 codex 渠道，供默认开放的 gpt-image 使用 (0.064667ms)
+✔ 整份替换时未接管的 Key 原样带上 (0.105167ms)
+✔ 已经一致时不产生写操作 (0.103416ms)
+✔ only selected live groups contribute models (0.730209ms)
+✔ removed legacy groups are pruned instead of remaining as ghost labels (0.082917ms)
+✔ no live groups leaves only the default-open models, never legacy unrestricted access (0.084208ms)
+✔ gpt-image family is open to every key without opening the rest of codex (0.058958ms)
+✔ new gpt-image models in live groups are picked up automatically, retired ones drop out (0.06725ms)
+✔ default-open models absent from the live catalog are not whitelisted; nothing left means DENY_ALL (0.067833ms)
+✔ disabled keys are not added to the CPA access map (0.053958ms)
+✔ access comparisons ignore key and model ordering but detect real changes (5.762541ms)
+✔ duplicate groups do not duplicate models (0.09925ms)
+✔ normalizes a readable key slug to the established kebab-case convention (0.450625ms)
+✔ builds keys as sk-purpose-random (0.084041ms)
+✔ extracts semantic names but ignores legacy random-only keys (0.098584ms)
+✔ derives a valid key slug from a display name (0.136583ms)
+✔ rejects invalid or overly long key slugs (0.193042ms)
+✔ 模型权限接口故障不能阻止撤销 Mox 渠道权限 (5.08775ms)
+{"category":"[AUDIT]","event":"management.key_model_access","stage":"reconcile","outcome":"ok","detail":"网关支持 api-key-model-access，Key 级模型白名单已生效"}
+✔ 并发对账排队后重读授权，旧快照不能在撤权完成后写回 Mox (6.61175ms)
+✔ issues a one-time reveal token for an API key (0.474208ms)
+✔ does not reveal a token for another key (0.070833ms)
+✔ 实时事件保留 Agent 身份和原始输入输出 token (2.053125ms)
+✔ anthropic 请求的单次命中率与成本 (0.183833ms)
+✔ openai 请求的 cached 内含于 input，不重复计费 (0.118875ms)
+✔ 未定价模型成本为 null 而不是 0 (0.254875ms)
+✔ 空提示不产生除零 (0.123083ms)
+✔ 超缓存写入上限的请求被标记 (0.108917ms)
+✔ 广播以 SSE 帧格式发给所有客户端 (0.252084ms)
+✔ 失败请求不进入缓存命中率实时流 (0.474ms)
+✔ 写失败的客户端被摘除，不影响其余客户端 (0.122708ms)
+✔ 取消订阅后不再收到广播 (0.094167ms)
+✔ 异步历史查询期间先缓冲广播并按 requestId 去重衔接 (0.186833ms)
+✔ 无客户端或空事件时广播是空操作 (0.079334ms)
+✔ 心跳发送注释帧并清理死连接 (0.060208ms)
+✔ 按模型筛选的客户端只收到该模型的事件 (0.0915ms)
+✔ 筛选客户端在无匹配事件时完全不收帧 (0.046042ms)
+✔ 不同客户端可以各自筛选不同模型 (0.064833ms)
+✔ 实时事件携带 keyHash，按 Key 与渠道筛选的客户端只收到匹配事件 (0.132041ms)
+✔ 缓冲客户端同样按 Key 筛选 (0.0675ms)
+✔ OMP ingestion reaches filtered SSE with its own UI label and never includes Pi (0.354209ms)
+✔ registry stores references, never raw upstream keys (0.749291ms)
+✔ credential references resolve only at runtime (0.147042ms)
+✔ invalid registries fail closed before a provider is configured (0.137708ms)
+✔ unrelated admin-input fields cannot become another persisted credential store (0.061875ms)
+✔ local auth-files and excluded models management operates safely (17.012959ms)
+✔ admission validates the generated upstream contract without exposing new routes (0.567875ms)
+✔ aliases map to separate kernel slots without cross-channel fallback (0.613917ms)
+✔ native Responses and Messages use their declared upstream slots (0.137666ms)
+✔ mixed per-key proxies and credential-bearing URLs fail closed (0.093334ms)
+﹣ real headless kernel: four protocols, streaming, admission and accounting (0.292458ms) # Run npm run test:magpie:kernel with the pinned kernel binary
+✔ migration preserves aliases and IDs without copying upstream credentials (0.731958ms)
+✔ remote loopback and unsupported protocols cannot become silent local routes (0.113292ms)
+✔ secret-bearing proxies stop migration instead of persisting a new secret copy (0.187333ms)
+/Users/crosery/work_file/crosery-api-console/server/db.ts:130
+  if (!keyColumns.has(name)) db.exec(`ALTER TABLE api_keys ADD COLUMN ${name} ${definition}`)
+                                ^
+
+Error: database is locked
+    at <anonymous> (/Users/crosery/work_file/crosery-api-console/server/db.ts:130:33)
+    at ModuleJob.run (node:internal/modules/esm/module_job:569:25)
+    at async node:internal/modules/esm/loader:650:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  code: 'ERR_SQLITE_ERROR',
+  errcode: 5,
+  errstr: 'database is locked'
+}
+
+Node.js v26.7.0
+✖ server/magpieOAuth.test.ts (104.184291ms)
+✔ version status consumes generated upstream routes and supported login IDs (0.733416ms)
+✔ reports a parsed candidate without implying it was installed or enabled (0.839958ms)
+✔ a different running revision cannot reuse a diff from another baseline (0.056833ms)
+✔ corrupt, oversized and public status files fail closed without file details (3.133416ms)
+✔ remote failure preserves known candidate information but explicitly reports error (0.419125ms)
+{"category":"[WARN]","event":"management.key_model_access","stage":"reconcile","outcome":"degraded","detail":"网关缺少 api-key-model-access（CPA v7.2.140 起已从上游移除），Key 级模型白名单不在网关生效"}
+{"category":"[AUDIT]","event":"management.key_model_access","stage":"reconcile","outcome":"ok","detail":"网关支持 api-key-model-access，Key 级模型白名单已生效"}
+✔ 账号开关不再因为网关缺少 api-key-model-access 而整体失败 (61.672667ms)
+✔ 网关真的故障时仍然抛错，不能被降级吞掉 (21.637125ms)
+✔ 渠道权限接口缺失必须报错，不能把独立候选池隔离静默降级 (2.417708ms)
+✔ 还没和网关对账过时不预设网关支持 (0.42475ms)
+✔ 对账后如实记录网关侧模型隔离已不可用，供 bootstrap 透出 (2.137375ms)
+✔ 网关支持该能力时记录为可用，不会一直挂着降级标记 (30.302958ms)
+✔ 合并网关价快照：本轮没回的老模型必须留在快照里 (0.578125ms)
+✔ 合并网关价快照：同一个模型上游改价时以本轮为准 (0.073ms)
+✔ 合并网关价快照：落盘结构里不带 unit、丢掉无效价 (0.441417ms)
+✔ 合并网关价快照：保留完整字段（until / cacheWrite / tiers / note） (0.330459ms)
+✔ inverts channel to model mapping (3.372375ms)
+✔ flags a model served by more than one channel (0.161709ms)
+✔ treats an excluded oauth model as disabled but still listed (0.086167ms)
+✔ marks oauth models unavailable when every account is disabled (0.069834ms)
+✔ a model whose only other source is disabled is not contested (0.073583ms)
+✔ a model in a disabled channel is reported disabled (0.068875ms)
+✔ sorts contested models first (0.228041ms)
+✔ keeps per-channel upstream counts (0.058291ms)
+✔ attaches public per-million pricing to a model even without recorded usage (0.109709ms)
+✔ shared catalog reader correctly accesses ~/.agents/crosery/catalog.json if present (0.420375ms)
+✔ syncUpstreamModels runs and returns structured sync result (0.377417ms)
+✔ codex window start derives from primary_window reset_at and limit_window_seconds (0.770041ms)
+✔ claude window start subtracts seven days from seven_day.resets_at or the weekly_all limit (0.161375ms)
+✔ antigravity window start prefers the gemini-weekly bucket (0.339416ms)
+✔ quotaWindowStart falls back to seven days and takes the earliest account window (0.686875ms)
+✔ buildQuotaShare weighs cached input and sorts by share (0.62075ms)
+✔ loadQuotaShare aggregates per key inside the window from SQLite (0.623708ms)
+✔ loadMonitorQuotaShare returns all three providers with account-derived windows (2.656459ms)
+✔ provider aliases cover the openai-compatible prefix (0.336041ms)
+✔ receives one multipart file within the configured limit (9.261458ms)
+✔ rejects uploads over the configured byte limit (0.649459ms)
+✔ rejects requests without a file (0.2715ms)
+✔ console nginx include compresses hashed assets and JSON responses (0.32525ms)
+✔ applies a valid fixed-path request with test-before-reload and writes status (35.959167ms)
+✔ is idempotent when the generated include already matches (9.975792ms)
+✔ restores the previous include when nginx validation fails (25.150209ms)
+✔ rejects insecure, tampered or symlink policy files before touching nginx (2.097125ms)
+✔ root worker has fixed paths and a constrained one-shot systemd sandbox (0.391583ms)
+✔ path unit watches only the fixed root-owned policy file (0.0775ms)
+✔ nginx keeps fail-closed default while generated unlimited keys clear the zone key (0.080459ms)
+✔ only enabled zero-concurrency keys enter the nginx unlimited policy (0.960042ms)
+✔ rejects malformed or directive-injecting keys (0.231084ms)
+✔ parses a versioned policy and returns a normalized independent copy (0.0765ms)
+✔ renders deterministic nginx set-only exemptions without exposing key comments (0.082833ms)
+✔ policy requests bind requestId and policy hash (0.206167ms)
+✔ snapshot writes are atomic, mode 0600 and idempotent (6.819458ms)
+✔ reconciles only enabled zero-concurrency keys from the database (0.9375ms)
+✔ writes a changed policy request, confirms it once, then skips an identical policy (8.990709ms)
+✔ coalesces concurrent applies for the same policy (8.656417ms)
+✔ serializes a newer request that returns to the previously applied policy (29.005333ms)
+✔ disabled sync never writes a snapshot or waits for the worker (0.229416ms)
+✔ surfaces a stable redacted error when the worker reports failure (5.495375ms)
+✔ rejects non-absolute policy and status paths (0.917292ms)
+✔ getConsoleVersion reads valid console version info (0.518ms)
+✔ OAUTH_PROVIDER_ENDPOINTS contains required providers with is_webui (0.075708ms)
+✔ startOAuthLogin rejects unsupported providers (0.304666ms)
+✔ getOAuthStatus requires non-empty state (0.094584ms)
+✔ submitOAuthCallback requires redirectUrl (0.112125ms)
+✔ cancelOAuthSession handles empty state gracefully (0.244041ms)
+✔ 网关能查到模型时，Key 拿到完整白名单 (6.6395ms)
+✔ 网关临时查不到模型时，Key 白名单不被削成 DENY_ALL (0.152708ms)
+✔ 没有兜底目录时仍如实降级为 DENY_ALL，不假装有模型 (0.101166ms)
+✔ 凭据真的被停用时，该渠道如实从白名单消失 (0.096417ms)
+✔ 页面主容器静态可见，不能依赖进入动画恢复透明度 (0.446666ms)
+✔ accepts total and per-group concurrency limits (0.358875ms)
+✔ accepts unlimited concurrency with zero limits (0.057833ms)
+✔ rejects group concurrency above total concurrency (1.473584ms)
+✔ rejects empty channel groups (0.125125ms)
+✔ channel prefixes resolve to the same price as the bare model (19.914792ms)
+✔ prefix stripping shares canonicalModelSql semantics: only the first slash is a channel prefix (0.144834ms)
+✔ Claude Code [1m] suffix and dot/dash version variants map to one price (0.131541ms)
+✔ current first-party prices come from models.dev (0.094125ms)
+✔ prices are selected by the usage timestamp, not by today (0.095666ms)
+✔ context tiers price the whole request once the prompt exceeds the threshold (0.132167ms)
+✔ unknown models stay unpriced instead of falling back to a guess (0.211875ms)
+✔ cached tokens bill at the cache rate (0.056959ms)
+✔ Codex Spark stays unpriced until its official rate card has numeric prices (0.102417ms)
+✔ image models use their published image input, output and cache token rates (0.093208ms)
+✔ models that used to be unpriced now resolve (0.092917ms)
+✔ channel-prefixed and effort-suffixed aliases borrow the base model price (0.108584ms)
+✔ an unlisted version borrows the nearest version of the same model line, never another tier (0.21275ms)
+✔ normalizes the three proxy_url modes CPA understands (0.409834ms)
+✔ rejects proxy values CPA cannot build a transport from (0.069291ms)
+✔ parses labelled and bare preset entries (0.385375ms)
+✔ drops malformed entries instead of the whole preset table (0.063958ms)
+✔ deduplicates repeated proxy addresses (0.078625ms)
+✔ treats an unset variable as no presets (0.046375ms)
+✔ reads an API key only from a valid Bearer authorization header (0.393917ms)
+✔ bounds public usage query values without accepting malformed input (0.073375ms)
+✔ zero means unlimited rather than "instantly exceeded" (1.357ms)
+✔ a window trips exactly at its limit, not after (0.1315ms)
+✔ the reported window is the one that actually tripped (0.190375ms)
+✔ daily and weekly windows are independent of each other (0.063583ms)
+✔ validation rejects nonsense combinations (1.139958ms)
+✔ cost sums per model instead of applying one blended rate (0.616792ms)
+✔ unpriced models contribute zero rather than blocking a key on a guess (1.144708ms)
+✔ unpriced Codex Spark does not guess quota spending while image token usage does (0.141416ms)
+✔ channel-prefixed models are priced like their bare name (0.071167ms)
+✔ the daily window starts at local midnight when never reset (0.09675ms)
+✔ a reset later than midnight becomes the new start (0.053208ms)
+✔ a stale reset mark never rewinds the natural window (0.06725ms)
+✔ the weekly window starts on Monday local midnight (0.0685ms)
+✔ the total window only honors explicit resets (0.033958ms)
+✔ daily and weekly windows expose their next automatic reset timestamp (0.055167ms)
+✔ only quota-blocked keys are auto-restored, never manually disabled ones (0.091917ms)
+✔ an over-quota enabled key is scheduled for blocking with its window (0.0555ms)
+✔ an already-blocked key is not blocked twice (0.050959ms)
+✔ daily quota compares offset timestamps by absolute time, not text order (2.405208ms)
+✔ weekly quota excludes records before Monday midnight across offsets (0.350584ms)
+✔ quota ledger migration backfills epoch timestamps, indexes them, and keeps new rows current (0.350875ms)
+✔ quota ledger migration resumes after an interrupted column add (0.21ms)
+✔ batch quota query reads every key and all three windows in one pass (1.365959ms)
+✖ report 页面用专用 loader，竞态由 useResource 的序号守卫统一丢弃过期响应 (1.350666ms)
+✔ report 页面的取数只跟随 URL 派生的 scope，不把数据写回共享状态 (0.194625ms)
+✔ usage 页只有一次 /api/usage-overview 读取（不再有两段式 core+summaries 合并） (0.347541ms)
+✖ charts 页真的请求 /api/charts 并把 trend 画出来（D3 回归守卫） (0.497041ms)
+✔ cache 筛选依赖响应里的目录但保留当前选中值（换 scope 不清空选择） (0.063084ms)
+✔ usage page core returns without waiting for the all-key aggregate (20.470417ms)
+✔ usage page keeps provider-specific new-input semantics after SQL pre-aggregation (0.27875ms)
+✔ usage key summaries run independently and omit per-key model arrays (0.278916ms)
+✔ usage page skips the all-key aggregate for a selected key (0.126166ms)
+✔ usage page remains internally consistent across a concurrent insert (66.598ms)
+✔ request-details analytics skips chart-only aggregates (0.37875ms)
+✔ charts report omits request details, key rankings, clients, and p95 sort (0.283916ms)
+✔ charts default report preserves the five legacy JSON datasets in one indexed pass (0.459208ms)
+✔ charts latency obtains exact p95 by indexed offset without a window sort (0.57025ms)
+✔ charts latency preserves the discrete percentile on SQLite without percentile extensions (0.676833ms)
+✔ cache trend aggregates in SQLite and preserves aggregate request counts (0.470042ms)
+✔ cache trend filters by key in SQL and by provider in Node while keeping both option counts (0.2495ms)
+✔ slow report routes use persistent snapshots and a bounded configurable read pool (0.731667ms)
+✔ p95 reports use a dedicated one-worker reader outside the core report pool (0.131542ms)
+✔ cache live history never runs a synchronous SQLite seed on the request thread (0.074875ms)
+✔ default report scopes warm at startup and stay warm in the background (0.082292ms)
+✔ bootstrap keeps local keys and quota states when the control plane fails (0.065625ms)
+✔ channel and model index reads honour fresh=1 by dropping the gateway snapshot first (0.071917ms)
+✔ bootstrap always ships a complete quotaState per key even when the quota reader fails (0.096708ms)
+✔ 活代码里只有授权轮询与 SSE 重连两类定时器，不存在隐式的渠道/模型轮询 (1.002417ms)
+✔ cache trend and cache live accept key and provider filters with a v3 snapshot key (0.106875ms)
+✔ report snapshots survive a process-local cache restart (1.788ms)
+✔ stale report snapshots return immediately and refresh once in background (2.694708ms)
+✔ different report scopes never share a persistent entry (1.49625ms)
+✔ report snapshot persistence stays bounded across filter churn (2.580875ms)
+✔ persists and validates the last successful reporting groups (1.969792ms)
+✔ rejects corrupt or unbounded stored group payloads (0.112792ms)
+✔ coalesces concurrent requests for the same analytics key (30.567917ms)
+✔ returns a short-lived cached result without sharing different keys (0.208458ms)
+✔ serves stale data immediately while one deferred refresh runs (3.794417ms)
+✔ keeps stale data when a background refresh fails (21.478792ms)
+✔ clear forces the next run to reload instead of serving the stale-while-revalidate window (1.09ms)
+✔ T1 内核平面：非 magpie 引擎 / socket 不存在都如实报未配置 (1.342542ms)
+✔ T1/T2 内核 socket 不可用时 status 仍可用，plane=local 且数据来自本机 (0.879708ms)
+✔ 内核平面：/internal/rtk 正常应答时可用 (22.950042ms)
+✔ T2 内核平面：旧构建没有 /internal/rtk 缝时报 not_supported 并带状态码 (4.645792ms)
+✔ 中转站平面：未配置 / 缺密钥分开上报 (0.104458ms)
+✔ 中转站平面：404 与 401 分别上报为「路由不存在」和「未授权」 (11.304875ms)
+✔ 中转站平面：远端错误正文里的密钥被脱敏 (2.655291ms)
+✔ 权威平面：内核可用时走内核 (1.217458ms)
+✔ 权威平面：内核旧构建 + 中转站可用时回退到中转站并保留内核原因 (1.497417ms)
+✔ 权威平面：都不可用时回退 local，且不假装已同步 (1.397ms)
+✔ readRTKStatus：权威平面取内核视图，本机开关数据单独给 localAgents (1.398583ms)
+✔ T3 rtk 未安装时拒绝写入并给安装指引，绝不返回成功 (0.605375ms)
+✔ install/upgrade：三个平面都不支持时返回 501，不静默成功 (0.993ms)
+✔ T13 中转站：没有 RTK 管理面 → 501，有面但未开远程写 → 403，两种情况都不发写请求 (13.567041ms)
+✔ 内核写入默认 501（沙箱 HOME，不影响本机 agent 配置），显式打开后才走闸门 (2.654375ms)
+✔ toggle：项目级 agent 与未知 agent 明确拒绝 (0.218167ms)
+✔ 本机写入闸门：RTK_WRITE_MODE=off 全只读，=confirm 需显式确认 (0.12825ms)
+﹣ T5/T10 本机开关：codex 经 rtk CLI 落地，形状与实测一致且 exitCode=0/stderr 为空 (0.020375ms) # SKIP
+﹣ T10 agent 覆盖矩阵：11 个全局 agent 各自 ON→OFF，退出码 0、stderr 为空、状态独立 (0.017167ms) # SKIP
+﹣ 缺陷 1：cursor ON 连带打开的 Claude 配置必须按快照撤回，并如实回传 (0.015167ms) # SKIP
+﹣ 缺陷 1（反向，不许改坏）：claude OFF 连带删掉的 cursor 钩子仍要修回 (0.014917ms) # SKIP
+﹣ 缺陷 1（既有 claude 已开启）：cursor ON 不得改动已有的 claude 配置 (0.016041ms) # SKIP
+✔ 缺陷 2：rtk 未安装时 local 平面不再谎报「已安装」 (0.232791ms)
+✔ 缺陷 3：CLI 把钩子文件写坏时必须按 CLI 之前的原文回填，并保留 409/plane/reason/backup (6.06175ms)
+✔ 缺陷 3（附带）：目录不可写时返回结构化错误，不泄漏服务端临时路径 (0.919125ms)
+✔ 缺陷 4：备份按 RTK_BACKUP_KEEP 轮转，toggle 响应不回传备份历史 (6.340625ms)
+✔ T7 关闭时只移除 rtk 自己那一条，第三方 hook 全部保留 (2.707125ms)
+✔ T4/T6 并发与幂等：连续/并发 ON 之后 rtk 条目只有一条，第三方数量不变 (3.903125ms)
+✔ 已验证 schema 兜底：rtk CLI 不可用时六个 hook agent 形状仍与实测一致 (9.385ms)
+✔ T9 坏 JSON 不覆盖：返回 409、原文件字节不变、备份存在 (0.887917ms)
+﹣ T8 关得掉：CLI ON 之后走控制台 OFF，条目移除且状态回到 on=false (0.022583ms) # SKIP
+✔ 一键回退：从备份原地恢复 agent 配置 (3.531458ms)
+﹣ T11 字段一致性：getRTKStats 与 rtk gain --daily --format json 逐项相等 (0.025834ms) # SKIP
+✔ 本机检测：覆盖 rtk init 支持的全部 agent，项目级 agent 标 supported=false (0.173541ms)
+﹣ 本机检测：注册表覆盖 `rtk init --help` 列出的每个 agent (0.016209ms) # SKIP
+✔ 检测不看说明文件：只有 RTK.md/AGENTS.md 时必须仍是 on=false（否则永远关不掉） (0.259709ms)
+✔ 测试上下文拒绝对真实 home 写入 agent 配置 (0.20675ms)
+✔ P0-1 轮转不得删掉在飞/刚创建的备份：并发 toggle 后每个 backupId 都还能 rollback (10.054125ms)
+✔ P0-1（次要）孤儿备份目录：过保护窗口后清理，status 期间如实计数 (1.176959ms)
+✔ P0-2 OFF 与 ON 共用同一套写后校验：假 CLI 写坏文件时两边都 409 并回填 (9.199125ms)
+✔ P1-a CLI 窗口内的第三方改动必须保留（条目级最小差异还原） (7.278125ms)
+✔ P1-a 结构无法安全还原时不覆盖，如实上报 collateralSkipped (6.816709ms)
+✔ P1-b 目标文件自己的 .bak 纳管：成功后还原用户原件，失败后也回到操作前 (11.960959ms)
+✔ P2 同一 agent 不会同时出现在 reverted 与 restored，collateral 每个 agent 只有一条 (9.023833ms)
+﹣ 红队 ⑥ 宽并发下 rtk CLI 不再互相干扰：6 个 agent × 2 次并发 ON 全部成功 (0.082583ms) # SKIP
+✔ reads a valid snapshot from SQLite after the L1 cache is cleared (1.411083ms)
+✔ returns stale last-good immediately and refreshes once in the background (3.848125ms)
+✔ keeps last-good when a stale refresh fails (0.870667ms)
+✔ treats corrupt or schema-incompatible L2 values as misses and repairs them (0.336042ms)
+✔ returns the last-good snapshot at the max-stale boundary but not beyond it (0.190166ms)
+✔ an expired snapshot is unavailable when its refresh fails (0.376917ms)
+✔ uses a five-minute hard stale limit by default (0.142042ms)
+✔ bounds the process-local snapshot cache with LRU eviction (0.847084ms)
+✔ runs a batch of read-only SQLite queries in a worker (59.330375ms)
+✔ returns query errors without killing the worker (43.472916ms)
+✔ pool run keeps a batch on one worker (39.0825ms)
+✔ pool runParallel preserves result order and uses at most four workers (45.248167ms)
+✔ pool runParallel handles an empty batch without starting a worker (0.136042ms)
+✔ pool remains usable after a parallel query fails (79.873417ms)
+✔ 入口 HTML 不会被静态资源的一小时缓存锁住 (0.455084ms)
+✔ single-flight cycle skips overlapping ticks and runs again after completion (0.37875ms)
+✔ single-flight cycle releases its guard after a failure (0.207333ms)
+✔ control-plane reconciliation keeps quota enforcement but excludes usage collection (0.349667ms)
+✔ schedules collector and reconciliation at independent intervals (0.111ms)
+✔ collector leaves the destructive queue untouched until local groups exist (0.110916ms)
+✔ high-frequency collector reads only persisted reporting groups (2.5475ms)
+✔ collector durably records usage when a CPA key arrives before reconciliation (1.564375ms)
+✔ epochMsForTimestamp normalizes offset timestamps to one absolute timeline (0.357958ms)
+✔ usageWindow emits an indexable predicate and preserves key filtering (0.341584ms)
+✔ timestamp_ms range query is correct across timezone offsets and uses the index (0.404875ms)
+✔ julianday 正确判定时间窗口，字符串比较会误判 (16.019125ms)
+✔ julianday 在跨日边界仍然正确 (0.581209ms)
+✔ INSERT OR IGNORE 重复插入时 changes 为 0 而 lastInsertRowid 陈旧 (0.399292ms)
+✔ allows only one credential upload task at a time (0.627ms)
+✔ cost splits into input, output and cache segments (1.178417ms)
+✔ unpriced models report null, not zero, so "free" is distinguishable (0.223625ms)
+✔ breakdown sorts by cost and aggregates segment totals (0.425292ms)
+✔ unpriced models are listed once by bare name (0.098042ms)
+✔ unpriced rows contribute zero to totals rather than NaN (0.154791ms)
+✔ image rows use the published image token price card (0.058708ms)
+✔ categorizes the production Codex EOF burst as an upstream transport failure (0.419875ms)
+✔ prefers explicit Claude cache read/write segments and derives writes from the same read value (0.121167ms)
+✔ compatible Claude-named models never invent a cache write segment (0.052958ms)
+✔ separates caller input, quota, auth and wrong-endpoint failures (0.052292ms)
+✔ daily series fills gap days so the heatmap keeps calendar spacing (0.762542ms)
+✔ intensity scales against the busiest day in range (0.087542ms)
+✔ cost skips unpriced models instead of guessing a price (0.673125ms)
+✔ cost is null when nothing in range has a known price (0.149208ms)
+✔ cached tokens are priced at the cache rate, not the input rate (0.118292ms)
+✔ providers aggregate their models and keep the biggest one as the headline (0.112625ms)
+✔ cache share measures cache against the new-input/output/cache mix (0.071791ms)
+✔ empty range reports no cost and no best day rather than zeroes (0.054584ms)
+✔ daily points carry the breakdown a hover card needs (0.138417ms)
+✔ gap days expose zeroed detail rather than undefined (0.09525ms)
+ℹ tests 544
+ℹ suites 0
+ℹ pass 530
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 10
+ℹ todo 0
+ℹ duration_ms 988.428083
+
+✖ failing tests:
+
+test at server/analyticsNavigationFallback.test.ts:1:288
+✖ 请求明细页在 keyUsage 缺失时不解引用（活代码：AnalyticsPage.vue） (1.630625ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /v-for="k in keyUsage"/. Input:
+  
+  '<script setup lang="ts">\n' +
+    "import { computed, ref, watch } from 'vue'\n" +
+    "import { TxCard } from '@talex-touch/tuffex/card'\n" +
+    "import { TxDataTable } from '@talex-touch/tuffex/data-table'\n" +
+    "import { TxButton } from '@talex-touch/tuffex/button'\n" +
+    "import { TxStatusBadge } from '@talex-touch/tuffex/status-badge'\n" +
+    "import { TxSelect, TxSelectItem } from '@talex-touch/tuffex/select'\n" +
+    "import { TxInput } from '@talex-touch/tuffex/input'\n" +
+    "import { TxPagination } from '@talex-touch/tuffex/pagination'\n" +
+    "import PageHeader from '../components/PageHeader.vue'\n" +
+    "import ErrorPanel from '../components/ErrorPanel.vue'\n" +
+    "import LoadingBlock from '../components/LoadingBlock.vue'\n" +
+    "import EmptyState from '../components/EmptyState.vue'\n" +
+    "import RequestDetail from '../components/RequestDetail.vue'\n" +
+    "import { CLIENT_LABELS } from '../clientLabels'\n" +
+    "import { api } from '../api'\n" +
+    "import { debounce, paginate, useQueryState } from '../lib/listState'\n" +
+    "import { useResource } from '../lib/resource'\n" +
+    "import { fmtClock, fmtCompact, fmtLatency, fmtPercent } from '../lib/format'\n" +
+    "import type { AnalyticsData, ApiKeyItem, RequestDetailItem } from '../types'\n" +
+    '\n' +
+    'const PAGE_SIZE = 20\n' +
+    '\n' +
+    '/** 筛选、搜索、分页全部写进 URL：深链、刷新、后退都回到同一视图（对照参考实现 repos 列表的深链做法）。 */\n' +
+    "const scope = useQueryState({ days: '7', keyId: '', q: '', page: '1' })\n" +
+    'const days = computed(() => {\n' +
+    '  const value = Number(scope.state.days)\n' +
+    '  return [1, 7, 30, 90].includes(value) ? value : 7\n' +
+    '})\n' +
+    '\n' +
+    'const res = useResource(\n' +
+    '  // D1：这里必须用 /api/analytics（AnalyticsData 的形状），原实现误调 /api/usage-breakdown，\n' +
+    '  // 两者除 days 外零字段重叠，真实错误率被渲染成 0.0%。类型与请求同源，取错接口会直接编译不过。\n' +
+    '  () => api.analytics<AnalyticsData>(days.value, scope.state.keyId),\n' +
+    '  [() => scope.state.days, () => scope.state.keyId],\n' +
+    ')\n' +
+    '/** 密钥清单只取一次，用来填充 Key 筛选（原实现里筛选框永远是空的）。 */\n' +
+    'const keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])\n' +
+    '\n' +
+    'const analytics = computed(() => res.data.value)\n' +
+    'const keys = computed(() => keysRes.data.value?.keys ?? [])\n' +
+    'const error = computed(() => res.error.value ?? keysRes.error.value)\n' +
+    'const showSkeleton = computed(() => !analytics.value && !error.value)\n' +
+    'const reloadAll = () => Promise.all([res.reload(), keysRes.reload()])\n' +
+    '\n' +
+    'const selectedRequest = ref<RequestDetailItem | null>(null)\n' +
+    'const detailOpen = ref(false)\n' +
+    '\n' +
+    'const summary = computed(() => analytics.value?.summary)\n' +
+    'const keyUsage = computed(() => analytics.value?.keyUsage ?? [])\n' +
+    'const clients = computed(() => analytics.value?.clients ?? [])\n' +
+    'const requests = computed(() => analytics.value?.requests ?? [])\n' +
+    '\n' +
+    'const metrics = computed(() => [\n' +
+    "  { label: '请求量', value: fmtCompact(summary.value?.requests || 0), desc: '总调用次数' },\n" +
+    "  { label: 'Token 消耗', value: fmtCompact(summary.value?.tokens || 0), desc: '输入 + 输出 tokens' },\n" +
+    '  {\n' +
+    "    label: '错误率',\n" +
+    '    value: fmtPercent(summary.value?.errorRate),\n' +
+    "    desc: (summary.value?.errorRate || 0) > 0.05 ? '存在异常拦截' : '健康稳定',\n" +
+    '    alert: (summary.value?.errorRate || 0) > 0.05,\n' +
+    '  },\n' +
+    "  { label: '平均响应时间', value: fmtLatency(summary.value?.avgLatency || 0), desc: '端到端延迟' },\n" +
+    '])\n' +
+    '\n' +
+    '// 搜索：输入即时反馈，300ms 后才写 URL；改筛选时页码回到第 1 页。\n' +
+    'const searchInput = ref(scope.state.q)\n' +
+    "const applySearch = debounce(() => scope.patch({ q: searchInput.value.trim(), page: '1' }), 300)\n" +
+    'watch(searchInput, () => applySearch())\n' +
+    '// 深链 / 后退把 URL 上的关键词回填到输入框。\n' +
+    'watch(\n' +
+    '  () => scope.state.q,\n' +
+    '  (value) => {\n' +
+    '    if (value !== searchInput.value.trim()) searchInput.value = value\n' +
+    '  },\n' +
+    ')\n' +
+    '\n' +
+    'const filtered = computed(() => {\n' +
+    '  const needle = scope.state.q.trim().toLowerCase()\n' +
+    '  if (!needle) return requests.value\n' +
+    '  return requests.value.filter((row) =>\n' +
+    "    [row.model, row.requestId, row.clientType, CLIENT_LABELS[row.clientType || 'unknown']]\n" +
+    "      .some((field) => String(field ?? '').toLowerCase().includes(needle)),\n" +
+    '  )\n' +
+    '})\n' +
+    'const paged = computed(() => paginate(filtered.value, Number(scope.state.page), PAGE_SIZE))\n' +
+    '// 数据变少时把越界页码夹回范围内，避免停在空白页。\n' +
+    'watch(\n' +
+    '  () => paged.value.page,\n' +
+    '  (page) => {\n' +
+    '    if (String(page) !== scope.state.page) scope.state.page = String(page)\n' +
+    '  },\n' +
+    ')\n' +
+    'const hasFilter = computed(() => Boolean(scope.state.q.trim()) || Boolean(scope.state.keyId))\n' +
+    '\n' +
+    'const columns = [\n' +
+    "  { key: 'time', title: '时间', width: 140 },\n" +
+    "  { key: 'model', title: '模型', width: 180 },\n" +
+    "  { key: 'client', title: '客户端', width: 140 },\n" +
+    "  { key: 'status', title: '状态', width: 90 },\n" +
+    "  { key: 'latency', title: '耗时', width: 100, align: 'right' as const },\n" +
+    "  { key: 'tokens', title: 'Tokens', width: 110, align: 'right' as const },\n" +
+    "  { key: 'requestId', title: '请求 ID', minWidth: 160 },\n" +
+    ']\n' +
+    '\n' +
+    'function openDetail(req: RequestDetailItem) {\n' +
+    '  selectedRequest.value = req\n' +
+    '  detailOpen.value = true\n' +
+    '}\n' +
+    '\n' +
+    'function setDays(val: string | number) {\n' +
+    "  scope.patch({ days: String(val), page: '1' })\n" +
+    '}\n' +
+    '\n' +
+    'function setKey(val: string | number) {\n' +
+    "  scope.patch({ keyId: String(val), page: '1' })\n" +
+    '}\n' +
+    '\n' +
+    'function clearFilters() {\n' +
+    "  scope.patch({ q: '', keyId: '', page: '1' })\n" +
+    "  searchInput.value = ''\n" +
+    '}\n' +
+    '</script>\n' +
+    '\n' +
+    '<template>\n' +
+    '  <div class="page-stack analytics-page">\n' +
+    '    <PageHeader\n' +
+    '      title="使用统计与请求明细"\n' +
+    '      description="按 API Key、渠道和模型分析调用量、Token、延迟与错误趋势，点击列表可下钻查看单次请求参数；筛选、搜索与页码都写在地址栏里。"\n' +
+    '    >\n' +
+    '      <template #actions>\n' +
+    '        <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="setKey">\n' +
+    '          <TxSelectItem value="" label="全部 API Key" />\n' +
+    '          <TxSelectItem v-for="k in keys" :key="k.id" :value="k.id" :label="k.name" />\n' +
+    '        </TxSelect>\n' +
+    '        <TxSelect :model-value="scope.state.days" placeholder="选择统计周期" class="w-130px" @update:model-value="setDays">\n' +
+    '          <TxSelectItem value="1" label="最近 24 小时" />\n' +
+    '          <TxSelectItem value="7" label="最近 7 天" />\n' +
+    '          <TxSelectItem value="30" label="最近 30 天" />\n' +
+    '          <TxSelectItem value="90" label="最近 90 天" />\n' +
+    '        </TxSelect>\n' +
+    '        <TxButton variant="secondary" :loading="res.loading.value" @click="reloadAll">\n' +
+    '          刷新\n' +
+    '        </TxButton>\n' +
+    '      </template>\n' +
+    '    </PageHeader>\n' +
+    '\n' +
+    '    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->\n' +
+    '    <ErrorPanel v-if="error && !analytics" :error="error" :retry="reloadAll" />\n' +
+    '    <LoadingBlock v-else-if="showSkeleton" :lines="8" label="正在读取使用统计" />\n' +
+    '\n' +
+    '    <template v-else>\n' +
+    '    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->\n' +
+    '    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"\n' +
+    '      stale-hint="下方仍是最近一次成功读取的请求明细，可以继续查看。" />\n' +
+    '\n' +
+    '\n' +
+    '    <!-- 汇总指标卡 -->\n' +
+    '    <div class="metric-row">\n' +
+    `      <TxCard v-for="m in metrics" :key="m.label" class="stat-box" :class="{ 'stat-box--alert': m.alert }">\n` +
+    '        <span class="stat-label">{{ m.label }}</span>\n' +
+    '        <strong class="stat-value">{{ m.value }}</strong>\n' +
+    '        <small class="stat-sub">{{ m.desc }}</small>\n' +
+    '      </TxCard>\n' +
+    '    </div>\n' +
+    '\n' +
+    '    <!-- 中间排行与分布卡片 -->\n' +
+    '    <div class="ranking-grid">\n' +
+    '      <TxCard :padding="16" class="rank-card">\n' +
+    '        <template #header>\n' +
+    '          <div class="card-head">\n' +
+    '            <strong>API Key 使用排行</strong>\n' +
+    '            <span class="count">{{ keyUsage.length }} 个 Key</span>\n' +
+    '          </div>\n' +
+    '        </template>\n' +
+    '        <div class="rank-list scroll-area">\n' +
+    '          <div v-if="!keyUsage.length" class="text-muted text-center py-4">无 Key 使用数据</div>\n' +
+    '          <div v-for="(k, idx) in keyUsage" :key="k.id" class="rank-item">\n' +
+    `            <span class="rank-idx mono">{{ String(idx + 1).padStart(2, '0') }}</span>\n` +
+    '            <span class="rank-name" :title="k.name">{{ k.name }}</span>\n' +
+    '            <div class="rank-bar-wrap">\n' +
+    '              <span class="rank-bar-fill" :style="{ width: `${Math.max(2, Math.min(100, (k.requests / Math.max(1, keyUsage[0]?.requests || 1)) * 100))}%` }" />\n' +
+    '            </div>\n' +
+    '            <span class="rank-count mono">{{ fmtCompact(k.requests) }} 次</span>\n' +
+    '            <span class="rank-err mono" :class="{ bad: k.errorRate > 0.1 }">{{ fmtPercent(k.errorRate) }}</span>\n' +
+    '          </div>\n' +
+    '        </div>\n' +
+    '      </TxCard>\n' +
+    '\n' +
+    '      <TxCard :padding="16" class="rank-card">\n' +
+    '        <template #header>\n' +
+    '          <div class="card-head">\n' +
+    '            <strong>调用客户端分布</strong>\n' +
+    '            <span class="count">{{ clients.length }} 类</span>\n' +
+    '          </div>\n' +
+    '        </template>\n' +
+    '        <div class="rank-list scroll-area">\n' +
+    '          <div v-if="!clients.length" class="text-muted text-center py-4">无客户端调用记录</div>\n' +
+    '          <div v-for="(c, idx) in clients" :key="c.type" class="rank-item">\n' +
+    `            <span class="rank-idx mono">{{ String(idx + 1).padStart(2, '0') }}</span>\n` +
+    '            <span class="rank-name" :title="c.label">{{ c.label }}</span>\n' +
+    '            <div class="rank-bar-wrap">\n' +
+    '              <span class="rank-bar-fill" :style="{ width: `${Math.max(2, Math.min(100, (c.requests / Math.max(1, clients[0]?.requests || 1)) * 100))}%` }" />\n' +
+    '            </div>\n' +
+    '            <span class="rank-count mono">{{ fmtCompact(c.requests) }} 次</span>\n' +
+    '            <span class="rank-err mono" :class="{ bad: c.errorRate > 0.1 }">{{ fmtPercent(c.errorRate) }}</span>\n' +
+    '          </div>\n' +
+    '        </div>\n' +
+    '      </TxCard>\n' +
+    '    </div>\n' +
+    '\n' +
+    '    <!-- 请求明细数据表格 -->\n' +
+    '    <TxCard :padding="16" class="requests-card">\n' +
+    '      <template #header>\n' +
+    '        <div class="card-head">\n' +
+    '          <strong>请求明细流水</strong>\n' +
+    '          <span class="count">\n' +
+    '            共 {{ filtered.length }} 条记录<template v-if="hasFilter">（已筛选，原 {{ requests.length }} 条）</template>\n' +
+    '          </span>\n' +
+    '          <div class="requests-toolbar">\n' +
+    '            <TxInput\n' +
+    '              v-model="searchInput"\n' +
+    '              type="text"\n' +
+    '              clearable\n' +
+    '              placeholder="搜索模型 / 请求 ID / 客户端"\n' +
+    '              class="requests-search"\n' +
+    '              aria-label="搜索请求明细"\n' +
+    '            />\n' +
+    '            <TxButton v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">清除筛选</TxButton>\n' +
+    '          </div>\n' +
+    '        </div>\n' +
+    '      </template>\n' +
+    '\n' +
+    '      <TxDataTable\n' +
+    '        :columns="columns"\n' +
+    '        :data="paged.rows"\n' +
+    '        row-key="requestId"\n' +
+    '        striped\n' +
+    '        bordered\n' +
+    '        scroll-x\n' +
+    '        :loading="res.loading.value"\n' +
+    '        class="requests-table"\n' +
+    '      >\n' +
+    '        <template #cell-time="{ row }: { row: RequestDetailItem }">\n' +
+    '          <span class="mono text-muted text-xs">{{ fmtClock(row.timestamp) }}</span>\n' +
+    '        </template>\n' +
+    '\n' +
+    '        <template #cell-model="{ row }: '... 4928 more characters
+  
+      at TestContext.<anonymous> (/Users/crosery/work_file/crosery-api-console/server/analyticsNavigationFallback.test.ts:17:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1397:25)
+      at Test.start (node:internal/test_runner/test:1257:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<script setup lang="ts">\nimport { computed, ref, watch } from \'vue\'\nimport { TxCard } from \'@talex-touch/tuffex/card\'\nimport { TxDataTable } from \'@talex-touch/tuffex/data-table\'\nimport { TxButton } from \'@talex-touch/tuffex/button\'\nimport { TxStatusBadge } from \'@talex-touch/tuffex/status-badge\'\nimport { TxSelect, TxSelectItem } from \'@talex-touch/tuffex/select\'\nimport { TxInput } from \'@talex-touch/tuffex/input\'\nimport { TxPagination } from \'@talex-touch/tuffex/pagination\'\nimport PageHeader from \'../components/PageHeader.vue\'\nimport ErrorPanel from \'../components/ErrorPanel.vue\'\nimport LoadingBlock from \'../components/LoadingBlock.vue\'\nimport EmptyState from \'../components/EmptyState.vue\'\nimport RequestDetail from \'../components/RequestDetail.vue\'\nimport { CLIENT_LABELS } from \'../clientLabels\'\nimport { api } from \'../api\'\nimport { debounce, paginate, useQueryState } from \'../lib/listState\'\nimport { useResource } from \'../lib/resource\'\nimport { fmtClock, fmtCompact, fmtLatency, fmtPercent } from \'../lib/format\'\nimport type { AnalyticsData, ApiKeyItem, RequestDetailItem } from \'../types\'\n\nconst PAGE_SIZE = 20\n\n/** 筛选、搜索、分页全部写进 URL：深链、刷新、后退都回到同一视图（对照参考实现 repos 列表的深链做法）。 */\nconst scope = useQueryState({ days: \'7\', keyId: \'\', q: \'\', page: \'1\' })\nconst days = computed(() => {\n  const value = Number(scope.state.days)\n  return [1, 7, 30, 90].includes(value) ? value : 7\n})\n\nconst res = useResource(\n  // D1：这里必须用 /api/analytics（AnalyticsData 的形状），原实现误调 /api/usage-breakdown，\n  // 两者除 days 外零字段重叠，真实错误率被渲染成 0.0%。类型与请求同源，取错接口会直接编译不过。\n  () => api.analytics<AnalyticsData>(days.value, scope.state.keyId),\n  [() => scope.state.days, () => scope.state.keyId],\n)\n/** 密钥清单只取一次，用来填充 Key 筛选（原实现里筛选框永远是空的）。 */\nconst keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])\n\nconst analytics = computed(() => res.data.value)\nconst keys = computed(() => keysRes.data.value?.keys ?? [])\nconst error = computed(() => res.error.value ?? keysRes.error.value)\nconst showSkeleton = computed(() => !analytics.value && !error.value)\nconst reloadAll = () => Promise.all([res.reload(), keysRes.reload()])\n\nconst selectedRequest = ref<RequestDetailItem | null>(null)\nconst detailOpen = ref(false)\n\nconst summary = computed(() => analytics.value?.summary)\nconst keyUsage = computed(() => analytics.value?.keyUsage ?? [])\nconst clients = computed(() => analytics.value?.clients ?? [])\nconst requests = computed(() => analytics.value?.requests ?? [])\n\nconst metrics = computed(() => [\n  { label: \'请求量\', value: fmtCompact(summary.value?.requests || 0), desc: \'总调用次数\' },\n  { label: \'Token 消耗\', value: fmtCompact(summary.value?.tokens || 0), desc: \'输入 + 输出 tokens\' },\n  {\n    label: \'错误率\',\n    value: fmtPercent(summary.value?.errorRate),\n    desc: (summary.value?.errorRate || 0) > 0.05 ? \'存在异常拦截\' : \'健康稳定\',\n    alert: (summary.value?.errorRate || 0) > 0.05,\n  },\n  { label: \'平均响应时间\', value: fmtLatency(summary.value?.avgLatency || 0), desc: \'端到端延迟\' },\n])\n\n// 搜索：输入即时反馈，300ms 后才写 URL；改筛选时页码回到第 1 页。\nconst searchInput = ref(scope.state.q)\nconst applySearch = debounce(() => scope.patch({ q: searchInput.value.trim(), page: \'1\' }), 300)\nwatch(searchInput, () => applySearch())\n// 深链 / 后退把 URL 上的关键词回填到输入框。\nwatch(\n  () => scope.state.q,\n  (value) => {\n    if (value !== searchInput.value.trim()) searchInput.value = value\n  },\n)\n\nconst filtered = computed(() => {\n  const needle = scope.state.q.trim().toLowerCase()\n  if (!needle) return requests.value\n  return requests.value.filter((row) =>\n    [row.model, row.requestId, row.clientType, CLIENT_LABELS[row.clientType || \'unknown\']]\n      .some((field) => String(field ?? \'\').toLowerCase().includes(needle)),\n  )\n})\nconst paged = computed(() => paginate(filtered.value, Number(scope.state.page), PAGE_SIZE))\n// 数据变少时把越界页码夹回范围内，避免停在空白页。\nwatch(\n  () => paged.value.page,\n  (page) => {\n    if (String(page) !== scope.state.page) scope.state.page = String(page)\n  },\n)\nconst hasFilter = computed(() => Boolean(scope.state.q.trim()) || Boolean(scope.state.keyId))\n\nconst columns = [\n  { key: \'time\', title: \'时间\', width: 140 },\n  { key: \'model\', title: \'模型\', width: 180 },\n  { key: \'client\', title: \'客户端\', width: 140 },\n  { key: \'status\', title: \'状态\', width: 90 },\n  { key: \'latency\', title: \'耗时\', width: 100, align: \'right\' as const },\n  { key: \'tokens\', title: \'Tokens\', width: 110, align: \'right\' as const },\n  { key: \'requestId\', title: \'请求 ID\', minWidth: 160 },\n]\n\nfunction openDetail(req: RequestDetailItem) {\n  selectedRequest.value = req\n  detailOpen.value = true\n}\n\nfunction setDays(val: string | number) {\n  scope.patch({ days: String(val), page: \'1\' })\n}\n\nfunction setKey(val: string | number) {\n  scope.patch({ keyId: String(val), page: \'1\' })\n}\n\nfunction clearFilters() {\n  scope.patch({ q: \'\', keyId: \'\', page: \'1\' })\n  searchInput.value = \'\'\n}\n</script>\n\n<template>\n  <div class="page-stack analytics-page">\n    <PageHeader\n      title="使用统计与请求明细"\n      description="按 API Key、渠道和模型分析调用量、Token、延迟与错误趋势，点击列表可下钻查看单次请求参数；筛选、搜索与页码都写在地址栏里。"\n    >\n      <template #actions>\n        <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="setKey">\n          <TxSelectItem value="" label="全部 API Key" />\n          <TxSelectItem v-for="k in keys" :key="k.id" :value="k.id" :label="k.name" />\n        </TxSelect>\n        <TxSelect :model-value="scope.state.days" placeholder="选择统计周期" class="w-130px" @update:model-value="setDays">\n          <TxSelectItem value="1" label="最近 24 小时" />\n          <TxSelectItem value="7" label="最近 7 天" />\n          <TxSelectItem value="30" label="最近 30 天" />\n          <TxSelectItem value="90" label="最近 90 天" />\n        </TxSelect>\n        <TxButton variant="secondary" :loading="res.loading.value" @click="reloadAll">\n          刷新\n        </TxButton>\n      </template>\n    </PageHeader>\n\n    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->\n    <ErrorPanel v-if="error && !analytics" :error="error" :retry="reloadAll" />\n    <LoadingBlock v-else-if="showSkeleton" :lines="8" label="正在读取使用统计" />\n\n    <template v-else>\n    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->\n    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"\n      stale-hint="下方仍是最近一次成功读取的请求明细，可以继续查看。" />\n\n\n    <!-- 汇总指标卡 -->\n    <div class="metric-row">\n      <TxCard v-for="m in metrics" :key="m.label" class="stat-box" :class="{ \'stat-box--alert\': m.alert }">\n        <span class="stat-label">{{ m.label }}</span>\n        <strong class="stat-value">{{ m.value }}</strong>\n        <small class="stat-sub">{{ m.desc }}</small>\n      </TxCard>\n    </div>\n\n    <!-- 中间排行与分布卡片 -->\n    <div class="ranking-grid">\n      <TxCard :padding="16" class="rank-card">\n        <template #header>\n          <div class="card-head">\n            <strong>API Key 使用排行</strong>\n            <span class="count">{{ keyUsage.length }} 个 Key</span>\n          </div>\n        </template>\n        <div class="rank-list scroll-area">\n          <div v-if="!keyUsage.length" class="text-muted text-center py-4">无 Key 使用数据</div>\n          <div v-for="(k, idx) in keyUsage" :key="k.id" class="rank-item">\n            <span class="rank-idx mono">{{ String(idx + 1).padStart(2, \'0\') }}</span>\n            <span class="rank-name" :title="k.name">{{ k.name }}</span>\n            <div class="rank-bar-wrap">\n              <span class="rank-bar-fill" :style="{ width: `${Math.max(2, Math.min(100, (k.requests / Math.max(1, keyUsage[0]?.requests || 1)) * 100))}%` }" />\n            </div>\n            <span class="rank-count mono">{{ fmtCompact(k.requests) }} 次</span>\n            <span class="rank-err mono" :class="{ bad: k.errorRate > 0.1 }">{{ fmtPercent(k.errorRate) }}</span>\n          </div>\n        </div>\n      </TxCard>\n\n      <TxCard :padding="16" class="rank-card">\n        <template #header>\n          <div class="card-head">\n            <strong>调用客户端分布</strong>\n            <span class="count">{{ clients.length }} 类</span>\n          </div>\n        </template>\n        <div class="rank-list scroll-area">\n          <div v-if="!clients.length" class="text-muted text-center py-4">无客户端调用记录</div>\n          <div v-for="(c, idx) in clients" :key="c.type" class="rank-item">\n            <span class="rank-idx mono">{{ String(idx + 1).padStart(2, \'0\') }}</span>\n            <span class="rank-name" :title="c.label">{{ c.label }}</span>\n            <div class="rank-bar-wrap">\n              <span class="rank-bar-fill" :style="{ width: `${Math.max(2, Math.min(100, (c.requests / Math.max(1, clients[0]?.requests || 1)) * 100))}%` }" />\n            </div>\n            <span class="rank-count mono">{{ fmtCompact(c.requests) }} 次</span>\n            <span class="rank-err mono" :class="{ bad: c.errorRate > 0.1 }">{{ fmtPercent(c.errorRate) }}</span>\n          </div>\n        </div>\n      </TxCard>\n    </div>\n\n    <!-- 请求明细数据表格 -->\n    <TxCard :padding="16" class="requests-card">\n      <template #header>\n        <div class="card-head">\n          <strong>请求明细流水</strong>\n          <span class="count">\n            共 {{ filtered.length }} 条记录<template v-if="hasFilter">（已筛选，原 {{ requests.length }} 条）</template>\n          </span>\n          <div class="requests-toolbar">\n            <TxInput\n              v-model="searchInput"\n              type="text"\n              clearable\n              placeholder="搜索模型 / 请求 ID / 客户端"\n              class="requests-search"\n              aria-label="搜索请求明细"\n            />\n            <TxButton v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">清除筛选</TxButton>\n          </div>\n        </div>\n      </template>\n\n      <TxDataTable\n        :columns="columns"\n        :data="paged.rows"\n        row-key="requestId"\n        striped\n        bordered\n        scroll-x\n        :loading="res.loading.value"\n        class="requests-table"\n      >\n        <template #cell-time="{ row }: { row: RequestDetailItem }">\n          <span class="mono text-muted text-xs">{{ fmtClock(row.timestamp) }}</span>\n        </template>\n\n        <template #cell-model="{ row }: '... 4928 more characters,
+    expected: /v-for="k in keyUsage"/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at server/magpieOAuth.test.ts:1:1
+✖ server/magpieOAuth.test.ts (104.184291ms)
+  'test failed'
+
+test at server/reportPageFrontend.test.ts:1:529
+✖ report 页面用专用 loader，竞态由 useResource 的序号守卫统一丢弃过期响应 (1.350666ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /if \(mine === seq && !disposed\) data\.value = result/. Input:
+  
+  '/**\n' +
+    ' * 一次读取 / 一次写入的状态机。\n' +
+    ' *\n' +
+    ' * 对照参考实现 `geek_main/app/console/src/lib/resource.ts:1-58`（逐行移植，仅补充注释与 `refetch` 别名）：\n' +
+    ' * - `useResource`：加载中、失败、数据三态；依赖变化自动重取；按序号丢弃过期响应，避免慢请求覆盖新结果；\n' +
+    ' *   成功前不碰旧数据，所以刷新列表时页面不会闪空。\n' +
+    ' * - `useAction`：写操作进行中 / 错误；成功返回结果，失败返回 undefined 并把错误留在 `error` 上。\n' +
+    ' */\n' +
+    "import { onScopeDispose, ref, shallowRef, watch, type Ref, type WatchSource } from 'vue'\n" +
+    '\n' +
+    'export type Resource<T> = {\n' +
+    '  data: Ref<T | undefined>\n' +
+    '  error: Ref<unknown>\n' +
+    '  loading: Ref<boolean>\n' +
+    '  /** 首次加载（还没有任何数据）时为 true，用于「首次骨架 / 刷新不闪空」的分支。 */\n' +
+    '  initial: Ref<boolean>\n' +
+    '  reload: () => Promise<void>\n' +
+    '}\n' +
+    '\n' +
+    '/**\n' +
+    ' * 读取一次接口。`deps` 变化时重新读取，旧请求的结果按序号丢弃。\n' +
+    ' * 刷新时保留旧数据（成功前 `data` 不被清空），所以列表不会闪空。\n' +
+    ' */\n' +
+    'export function useResource<T>(\n' +
+    '  fetcher: () => Promise<T>,\n' +
+    '  deps: WatchSource[] = [],\n' +
+    '  options: { enabled?: () => boolean } = {},\n' +
+    '): Resource<T> {\n' +
+    '  const data = shallowRef<T>()\n' +
+    '  const error = shallowRef<unknown>(null)\n' +
+    '  const loading = ref(false)\n' +
+    '  const initial = ref(true)\n' +
+    '  let seq = 0\n' +
+    '  let disposed = false\n' +
+    '\n' +
+    '  async function reload() {\n' +
+    '    if (options.enabled && !options.enabled()) return\n' +
+    '    const mine = ++seq\n' +
+    '    loading.value = true\n' +
+    '    error.value = null\n' +
+    '    try {\n' +
+    '      const result = await fetcher()\n' +
+    '      if (mine === seq && !disposed) {\n' +
+    '        data.value = result\n' +
+    '        initial.value = false\n' +
+    '      }\n' +
+    '    } catch (err) {\n' +
+    '      if (mine === seq && !disposed) error.value = err\n' +
+    '    } finally {\n' +
+    '      if (mine === seq && !disposed) loading.value = false\n' +
+    '    }\n' +
+    '  }\n' +
+    '\n' +
+    '  watch(deps, () => void reload(), { immediate: true })\n' +
+    '  onScopeDispose(() => {\n' +
+    '    disposed = true\n' +
+    '  })\n' +
+    '  return { data, error, loading, initial, reload }\n' +
+    '}\n' +
+    '\n' +
+    '/** 一次写操作的状态：进行中与错误；成功返回结果，失败返回 undefined 并记下错误。 */\n' +
+    'export function useAction<A extends unknown[], R>(run: (...args: A) => Promise<R>) {\n' +
+    '  const pending = ref(false)\n' +
+    '  const error = shallowRef<unknown>(null)\n' +
+    '  async function execute(...args: A): Promise<R | undefined> {\n' +
+    '    pending.value = true\n' +
+    '    error.value = null\n' +
+    '    try {\n' +
+    '      return await run(...args)\n' +
+    '    } catch (err) {\n' +
+    '      error.value = err\n' +
+    '      return undefined\n' +
+    '    } finally {\n' +
+    '      pending.value = false\n' +
+    '    }\n' +
+    '  }\n' +
+    '  return {\n' +
+    '    pending,\n' +
+    '    error,\n' +
+    '    execute,\n' +
+    '    reset: () => {\n' +
+    '      error.value = null\n' +
+    '    },\n' +
+    '  }\n' +
+    '}\n'
+  
+      at TestContext.<anonymous> (/Users/crosery/work_file/crosery-api-console/server/reportPageFrontend.test.ts:31:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1397:25)
+      at Test.start (node:internal/test_runner/test:1257:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: "/**\n * 一次读取 / 一次写入的状态机。\n *\n * 对照参考实现 `geek_main/app/console/src/lib/resource.ts:1-58`（逐行移植，仅补充注释与 `refetch` 别名）：\n * - `useResource`：加载中、失败、数据三态；依赖变化自动重取；按序号丢弃过期响应，避免慢请求覆盖新结果；\n *   成功前不碰旧数据，所以刷新列表时页面不会闪空。\n * - `useAction`：写操作进行中 / 错误；成功返回结果，失败返回 undefined 并把错误留在 `error` 上。\n */\nimport { onScopeDispose, ref, shallowRef, watch, type Ref, type WatchSource } from 'vue'\n\nexport type Resource<T> = {\n  data: Ref<T | undefined>\n  error: Ref<unknown>\n  loading: Ref<boolean>\n  /** 首次加载（还没有任何数据）时为 true，用于「首次骨架 / 刷新不闪空」的分支。 */\n  initial: Ref<boolean>\n  reload: () => Promise<void>\n}\n\n/**\n * 读取一次接口。`deps` 变化时重新读取，旧请求的结果按序号丢弃。\n * 刷新时保留旧数据（成功前 `data` 不被清空），所以列表不会闪空。\n */\nexport function useResource<T>(\n  fetcher: () => Promise<T>,\n  deps: WatchSource[] = [],\n  options: { enabled?: () => boolean } = {},\n): Resource<T> {\n  const data = shallowRef<T>()\n  const error = shallowRef<unknown>(null)\n  const loading = ref(false)\n  const initial = ref(true)\n  let seq = 0\n  let disposed = false\n\n  async function reload() {\n    if (options.enabled && !options.enabled()) return\n    const mine = ++seq\n    loading.value = true\n    error.value = null\n    try {\n      const result = await fetcher()\n      if (mine === seq && !disposed) {\n        data.value = result\n        initial.value = false\n      }\n    } catch (err) {\n      if (mine === seq && !disposed) error.value = err\n    } finally {\n      if (mine === seq && !disposed) loading.value = false\n    }\n  }\n\n  watch(deps, () => void reload(), { immediate: true })\n  onScopeDispose(() => {\n    disposed = true\n  })\n  return { data, error, loading, initial, reload }\n}\n\n/** 一次写操作的状态：进行中与错误；成功返回结果，失败返回 undefined 并记下错误。 */\nexport function useAction<A extends unknown[], R>(run: (...args: A) => Promise<R>) {\n  const pending = ref(false)\n  const error = shallowRef<unknown>(null)\n  async function execute(...args: A): Promise<R | undefined> {\n    pending.value = true\n    error.value = null\n    try {\n      return await run(...args)\n    } catch (err) {\n      error.value = err\n      return undefined\n    } finally {\n      pending.value = false\n    }\n  }\n  return {\n    pending,\n    error,\n    execute,\n    reset: () => {\n      error.value = null\n    },\n  }\n}\n",
+    expected: /if \(mine === seq && !disposed\) data\.value = result/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at server/reportPageFrontend.test.ts:1:2260
+✖ charts 页真的请求 /api/charts 并把 trend 画出来（D3 回归守卫） (0.497041ms)
+  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /加载图表数据中/. Input:
+  
+  '<script setup lang="ts">\n' +
+    "import { computed } from 'vue'\n" +
+    "import { TxCard } from '@talex-touch/tuffex/card'\n" +
+    "import { TxButton } from '@talex-touch/tuffex/button'\n" +
+    "import { TxSelect, TxSelectItem } from '@talex-touch/tuffex/select'\n" +
+    "import { TxTag } from '@talex-touch/tuffex/tag'\n" +
+    "import PageHeader from '../components/PageHeader.vue'\n" +
+    "import ErrorPanel from '../components/ErrorPanel.vue'\n" +
+    "import LoadingBlock from '../components/LoadingBlock.vue'\n" +
+    "import EmptyState from '../components/EmptyState.vue'\n" +
+    "import { api } from '../api'\n" +
+    "import { useQueryState } from '../lib/listState'\n" +
+    "import { useResource } from '../lib/resource'\n" +
+    "import { fmtCompact, fmtLatency, fmtPercent } from '../lib/format'\n" +
+    "import type { ApiKeyItem, ChartsData } from '../types'\n" +
+    '\n' +
+    '/**\n' +
+    ' * 图表分析：真的请求 /api/charts（红队 D3：原来 18 行占位、永久显示「加载图表数据中...」且从不发请求）。\n' +
+    ' * 加载态用受控骨架：有数据就绝不显示（对照 TUF `components/LoadingBlock.vue:10-13` 的用法）。\n' +
+    ' * 统计周期与 Key 进 URL，刷新/分享链接保持同一视图。\n' +
+    ' */\n' +
+    "const scope = useQueryState({ days: '7', keyId: '' })\n" +
+    'const days = computed(() => {\n' +
+    '  const value = Number(scope.state.days)\n' +
+    '  return [1, 7, 30, 90].includes(value) ? value : 7\n' +
+    '})\n' +
+    '\n' +
+    'const res = useResource(\n' +
+    '  () => api.charts<ChartsData>(days.value, scope.state.keyId),\n' +
+    '  [() => scope.state.days, () => scope.state.keyId],\n' +
+    ')\n' +
+    'const keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])\n' +
+    '\n' +
+    'const charts = computed(() => res.data.value)\n' +
+    'const keys = computed(() => keysRes.data.value?.keys ?? [])\n' +
+    'const error = computed(() => res.error.value ?? keysRes.error.value)\n' +
+    'const reloadAll = () => Promise.all([res.reload(), keysRes.reload()])\n' +
+    '\n' +
+    'const trend = computed(() => charts.value?.trend ?? [])\n' +
+    'const groups = computed(() => charts.value?.groups ?? [])\n' +
+    'const models = computed(() => charts.value?.models ?? [])\n' +
+    'const latency = computed(() => charts.value?.latency ?? [])\n' +
+    'const statusCodes = computed(() => charts.value?.statusCodes ?? [])\n' +
+    'const errorCategories = computed(() => charts.value?.errorCategories ?? [])\n' +
+    '\n' +
+    'const totals = computed(() => {\n' +
+    '  const requests = trend.value.reduce((acc, point) => acc + point.requests, 0)\n' +
+    '  const errors = trend.value.reduce((acc, point) => acc + point.errors, 0)\n' +
+    '  return { requests, errors, errorRate: requests ? errors / requests : 0 }\n' +
+    '})\n' +
+    '\n' +
+    '/** 趋势折线：与概览页同一套 viewBox 口径，窄屏按容器宽度自适应，不做横向溢出。 */\n' +
+    'const VIEW = { width: 720, height: 200, padding: 28 }\n' +
+    'const line = computed(() => {\n' +
+    '  const points = trend.value\n' +
+    "  if (!points.length) return ''\n" +
+    '  const max = Math.max(...points.map((p) => p.requests), 1)\n' +
+    '  const innerW = VIEW.width - VIEW.padding * 2\n' +
+    '  const innerH = VIEW.height - VIEW.padding * 2\n' +
+    '  return points\n' +
+    '    .map((point, index) => {\n' +
+    '      const x = VIEW.padding + (index / Math.max(points.length - 1, 1)) * innerW\n' +
+    '      const y = VIEW.height - VIEW.padding - (point.requests / max) * innerH\n' +
+    "      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`\n" +
+    '    })\n' +
+    "    .join(' ')\n" +
+    '})\n' +
+    '\n' +
+    'const topModels = computed(() =>\n' +
+    '  [...models.value].sort((a, b) => b.requests - a.requests).slice(0, 8),\n' +
+    ')\n' +
+    'const topGroups = computed(() =>\n' +
+    '  [...groups.value].sort((a, b) => b.requests - a.requests).slice(0, 8),\n' +
+    ')\n' +
+    'const slowest = computed(() =>\n' +
+    '  [...latency.value].sort((a, b) => (b.p95 || b.avgLatency || 0) - (a.p95 || a.avgLatency || 0)).slice(0, 8),\n' +
+    ')\n' +
+    'const maxModelRequests = computed(() => Math.max(1, ...topModels.value.map((m) => m.requests)))\n' +
+    'const maxGroupRequests = computed(() => Math.max(1, ...topGroups.value.map((g) => g.requests)))\n' +
+    'const maxStatusCount = computed(() => Math.max(1, ...statusCodes.value.map((s) => s.count)))\n' +
+    '\n' +
+    'const isEmpty = computed(\n' +
+    '  () => !trend.value.length && !groups.value.length && !models.value.length && !statusCodes.value.length,\n' +
+    ')\n' +
+    '\n' +
+    'function setDays(value: string | number) {\n' +
+    '  scope.state.days = String(value)\n' +
+    '}\n' +
+    'function setKey(value: string | number) {\n' +
+    '  scope.state.keyId = String(value)\n' +
+    '}\n' +
+    '</script>\n' +
+    '\n' +
+    '<template>\n' +
+    '  <div class="page">\n' +
+    '    <PageHeader\n' +
+    '      title="图表分析"\n' +
+    '      description="多维度趋势分析、用量分布与请求延迟分布可视化；统计周期与 Key 写在地址栏里。"\n' +
+    '    >\n' +
+    '      <template #actions>\n' +
+    '        <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="setKey">\n' +
+    '          <TxSelectItem value="" label="全部 API Key" />\n' +
+    '          <TxSelectItem v-for="k in keys" :key="k.id" :value="k.id" :label="k.name" />\n' +
+    '        </TxSelect>\n' +
+    '        <TxSelect :model-value="scope.state.days" placeholder="统计周期" class="w-130px" @update:model-value="setDays">\n' +
+    '          <TxSelectItem value="1" label="最近 24 小时" />\n' +
+    '          <TxSelectItem value="7" label="最近 7 天" />\n' +
+    '          <TxSelectItem value="30" label="最近 30 天" />\n' +
+    '          <TxSelectItem value="90" label="最近 90 天" />\n' +
+    '        </TxSelect>\n' +
+    '        <TxButton variant="secondary" :loading="res.loading.value" @click="reloadAll">刷新</TxButton>\n' +
+    '      </template>\n' +
+    '    </PageHeader>\n' +
+    '\n' +
+    '    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->\n' +
+    '    <ErrorPanel v-if="error && !charts" :error="error" :retry="reloadAll" />\n' +
+    '    <LoadingBlock v-else-if="!charts && !error" :lines="8" label="正在读取图表数据" />\n' +
+    '    <TxCard v-else-if="isEmpty">\n' +
+    '      <EmptyState\n' +
+    '        title="选定的周期内没有调用数据"\n' +
+    '        description="把统计周期调长一些，或先让客户端发起几次调用。"\n' +
+    '        action-label="看最近 30 天"\n' +
+    '        size="medium"\n' +
+    '        @action="setDays(30)"\n' +
+    '      />\n' +
+    '    </TxCard>\n' +
+    '\n' +
+    '    <template v-else>\n' +
+    '    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->\n' +
+    '    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"\n' +
+    '      stale-hint="下方仍是最近一次成功读取的图表数据，可以继续查看。" />\n' +
+    '\n' +
+    '      <div class="charts-stats">\n' +
+    '        <TxCard class="stat">\n' +
+    '          <span class="stat-label">请求总量</span>\n' +
+    '          <strong class="stat-value">{{ fmtCompact(totals.requests) }}</strong>\n' +
+    '        </TxCard>\n' +
+    '        <TxCard class="stat">\n' +
+    '          <span class="stat-label">错误数</span>\n' +
+    '          <strong class="stat-value">{{ fmtCompact(totals.errors) }}</strong>\n' +
+    '        </TxCard>\n' +
+    '        <TxCard class="stat">\n' +
+    '          <span class="stat-label">错误率</span>\n' +
+    '          <strong class="stat-value" :class="{ bad: totals.errorRate > 0.05 }">{{ fmtPercent(totals.errorRate) }}</strong>\n' +
+    '        </TxCard>\n' +
+    '        <TxCard class="stat">\n' +
+    '          <span class="stat-label">时间桶</span>\n' +
+    '          <strong class="stat-value">{{ trend.length }}</strong>\n' +
+    '        </TxCard>\n' +
+    '      </div>\n' +
+    '\n' +
+    '      <TxCard :padding="16">\n' +
+    '        <template #header>\n' +
+    '          <div class="card-head">\n' +
+    '            <strong>请求趋势</strong>\n' +
+    '            <span class="count">{{ days }} 天 · 共 {{ trend.length }} 个时间桶</span>\n' +
+    '          </div>\n' +
+    '        </template>\n' +
+    '        <div class="trend-wrap">\n' +
+    '          <svg viewBox="0 0 720 200" class="trend-svg" preserveAspectRatio="none" role="img" aria-label="请求量趋势折线">\n' +
+    '            <line x1="28" y1="172" x2="692" y2="172" stroke="var(--tx-border-color-lighter)" stroke-width="1" />\n' +
+    '            <path :d="line" fill="none" stroke="var(--tx-color-primary)" stroke-width="2.2" stroke-linecap="round" />\n' +
+    '          </svg>\n' +
+    '        </div>\n' +
+    '      </TxCard>\n' +
+    '\n' +
+    '      <div class="charts-grid">\n' +
+    '        <TxCard :padding="16">\n' +
+    '          <template #header>\n' +
+    '            <div class="card-head"><strong>模型用量 Top 8</strong><span class="count">{{ models.length }} 个模型</span></div>\n' +
+    '          </template>\n' +
+    '          <ul class="bar-list">\n' +
+    '            <li v-for="m in topModels" :key="m.name" class="bar-row">\n' +
+    '              <span class="bar-name" :title="m.name">{{ m.name }}</span>\n' +
+    '              <span class="bar-track"><span class="bar-fill" :style="{ width: `${(m.requests / maxModelRequests) * 100}%` }" /></span>\n' +
+    '              <span class="mono bar-value">{{ fmtCompact(m.requests) }}</span>\n' +
+    '            </li>\n' +
+    '            <li v-if="!topModels.length" class="muted text-12">该周期无模型调用</li>\n' +
+    '          </ul>\n' +
+    '        </TxCard>\n' +
+    '\n' +
+    '        <TxCard :padding="16">\n' +
+    '          <template #header>\n' +
+    '            <div class="card-head"><strong>渠道分组用量 Top 8</strong><span class="count">{{ groups.length }} 个分组</span></div>\n' +
+    '          </template>\n' +
+    '          <ul class="bar-list">\n' +
+    '            <li v-for="g in topGroups" :key="g.name" class="bar-row">\n' +
+    '              <span class="bar-name" :title="g.name">{{ g.name }}</span>\n' +
+    '              <span class="bar-track"><span class="bar-fill" :style="{ width: `${(g.requests / maxGroupRequests) * 100}%` }" /></span>\n' +
+    '              <span class="mono bar-value">{{ fmtCompact(g.requests) }}</span>\n' +
+    '            </li>\n' +
+    '            <li v-if="!topGroups.length" class="muted text-12">该周期无分组数据</li>\n' +
+    '          </ul>\n' +
+    '        </TxCard>\n' +
+    '\n' +
+    '        <TxCard :padding="16">\n' +
+    '          <template #header>\n' +
+    '            <div class="card-head"><strong>最慢的上游（按 P95）</strong><span class="count">{{ latency.length }} 条</span></div>\n' +
+    '          </template>\n' +
+    '          <ul class="bar-list">\n' +
+    '            <li v-for="l in slowest" :key="l.name" class="bar-row">\n' +
+    '              <span class="bar-name" :title="l.name">{{ l.name }}</span>\n' +
+    '              <span class="bar-meta mono">\n' +
+    '                P95 {{ fmtLatency(l.p95) }} · 均值 {{ fmtLatency(l.avgLatency) }}\n' +
+    '              </span>\n' +
+    '            </li>\n' +
+    '            <li v-if="!slowest.length" class="muted text-12">该周期无延迟数据</li>\n' +
+    '          </ul>\n' +
+    '        </TxCard>\n' +
+    '\n' +
+    '        <TxCard :padding="16">\n' +
+    '          <template #header>\n' +
+    '            <div class="card-head"><strong>状态码与错误类别</strong><span class="count">{{ statusCodes.length }} 种状态码</span></div>\n' +
+    '          </template>\n' +
+    '          <ul class="bar-list">\n' +
+    '            <li v-for="s in statusCodes" :key="s.code" class="bar-row">\n' +
+    '              <span class="bar-name mono">{{ s.code }}</span>\n' +
+    '              <span class="bar-track">\n' +
+    '                <span\n' +
+    '                  class="bar-fill"\n' +
+    '                  :class="{ bad: s.code >= 400 }"\n' +
+    '                  :style="{ width: `${(s.count / maxStatusCount) * 100}%` }"\n' +
+    '                />\n' +
+    '              </span>\n' +
+    '              <span class="mono bar-value">{{ fmtCompact(s.count) }}</span>\n' +
+    '            </li>\n' +
+    '          </ul>\n' +
+    '          <div v-if="errorCategories.length" class="tags">\n' +
+    '            <TxTag\n' +
+    '              v-for="c in errorCategories"\n' +
+    '              :key="c.category"\n' +
+    '              size="sm"\n' +
+    '              variant="outline"\n' +
+    '              :label="`${c.category} · ${fmtCompact(c.count)}`"\n' +
+    '            />\n' +
+    '          </d'... 2046 more characters
+  
+      at TestContext.<anonymous> (/Users/crosery/work_file/crosery-api-console/server/reportPageFrontend.test.ts:60:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1397:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:969:18)
+      at Test.postRun (node:internal/test_runner/test:1537:19)
+      at Test.run (node:internal/test_runner/test:1462:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:969:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '<script setup lang="ts">\nimport { computed } from \'vue\'\nimport { TxCard } from \'@talex-touch/tuffex/card\'\nimport { TxButton } from \'@talex-touch/tuffex/button\'\nimport { TxSelect, TxSelectItem } from \'@talex-touch/tuffex/select\'\nimport { TxTag } from \'@talex-touch/tuffex/tag\'\nimport PageHeader from \'../components/PageHeader.vue\'\nimport ErrorPanel from \'../components/ErrorPanel.vue\'\nimport LoadingBlock from \'../components/LoadingBlock.vue\'\nimport EmptyState from \'../components/EmptyState.vue\'\nimport { api } from \'../api\'\nimport { useQueryState } from \'../lib/listState\'\nimport { useResource } from \'../lib/resource\'\nimport { fmtCompact, fmtLatency, fmtPercent } from \'../lib/format\'\nimport type { ApiKeyItem, ChartsData } from \'../types\'\n\n/**\n * 图表分析：真的请求 /api/charts（红队 D3：原来 18 行占位、永久显示「加载图表数据中...」且从不发请求）。\n * 加载态用受控骨架：有数据就绝不显示（对照 TUF `components/LoadingBlock.vue:10-13` 的用法）。\n * 统计周期与 Key 进 URL，刷新/分享链接保持同一视图。\n */\nconst scope = useQueryState({ days: \'7\', keyId: \'\' })\nconst days = computed(() => {\n  const value = Number(scope.state.days)\n  return [1, 7, 30, 90].includes(value) ? value : 7\n})\n\nconst res = useResource(\n  () => api.charts<ChartsData>(days.value, scope.state.keyId),\n  [() => scope.state.days, () => scope.state.keyId],\n)\nconst keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])\n\nconst charts = computed(() => res.data.value)\nconst keys = computed(() => keysRes.data.value?.keys ?? [])\nconst error = computed(() => res.error.value ?? keysRes.error.value)\nconst reloadAll = () => Promise.all([res.reload(), keysRes.reload()])\n\nconst trend = computed(() => charts.value?.trend ?? [])\nconst groups = computed(() => charts.value?.groups ?? [])\nconst models = computed(() => charts.value?.models ?? [])\nconst latency = computed(() => charts.value?.latency ?? [])\nconst statusCodes = computed(() => charts.value?.statusCodes ?? [])\nconst errorCategories = computed(() => charts.value?.errorCategories ?? [])\n\nconst totals = computed(() => {\n  const requests = trend.value.reduce((acc, point) => acc + point.requests, 0)\n  const errors = trend.value.reduce((acc, point) => acc + point.errors, 0)\n  return { requests, errors, errorRate: requests ? errors / requests : 0 }\n})\n\n/** 趋势折线：与概览页同一套 viewBox 口径，窄屏按容器宽度自适应，不做横向溢出。 */\nconst VIEW = { width: 720, height: 200, padding: 28 }\nconst line = computed(() => {\n  const points = trend.value\n  if (!points.length) return \'\'\n  const max = Math.max(...points.map((p) => p.requests), 1)\n  const innerW = VIEW.width - VIEW.padding * 2\n  const innerH = VIEW.height - VIEW.padding * 2\n  return points\n    .map((point, index) => {\n      const x = VIEW.padding + (index / Math.max(points.length - 1, 1)) * innerW\n      const y = VIEW.height - VIEW.padding - (point.requests / max) * innerH\n      return `${index === 0 ? \'M\' : \'L\'} ${x.toFixed(1)} ${y.toFixed(1)}`\n    })\n    .join(\' \')\n})\n\nconst topModels = computed(() =>\n  [...models.value].sort((a, b) => b.requests - a.requests).slice(0, 8),\n)\nconst topGroups = computed(() =>\n  [...groups.value].sort((a, b) => b.requests - a.requests).slice(0, 8),\n)\nconst slowest = computed(() =>\n  [...latency.value].sort((a, b) => (b.p95 || b.avgLatency || 0) - (a.p95 || a.avgLatency || 0)).slice(0, 8),\n)\nconst maxModelRequests = computed(() => Math.max(1, ...topModels.value.map((m) => m.requests)))\nconst maxGroupRequests = computed(() => Math.max(1, ...topGroups.value.map((g) => g.requests)))\nconst maxStatusCount = computed(() => Math.max(1, ...statusCodes.value.map((s) => s.count)))\n\nconst isEmpty = computed(\n  () => !trend.value.length && !groups.value.length && !models.value.length && !statusCodes.value.length,\n)\n\nfunction setDays(value: string | number) {\n  scope.state.days = String(value)\n}\nfunction setKey(value: string | number) {\n  scope.state.keyId = String(value)\n}\n</script>\n\n<template>\n  <div class="page">\n    <PageHeader\n      title="图表分析"\n      description="多维度趋势分析、用量分布与请求延迟分布可视化；统计周期与 Key 写在地址栏里。"\n    >\n      <template #actions>\n        <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="setKey">\n          <TxSelectItem value="" label="全部 API Key" />\n          <TxSelectItem v-for="k in keys" :key="k.id" :value="k.id" :label="k.name" />\n        </TxSelect>\n        <TxSelect :model-value="scope.state.days" placeholder="统计周期" class="w-130px" @update:model-value="setDays">\n          <TxSelectItem value="1" label="最近 24 小时" />\n          <TxSelectItem value="7" label="最近 7 天" />\n          <TxSelectItem value="30" label="最近 30 天" />\n          <TxSelectItem value="90" label="最近 90 天" />\n        </TxSelect>\n        <TxButton variant="secondary" :loading="res.loading.value" @click="reloadAll">刷新</TxButton>\n      </template>\n    </PageHeader>\n\n    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->\n    <ErrorPanel v-if="error && !charts" :error="error" :retry="reloadAll" />\n    <LoadingBlock v-else-if="!charts && !error" :lines="8" label="正在读取图表数据" />\n    <TxCard v-else-if="isEmpty">\n      <EmptyState\n        title="选定的周期内没有调用数据"\n        description="把统计周期调长一些，或先让客户端发起几次调用。"\n        action-label="看最近 30 天"\n        size="medium"\n        @action="setDays(30)"\n      />\n    </TxCard>\n\n    <template v-else>\n    <!-- R2：有旧数据时刷新失败不再顶掉内容，只在顶部给非阻断横幅（有意偏离 TUF 的阻断式错误态） -->\n    <ErrorPanel v-if="error" inline :error="error" :retry="reloadAll"\n      stale-hint="下方仍是最近一次成功读取的图表数据，可以继续查看。" />\n\n      <div class="charts-stats">\n        <TxCard class="stat">\n          <span class="stat-label">请求总量</span>\n          <strong class="stat-value">{{ fmtCompact(totals.requests) }}</strong>\n        </TxCard>\n        <TxCard class="stat">\n          <span class="stat-label">错误数</span>\n          <strong class="stat-value">{{ fmtCompact(totals.errors) }}</strong>\n        </TxCard>\n        <TxCard class="stat">\n          <span class="stat-label">错误率</span>\n          <strong class="stat-value" :class="{ bad: totals.errorRate > 0.05 }">{{ fmtPercent(totals.errorRate) }}</strong>\n        </TxCard>\n        <TxCard class="stat">\n          <span class="stat-label">时间桶</span>\n          <strong class="stat-value">{{ trend.length }}</strong>\n        </TxCard>\n      </div>\n\n      <TxCard :padding="16">\n        <template #header>\n          <div class="card-head">\n            <strong>请求趋势</strong>\n            <span class="count">{{ days }} 天 · 共 {{ trend.length }} 个时间桶</span>\n          </div>\n        </template>\n        <div class="trend-wrap">\n          <svg viewBox="0 0 720 200" class="trend-svg" preserveAspectRatio="none" role="img" aria-label="请求量趋势折线">\n            <line x1="28" y1="172" x2="692" y2="172" stroke="var(--tx-border-color-lighter)" stroke-width="1" />\n            <path :d="line" fill="none" stroke="var(--tx-color-primary)" stroke-width="2.2" stroke-linecap="round" />\n          </svg>\n        </div>\n      </TxCard>\n\n      <div class="charts-grid">\n        <TxCard :padding="16">\n          <template #header>\n            <div class="card-head"><strong>模型用量 Top 8</strong><span class="count">{{ models.length }} 个模型</span></div>\n          </template>\n          <ul class="bar-list">\n            <li v-for="m in topModels" :key="m.name" class="bar-row">\n              <span class="bar-name" :title="m.name">{{ m.name }}</span>\n              <span class="bar-track"><span class="bar-fill" :style="{ width: `${(m.requests / maxModelRequests) * 100}%` }" /></span>\n              <span class="mono bar-value">{{ fmtCompact(m.requests) }}</span>\n            </li>\n            <li v-if="!topModels.length" class="muted text-12">该周期无模型调用</li>\n          </ul>\n        </TxCard>\n\n        <TxCard :padding="16">\n          <template #header>\n            <div class="card-head"><strong>渠道分组用量 Top 8</strong><span class="count">{{ groups.length }} 个分组</span></div>\n          </template>\n          <ul class="bar-list">\n            <li v-for="g in topGroups" :key="g.name" class="bar-row">\n              <span class="bar-name" :title="g.name">{{ g.name }}</span>\n              <span class="bar-track"><span class="bar-fill" :style="{ width: `${(g.requests / maxGroupRequests) * 100}%` }" /></span>\n              <span class="mono bar-value">{{ fmtCompact(g.requests) }}</span>\n            </li>\n            <li v-if="!topGroups.length" class="muted text-12">该周期无分组数据</li>\n          </ul>\n        </TxCard>\n\n        <TxCard :padding="16">\n          <template #header>\n            <div class="card-head"><strong>最慢的上游（按 P95）</strong><span class="count">{{ latency.length }} 条</span></div>\n          </template>\n          <ul class="bar-list">\n            <li v-for="l in slowest" :key="l.name" class="bar-row">\n              <span class="bar-name" :title="l.name">{{ l.name }}</span>\n              <span class="bar-meta mono">\n                P95 {{ fmtLatency(l.p95) }} · 均值 {{ fmtLatency(l.avgLatency) }}\n              </span>\n            </li>\n            <li v-if="!slowest.length" class="muted text-12">该周期无延迟数据</li>\n          </ul>\n        </TxCard>\n\n        <TxCard :padding="16">\n          <template #header>\n            <div class="card-head"><strong>状态码与错误类别</strong><span class="count">{{ statusCodes.length }} 种状态码</span></div>\n          </template>\n          <ul class="bar-list">\n            <li v-for="s in statusCodes" :key="s.code" class="bar-row">\n              <span class="bar-name mono">{{ s.code }}</span>\n              <span class="bar-track">\n                <span\n                  class="bar-fill"\n                  :class="{ bad: s.code >= 400 }"\n                  :style="{ width: `${(s.count / maxStatusCount) * 100}%` }"\n                />\n              </span>\n              <span class="mono bar-value">{{ fmtCompact(s.count) }}</span>\n            </li>\n          </ul>\n          <div v-if="errorCategories.length" class="tags">\n            <TxTag\n              v-for="c in errorCategories"\n              :key="c.category"\n              size="sm"\n              variant="outline"\n              :label="`${c.category} · ${fmtCompact(c.count)}`"\n            />\n          </d'... 2046 more characters,
+    expected: /加载图表数据中/,
+    operator: 'doesNotMatch',
+    diff: 'simple'
+  }
