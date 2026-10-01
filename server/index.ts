@@ -221,6 +221,35 @@ const parseJson = <T>(value: string, fallback: T): T => {
   try { return JSON.parse(value) as T } catch { return fallback }
 }
 
+/**
+ * `/v1/usage` 的 provider 过滤条件（task-73 R26-B）。
+ *
+ * 修前这里直接 `activeProviderPredicate(await listGroupsForReporting(), 'provider')`：
+ * 管理面一抖动（`CPA_MANAGEMENT_KEY 未配置`、上游 5xx）整个自助接口就 **500**，
+ * 而这不是用户的错，客户端还会当成服务端故障重试。
+ *
+ * 现在：拿不到分组就**降级为不过滤**（`1 = 1`），并把降级事实显式返回给调用方。
+ * 语义差异是"可能包含当前已停用渠道的历史用量"——只多不少，且仍然只查**该 Key 自己**的
+ * `key_hash`，不存在跨 Key 泄漏；管理面正常时返回的条件与修前完全一致。
+ */
+const resolveActiveProviderFilter = async (): Promise<{
+  active: { sql: string; params: string[] }
+  degraded: { reason: string; note: string; detail: string } | null
+}> => {
+  try {
+    return { active: activeProviderPredicate(await listGroupsForReporting(), 'provider'), degraded: null }
+  } catch (error) {
+    return {
+      active: { sql: '1 = 1', params: [] },
+      degraded: {
+        reason: 'provider_filter_unavailable',
+        note: '无法读取渠道分组，本次结果未按 provider 过滤（可能包含已停用渠道的历史用量）',
+        detail: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+      },
+    }
+  }
+}
+
 const publicUsageKey = (req: express.Request) => {
   const token = readBearerToken(req.header('authorization'))
   if (!token) return null
@@ -235,7 +264,9 @@ app.get('/v1/usage', async (req, res) => {
   const key = publicUsageKey(req)
   if (!key || (!key.enabled && !key.quota_blocked_reason)) return res.status(401).json({ error: { message: '无效或不可用的 API Key', type: 'invalid_api_key' } })
   const days = boundedInteger(req.query.days, 30, 1, config.usageRetentionDays)
-  const active = activeProviderPredicate(await listGroupsForReporting(), 'provider')
+  // task-73 R26-B：管理面不可用时**降级为不过滤**，而不是把用户的请求打成 500。
+  // 降级事实必须可见（header + 响应字段），绝不静默改变数据语义。
+  const { active, degraded } = await resolveActiveProviderFilter()
   const hasRollup = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_hourly_rollup'").get())
   const rows = db.prepare(hasRollup ? `
     SELECT ${canonicalModelSql()} model, SUM(request_count) requests,
@@ -266,6 +297,7 @@ app.get('/v1/usage', async (req, res) => {
     : `SELECT MIN(timestamp) since FROM usage_events WHERE key_hash = ? AND ${active.sql}`
   ).get(key.key_hash, ...active.params) as { since: string | null }
   res.setHeader('Cache-Control', 'no-store')
+  if (degraded) res.setHeader('X-Usage-Degraded', degraded.reason)
   res.json({
     object: 'usage_summary',
     days,
@@ -274,6 +306,8 @@ app.get('/v1/usage', async (req, res) => {
     quotaTimeZone: config.quotaTimeZone,
     quota: quotaStateFor(key),
     blockedReason: key.quota_blocked_reason || null,
+    // 只在降级时出现：管理面正常时响应体与修前**逐字节一致**
+    ...(degraded ? { degraded } : {}),
     ...breakdown,
   })
 })
@@ -1199,11 +1233,31 @@ app.get('/api/version', async (_req, res) => {
   }
 })
 
+/**
+ * OAuth provider 的**唯一校验出口**（task-73 R26-A）：`/start` 与 `/callback` 共用。
+ *
+ * 非法值一律 **400 + provider_not_supported**（附可选值），不允许任何一条路径把它变成 5xx：
+ * 修前 `/callback` 是 400、`/start` 是 500 —— 同一份非法输入两条路径状态码不一致，
+ * 5xx 会让监控误判成服务端故障，也可能被客户端重试放大。
+ */
+const requireOAuthProvider = async (res: express.Response, provider: string): Promise<string | null> => {
+  const { isSupportedOAuthProvider, supportedOAuthProviders } = await import('./cpa.js')
+  if (isSupportedOAuthProvider(provider)) return provider
+  res.status(400).json({
+    error: `不支持的 OAuth 提供商：${provider}。可选：${supportedOAuthProviders().join(', ')}`,
+    reason: 'provider_not_supported',
+  })
+  return null
+}
+
 app.post('/api/cpa/oauth/start', async (req, res) => {
   try {
     const provider = String(req.body?.provider || '').trim()
     if (!provider) return res.status(400).json({ error: '请选择提供商' })
-    const result = await startOAuthLogin(provider)
+    // 与 /callback 同一个出口：非法 provider 是 400，不是 500
+    const supported = await requireOAuthProvider(res, provider)
+    if (!supported) return
+    const result = await startOAuthLogin(supported)
     res.json(result)
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : '发起 OAuth 登录失败' })
@@ -1231,15 +1285,11 @@ app.post('/api/cpa/oauth/callback', async (req, res) => {
     const redirectUrl = String(req.body?.redirectUrl || req.body?.code || '').trim()
     const state = String(req.body?.state || '').trim()
     if (!provider || !redirectUrl) return res.status(400).json({ error: '缺少 provider 或回调内容/授权码' })
-    // 入口白名单（task-61 F2/F4）：未知 provider 不再原样返回——它会进凭据文件名与 authUrl
-    const { isSupportedOAuthProvider, supportedOAuthProviders } = await import('./cpa.js')
-    if (!isSupportedOAuthProvider(provider)) {
-      return res.status(400).json({
-        error: `不支持的 OAuth 提供商：${provider}。可选：${supportedOAuthProviders().join(', ')}`,
-        reason: 'provider_not_supported',
-      })
-    }
-    const result = await submitOAuthCallback(provider, redirectUrl, state)
+    // 入口白名单（task-61 F2/F4）：未知 provider 不再原样返回——它会进凭据文件名与 authUrl。
+    // task-73 R26-A：与 /start 共用**同一个校验出口**，两条路径状态码不会再分叉。
+    const supported = await requireOAuthProvider(res, provider)
+    if (!supported) return
+    const result = await submitOAuthCallback(supported, redirectUrl, state)
     invalidateControlPlaneCaches()
     addAudit('oauth_callback_submit', `provider=${provider}`)
     res.json(result)
