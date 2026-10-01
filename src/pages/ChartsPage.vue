@@ -46,7 +46,9 @@ const errorCategories = computed(() => charts.value?.errorCategories ?? [])
 const totals = computed(() => {
   const requests = trend.value.reduce((acc, point) => acc + point.requests, 0)
   const errors = trend.value.reduce((acc, point) => acc + point.errors, 0)
-  return { requests, errors, errorRate: requests ? errors / requests : 0 }
+  // task-77 恢复：旧 Charts 有「Token 消耗（每小时 Token 总量）」块，Vue 版被砍；`trend[].tokens` 后端一直在返回
+  const tokens = trend.value.reduce((acc, point) => acc + (point.tokens ?? 0), 0)
+  return { requests, errors, tokens, errorRate: requests ? errors / requests : 0 }
 })
 
 /** 趋势折线：与概览页同一套 viewBox 口径，窄屏按容器宽度自适应，不做横向溢出。 */
@@ -61,6 +63,22 @@ const line = computed(() => {
     .map((point, index) => {
       const x = VIEW.padding + (index / Math.max(points.length - 1, 1)) * innerW
       const y = VIEW.height - VIEW.padding - (point.requests / max) * innerH
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
+    })
+    .join(' ')
+})
+
+/** Token 消耗折线：与请求趋势同一套 viewBox 口径（旧页是「每小时 Token 总量」，这里按时间桶）。 */
+const tokenLine = computed(() => {
+  const points = trend.value
+  if (!points.length) return ''
+  const max = Math.max(...points.map((p) => p.tokens ?? 0), 1)
+  const innerW = VIEW.width - VIEW.padding * 2
+  const innerH = VIEW.height - VIEW.padding * 2
+  return points
+    .map((point, index) => {
+      const x = VIEW.padding + (index / Math.max(points.length - 1, 1)) * innerW
+      const y = VIEW.height - VIEW.padding - ((point.tokens ?? 0) / max) * innerH
       return `${index === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
     })
     .join(' ')
@@ -144,6 +162,10 @@ function setKey(value: string | number) {
           <strong class="stat-value" :class="{ bad: totals.errorRate > 0.05 }">{{ fmtPercent(totals.errorRate) }}</strong>
         </TxCard>
         <TxCard class="stat">
+          <span class="stat-label">Token 总量</span>
+          <strong class="stat-value">{{ fmtCompact(totals.tokens) }}</strong>
+        </TxCard>
+        <TxCard class="stat">
           <span class="stat-label">时间桶</span>
           <strong class="stat-value">{{ trend.length }}</strong>
         </TxCard>
@@ -160,6 +182,22 @@ function setKey(value: string | number) {
           <svg viewBox="0 0 720 200" class="trend-svg" preserveAspectRatio="none" role="img" aria-label="请求量趋势折线">
             <line x1="28" y1="172" x2="692" y2="172" stroke="var(--tx-border-color-lighter)" stroke-width="1" />
             <path :d="line" fill="none" stroke="var(--tx-color-primary)" stroke-width="2.2" stroke-linecap="round" />
+          </svg>
+        </div>
+      </TxCard>
+
+      <!-- task-77 恢复：旧 React 版的「Token 消耗（每小时 Token 总量）」折线，Vue 重写时被砍 -->
+      <TxCard :padding="16">
+        <template #header>
+          <div class="card-head">
+            <strong>Token 消耗</strong>
+            <span class="count">每个时间桶的 Token 总量</span>
+          </div>
+        </template>
+        <div class="trend-wrap">
+          <svg viewBox="0 0 720 200" class="trend-svg" preserveAspectRatio="none" role="img" aria-label="Token 消耗趋势折线">
+            <line x1="28" y1="172" x2="692" y2="172" stroke="var(--tx-border-color-lighter)" stroke-width="1" />
+            <path :d="tokenLine" fill="none" stroke="var(--tx-color-primary)" stroke-width="2.2" stroke-linecap="round" />
           </svg>
         </div>
       </TxCard>

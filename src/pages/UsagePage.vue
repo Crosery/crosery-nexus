@@ -315,10 +315,10 @@ function handleKeyChange(val: string | number) {
 </template>
 
 <style scoped>
+  /* gap 由共享 `.page-stack` 提供（28px）：页面里再设 gap 会盖过它，外层比内层还挤 */
 .usage-page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
   width: 100%;
 }
 .page-head {

@@ -95,3 +95,58 @@
 
 1. **`qa-contrast` 78 项失败 = 同一个类 `tx-bui-sidebar-nav__group-label`**（侧边栏分组标题：总览/接入管理/用量分析/运行监控/帮助），颜色 `rgb(111,118,153)` on white = **4.44:1**，要求 4.5:1，**差 0.06**。13 条路由 × 6 个标题。这是 **Lead 正在改的 `ConsoleNav.vue`** 引入/暴露的（分组标题渲染出来后才被扫到），我未动该文件。**建议**：把分组标题颜色换到 ≥4.5:1 的 token（例如 `--tx-text-color-secondary` 的更深一档），改一行即可；或把分组标题字号提到 ≥18.66px 走大字号 3:1 档（不推荐，视觉会变重）。
 2. **`tsc -b` / `npm run build` 当前是红的**（不是我的文件）：`server/modelCatalog.ts(7,26)` 与 `server/modelPricingSources.test.ts(54,48)` 报错，看起来是队友在途的改动（task-66/68 之后的定价源重构）。我不改 `server/**`，请对应负责人收口后再跑一次全量构建。
+
+---
+
+# 附：第三十五轮收尾（Lead 解除两个阻塞后）
+
+## A. 逐块并排核对：找到并恢复了**第二处真实被砍**
+
+**ChartsPage：旧有「Token 消耗（每小时 Token 总量）」→ 新缺 → 已恢复。**
+- 证据：旧 `ChartsPage.tsx:69` 的 `<h2>Token 消耗</h2><p>每小时 Token 总量</p>`；新 `ChartsPage.vue` 里 `grep -nE "token|Token"` **零命中**（整块被砍）。
+- 关键：**后端一直在返回** `trend[].tokens`（`server/usageReports.ts:112-123` 构造 `{ bucket, requests, tokens, errors }`），所以只需客户端恢复 —— **不需要改 server**。
+- 恢复内容（沿用页面既有的 inline-SVG 折线口径，未引入新依赖/魔法数字）：`Token 消耗` 卡片（与请求趋势同 viewBox、同 stroke），并把 **Token 总量** 加入统计行。
+- 验证（渲染）：`/charts` 卡片序 = `请求趋势 → Token 消耗 → 模型用量 Top 8 → 渠道分组用量 Top 8 → 最慢的上游（按 P95）→ 状态码与错误类别`；统计 = `请求总量 60 / 错误数 23 / 错误率 38.3% / **Token 总量 4375** / 时间桶 4`；Token 折线 path 非空（51 字符）→ `shots/charts-token-restored.png`。
+
+**MonitorPage：核对结论是"没有丢块"，只是命名升级。**
+| 旧 | 新 | 结论 |
+| --- | --- | --- |
+| 账号监控（页标题） | 页标题「上游账号与额度监控」 | 升级 ✓ |
+| 上游账号分组 | 按渠道类型分组，每组 `<h2>` = 渠道名 | ✓（本轮环境无账号，只看到空态，分组渲染**未在有数据环境验证**）|
+| 暂未读取到账号 | 空态「暂未接入上游监控账号」 | ✓ |
+
+## B. 间距：删掉 5 个页面的 gap 覆盖（共享 `.page-stack` = 28px 生效）
+
+删除 `.analytics-page` / `.cache-page` / `.help-page` / `.monitor-page` / `.usage-page` 里的 `gap: 16px`
+（RtkPage 由 Lead 已改；ModelsPage 本就没有覆盖）。保留注释说明"别再设 gap"，避免后人加回来。
+Dashboard / Keys / Channels 用的是共享 `.page`（16px）且**没有** scoped `gap` 覆盖 —— 属统一值，无"外层比内层挤"的问题，未改动。
+
+**实测间距（渲染）**：`/analytics /cache /usage /monitor /models /rtk` 的 `.page-stack` 计算 `row-gap` 全部 = **28px**，
+实测相邻块间距 28px（首个块与页头之间 32px = 页头自带下边距 + 28px 的视觉结果）。
+
+## C. 导航改动核对（Lead 的 `10cf65e`）
+
+| 项 | 实测 |
+| --- | --- |
+| 分组标题渲染 | 侧边栏出现 6 个分组标题：`总览 / 接入管理 / 用量分析 / 运行监控 / 帮助 / 实验` |
+| 分组标题对比度 | 颜色不再是 tuffex 默认 `rgb(111,118,153)`（4.44:1）；`qa-contrast` 全绿（见 D） |
+| `/credentials` 入口 | 侧边栏可见「凭据导入」；`/credentials` H1 = 「凭据导入」✓ |
+| 面包屑 | `/credentials` 面包屑不再出现原始路由片段（Lead 的 `src/lib/nav.ts` 单一真源） |
+
+## D. 回归（本轮全部重跑）
+
+| 扫描器 | 结果 |
+| --- | --- |
+| `qa-a11y`（路由含 `/credentials`） | **exit 0，25/25 通过** |
+| `qa-contrast`（路由含 `/credentials`） | **exit 0，`failing 0`、`renderFailures 0`** |
+| `qa-smoke` | **exit 0**（14 路由，`/credentials` 无错误/无失败请求） |
+| `qa-viewports` | **exit 0**（112 组合，0 失败、0 静默截断） |
+
+`npx vite build` = 0；`tsc -b` 仍受队友在途改动（`server/modelCatalog.ts` / `server/modelPricingSources.test.ts`）阻塞，**非前端问题**。
+
+## E. 仍未完成
+
+1. **Monitor 的分组渲染**未在有账号的环境下验证（本轮只有空态）。
+2. **真实凭据上传**（写生产 CPA）未触发，207 分支未端到端验证。
+3. `ModelsPage` 之外的其余页面的"逐字段"深核对（本轮做了标题/卡片/统计块的层级核对）。
+4. Dashboard/Keys/Channels 依旧用共享 `.page`（16px）而非 `page-stack`（28px）——**是否统一到 28px 需要设计决策**，我未擅自改动。
