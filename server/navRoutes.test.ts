@@ -22,12 +22,18 @@ function mountedChildRoutes(): string[] {
   return paths.sort()
 }
 
-/** 从 ConsoleNav.vue 里取导航项的目标路径。 */
+/**
+ * 从导航单一真源 `src/lib/nav.ts` 里取导航项的目标路径。
+ *
+ * 第 34 轮之前这里读的是 `components/ConsoleNav.vue`，因为导航项写在那里面；
+ * 现在导航与面包屑共用 `lib/nav.ts`（那次搬家顺带修掉了"分组标题从不渲染"
+ * 与"面包屑显示原始路由片段"两个缺陷）。**搬家时这条测试红了**——正是它该有的行为，
+ * 所以这里跟着换文件，而不是把断言放宽。
+ */
 function navTargets(): string[] {
-  const source = fs.readFileSync(new URL('components/ConsoleNav.vue', SRC), 'utf8')
-  const block = source.slice(source.indexOf('const navEntries = ['), source.indexOf(']', source.indexOf('const navEntries = [')))
-  const targets = [...block.matchAll(/to: '\/([^']+)'/g)].map((match) => match[1])
-  assert.ok(targets.length > 0, '没有从 ConsoleNav.vue 解析出导航项，解析逻辑需要更新')
+  const source = fs.readFileSync(new URL('lib/nav.ts', SRC), 'utf8')
+  const targets = [...source.matchAll(/to: '\/([^']+)'/g)].map((match) => match[1])
+  assert.ok(targets.length > 0, '没有从 lib/nav.ts 解析出导航项，解析逻辑需要更新')
   return targets.sort()
 }
 

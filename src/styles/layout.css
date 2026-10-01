@@ -19,7 +19,9 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  /* 与 .page-stack 同一个节奏（28px）。两套容器用不同的区块间距，
+     会让"概览/Key/渠道"比"统计/缓存/RTK"更挤，是同一类问题的残留。 */
+  gap: 28px;
 }
 
 /*
