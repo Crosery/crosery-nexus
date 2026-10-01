@@ -33,6 +33,7 @@ const PLANE_LABEL: Record<RtkPlaneId, string> = {
 
 const STATE_LABEL: Record<RtkPlaneState, string> = {
   available: '已接通',
+  degraded: '可用但未装 rtk',
   not_configured: '未配置',
   unreachable: '不可达',
   unauthorized: '凭据被拒',
@@ -41,6 +42,7 @@ const STATE_LABEL: Record<RtkPlaneState, string> = {
 
 const STATE_COLOR: Record<RtkPlaneState, string> = {
   available: '#10b981',
+  degraded: '#f59e0b',
   not_configured: '#94a3b8',
   unreachable: '#f59e0b',
   unauthorized: '#ef4444',
@@ -189,14 +191,14 @@ const authorityHint = computed(() => {
       <div class="board-head">
         <div>
           <h2>备份与回退</h2>
-          <p class="hint">每次写入前把目标文件原样备份，失败自动还原；这里可以一键回退到某次备份。</p>
+          <p class="hint">每次写入前把目标文件原样备份，失败自动回填；只保留最近 {{ status?.backupKeep ?? 10 }} 份（RTK_BACKUP_KEEP 可调），超出自动轮转。</p>
         </div>
       </div>
       <div class="backup-list">
         <div v-for="backup in backups" :key="backup.id" class="backup-row">
           <div>
             <code class="mono">{{ backup.id }}</code>
-            <span class="muted"> · {{ backup.files.length }} 个文件</span>
+            <span class="muted"> · {{ backup.fileCount }} 个文件</span>
           </div>
           <TxButton size="sm" variant="ghost" :disabled="busy === `rollback:${backup.id}`" @click="emit('rollback', backup.id)">回退</TxButton>
         </div>

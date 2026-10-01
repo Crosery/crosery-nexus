@@ -104,7 +104,7 @@ const kernelView = {
   agents: [{ id: 'codex', name: 'Codex', icon: 'openai', on: true }],
 }
 
-type PlaneFailure = Error & { status: number; reason: string; backup?: string }
+type PlaneFailure = Error & { status: number; reason: string; backup?: string; plane?: string }
 
 const expectPlaneError = async (run: () => Promise<unknown>, status: number, reason: string): Promise<PlaneFailure> => {
   try {
@@ -480,22 +480,141 @@ test('T10 agent 覆盖矩阵：11 个全局 agent 各自 ON→OFF，退出码 0�
   }
 })
 
-test('rtk 的真实耦合：cursor 目标会同时注册 Claude 钩子（UI 需如实展示，不能藏）', { skip: !rtkBinary }, async () => {
+test('缺陷 1：cursor ON 连带打开的 Claude 配置必须按快照撤回，并如实回传', { skip: !rtkBinary }, async () => {
   const home = tempHome('cursor-claude-coupling')
   const on = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
-  const claude = on.localAgents.find(agent => agent.id === 'claude')
-  const cursor = on.localAgents.find(agent => agent.id === 'cursor')
-  assert.equal(cursor?.on, true, 'cursor 自己的钩子应已注册')
-  assert.equal(claude?.on, true, '实测 rtk init -g --agent cursor 会连带写 .claude/settings.json')
-  assert.match(fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8'), /rtk hook claude/)
+  assert.equal(on.localAgents.find(agent => agent.id === 'cursor')?.on, true, 'cursor 自己的钩子应已注册')
+  // rtk 实测会连带在 .claude/settings.json 注册 claude 钩子、新建 .claude/RTK.md 与 .claude/CLAUDE.md
+  assert.deepEqual(on.collateralReverted, ['claude'], '连带打开必须撤回并回传')
+  assert.equal(on.localAgents.find(agent => agent.id === 'claude')?.on, false, '用户没点 claude，就不能被打开')
+  assert.equal(fs.existsSync(path.join(home, '.claude/RTK.md')), false, '.claude/RTK.md 不应残留')
+  assert.equal(fs.existsSync(path.join(home, '.claude/CLAUDE.md')), false, '.claude/CLAUDE.md 不应残留')
+  const settings = fs.existsSync(path.join(home, '.claude/settings.json'))
+    ? fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8')
+    : ''
+  assert.ok(!settings.includes('rtk hook claude'), '.claude/settings.json 不应留下 rtk 钩子')
+  assert.ok((on.collateralFiles || []).some(file => file.includes('.claude')), '回传里要列出被连带动到的文件')
   assert.match(fs.readFileSync(path.join(home, '.cursor/hooks.json'), 'utf8'), /rtk hook cursor/)
 
-  // 关掉 claude 时 rtk CLI 会连带删掉 .cursor/hooks.json，控制台必须修回来（只关用户点的那个）
+  // cursor OFF 后仍然没有 claude 残留（判据：ON→OFF 回到操作前状态）
+  const off = await service.setRTKAgentHook('cursor', false, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  assert.equal(off.localAgents.find(agent => agent.id === 'cursor')?.on, false)
+  assert.equal(off.localAgents.find(agent => agent.id === 'claude')?.on, false)
+  assert.equal(fs.existsSync(path.join(home, '.claude/RTK.md')), false)
+  assert.equal(fs.existsSync(path.join(home, '.claude/CLAUDE.md')), false)
+})
+
+test('缺陷 1（反向，不许改坏）：claude OFF 连带删掉的 cursor 钩子仍要修回', { skip: !rtkBinary }, async () => {
+  const home = tempHome('claude-off-collateral')
+  await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const claudeOn = await service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  assert.equal(claudeOn.localAgents.find(agent => agent.id === 'claude')?.on, true)
   const off = await service.setRTKAgentHook('claude', false, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
   assert.equal(off.localAgents.find(agent => agent.id === 'claude')?.on, false)
-  assert.equal(off.localAgents.find(agent => agent.id === 'cursor')?.on, true, '连带删掉的 cursor 钩子必须从备份修复')
+  assert.equal(off.localAgents.find(agent => agent.id === 'cursor')?.on, true, '连带删掉的 cursor 钩子必须从备份修回')
   assert.deepEqual(off.collateralRestored, ['cursor'])
-  assert.match(fs.readFileSync(path.join(home, '.cursor/hooks.json'), 'utf8'), /rtk hook cursor/)
+})
+
+test('缺陷 1（既有 claude 已开启）：cursor ON 不得改动已有的 claude 配置', { skip: !rtkBinary }, async () => {
+  const home = tempHome('claude-already-on')
+  const settingsPath = path.join(home, '.claude/settings.json')
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+  const original = `${JSON.stringify({
+    hooks: { PreToolUse: [
+      { matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] },
+      { matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook claude' }] },
+    ] },
+  }, null, 2)}\n`
+  fs.writeFileSync(settingsPath, original)
+  await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  assert.equal(fs.readFileSync(settingsPath, 'utf8'), original, 'claude 已开启时 cursor ON 不得改动该文件')
+})
+
+test('缺陷 2：rtk 未安装时 local 平面不再谎报「已安装」', async () => {
+  process.env.RTK_BIN = missingBinary
+  try {
+    const status = await service.readRTKStatus({ home: tempHome('defect2'), fresh: true, ...offlineTargets })
+    const localPlane = status.planes.find(item => item.id === 'local')
+    assert.ok(localPlane)
+    assert.equal(localPlane?.state, 'degraded')
+    assert.equal(localPlane?.reason, 'local_rtk_missing')
+    assert.ok(!String(localPlane?.detail).includes('已安装'), `不应再出现「已安装」字样: ${localPlane?.detail}`)
+    assert.equal(status.connected, false)
+    assert.equal(status.path, null)
+    assert.equal(status.local.connected, false)
+  } finally {
+    delete process.env.RTK_BIN
+  }
+})
+
+test('缺陷 3：CLI 把钩子文件写坏时必须按 CLI 之前的原文回填，并保留 409/plane/reason/backup', async () => {
+  const home = tempHome('defect3')
+  const filePath = path.join(home, '.codex/hooks.json')
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const pristine = `${JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo third-party-a' }] }] },
+  }, null, 2)}\n`
+  fs.writeFileSync(filePath, pristine)
+
+  // 假 rtk：照常 exit 0，但把目标文件覆盖成垃圾（模拟 CLI 崩溃/被杀/写一半）
+  const fakeBin = path.join(workspace, 'fake-rtk-corrupt.sh')
+  fs.writeFileSync(fakeBin, `#!/bin/sh\nprintf 'THIS IS NOT JSON' > "$HOME/.codex/hooks.json"\nexit 0\n`, { mode: 0o755 })
+
+  const error = await expectPlaneError(
+    () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: fakeBin, ...offlineTargets }),
+    409, 'hook_file_unparsable',
+  )
+  assert.equal(fs.readFileSync(filePath, 'utf8'), pristine, '文件必须回到 CLI 运行之前的原文（字节一致）')
+  assert.ok(error.backup && fs.existsSync(path.join(error.backup, 'manifest.json')), '错误里要带可回退的备份目录')
+  assert.match(error.message, /rollback/, '文案要给出回退入口')
+})
+
+test('缺陷 3（附带）：目录不可写时返回结构化错误，不泄漏服务端临时路径', async () => {
+  const home = tempHome('defect3-eacces')
+  const dir = path.join(home, '.codex')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.chmodSync(dir, 0o500)
+  try {
+    const error = await expectPlaneError(
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+      500, 'hook_write_failed',
+    )
+    assert.equal(error.plane, 'local')
+    assert.ok(error.backup, '结构化错误仍要带备份目录')
+    assert.ok(!error.message.includes('.rtk-'), `不得泄漏临时文件路径: ${error.message}`)
+    assert.ok(!error.message.includes(workspace), `不得泄漏服务端路径: ${error.message}`)
+  } finally {
+    fs.chmodSync(dir, 0o700)
+  }
+})
+
+test('缺陷 4：备份按 RTK_BACKUP_KEEP 轮转，toggle 响应不回传备份历史', async () => {
+  const home = tempHome('defect4')
+  const keepRoot = path.join(workspace, 'backups-keep3')
+  process.env.RTK_BACKUP_KEEP = '3'
+  process.env.RTK_BACKUP_DIR = keepRoot
+  try {
+    let last: Awaited<ReturnType<typeof service.setRTKAgentHook>> | null = null
+    for (let i = 0; i < 5; i += 1) {
+      last = await service.setRTKAgentHook('codex', i % 2 === 0, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+    }
+    const ids = fs.readdirSync(keepRoot).filter(name => fs.existsSync(path.join(keepRoot, name, 'manifest.json')))
+    assert.equal(ids.length, 3, `保留策略应只留 3 份，实际 ${ids.length}`)
+    assert.ok(last)
+    assert.ok(!('backups' in (last as object)), 'toggle 响应不得回传备份历史列表')
+    assert.ok(last?.backupId && typeof last?.backupFileCount === 'number', 'toggle 只回传本次备份摘要')
+
+    const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+    assert.equal(status.backupKeep, 3)
+    assert.ok(status.backups.length <= 3)
+    for (const item of status.backups) {
+      assert.equal(typeof item.fileCount, 'number')
+      assert.ok(!('files' in item), '备份摘要不得带完整文件清单')
+    }
+  } finally {
+    delete process.env.RTK_BACKUP_KEEP
+    process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
+  }
 })
 
 test('T7 关闭时只移除 rtk 自己那一条，第三方 hook 全部保留', async () => {

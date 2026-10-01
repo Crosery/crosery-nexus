@@ -12,6 +12,7 @@ import {
   RtkPlaneError,
   assertLocalWrite,
   assertRemoteWrite,
+  findRTKBinary,
   kernelRtkRequest,
   probeRelayPlane,
   normalizePlanePayload,
@@ -37,7 +38,7 @@ import {
 const execFileAsync = promisify(execFile)
 
 export type { KernelTarget, RelayTarget, RtkAgentView, RtkDay, RtkGain, RtkPlaneId, RtkPlaneProbe, RtkWriteMode } from './rtkPlane.js'
-export { RtkPlaneError, RTK_AGENT_SPECS, RTK_URL } from './rtkPlane.js'
+export { RtkPlaneError, RTK_AGENT_SPECS, RTK_URL, findRTKBinary } from './rtkPlane.js'
 
 const RTK_INSTALL_HINT = `curl -fsSL ${RTK_URL}/install.sh | sh`
 
@@ -45,7 +46,8 @@ const RTK_INSTALL_HINT = `curl -fsSL ${RTK_URL}/install.sh | sh`
 /* 契约类型                                                            */
 /* ------------------------------------------------------------------ */
 
-export type RtkBackupSummary = { id: string; at: string; files: string[] }
+/** 备份摘要：只带必要信息，不回传完整文件清单（避免响应体随历史线性膨胀）。 */
+export type RtkBackupSummary = { id: string; at: string; fileCount: number }
 
 export type RTKStatusView = {
   plane: RtkPlaneId
@@ -60,8 +62,10 @@ export type RTKStatusView = {
   localAgents: RtkAgentView[]
   /** 控制台所在机器的 RTK 安装情况（与权威平面无关）。 */
   local: { connected: boolean; path: string | null; version: string | null }
-  /** 最近的本机写入备份，供一键回退。 */
+  /** 最近的本机写入备份（紧凑摘要，供一键回退）。 */
   backups: RtkBackupSummary[]
+  /** 备份保留份数（RTK_BACKUP_KEEP，默认 10），超出自动轮转。 */
+  backupKeep: number
   install?: string
   url: string
   writeMode: RtkWriteMode
@@ -74,16 +78,24 @@ export type RTKStatusView = {
 
 export type RtkCliAttempt = { command: string; exitCode: number | null; stderr: string; ok: boolean }
 
-export type RTKToggleResult = RTKStatusView & {
+/** toggle 响应不回传备份历史（只给本次备份摘要），避免响应体随历史线性膨胀。 */
+export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   ok: true
   plane: RtkPlaneId
   readPlane: RtkPlaneId
   mechanism?: 'rtk-cli' | 'hooks-json'
+  /** 本次操作产生的备份目录。 */
   backup?: string
+  backupId?: string
+  backupFileCount?: number
   fallbackReason?: string
   cli?: RtkCliAttempt | null
-  /** 被 rtk CLI 连带关掉、已修复回来的其他 agent。 */
+  /** 被 rtk CLI 连带关掉、已按快照修回的其他 agent。 */
   collateralRestored?: string[]
+  /** 被 rtk CLI 连带打开、已按快照撤回的其他 agent。 */
+  collateralReverted?: string[]
+  /** 本次连带动到的文件（相对 home）。 */
+  collateralFiles?: string[]
 }
 export type RTKInstallResult = RTKStatusView & { ok: true; plane: RtkPlaneId; readPlane: RtkPlaneId }
 export type RTKRollbackResult = RTKStatusView & { ok: true; plane: RtkPlaneId; backupId: string; restored: string[] }
@@ -138,27 +150,6 @@ export function assertNotRealHomeInTests(home: string, env: NodeJS.ProcessEnv = 
   throw new RtkPlaneError(500, 'local', 'test_context_real_home_refused', '测试上下文拒绝对真实 home 写入 agent 配置')
 }
 
-/** RTK_BIN 一旦显式设置就以它为准：指向不存在的路径时返回 null，不再静默改用别的候选。 */
-export function findRTKBinary(env: NodeJS.ProcessEnv = process.env): string | null {
-  const custom = env.RTK_BIN
-  if (custom) return fs.existsSync(custom) ? custom : null
-
-  const candidates = [
-    path.join(os.homedir(), '.local/bin/rtk'),
-    path.join(os.homedir(), '.cargo/bin/rtk'),
-    '/usr/local/bin/rtk',
-    '/opt/homebrew/bin/rtk',
-  ]
-  for (const candidate of candidates) {
-    try {
-      if (fs.existsSync(candidate)) return candidate
-    } catch {
-      // ignore
-    }
-  }
-  return null
-}
-
 function readFileIfExists(filePath: string): string | null {
   try {
     if (!fs.existsSync(filePath)) return null
@@ -197,7 +188,7 @@ export function rtkBackupRoot(home: string, env: NodeJS.ProcessEnv = process.env
 
 const backupFileName = (rel: string) => rel.replace(/[\\/]/g, '__')
 
-export type RtkBackupCreated = RtkBackupSummary & { dir: string }
+export type RtkBackupCreated = { id: string; at: string; dir: string; files: string[] }
 
 /** 写之前先把原文件原样存一份；失败也必须留下可回退的原件。 */
 export function createRtkBackup(home: string, rels: string[]): RtkBackupCreated {
@@ -219,7 +210,14 @@ export function createRtkBackup(home: string, rels: string[]): RtkBackupCreated 
   return { id, at, dir, files: files.map(file => file.rel) }
 }
 
-export function listRtkBackups(home: string = resolveHome(), limit = 10): RtkBackupSummary[] {
+/** 保留最近 N 份备份；N 可配（RTK_BACKUP_KEEP），默认 10。 */
+export function rtkBackupKeep(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.RTK_BACKUP_KEEP)
+  return Number.isFinite(raw) && raw >= 1 && raw <= 200 ? Math.floor(raw) : 10
+}
+
+/** 备份目录按 id（ISO 时间戳）倒序，最新在前。 */
+function backupIds(home: string): string[] {
   const root = rtkBackupRoot(home)
   let entries: string[]
   try {
@@ -227,19 +225,33 @@ export function listRtkBackups(home: string = resolveHome(), limit = 10): RtkBac
   } catch {
     return []
   }
-  return entries
-    .filter(name => fs.existsSync(path.join(root, name, 'manifest.json')))
-    .sort()
-    .reverse()
-    .slice(0, limit)
-    .map(id => {
-      try {
-        const manifest = JSON.parse(fs.readFileSync(path.join(root, id, 'manifest.json'), 'utf8')) as { at?: string; files?: Array<{ rel: string }> }
-        return { id, at: manifest.at || id, files: (manifest.files || []).map(file => file.rel) }
-      } catch {
-        return { id, at: id, files: [] }
-      }
-    })
+  return entries.filter(name => fs.existsSync(path.join(root, name, 'manifest.json'))).sort().reverse()
+}
+
+/** 轮转：超出保留份数的旧备份直接删除（rollback 只恢复不清理，所以必须有这里）。 */
+export function pruneRtkBackups(home: string = resolveHome(), keep: number = rtkBackupKeep()): string[] {
+  const root = rtkBackupRoot(home)
+  const removed: string[] = []
+  for (const id of backupIds(home).slice(Math.max(1, keep))) {
+    try {
+      fs.rmSync(path.join(root, id), { recursive: true, force: true })
+      removed.push(id)
+    } catch {
+      // 清理失败不影响主流程
+    }
+  }
+  return removed
+}
+
+export function listRtkBackups(home: string = resolveHome(), limit = rtkBackupKeep()): RtkBackupSummary[] {
+  return backupIds(home).slice(0, Math.max(1, limit)).map(id => {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(rtkBackupRoot(home), id, 'manifest.json'), 'utf8')) as { at?: string; files?: unknown[] }
+      return { id, at: manifest.at || id, fileCount: (manifest.files || []).length }
+    } catch {
+      return { id, at: id, fileCount: 0 }
+    }
+  })
 }
 
 /** 从备份原地恢复：写过的文件回滚，原本不存在的文件删掉。 */
@@ -466,7 +478,8 @@ export function toStatusView(read: AuthoritativeRead, policy: RtkWritePolicy = r
     agents: read.payload.agents,
     localAgents: read.local.agents,
     local: { connected: read.local.connected, path: read.local.path, version: read.local.version },
-    backups: listRtkBackups(home),
+    backups: listRtkBackups(home, Math.min(rtkBackupKeep(), 10)),
+    backupKeep: rtkBackupKeep(),
     ...(read.payload.install ? { install: read.payload.install } : {}),
     url: read.payload.url,
     ...policyFields(policy),
@@ -613,35 +626,116 @@ export type LocalHookResult = {
   cli: RtkCliAttempt
   fallbackReason?: string
   backup: string
-  /** 被 rtk CLI 连带关掉、已从备份修复回来的其他 agent（实测 claude/cursor 互相牵连）。 */
+  backupId: string
+  backupFileCount: number
+  /** 被 rtk CLI 连带关掉、已按快照修回的其他 agent。 */
   collateralRestored?: string[]
+  /** 被 rtk CLI 连带打开、已按快照撤回的其他 agent。 */
+  collateralReverted?: string[]
+  /** 本次连带动到的文件（相对 home），UI 用来如实交代。 */
+  collateralFiles?: string[]
 }
 
-/** 除目标外，其它 agent 的钩子文件也纳入备份/比对：rtk CLI 存在跨 agent 连带改动。 */
-const otherHookFiles = (targetId: string): string[] =>
-  RTK_AGENT_SPECS.filter(spec => spec.id !== targetId && spec.hookFile).map(spec => spec.hookFile as string)
+type GuardEntry = { rel: string; kind: 'hook' | 'extra' | 'bak'; owner: string }
+
+/** 目标之外的 agent 文件：钩子文件、说明文件、以及 rtk CLI 会留下的同名 .bak。 */
+function guardEntries(targetId: string): GuardEntry[] {
+  return RTK_AGENT_SPECS.filter(spec => spec.id !== targetId).flatMap(spec => {
+    const entries: GuardEntry[] = []
+    if (spec.hookFile) {
+      entries.push({ rel: spec.hookFile, kind: 'hook', owner: spec.id })
+      entries.push({ rel: `${spec.hookFile}.bak`, kind: 'bak', owner: spec.id })
+    }
+    for (const rel of spec.extraFiles || []) entries.push({ rel, kind: 'extra', owner: spec.id })
+    return entries
+  })
+}
 
 const isAgentOn = (spec: RtkAgentSpec, content: string | null): boolean =>
   content !== null && (spec.marker ? content.includes(spec.marker) : true)
 
+function restoreToSnapshot(target: string, before: string | null, after: string | null): void {
+  if (before !== null) {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    writeFileAtomic(target, before)
+  } else if (after !== null) {
+    fs.rmSync(target)
+  }
+}
+
 /**
- * rtk CLI 的实测连带效应：`--agent claude --uninstall` 会顺带删掉 `.cursor/hooks.json`。
- * 用户点的是「关掉 A」，不能悄悄把 B 也关了——把被连带改动的其他 agent 文件从备份恢复。
+ * rtk CLI 的连带效应是**双向**的（实测）：
+ * - `--agent claude --uninstall` 会顺带删掉 `.cursor/hooks.json`（把别人关掉）；
+ * - `--agent cursor --auto-patch` 会顺带在 `.claude/settings.json` 注册钩子，并新建
+ *   `.claude/RTK.md`、`.claude/CLAUDE.md`（把别人打开）。
+ * 用户只点了 A：两个方向都按快照还原，否则会静默改/关别的 agent 的配置。
  */
-function repairCollateral(home: string, snapshots: Map<string, string | null>): string[] {
-  const restored: string[] = []
-  for (const [rel, before] of snapshots) {
-    const owner = RTK_AGENT_SPECS.find(spec => spec.hookFile === rel)
-    if (!owner) continue
-    const after = readFileIfExists(path.join(home, rel))
+function reconcileCollateral(
+  home: string,
+  snapshot: Map<string, string | null>,
+  entries: GuardEntry[],
+): { restored: string[]; reverted: string[]; files: string[] } {
+  const byRel = new Map(entries.map(entry => [entry.rel, entry]))
+  const restored = new Set<string>()
+  const reverted = new Set<string>()
+  const files: string[] = []
+  for (const [rel, before] of snapshot) {
+    const entry = byRel.get(rel)
+    if (!entry || entry.kind === 'bak') continue
+    const target = path.join(home, rel)
+    const after = readFileIfExists(target)
     if (after === before) continue
-    if (isAgentOn(owner, before) && !isAgentOn(owner, after)) {
-      if (before !== null) writeFileAtomic(path.join(home, rel), before)
-      else if (after !== null) fs.rmSync(path.join(home, rel))
-      restored.push(owner.id)
+    if (entry.kind === 'extra') {
+      // 说明文件（RTK.md / CLAUDE.md / GEMINI.md …）：任何改动都还原
+      restoreToSnapshot(target, before, after)
+      if (before === null) reverted.add(entry.owner)
+      else restored.add(entry.owner)
+      files.push(rel)
+      continue
+    }
+    const spec = rtkAgentSpec(entry.owner)
+    if (!spec) continue
+    const wasOn = isAgentOn(spec, before)
+    const isOn = isAgentOn(spec, after)
+    if (wasOn && !isOn) {
+      restoreToSnapshot(target, before, after)
+      restored.add(entry.owner)
+      files.push(rel)
+    } else if (!wasOn && isOn) {
+      restoreToSnapshot(target, before, after)
+      reverted.add(entry.owner)
+      files.push(rel)
+    }
+    // on 状态没变（只是内容重排）→ 不动用户的文件
+  }
+  // 撤回/修复过的文件若被 CLI 留了新 .bak，一并清掉（原本就有的 .bak 不动）
+  for (const owner of new Set([...restored, ...reverted])) {
+    const spec = rtkAgentSpec(owner)
+    if (!spec?.hookFile) continue
+    const bakRel = `${spec.hookFile}.bak`
+    if (snapshot.get(bakRel)) continue
+    const bakPath = path.join(home, bakRel)
+    if (fs.existsSync(bakPath)) {
+      fs.rmSync(bakPath)
+      files.push(bakRel)
     }
   }
-  return restored
+  return { restored: [...restored], reverted: [...reverted], files }
+}
+
+const collateralFields = (collateral: { restored: string[]; reverted: string[]; files: string[] }) => ({
+  ...(collateral.restored.length ? { collateralRestored: collateral.restored } : {}),
+  ...(collateral.reverted.length ? { collateralReverted: collateral.reverted } : {}),
+  ...(collateral.files.length ? { collateralFiles: collateral.files } : {}),
+})
+
+/** 权限/磁盘等原生异常包成结构化错误：不泄漏服务端临时路径，带 plane/reason/backup。 */
+function structuredWriteError(error: unknown, spec: RtkAgentSpec, backupDir: string): RtkPlaneError {
+  const code = String((error as { code?: unknown } | null)?.code || 'unknown')
+  const failure = new RtkPlaneError(500, 'local', 'hook_write_failed',
+    `写入 ${spec.name} 的钩子配置失败（${code}）：原文件未改动，已备份，可用 /api/rtk/rollback 恢复`)
+  failure.backup = backupDir
+  return failure
 }
 
 /**
@@ -696,68 +790,88 @@ export async function applyLocalAgentHook(
   }
 
   return withFileLock(path.join(home, spec.dir), async () => {
-    // 备份先做：失败也必须留下可回退的原件（T9）；连同其他 agent 的钩子文件一起存，
-    // 因为 rtk CLI 有跨 agent 连带改动（实测 claude/cursor），需要能修回来。
-    const guardFiles = otherHookFiles(spec.id)
-    const backup = createRtkBackup(home, [spec.hookFile, ...(spec.extraFiles || []), ...guardFiles].filter((rel): rel is string => Boolean(rel)))
-    const guardSnapshot = new Map(guardFiles.map(rel => [rel, readFileIfExists(path.join(home, rel))]))
-    // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
-    for (const rel of [spec.hookFile, ...(spec.extraFiles || [])]) {
-      if (rel) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
+    const targets = [spec.hookFile, ...(spec.extraFiles || [])].filter((rel): rel is string => Boolean(rel))
+    const guards = guardEntries(spec.id)
+    // 备份与快照都必须发生在 CLI **之前**：CLI 可能把目标文件写坏，
+    // 之后再读就等于把坏内容当原件（红队缺陷 3）。
+    const backup = createRtkBackup(home, [...new Set([...targets, ...guards.map(entry => entry.rel)])])
+    pruneRtkBackups(home)
+    const snapshot = new Map<string, string | null>()
+    for (const rel of [...new Set([...targets, ...guards.map(entry => entry.rel)])]) {
+      snapshot.set(rel, readFileIfExists(path.join(home, rel)))
     }
+    const restoreTargets = () => {
+      for (const rel of targets) {
+        const target = path.join(home, rel)
+        const before = snapshot.get(rel) ?? null
+        const after = readFileIfExists(target)
+        if (after !== before) restoreToSnapshot(target, before, after)
+      }
+    }
+    // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
+    for (const rel of targets) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
     fs.mkdirSync(path.join(home, spec.dir), { recursive: true })
 
-    const args = on ? spec.initFlags! : [...spec.initFlags!, '--uninstall']
-    let cli: RtkCliAttempt
-    if (fs.existsSync(bin)) {
-      cli = await runRtkCli(bin, args, home, options.timeoutMs ?? 20_000)
-      const collateralRestored = repairCollateral(home, guardSnapshot)
-      if (cli.ok && verifyLocalHook(spec, on, home)) {
-        return {
-          mechanism: 'rtk-cli', detail: `rtk init -g ${args.join(' ')}`, cli, backup: backup.dir,
-          ...(collateralRestored.length ? { collateralRestored } : {}),
+    try {
+      const args = on ? spec.initFlags! : [...spec.initFlags!, '--uninstall']
+      let cli: RtkCliAttempt
+      if (fs.existsSync(bin)) {
+        cli = await runRtkCli(bin, args, home, options.timeoutMs ?? 20_000)
+        const collateral = reconcileCollateral(home, snapshot, guards)
+        if (cli.ok && verifyLocalHook(spec, on, home)) {
+          return {
+            mechanism: 'rtk-cli', detail: `rtk init -g ${args.join(' ')}`, cli,
+            backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
+            ...collateralFields(collateral),
+          }
         }
+        cli = cli.ok ? { ...cli, ok: false, stderr: 'rtk 执行成功但目标状态未生效' } : cli
+      } else {
+        cli = { command: `rtk init -g ${args.join(' ')}`, exitCode: null, stderr: `${bin} 不存在`, ok: false }
       }
-      cli = cli.ok ? { ...cli, ok: false, stderr: 'rtk 执行成功但目标状态未生效' } : cli
-    } else {
-      cli = { command: `rtk init -g ${args.join(' ')}`, exitCode: null, stderr: `${bin} 不存在`, ok: false }
-    }
 
-    const jsonSpec = HOOK_JSON[spec.id]
-    if (spec.hookFile && jsonSpec) {
-      const filePath = path.join(home, spec.hookFile)
-      const existedBefore = readFileIfExists(filePath)
-      fs.mkdirSync(path.dirname(filePath), { recursive: true })
-      try {
-        applyHookJson(spec, jsonSpec, filePath, on)
-      } catch (error) {
-        if (existedBefore !== null) writeFileAtomic(filePath, existedBefore)
-        if (error instanceof RtkPlaneError) {
-          error.backup = backup.dir
+      const jsonSpec = HOOK_JSON[spec.id]
+      if (spec.hookFile && jsonSpec) {
+        const filePath = path.join(home, spec.hookFile)
+        fs.mkdirSync(path.dirname(filePath), { recursive: true })
+        try {
+          applyHookJson(spec, jsonSpec, filePath, on)
+        } catch (error) {
+          restoreTargets()
+          if (error instanceof RtkPlaneError) {
+            error.backup = backup.dir
+            error.message = `${error.message}；原文件已按备份回填，也可用 /api/rtk/rollback 恢复`
+            throw error
+          }
           throw error
         }
-        throw error
-      }
-      if (verifyLocalHook(spec, on, home)) {
-        const collateralRestored = repairCollateral(home, guardSnapshot)
-        return {
-          mechanism: 'hooks-json',
-          detail: `${spec.hookFile}（已核实 schema）`,
-          cli,
-          fallbackReason: cli.stderr,
-          backup: backup.dir,
-          ...(collateralRestored.length ? { collateralRestored } : {}),
+        if (verifyLocalHook(spec, on, home)) {
+          const collateral = reconcileCollateral(home, snapshot, guards)
+          return {
+            mechanism: 'hooks-json',
+            detail: `${spec.hookFile}（已核实 schema）`,
+            cli,
+            fallbackReason: cli.stderr,
+            backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
+            ...collateralFields(collateral),
+          }
         }
+        restoreTargets()
+        throw new RtkPlaneError(502, 'local', 'hook_write_unverified',
+          `写入 ${spec.hookFile} 后仍检测不到目标状态（rtk CLI: ${cli.stderr}）；原文件已按备份回填，可用 /api/rtk/rollback 恢复`)
       }
-      if (existedBefore !== null) writeFileAtomic(filePath, existedBefore)
-      throw new RtkPlaneError(502, 'local', 'hook_write_unverified',
-        `写入 ${spec.hookFile} 后仍检测不到目标状态（rtk CLI: ${cli.stderr}）`)
-    }
 
-    throw new RtkPlaneError(502, 'local', 'hook_cli_failed',
-      `${spec.name} 的钩子文件形状未经验证，且 rtk CLI 失败：${cli.stderr}`)
+      throw new RtkPlaneError(502, 'local', 'hook_cli_failed',
+        `${spec.name} 的钩子文件形状未经验证，且 rtk CLI 失败：${cli.stderr}`)
+    } catch (error) {
+      // 失败路径同样要把被连带改动的其他 agent 文件还原（CLI 可能已经动过它们）。
+      reconcileCollateral(home, snapshot, guards)
+      if (error instanceof RtkPlaneError) throw error
+      throw structuredWriteError(error, spec, backup.dir)
+    }
   })
 }
+
 
 /* ------------------------------------------------------------------ */
 /* 平面写入与编排                                                      */
@@ -801,9 +915,13 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
   const home = options.home || resolveHome()
   let mechanism: RTKToggleResult['mechanism']
   let backup: string | undefined
+  let backupId: string | undefined
+  let backupFileCount: number | undefined
   let fallbackReason: string | undefined
   let cli: RtkCliAttempt | undefined
   let collateralRestored: string[] | undefined
+  let collateralReverted: string[] | undefined
+  let collateralFiles: string[] | undefined
 
   if (plane === 'local') {
     const spec = rtkAgentSpec(agent)
@@ -812,9 +930,13 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     const result = await applyLocalAgentHook(spec, on, { home, bin: options.bin, timeoutMs: options.timeoutMs })
     mechanism = result.mechanism
     backup = result.backup
+    backupId = result.backupId
+    backupFileCount = result.backupFileCount
     fallbackReason = result.fallbackReason
     cli = result.cli
     collateralRestored = result.collateralRestored
+    collateralReverted = result.collateralReverted
+    collateralFiles = result.collateralFiles
   } else if (plane === 'kernel') {
     // 内核由 scripts/magpie-console.mjs:91-93 以 HOME=<runtime>/home 启动，它的 agent
     // 配置在沙箱 HOME 里，写内核不会影响用户真实的 ~/.codex / ~/.claude。
@@ -841,16 +963,23 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
   }
 
   const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
+  // 不回传备份历史：只有本次备份的必要摘要。
+  const { backups: _history, ...status } = toStatusView(read, policy, home)
+  void _history
   return {
-    ...toStatusView(read, policy, home),
+    ...status,
     ok: true,
     plane,
     readPlane: read.plane,
     ...(mechanism ? { mechanism } : {}),
     ...(backup ? { backup } : {}),
+    ...(backupId ? { backupId } : {}),
+    ...(backupFileCount !== undefined ? { backupFileCount } : {}),
     ...(fallbackReason ? { fallbackReason } : {}),
     ...(cli ? { cli } : {}),
     ...(collateralRestored?.length ? { collateralRestored } : {}),
+    ...(collateralReverted?.length ? { collateralReverted } : {}),
+    ...(collateralFiles?.length ? { collateralFiles } : {}),
   }
 }
 

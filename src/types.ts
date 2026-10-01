@@ -162,8 +162,8 @@ export type ModelSyncResult = {
 
 export type RtkPlaneId = 'kernel' | 'relay' | 'local'
 
-/** 未配置 / 配置了但不可达 / 未授权 / 路由不存在 / 可用 —— UI 必须如实区分。 */
-export type RtkPlaneState = 'available' | 'not_configured' | 'unreachable' | 'unauthorized' | 'not_supported'
+/** 可用 / 可用但降级（本机未装 rtk）/ 未配置 / 不可达 / 未授权 / 路由不存在 —— UI 必须如实区分。 */
+export type RtkPlaneState = 'available' | 'degraded' | 'not_configured' | 'unreachable' | 'unauthorized' | 'not_supported'
 
 export type RtkPlaneProbe = {
   id: RtkPlaneId
@@ -185,7 +185,8 @@ export type RtkAgentStatus = {
   blocked?: string
 }
 
-export type RtkBackupSummary = { id: string; at: string; files: string[] }
+/** 备份摘要：只有必要信息，不含完整文件清单。 */
+export type RtkBackupSummary = { id: string; at: string; fileCount: number }
 
 export type RTKStatusResponse = {
   /** 权威读取平面：kernel → relay → local，第一个真正应答的。 */
@@ -213,6 +214,8 @@ export type RTKStatusResponse = {
   localAgents: RtkAgentStatus[]
   local: { connected: boolean; path: string | null; version: string | null }
   backups: RtkBackupSummary[]
+  /** 备份保留份数（RTK_BACKUP_KEEP），超出自动轮转。 */
+  backupKeep: number
   writeMode: 'local' | 'confirm' | 'off'
   remoteWriteEnabled: boolean
   kernelWriteEnabled: boolean
@@ -223,12 +226,20 @@ export type RTKStatusResponse = {
   error?: string
 }
 
-export type RTKToggleResponse = RTKStatusResponse & {
+/** toggle 响应不带备份历史，只给本次备份摘要。 */
+export type RTKToggleResponse = Omit<RTKStatusResponse, 'backups'> & {
   ok: true
   mechanism?: 'rtk-cli' | 'hooks-json'
   backup?: string
+  backupId?: string
+  backupFileCount?: number
   fallbackReason?: string
+  /** 被 rtk CLI 连带关掉、已修回的其他 agent。 */
   collateralRestored?: string[]
+  /** 被 rtk CLI 连带打开、已撤回的其他 agent。 */
+  collateralReverted?: string[]
+  /** 本次连带动到的文件。 */
+  collateralFiles?: string[]
 }
 
 export type RTKRollbackResponse = RTKStatusResponse & { ok: true; backupId: string; restored: string[] }

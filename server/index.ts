@@ -1152,7 +1152,12 @@ app.post('/api/rtk/toggle', async (req, res) => {
   try {
     const { setRTKAgentHook } = await import('./rtkService.js')
     const result = await setRTKAgentHook(agent, on, { plane: plane as 'kernel' | 'relay' | 'local', confirm })
-    addAudit('toggle_rtk_hook', agent, `on=${on}, plane=${result.plane}, outcome=ok${result.mechanism ? `, mechanism=${result.mechanism}` : ''}`)
+    // 连带改动必须进审计：事后能追责「这次操作顺带撤回/修回了哪些别的客户端」。
+    const collateralParts = [
+      ...(result.collateralReverted?.length ? [`reverted:${result.collateralReverted.join('+')}`] : []),
+      ...(result.collateralRestored?.length ? [`restored:${result.collateralRestored.join('+')}`] : []),
+    ]
+    addAudit('toggle_rtk_hook', agent, `on=${on}, plane=${result.plane}, outcome=ok${result.mechanism ? `, mechanism=${result.mechanism}` : ''}, collateral=${collateralParts.length ? collateralParts.join('|') : 'none'}`)
     res.json(result)
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)

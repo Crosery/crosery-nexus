@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { config } from './config.js'
 
 /**
@@ -15,8 +17,8 @@ import { config } from './config.js'
 
 export type RtkPlaneId = 'kernel' | 'relay' | 'local'
 
-/** 未配置 / 配置了但不可达 / 未授权 / 路由不存在 / 可用。 */
-export type RtkPlaneState = 'available' | 'not_configured' | 'unreachable' | 'unauthorized' | 'not_supported'
+/** 可用 / 可用但降级（本机没装 rtk）/ 未配置 / 配置了但不可达 / 未授权 / 路由不存在。 */
+export type RtkPlaneState = 'available' | 'degraded' | 'not_configured' | 'unreachable' | 'unauthorized' | 'not_supported'
 
 export type RtkPlaneProbe = {
   id: RtkPlaneId
@@ -327,11 +329,44 @@ export async function probeRelayPlane(target: RelayTarget = {}): Promise<RtkPlan
   }
 }
 
-/** 本机平面：控制台所在机器永远可达，本机实现就是回退面。 */
-export function probeLocalPlane(binFound = true): RtkPlaneProbe {
+/**
+ * RTK_BIN 一旦显式设置就以它为准：指向不存在的路径时返回 null，不再静默改用别的候选。
+ * 放在 rtkPlane 里是因为平面探测需要它，而 rtkService 依赖 rtkPlane（反向会成环）。
+ */
+export function findRTKBinary(env: NodeJS.ProcessEnv = process.env): string | null {
+  const custom = env.RTK_BIN
+  if (custom) return existsSync(custom) ? custom : null
+
+  const candidates = [
+    join(homedir(), '.local/bin/rtk'),
+    join(homedir(), '.cargo/bin/rtk'),
+    '/usr/local/bin/rtk',
+    '/opt/homebrew/bin/rtk',
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // ignore
+    }
+  }
+  return null
+}
+
+/**
+ * 本机平面：控制台所在机器永远可达（本机实现就是回退面），但 rtk 未安装时必须如实降级，
+ * 否则会出现「connected:false / path:null」与「本机 rtk 已安装」自相矛盾的响应。
+ */
+export function probeLocalPlane(binFound: boolean = findRTKBinary() !== null): RtkPlaneProbe {
   return {
-    id: 'local', available: true, configured: true, state: 'available',
-    reason: 'local_host', detail: binFound ? '本机 rtk 已安装' : '本机未找到 rtk 可执行文件（仍可读写 agent 配置）',
+    id: 'local',
+    available: true,
+    configured: true,
+    state: binFound ? 'available' : 'degraded',
+    reason: binFound ? 'local_host' : 'local_rtk_missing',
+    detail: binFound
+      ? '本机 rtk 可用'
+      : '本机未安装 rtk：仍可读写 agent 配置，但无法执行 rtk CLI（安装后重试）',
   }
 }
 
@@ -355,6 +390,8 @@ export type RtkPlaneOptions = {
   fresh?: boolean
   kernel?: KernelTarget
   relay?: RelayTarget
+  /** 仅测试/调用方已知 rtk 是否安装时注入，避免再次探测。 */
+  localBinFound?: boolean
 }
 
 export async function resolveRtkPlane(options: RtkPlaneOptions = {}): Promise<RtkPlaneResolution> {
@@ -363,7 +400,7 @@ export async function resolveRtkPlane(options: RtkPlaneOptions = {}): Promise<Rt
   if (!injectable && !options.fresh && planeCache && Date.now() - planeCache.at < PLANE_CACHE_TTL_MS) return planeCache.value
   // 内核优先但必须真的应答；任何失败都降级并保留原因，不假装成功。
   const [kernel, relay] = await Promise.all([probeKernelPlane(options.kernel), probeRelayPlane(options.relay)])
-  const planes: RtkPlaneProbe[] = [kernel, relay, probeLocalPlane()]
+  const planes: RtkPlaneProbe[] = [kernel, relay, probeLocalPlane(options.localBinFound ?? findRTKBinary() !== null)]
   const authoritative = planes.find(probe => probe.available) || planes[planes.length - 1]
   const value: RtkPlaneResolution = { plane: authoritative.id, planes, fellBack: authoritative.id !== 'kernel' }
   if (!injectable) planeCache = { at: Date.now(), value }
