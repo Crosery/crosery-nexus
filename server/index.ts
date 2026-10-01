@@ -8,16 +8,16 @@ import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
-import { isAuthenticated, logout, requireAuth, validateCredentials } from './auth.js'
 import {
-  errorResponseBody,
-  isSessionRevoked,
+  createSessionGuard,
+  isAuthenticated,
   issueSession,
-  loginRateLimitKey,
-  loginRateLimiter,
+  logout,
   readSessionToken,
   revokeSession,
-} from './security.js'
+  validateCredentials,
+} from './auth.js'
+import { errorResponseBody, loginRateLimitKey, loginRateLimiter } from './security.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
@@ -150,19 +150,15 @@ app.use(express.json({ limit: '1mb' }))
 app.use(cookieParser())
 
 /**
- * 已登出（撤销）的会话在这里就被挡下（task-57 ③）。
+ * 全局鉴权守卫（task-58：把「恰好所有敏感路由都在 `/api` 下」改成**默认拒绝**）。
  *
- * 必须放在**所有 `/api` 路由之前**：`/api/session` 是注册最早的路由之一，
- * 如果把撤销检查放在后面，登出后的旧 cookie 仍会让 `/api/session` 报「已认证」。
- * `/api/session` 保持 200 + `{authenticated:false}`（前端靠它判断登录态，不能改成 401），
- * 其余受保护接口一律 401。
+ * 挂在**所有路由之前**，判定顺序与白名单理由见 `server/auth.ts` 的 `createSessionGuard`：
+ * 公开白名单 → 有效会话 → 已撤销会话清 Cookie → 受保护前缀（`/api/*`）→ 命中已注册路由 → 放行静态/SPA 回退。
+ * 后者保证 SPA 深链接仍返回 index.html 而不是 401 页面；前者保证将来新增的任何路由默认需要登录。
+ * 结构性断言测试见 `server/authDefaultDeny.test.ts`。
  */
-app.use('/api', (req, res, next) => {
-  if (!isSessionRevoked(readSessionToken(req))) return next()
-  logout(res)
-  if (req.path === '/session') return res.json({ authenticated: false })
-  return res.status(401).json({ error: '请先登录' })
-})
+app.use(createSessionGuard(app))
+
 
 app.get('/api/session', (req, res) => res.json({ authenticated: isAuthenticated(req) }))
 app.post('/api/login', (req, res) => {
@@ -296,7 +292,6 @@ app.get('/api/public/model-catalog', async (req, res) => {
   }
 })
 
-app.use('/api', requireAuth)
 
 app.post('/api/credentials/upload', async (req, res) => {
   const traceId = crypto.randomUUID()

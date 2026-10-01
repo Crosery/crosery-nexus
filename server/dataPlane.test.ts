@@ -567,11 +567,13 @@ test('snapshot client accepts only the complete shared envelope', async () => {
 
 test('data-plane status route remains behind the existing administrator middleware', () => {
   const source = fs.readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
-  const auth = source.indexOf("app.use('/api', requireAuth)")
+  // task-58：鉴权从「`/api` 前缀中间件」改成**全局默认拒绝守卫**（`createSessionGuard`），
+  // 断言的**意图不变**——这条路由仍然注册在鉴权之后、且不是公开白名单的一员。
+  const guard = source.indexOf('app.use(createSessionGuard(app))')
   const status = source.indexOf("app.get('/api/data-plane/status'")
   const notFound = source.indexOf("app.use('/api', (_req, res) => res.status(404)")
-  assert.ok(auth >= 0)
-  assert.ok(status > auth)
+  assert.ok(guard >= 0, '必须存在全局会话守卫')
+  assert.ok(status > guard, 'data-plane status 必须注册在守卫之后（默认拒绝）')
   assert.ok(notFound > status)
 })
 

@@ -5,12 +5,23 @@ import test from 'node:test'
 // 先设好环境再**动态**导入被测模块：`server/config.ts` 在模块求值时读取 SESSION_SECRET。
 process.env.SESSION_SECRET = 'unit-test-session-secret'
 
-const { createLoginRateLimiter, issueSession, isSessionRevoked, isSessionTokenValid, revokeSession, revokedSessionCount, clearRevokedSessions, shouldSecureCookie, errorResponseBody, SESSION_COOKIE } =
-  await import('./security.js')
-const { isAuthenticated } = await import('./auth.js')
+// task-58：会话实现已归并到 auth.ts，本文件只测「传输与滥用防护工具」，
+// 会话相关的原语改从 auth.js 导入（契约测试「签发↔验证」随之变成同模块内自洽 + 与 isAuthenticated 对照）。
+const { createLoginRateLimiter, shouldSecureCookie, errorResponseBody } = await import('./security.js')
+const {
+  clearRevokedSessions,
+  isAuthenticated,
+  isSessionRevoked,
+  issueSession,
+  revokeSession,
+  revokedSessionCount,
+  sessionTokenValid,
+  SESSION_COOKIE,
+} = await import('./auth.js')
 
 /**
- * task-57 的三块安全原语的**行为级**单测（不需要 HTTP）。
+ * task-57 的三块安全原语的**行为级**单测（不需要 HTTP）；
+ * task-58 把会话实现迁到 `auth.ts` 后，本文件只覆盖 security.ts 的工具 + 会话契约。
  * 端到端（限流 429、登出后 401、错误不泄堆栈）在 `server/securityRoutes.test.ts`。
  */
 
@@ -143,7 +154,7 @@ test('issueSession 签发的 Cookie 能被 server/auth.ts 的 isAuthenticated �
 
   // 交给真正的验证方（auth.ts）判定：签名格式一致才算通过。
   assert.equal(isAuthenticated({ cookies: { [SESSION_COOKIE]: issued.value } } as unknown as import('express').Request), true)
-  assert.equal(isSessionTokenValid(issued.value), true, '本模块自验证也通过')
+  assert.equal(sessionTokenValid(issued.value), true, '本模块自验证也通过')
   const tampered = `${issued.value.slice(0, -2)}xx`
   assert.equal(isAuthenticated({ cookies: { [SESSION_COOKIE]: tampered } } as unknown as import('express').Request), false, '伪造签名必须 401')
 })
