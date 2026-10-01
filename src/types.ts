@@ -80,18 +80,42 @@ export type ModelSource = {
   channelEnabled: boolean
 }
 
+/** 单个价格来源的单价（task-79；金额单位由 `unit` 说明，缺失字段一律 undefined，不补 0）。 */
+export type PriceSourceEntry = {
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+  unit?: string
+  sourceId?: string
+  fetchedAt?: number
+}
+
 export type ModelEntry = {
   id: string
   pricing: ModelPricing | null
   sources: ModelSource[]
   enabledSources: number
   contested: boolean
+  /** 双源价格：openrouter / models.dev 各自保存，缺失即缺席（**不写 0 冒充免费**）。 */
+  pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceSourceEntry>>
+  /** 两个来源都没有价格 ⇒ true。UI 写「未收录」而不是 0。 */
+  unpriced?: boolean
+  /** 仅出现在目录、网关上不可用 ⇒ false。 */
+  availableOnGateway?: boolean
 }
 
 export type ModelIndexData = {
   models: ModelEntry[]
   channels: ChannelItem[]
   credentials: CredentialItem[]
+  /** 双源价格的整体状态（task-79）：来源 ok/entries/fetchedAt、降级原因、加载时间。 */
+  sourceStatus?: {
+    sources?: Partial<Record<'models.dev' | 'openrouter', { ok?: boolean; fetchedAt?: number; entries?: number; error?: string }>>
+    loadedAt?: number | null
+    degraded?: string[]
+    models?: number
+  }
 }
 
 /**
@@ -637,4 +661,19 @@ export type MonitorData = {
   accounts?: Array<Record<string, any>>
   /** 各上游套餐窗口内，每个 Key 的 token 消耗占比 */
   quotaShare?: Partial<Record<'codex' | 'claude' | 'antigravity', QuotaShareWindow>> | null
+}
+
+
+/** magpie 内核更新状态（`GET /api/magpie/update-status`，task-79）。 */
+export type MagpieUpdateStatus = {
+  capability: boolean
+  reason?: string
+  script?: string
+  root?: string
+  currentVersion?: string | null
+  latestVersion?: string | null
+  lastCheckedAt?: string | null
+  lastResult?: string | null
+  backupPath?: string | null
+  error?: string | null
 }

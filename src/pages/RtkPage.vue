@@ -6,11 +6,14 @@ import { TxButton } from '@talex-touch/tuffex/button'
 import RtkBoard from '../components/RtkBoard.vue'
 import { api, RtkApiError } from '../api'
 import { confirm } from '../lib/confirm'
-import type { RTKStatusResponse, RtkPlaneId } from '../types'
+import type { MagpieUpdateStatus, RTKStatusResponse, RtkPlaneId } from '../types'
 
 const emit = defineEmits<{ (e: 'notify', message: string): void }>()
 
 const status = ref<RTKStatusResponse | null>(null)
+/** magpie 内核更新状态（只读；动作走 api.runMagpieUpdate，apply 需显式确认）。 */
+const updateStatus = ref<MagpieUpdateStatus | null>(null)
+const updateBusy = ref(false)
 const loading = ref(false)
 const busy = ref<string | null>(null)
 /** 失败原因必须持久可见：只有用户下一次操作或手动关闭才清除（load() 绝不清理它）。 */
@@ -156,7 +159,37 @@ async function rollback(backup: string) {
   }
 }
 
-onMounted(load)
+/**
+ * magpie 更新状态：只读拉取。能力不可用（脚本缺失）时服务端会如实给 capability:false，
+ * 面板据此禁用按钮——**不假装可以更新**。
+ */
+async function loadUpdateStatus() {
+  try {
+    updateStatus.value = await api.getMagpieUpdateStatus()
+  } catch (error) {
+    updateStatus.value = { capability: false, reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function runUpdate(action: 'check' | 'rehearse' | 'apply') {
+  updateBusy.value = true
+  try {
+    const result = await api.runMagpieUpdate(action, action === 'apply')
+    const text = typeof result.error === 'string' ? result.error : ''
+    if (text) emit('notify', `更新${action === 'apply' ? '替换' : action === 'rehearse' ? '演练' : '检查'}未完成：${text}`)
+    else emit('notify', action === 'apply' ? '内核已更新' : action === 'rehearse' ? '演练完成（未改动正在运行的内核）' : '已检查上游版本')
+  } catch (error) {
+    emit('notify', error instanceof Error ? error.message : String(error))
+  } finally {
+    updateBusy.value = false
+    await loadUpdateStatus()
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadUpdateStatus()
+})
 </script>
 
 <template>
@@ -184,7 +217,16 @@ onMounted(load)
       </div>
     </TxAlert>
 
-    <RtkBoard :status="status" :loading="loading" :busy="busy" @refresh="load"
+    <RtkBoard
+      :status="status"
+      :loading="loading"
+      :busy="busy"
+      :update="updateStatus"
+      :update-busy="updateBusy"
+      @update-check="runUpdate('check')"
+      @update-rehearse="runUpdate('rehearse')"
+      @update-apply="runUpdate('apply')"
+      @refresh="load"
       @toggle="toggleLocal"
       @remote="(plane: RtkPlaneId, on: boolean, agent: string) => toggleRemote(plane, agent, on)"
       @install="(plane: RtkPlaneId) => binaryAction('install', plane)"

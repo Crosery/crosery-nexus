@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
+import MagpieUpdatePanel from './MagpieUpdatePanel.vue'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxSwitch } from '@talex-touch/tuffex/switch'
-import type { RTKStatusResponse, RtkAgentStatus, RtkPlaneId, RtkPlaneProbe, RtkPlaneState } from '../types'
+import type { MagpieUpdateStatus, RTKStatusResponse, RtkAgentStatus, RtkPlaneId, RtkPlaneProbe, RtkPlaneState } from '../types'
 
 const props = withDefaults(defineProps<{
   status?: RTKStatusResponse | null
   loading?: boolean
   busy?: string | null
+  /** magpie 内核更新状态（task-79；由 RtkPage 拉取后下发）。 */
+  update?: MagpieUpdateStatus | null
+  /** 更新动作进行中（按钮禁用 + 文案）。 */
+  updateBusy?: boolean
 }>(), {
   status: null,
   loading: false,
   busy: null,
+  update: null,
+  updateBusy: false,
 })
 
 const emit = defineEmits<{
@@ -23,6 +30,9 @@ const emit = defineEmits<{
   (e: 'upgrade', plane: RtkPlaneId): void
   (e: 'rollback', backup: string): void
   (e: 'refresh'): void
+  (e: 'update-check'): void
+  (e: 'update-rehearse'): void
+  (e: 'update-apply'): void
 }>()
 
 const PLANE_LABEL: Record<RtkPlaneId, string> = {
@@ -217,6 +227,27 @@ const authorityHint = computed(() => {
         </div>
         <p v-if="!backups.length" class="hint">还没有备份记录。</p>
       </div>
+    </TxCard>
+
+    <!-- 相关设置：把维护类操作收在一起，别散落在几张卡片里 -->
+    <TxCard :padding="0" class="board-card">
+      <div class="board-head">
+        <div>
+          <h2>内核更新</h2>
+          <p class="hint">从上游取最新 magpie，校验后原子替换；失败自动回滚。默认只读，替换需要显式确认。</p>
+        </div>
+      </div>
+      <MagpieUpdatePanel
+        :status="update"
+        :available="update?.capability !== false"
+        :busy="updateBusy"
+        @check="emit('update-check')"
+        @rehearse="emit('update-rehearse')"
+        @apply="emit('update-apply')"
+      />
+      <p v-if="update && update.capability === false" class="warn-line">
+        更新能力不可用：{{ update.reason || '未说明原因' }}
+      </p>
     </TxCard>
   </div>
 </template>

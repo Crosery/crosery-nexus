@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxDataTable } from '@talex-touch/tuffex/data-table'
+import ModelPricingSources from '../components/ModelPricingSources.vue'
 import type { DataTableKey } from '@talex-touch/tuffex/data-table'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxButton } from '@talex-touch/tuffex/button'
@@ -528,6 +529,12 @@ async function handleSyncUpstream() {
           <TxButton variant="danger" size="sm" :loading="batchRunning" @click="applyBatch(false)">批量停用渠道映射</TxButton>
           <TxButton variant="ghost" size="sm" :disabled="batchRunning" @click="selectedIds = []">清除选择</TxButton>
         </div>
+
+        <!-- 选中单个模型时给出「两个价格来源各自怎么说」：表格列只能放一个单价，
+             而用户要的是能看出 openrouter 与 models.dev 的差异与抓取时间。 -->
+        <TxCard v-if="selectedModels.length === 1" :padding="14">
+          <ModelPricingSources :model="selectedModels[0]" :source-status="indexRes.data.value?.sourceStatus" />
+        </TxCard>
 
         <!-- 模型数据表格 -->
         <TxDataTable

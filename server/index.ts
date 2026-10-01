@@ -1173,7 +1173,11 @@ app.get('/api/model-index', async (req, res) => {
  * 更新脚本与安装根都可注入（测试用替身；生产用默认值）。**绝不碰 launchd、不重启服务**：
  * 本端点只跑 `scripts/magpie-update.mjs`，它自己只做"校验 → 备份 → 原子替换 → 失败回滚"。
  */
-const magpieUpdateScript = () => process.env.MAGPIE_UPDATE_SCRIPT || path.join(root, 'scripts/magpie-update.mjs')
+const magpieUpdateScript = () =>
+  // 仓库根 = server/ 的上一级（与 dist 的写法一致：`path.resolve(root, '../dist')`）。
+  // 之前少了这一层，默认路径被解析成 `server/scripts/magpie-update.mjs`——那个文件不存在，
+  // 于是端点永远报 capability:false，功能看起来"没实现"。
+  process.env.MAGPIE_UPDATE_SCRIPT || path.join(root, '..', 'scripts/magpie-update.mjs')
 const magpieUpdateRoot = () => process.env.MAGPIE_UPDATE_ROOT || path.join(os.homedir(), '.agents/crosery/magpie-console/bin')
 
 /** 能力探测：脚本存在且能被 node 读；装不上就如实说"不可用"，不假装有。 */

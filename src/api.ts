@@ -1,4 +1,4 @@
-import type { ModelSyncResult, OAuthStartResult, OAuthStatusResult, RtkPlaneId, RtkPlaneProbe, RTKRollbackResponse, RTKStatusResponse, RTKToggleResponse, VersionsData } from './types'
+import type { MagpieUpdateStatus, ModelSyncResult, OAuthStartResult, OAuthStatusResult, RtkPlaneId, RtkPlaneProbe, RTKRollbackResponse, RTKStatusResponse, RTKToggleResponse, VersionsData } from './types'
 
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
@@ -98,6 +98,13 @@ export const api = {
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
   version: () => request<VersionsData>('/api/version'),
   syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
+  /**
+   * magpie 内核更新（task-79 端点）。状态只读；`apply` 必须显式 `confirm: true`，
+   * 服务端缺确认会 403 `confirm_required` 且**一次脚本调用都不发生**。
+   */
+  getMagpieUpdateStatus: () => request<MagpieUpdateStatus>('/api/magpie/update-status'),
+  runMagpieUpdate: (action: 'check' | 'rehearse' | 'apply', confirm = false) =>
+    request<Record<string, unknown>>('/api/magpie/update', { method: 'POST', body: JSON.stringify({ action, confirm }) }),
   getRTKStatus: () => rtkRequest<RTKStatusResponse>('/api/rtk/status'),
   getRTKPlanes: () => rtkRequest<{ plane: RtkPlaneId; planes: RtkPlaneProbe[]; fellBack: boolean }>('/api/rtk/planes'),
   /** plane 默认 local：只有本机才有用户的 agent 配置；远端下发需显式指定并确认。 */
