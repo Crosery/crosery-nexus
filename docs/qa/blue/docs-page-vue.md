@@ -119,3 +119,90 @@ $ npm test          → test_exit=0 · ℹ tests 619 · pass 618 · fail 0 · ca
   1. **`recharts` 传递依赖 React**，等你的授权（见 §3）；
   2. 剪贴板失败分支（权限被拒时）在 Vue 版里保持「复制」原文案不再谎报「已复制」——这是有意的行为差异，未专门截图；
   3. `/docs` 的深链锚点（`#images` 等）已实测跳转正常；`/docs` 的 `max-age=300` 缓存由扫描器自带 cache-buster 规避，浏览器手动刷新若看到旧页面属正常缓存行为。
+
+---
+
+# 附录：删除未被使用的 `recharts`（task-45，2026-10-01）
+
+背景：§3 报告的「`recharts` 传递引入 react，导致 `npm ls` 达不到空」——Lead 授权删除这一个依赖。
+
+## 删前自证：源码/构建配置里 0 命中
+
+```console
+$ grep -rn "recharts" src/ apps/ packages/ scripts/ docs/ --include="*.vue" --include="*.ts" --include="*.tsx" --include="*.mjs" --include="*.html"
+（无输出 —— 源码里 0 命中）
+$ grep -rn "recharts" vite.config.ts index.html docs.html uno.config.ts tsconfig*.json
+（无输出 —— 构建配置里 0 命中）
+$ grep -n recharts package.json
+56:    "recharts": "^3.10.1"        ← 唯一残留处：依赖清单本身
+```
+（历史 QA 文档里对它的提及此前已被清理，故也没有文档命中。）
+
+## 改动（只删这一个，未动版本范围、未加新依赖）
+
+```console
+$ git diff -- package.json
+-    "recharts": "^3.10.1",
+$ python3 -c "…len(dependencies)…"   # 11 → 10
+deps: ['@iconify-json/carbon', '@talex-touch/tuffex', '@vitejs/plugin-vue', 'busboy', 'cookie-parser', 'express', 'unocss', 'vue', 'vue-router', 'yauzl']
+```
+随后 `npm install`（**未手动 `rm -rf node_modules`**）让 lock 与 `node_modules` 收敛。
+
+## 删后证据
+
+```console
+删前：
+$ npm ls react react-dom lucide-react recharts
+`-- recharts@3.10.1
+  +-- @reduxjs/toolkit@2.12.0
+  | `-- react@19.2.8 deduped
+  +-- react-dom@19.2.8
+  +-- react-redux@9.3.0
+  +-- react@19.2.8
+  `-- use-sync-external-store@1.6.0
+
+删后：
+$ npm ls react react-dom lucide-react recharts
+crosery-cpe-console@0.1.0 /Users/crosery/work_file/crosery-api-console
+`-- (empty)                                  ← 四个包全空
+$ npm ls react --all
+`-- (empty)                                  ← 全树无任何 react 引入者
+
+$ ls -d node_modules/react node_modules/react-dom node_modules/lucide-react node_modules/recharts
+ls: node_modules/lucide-react: No such file or directory
+ls: node_modules/react: No such file or directory
+ls: node_modules/react-dom: No such file or directory
+ls: node_modules/recharts: No such file or directory        ← 目录已随 npm install 清除
+
+$ grep -c "node_modules/react\|node_modules/lucide-react\|node_modules/recharts" package-lock.json
+0                                            ← lock 里 0 处 react 相关条目
+```
+recharts 的传递依赖也一并消失：`@reduxjs/toolkit`、`react-redux`、`use-sync-external-store` 均已移除。
+
+**没有其它传递引入 react 的包**：`npm ls react --all` 为空、lock 里 0 处命中 → `package.json` 的 10 个直接依赖里没有第二个 React 引入者。**React 已从本仓库彻底移除**。
+
+## 四项命令（退出码）
+
+```
+$ npx tsc -b        → tsc_exit=0
+$ npm run lint      → lint_exit=0（2 条既存 server/nativeResponses.ts no-control-regex warning）
+$ npm run build     → build_exit=0 · ✓ built in 519ms
+$ npm test          → test_exit=0 · ℹ tests 619 · pass 618 · fail 0 · cancelled 0 · skipped 1
+```
+**未撞上 flake**：`grep -E "rtkLock|✖"` 在全量输出里 0 命中 —— 本轮 `server/rtkLock.test.ts` 的 rollback e2e **通过**（你提到的 ~15% 概率性失败没有出现，如实记录，不当「重跑就好」）。
+
+## 两个扫描器（删依赖后各跑一次）
+
+```console
+$ cat scripts/qa-viewports.mjs | ego-browser nodejs
+{"checked":112,"failing":0,"renderFailures":0,"silentlyTruncatedTotal":0}
+EXIT=0
+
+$ cat scripts/qa-contrast.mjs | ego-browser nodejs
+{"route":"TOTAL","failing":0,"renderFailures":0}
+EXIT=0
+```
+
+## `/docs` 实拍无回归
+
+删依赖后实测：`sections 10`、`codeBlocks 14`、`icons 40`（**masked 40/40**）、`sidebarLinks 10`、点第一个复制按钮 → **「已复制」**、390px 移动菜单 → `.docs-sidebar open` + `display:flex`。截图 `r16-docs-after-recharts-removal.png`（桌面，含图标/代码块/复制按钮）、`r16-docs-mobile-menu.png`（390 移动菜单）。

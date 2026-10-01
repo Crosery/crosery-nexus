@@ -53,7 +53,6 @@
     "busboy": "^1.6.0",
     "cookie-parser": "^1.4.7",
     "express": "^5.2.1",
-    "recharts": "^3.10.1",
     "unocss": "^66.10.5",
     "vue": "^3.5.43",
     "vue-router": "^4.6.4",
