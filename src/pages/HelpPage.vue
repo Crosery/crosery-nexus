@@ -321,6 +321,13 @@ rtk init -g --agent claude --uninstall`
             命令退出码是 0，但 hook 根本没写进去，看起来「装了却不生效」。
           </TxAlert>
 
+          <TxAlert type="info" title="写完 ≠ 立刻生效" :closable="false">
+            挂载 hook 之后，<strong>正在运行的客户端不会热加载</strong>：先退出并重开该客户端，新的 hook 才会被读取；
+            部分客户端（如需要确认 hook 信任的工具）首次触发时会再问一次，必须允许，否则命令输出仍不会被压缩。
+            判断是否真的生效：新开一个会话跑 <code>rtk gain --daily</code>，看到 <code>total_saved</code> 增长即为生效。
+            控制台「RTK 优化」页每 30 秒刷新一次状态，也可用来对照。
+          </TxAlert>
+
           <div class="code-wrapper mt-3">
             <div class="code-header">
               <span>3. 验证与卸载（本机）</span>

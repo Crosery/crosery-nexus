@@ -122,6 +122,10 @@ const authorityHint = computed(() => {
         <div>
           <h2>本机客户端钩子</h2>
           <p class="hint">开关直接改本机 agent 配置（写前备份、写后校验、失败回滚）。rtk 0.50.0 只有 11 个 agent 支持全局钩子，其余只能按项目初始化。</p>
+          <p class="hint hint--warning">
+            改完需要<strong>重启对应客户端</strong>才生效（运行中的进程不会热加载 hook）；首次触发时若客户端询问是否信任 hook，必须允许。
+            判断是否真生效：新开会话跑 <code class="mono">rtk gain --daily</code> 看 <code class="mono">total_saved</code> 是否增长。
+          </p>
         </div>
       </div>
 
@@ -244,6 +248,13 @@ const authorityHint = computed(() => {
   font-size: 12.5px;
   color: var(--tx-text-color-secondary, #535b85);
   line-height: 1.5;
+}
+/* 「写完 ≠ 生效」提示：与普通说明区分，避免用户以为点了开关就立刻省 token。 */
+.hint--warning {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--tx-color-warning, #d97706);
+  color: var(--tx-text-color-primary, #1f2547);
 }
 .head-actions {
   display: flex;
