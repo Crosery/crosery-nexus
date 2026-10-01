@@ -66,6 +66,9 @@ console.log(JSON.stringify({ pinnedNow: new Date(pinnedNow).toISOString() }))
 const which = process.env.ROUTE || 'all'
 
 const cases = {
+  'cache-trend-1h': () => Reports.loadCacheTrendReport(reader, GROUPS, 1, '', '', '', '', pinnedNow),
+  'cache-trend-6h': () => Reports.loadCacheTrendReport(reader, GROUPS, 6, '', '', '', '', pinnedNow),
+  'cache-trend-72h': () => Reports.loadCacheTrendReport(reader, GROUPS, 72, '', '', '', '', pinnedNow),
   'cache-trend-168h': () => Reports.loadCacheTrendReport(reader, GROUPS, 168, '', '', '', '', pinnedNow),
   'cache-trend-24h': () => Reports.loadCacheTrendReport(reader, GROUPS, 24, '', '', '', '', pinnedNow),
   'cache-trend-720h': () => Reports.loadCacheTrendReport(reader, GROUPS, 720, '', '', '', '', pinnedNow),
@@ -86,6 +89,7 @@ for (const name of selected) {
     timings.push(performance.now() - started)
   }
   results[name] = {
+    bucketSeconds: payload?.bucketSeconds, points: payload?.points?.length,
     p50: Number(percentile(timings, 50).toFixed(1)),
     p95: Number(percentile(timings, 95).toFixed(1)),
     samples: timings.map((value) => Number(value.toFixed(1))),
