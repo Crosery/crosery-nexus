@@ -35,6 +35,15 @@ rmdir /tmp/cac-build.lock 2>/dev/null
 - 服务端改动要生效：`npm run build` 不是必须，但必须重启 `com.crosery.console-magpie`。
   **提交服务端改动的人负责重启并抽验**：先用 `launchctl kickstart -k ...` 重启，再对**运行中的实例**发一条真实请求验证新行为（红队 R7-A：`server/index.ts` 的修复已提交但服务没重启，线上仍在静默改写用户输入，而所有进程内测试都是绿的——测试 spawn 自己的子进程，验不到「进程没重启」）。
 
+## Git（共享工作区，血泪教训）
+
+多个成员共用**同一个索引与同一个分支**，所以：
+
+- **`git add` 与 `git commit` 都必须带显式路径**（`git commit -- <paths>`）。索引里随时可能有别人的暂存内容，裸 `git commit` 会把队友的文件卷进你的提交。
+- **不要在共享分支上 `amend`/`reset`/`rebase` 别人的提交**。第 10 轮真实发生过：A 的提交卷走了 B 的 17 个文件 → A `reset --soft` 改写 → **B 的改动从 HEAD 消失、退回暂存区**（内容没丢，但一度以为丢了）。改写前先 `git diff --cached` 看清谁的暂存。
+- 提交前固定自查：`git diff --cached --stat` **逐项**是否都属于本任务写范围。
+- 临时改动一律用 `git diff` + `shasum` 自证还原，别用 `git checkout .`（会连队友的改动一起冲掉）。
+
 ## 浏览器（ego-browser）
 
 - 同一时间只允许一个成员驱动浏览器。用 `/tmp/cac-browser.lock` 同样的 mkdir 方式取锁，用完 `rmdir`。
