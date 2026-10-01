@@ -370,7 +370,10 @@ rtk init -g --agent claude --uninstall`
 }
 .help-layout {
   display: grid;
-  grid-template-columns: 200px 1fr;
+  /* minmax(0, 1fr)：默认 1fr = minmax(auto, 1fr)，列宽不会小于内容的 min-content；
+     代码块里的长命令（<pre>）min-content 很宽，会把整列撑出视口 —— 实测 1024px 溢出 254px、
+     768px 溢出 42px（Lead 多视口扫描发现）。改成 minmax(0, 1fr) 后由 <pre> 自己横向滚动。 */
+  grid-template-columns: 200px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
@@ -411,6 +414,8 @@ rtk init -g --agent claude --uninstall`
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* 作为 grid 项目，默认 min-width:auto 会被内容（长命令）撑破；与 .help-layout 的 minmax(0,1fr) 配套。 */
+  min-width: 0;
 }
 .section-card {
   display: flex;
@@ -465,6 +470,9 @@ rtk init -g --agent claude --uninstall`
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--tx-border-color, #d5daec);
+  /* 卡片与 flex 子项都不许被长命令撑宽：宽度交给容器，横向滚动交给 .code-block。 */
+  min-width: 0;
+  max-width: 100%;
 }
 .code-header {
   display: flex;
@@ -483,6 +491,7 @@ rtk init -g --agent claude --uninstall`
   font-size: 12px;
   line-height: 1.5;
   overflow-x: auto;
+  max-width: 100%;
 }
 .client-grid {
   display: grid;
