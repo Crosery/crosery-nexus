@@ -18,6 +18,16 @@
 
 `npm run build`（tsc -b + vite）、`npm test`、服务重启都会互相踩。规则：
 
+**先看工作树，再跑全量**：别人正在写文件时，全量测试会把你自己的验证变成"别人的半成品"。**第 27 轮 Lead 就踩了一次**——`git status` 明明显示 `scripts/rollup-rebuild.mjs` 被改到一半（`rebuild is not defined`），还是跑了全量，白追一条假失败。正确做法二选一：
+
+```bash
+git status --short          # 有别人的未提交改动 → 换下面这条
+git archive HEAD | tar -x -C /tmp/cac-clean && ln -s "$PWD/node_modules" /tmp/cac-clean/node_modules
+cd /tmp/cac-clean && npm test     # 干净副本上跑，结论才算数
+```
+
+红队在第十八轮就是这么做的（`git archive HEAD` 副本 + 记录脏文件指纹），值得照抄。
+
 ```bash
 # 取锁（最长等 180s，失败就报给 lead）
 for i in $(seq 1 36); do mkdir /tmp/cac-build.lock 2>/dev/null && break || sleep 5; done
