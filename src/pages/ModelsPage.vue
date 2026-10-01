@@ -17,6 +17,7 @@ import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
 import { confirm } from '../lib/confirm'
 import { debounce, paginate, useQueryState } from '../lib/listState'
+import { sortKeyForColumn, tableSortState } from '../lib/tableSort'
 import { useResource } from '../lib/resource'
 import { fmtCompact, fmtInt, fmtUsd } from '../lib/format'
 import type { ApiKeyItem, ModelCost, ModelEntry, ModelIndexData, ModelSource, UsageBreakdownData } from '../types'
@@ -236,17 +237,19 @@ const columns = [
   { key: 'usage', title: '用量与花费', width: 200, align: 'right' as const, sortable: true },
 ]
 
-/** 表头列 key ↔ URL 里的排序字段。 */
-const SORT_BY_COLUMN: Record<string, string> = { model: 'name', sources: 'sources', pricing: 'input', usage: 'usage' }
-const columnOfSort = computed(() => Object.entries(SORT_BY_COLUMN).find(([, key]) => key === sortKey.value)?.[0] ?? 'model')
-const tableSort = computed(() => ({ key: columnOfSort.value, order: dir.value }))
+/**
+ * 列 ↔ 排序字段的映射收在 `src/lib/tableSort.ts`（纯函数、可测）：
+ * - `pricing` 列同时承载 `input` / `output`，所以 `?sort=output` 的 `aria-sort` 仍落在定价列；
+ * - 没有匹配时返回 null —— **不打 `aria-sort`**，而不是兜底标到第一列（红队 R4-A）。
+ */
+const tableSort = computed(() => tableSortState(sortKey.value, dir.value))
 
 function onSortChange(next: { key: string; order: 'asc' | 'desc' | null } | null) {
   if (!next?.order) {
     scope.patch({ sort: 'name', dir: 'asc', page: '1' })
     return
   }
-  scope.patch({ sort: SORT_BY_COLUMN[next.key] ?? 'name', dir: next.order, page: '1' })
+  scope.patch({ sort: sortKeyForColumn(next.key) ?? 'name', dir: next.order, page: '1' })
 }
 
 /** 列显隐：进 URL（`cols=model,sources,pricing,usage`），可分享「只看价格」这类视图。 */
