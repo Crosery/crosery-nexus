@@ -46,8 +46,8 @@ try {
     }
   };
   if (looksLikeLogin) {
-    await page.fill('loc=css:input[placeholder="请输入管理员账号"]', "admin");
-    await page.fill('loc=css:input[placeholder="请输入控制台密码"]', pw);
+    await fillWithRetry('loc=css:input[placeholder="请输入管理员账号"]', "admin", "管理员账号");
+    await fillWithRetry('loc=css:input[placeholder="请输入控制台密码"]', pw, "控制台密码");
     await page.click('loc=role:button[name="进入控制台"]');
     await page.waitForURL("**/dashboard", { timeout: 20000 });
   }
