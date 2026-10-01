@@ -9,6 +9,24 @@
 
 ---
 
+## 0.2 【第 10 轮刷新】发布源 = `526fdfc`（当初写此文时为 `fabd4fe`）
+
+上机前**必须以组装时 `git rev-parse HEAD` 为准**（本文其余数字仍是 `fabd4fe` 时点）。本轮在**干净工作树**上重跑了 `--frontend=vue` 组装，结论：
+
+| 项 | `fabd4fe`（本文原值） | **`526fdfc`（本轮）** |
+| --- | --- | --- |
+| 组装树 | 416 文件 / 7.10 MB，MANIFEST 413 | **413 文件 / 7.19 MB，MANIFEST 412** |
+| 缺失生产文件 | 0 | **0** |
+| 非 dist 新增 | 95 add + 36 replace | **334 add + 0 replace**（口径按本轮脚本；旧口径见 §1） |
+| dist | 74 文件 | **77 文件**（vite manifest 46 条，`.tsx` 条目 **0**） |
+| 结果 | PASS | **PASS（1 条警告：本地 node v26 vs engines `>=24 <25`）** |
+
+- **keep-prod 模式本轮未重跑**：它需要**生产 dist 快照**（`--dist-from`），本轮手上只有 `vue` 模式的 dist；§1 里 keep-prod 的数字仍是 `fabd4fe` 时点。上机时若要选 B，请先用生产 dist 重跑一次组装再进入 §5。
+- 本轮先把工作树弄干净才组装：先前一直存在的未跟踪文件 `public/tuffex-dashboard-preview.png`（**截图里含 owner 的 API Key 名称**，且位于会被静态托管的 `public/`）已移出到 `docs/qa/evidence/` 并提交——组装脚本本来就把它排除在 release 之外，但它会让「工作树必须干净」这条断言失败，而这条断言正是「发布内容必须能由某个 commit 复现」的保障。
+- 本地已追加提交若干（RTK 跨进程锁与 fencing、排版收口、窄屏修复等）；**这些都会随本次发布一起上**，因此 §1 的「用户可见变化」还应对照 `docs/qa/STATUS.md` 的最新一节。
+
+---
+
 ## 0. 结论（TL;DR）
 
 1. 发布内容 = **BASE 全量文件** + **131 个本地非 dist 文件**（replace 36 / add 95）+ **可选的新 dist**（发布源 `fabd4fe`）。本地演练两种模式都通过校验：**0 个生产文件缺失**。
