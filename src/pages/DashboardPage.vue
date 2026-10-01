@@ -70,6 +70,12 @@ function handleOpenKeys() {
   router.push('/keys')
 }
 
+// 真实用户投票是这条改进闭环里唯一没人跑过的一环（实验台建好后只有自测与红队投过票）。
+// 在运行概览的快捷区放一个入口：不打断、不弹窗，点进去 30 秒可投一票。
+function handleOpenAbLab() {
+  router.push('/ab')
+}
+
 // Hover state on SVG chart
 const hoveredPoint = ref<{ x: number; y: number; bucket: string; requests: number } | null>(null)
 
@@ -314,6 +320,9 @@ const chartPath = computed(() => {
           <TxButton variant="primary" size="sm" block @click="handleOpenKeys">
             管理所有 API Key
           </TxButton>
+          <TxButton variant="ghost" size="sm" block @click="handleOpenAbLab">
+            对比新旧界面（A/B 实验台）
+          </TxButton>
         </div>
       </TxCard>
     </section>
@@ -498,6 +507,9 @@ const chartPath = computed(() => {
 }
 
 .quick-actions-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-top: 14px;
   padding-top: 10px;
   border-top: 1px solid var(--tx-border-color-lighter);
