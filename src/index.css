@@ -29,5 +29,6 @@ html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
 body { min-height: 100vh; background: var(--bg-secondary); }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary-color) 55%, transparent); outline-offset: 2px; }
+/* task-72：原来用 55% 透明的 mix，对白底实测只有 ~2:1（低于非文本 3:1）；改用实色 token */
+html :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--console-focus-ring, #1b2a6b) !important; outline-offset: 2px !important; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }

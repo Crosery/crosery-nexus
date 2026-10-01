@@ -49,7 +49,11 @@ async function signOut() {
 
 <template>
   <div class="shell">
+    <!-- 跳到主内容：必须是页面上**第一个可聚焦元素**（键盘用户按一次 Tab 就能跳过整条侧边栏导航） -->
+    <a class="skip-link" href="#main-content">跳到主内容</a>
     <aside class="shell__sidebar">
+      <!-- nav landmark 由 TxSidebarNav 自己渲染（aria-label="控制台导航"），这里不再包一层 nav，
+           否则会出现两个同名导航 landmark（实测 nav 计数会重复） -->
       <ConsoleNav @signout="signOut" />
     </aside>
 
@@ -82,7 +86,7 @@ async function signOut() {
       <ConsoleNav @navigate="drawerOpen = false" @signout="signOut" />
     </TxDrawer>
 
-    <main class="shell__main console-ground">
+    <main id="main-content" class="shell__main console-ground" tabindex="-1">
       <header v-if="!isMobile" class="shell__desktop-header">
         <div class="shell__header-left">
           <!-- 面包屑（原来是空注释占位；现在由当前路由推导，站内路由跳转） -->

@@ -1,3 +1,8 @@
+:root {
+  /* 焦点环：对浅色背景（页面/卡片/输入框）实测 ≥ 3:1；深色表面用下面那个 */
+  --console-focus-ring: #1b2a6b;
+}
+
 /*
  * 控制台主题：只覆盖 Tuffex 官方 --tx-* / --tx-bui-* 令牌（参考 geek_main 与 Tuffex 官方规范）。
  * 视觉：冰白纸面 + 钴蓝主色。组件统一读取此处的设计令牌。
@@ -190,9 +195,46 @@ a:hover {
   text-decoration: underline;
 }
 
-:focus-visible {
-  outline: 2px solid var(--tx-color-primary);
-  outline-offset: 2px;
+/**
+ * 焦点指示器（task-72，WCAG 2.4.7）。
+ *
+ * 背景：组件库的 scoped 样式里有 `.tx-input__inner[data-v-…]{outline:none}`
+ * （特异性 (0,2,0)），而我们原来的 `:focus-visible` 只有 (0,1,0) ⇒ 键盘焦点**完全没有环**
+ * （红队 R26-C 实测三态计算样式相同；我在浏览器里复现了：`:focus-visible` 命中，
+ * 但 computed `outline-style` 仍是 `none`）。
+ *
+ * 因此这里用 `html :is(…)` 把特异性提到 (0,2,1)，并对三个 outline 属性加 `!important`
+ * 兜底：焦点可见性是硬性可访问性要求，组件库的 `outline:none` 不该赢。
+ * 颜色用专用 token（不是半透明 mix），保证对相邻背景 ≥3:1 可实测。
+ */
+html :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--console-focus-ring) !important;
+  outline-offset: 2px !important;
+}
+
+/* 注：曾想给「深色表面」换亮色环，但实测本应用侧边栏/顶栏都是浅色（#fff / #faf9f5），
+   浅蓝环 (#8ab4ff) 只有 2.09:1 ⇒ 不达标，故统一用同一个深色环（实测 ≥ 3:1）。 */
+
+/* 跳到主内容：只在被键盘聚焦时出现（首个可聚焦元素，见 ConsoleShell.vue） */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 9999;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--tx-color-primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 120ms ease;
+}
+
+.skip-link:focus-visible {
+  top: 12px;
+  outline: 2px solid var(--console-focus-ring) !important;
+  outline-offset: 2px !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

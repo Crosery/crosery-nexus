@@ -52,7 +52,9 @@ async function handleSubmit() {
           <p class="login-subtitle">统一管理网关 API Key、模型路由、用量审计与账号额度。</p>
         </div>
 
-        <TxAlert v-if="error" type="danger" :title="error" :closable="false" class="mb-4" />
+        <!-- 错误提示：TxAlert 自带 role="alert"（实测渲染 `role: "alert"`），这里再给它一个 id，
+             让输入框用 aria-describedby 指过来（聚焦时读屏会读错误文案），并用 aria-invalid 标记 -->
+        <TxAlert v-if="error" id="login-error" type="danger" :title="error" :closable="false" class="mb-4" :aria-live="'assertive'" />
 
         <TxForm :model="form" class="login-form" @submit.prevent="handleSubmit">
           <TxFormItem label="管理员账号" prop="username">
@@ -61,6 +63,8 @@ async function handleSubmit() {
               placeholder="请输入管理员账号"
               autocomplete="username"
               class="w-full"
+              :aria-invalid="error ? 'true' : undefined"
+              :aria-describedby="error ? 'login-error' : undefined"
             />
           </TxFormItem>
 
@@ -71,6 +75,8 @@ async function handleSubmit() {
               placeholder="请输入控制台密码"
               autocomplete="current-password"
               class="w-full"
+              :aria-invalid="error ? 'true' : undefined"
+              :aria-describedby="error ? 'login-error' : undefined"
               @keydown.enter="handleSubmit"
             />
           </TxFormItem>
