@@ -2,7 +2,7 @@
 
 - **日期**：2026-10-01 ｜ **任务**：task-15 ｜ **执行**：deploy-reconciler ｜ **状态**：**本轮未执行任何上机步骤**，本文供 Lead/用户按步执行
 - **配套**：[release-plan.md](<docs/qa/deploy/release-plan.md>)（发布内容清单与前端决策）、[assemble-release.mjs](<docs/qa/deploy/assemble-release.mjs>)（本地组装+校验）
-- **对象**：`cpa-vps`（`root@45.192.104.163:39822`）上的 `crosery-api-console.service`
+- **对象**：`cpa-vps`（SSH 别名，见本机 `~/.ssh/config`）上的 `crosery-api-console.service`
 
 ## 0. 关键事实（task-6/task-15 实测）
 

@@ -1,7 +1,7 @@
 # 中转站生产 release ⟷ 本地仓库 双向漂移盘点（Phase 1，只读）
 
 - **日期**：2026-10-01 ｜ **任务**：task-6 ｜ **执行**：deploy-reconciler ｜ **状态**：Phase 1 完成（未做任何生产写入，§6.1 自证）
-- **生产主机**：`cpa-vps`（`root@45.192.104.163:39822`）｜ 服务 `crosery-api-console.service`（`active`，MainPID 1476015，`ExecMainStartTimestamp=Mon 2026-09-28 00:00:23 EDT`，`NRestarts=0`）
+- **生产主机**：`cpa-vps`（SSH 别名，见本机 `~/.ssh/config`）｜ 服务 `crosery-api-console.service`（`active`，MainPID 1476015，`ExecMainStartTimestamp=Mon 2026-09-28 00:00:23 EDT`，`NRestarts=0`）
 - **生产 release**：`/opt/crosery-api-console-current → /opt/crosery-api-console-releases/20260928-reset-clears-cooldown`（release 内**无 `.git`**；运行进程 `cwd` 已解析到该 release 目录，见 CMD-9）
 - **本地**：`/Users/crosery/work_file/crosery-api-console` @ `281c30e`（工作区另有他人未提交改动，见 §3.3）
 - **工具与证据**：[divergence-scan.py](<docs/qa/deploy/divergence-scan.py>)、`docs/qa/deploy/evidence/`（原始 manifest、分类 TSV、本地测试日志、release 链 manifest 压缩包）
