@@ -203,3 +203,108 @@ test('R9-E 载荷 home 与本次不同：共用备份目录时不基于超时接
   assert.equal(deAdProbe.reason, 'holder_dead')
   fs.rmSync(lockPath())
 })
+
+
+/* ---------------- R10-A：心跳不得抢回被接管的锁 ---------------- */
+
+test('R10-A 心跳不校验 token 时会抢回被接管的锁（修前复现：断言必须失败）', async () => {
+  const staleMs = 300 // 心跳周期 = max(200, min(100, 300)) = 200ms
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'victim', env: { ...env }, staleMs })
+  const thief = JSON.stringify({ token: 'THIEF-TOKEN', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home })
+  // 模拟合法接管：删掉 + 重建（inode 变了），再原地写一次覆盖 token 但保留 inode 的情形
+  fs.rmSync(lockPath())
+  fs.writeFileSync(lockPath(), thief)
+  await new Promise(resolve => setTimeout(resolve, 900)) // 远超 3 个心跳周期
+  const after = fs.readFileSync(lockPath(), 'utf8')
+  assert.equal(JSON.parse(after).token, 'THIEF-TOKEN', '心跳不得把锁抢回自己的 token')
+  assert.equal(lock.info.lost, true, '失去锁必须如实上报')
+  assert.equal(lock.info.lostReason, 'token_mismatch')
+  lock.release()
+  assert.equal(fs.existsSync(lockPath()), true, '失去锁的一方不得在 release 时删掉接管者的锁')
+  assert.equal(JSON.parse(fs.readFileSync(lockPath(), 'utf8')).token, 'THIEF-TOKEN')
+  fs.rmSync(lockPath())
+})
+
+test('R10-A 原地改 token（inode 不变）也必须被检出并停止续期', async () => {
+  const staleMs = 300
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'victim-inplace', env: { ...env }, staleMs })
+  fs.writeFileSync(lockPath(), JSON.stringify({ token: 'INPLACE-THIEF', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home }))
+  await new Promise(resolve => setTimeout(resolve, 700))
+  assert.equal(JSON.parse(fs.readFileSync(lockPath(), 'utf8')).token, 'INPLACE-THIEF')
+  assert.equal(lock.info.lost, true)
+  assert.equal(lock.info.lostReason, 'token_mismatch')
+  fs.rmSync(lockPath())
+})
+
+/* ---------------- R10-B：续期失败必须可见 ---------------- */
+
+test('R10-B 续期失败可见（计数 + 最后错误 + 连续失败降级为 lost），且不留 *.renew-* 残留', async () => {
+  const staleMs = 300
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'renew-fail', env: { ...env }, staleMs })
+  const dir = path.dirname(lockPath())
+  fs.chmodSync(dir, 0o500) // 目录不可写 → 续期写临时文件必然 EACCES
+  try {
+    await new Promise(resolve => setTimeout(resolve, 900)) // ≥ 3 个心跳周期
+    assert.ok((lock.info.renewFailures ?? 0) >= 1, `首次失败就要可见：${JSON.stringify(lock.info)}`)
+    assert.match(String(lock.info.renewLastError), /EACCES|EPERM|permission/i)
+    assert.equal(lock.info.lost, true, '连续失败应主动降级为 lost（假活锁会随时被夺）')
+    assert.equal(lock.info.lostReason, 'renew_failed')
+    const leftovers = fs.readdirSync(dir).filter(name => name.includes('.renew-'))
+    assert.deepEqual(leftovers, [], `不得留下续期临时文件：${leftovers.join(',')}`)
+  } finally {
+    fs.chmodSync(dir, 0o700)
+  }
+  lock.release()
+})
+
+test('R10-B 残留的 *.renew-*：够老的会被清理，新鲜的保留（不误删进行中的续期）', () => {
+  const fakeLock = path.join(workspace, 'renew-sweep', 'rtk-write.lock')
+  fs.mkdirSync(path.dirname(fakeLock), { recursive: true })
+  const old = path.join(path.dirname(fakeLock), 'rtk-write.lock.renew-999-aaa')
+  const fresh = path.join(path.dirname(fakeLock), 'rtk-write.lock.renew-999-bbb')
+  fs.writeFileSync(old, 'x')
+  fs.writeFileSync(fresh, 'x')
+  const old2 = new Date(Date.now() - 10 * 60_000)
+  fs.utimesSync(old, old2, old2)
+  const removed = service.sweepStaleRenewTemps(fakeLock, 30_000)
+  assert.deepEqual(removed, ['rtk-write.lock.renew-999-aaa'])
+  assert.equal(fs.existsSync(old), false)
+  assert.equal(fs.existsSync(fresh), true)
+})
+
+/* ---------------- 心跳周期与 staleMs 的关系 ---------------- */
+
+test('心跳周期断言：interval ≤ staleMs 且 ≥ 200ms（staleMs 很小时也不许把锁判活到无限）', () => {
+  for (const staleMs of [300, 600, 1_000, 3_000, 60_000, 3_600_000]) {
+    const interval = service.rtkLockHeartbeatMs(staleMs)
+    assert.ok(interval >= 200, `周期下限：${staleMs} → ${interval}`)
+    assert.ok(interval <= staleMs, `周期不得超过 staleMs（否则活锁会被误判陈旧）：${staleMs} → ${interval}`)
+  }
+  // 端到端：staleMs=600 时持有者持续续期，等待者只能超时，不能接管
+  return (async () => {
+    const lock = await service.acquireRtkFileLock({ home, purpose: 'period', env: { ...env }, staleMs: 600 })
+    await new Promise(resolve => setTimeout(resolve, 1_500))
+    assert.equal(service.inspectRtkLock(lockPath(), Date.now(), 600, home).stale, false)
+    await assert.rejects(
+      () => service.acquireRtkFileLock({ home, purpose: 'waiter-period', env: { ...env }, staleMs: 600, timeoutMs: 300 }),
+      (error: { reason?: string }) => error?.reason === 'rtk_lock_timeout',
+    )
+    lock.release()
+  })()
+})
+
+test('时钟疑似不一致时：等待者 503 且文案带排查提示', async () => {
+  // 活着的持有者 + at 新鲜 + mtime 被改老 2h → suspicious（不接管）
+  fs.writeFileSync(lockPath(), JSON.stringify({ token: 'skewed', pid: process.pid, at: new Date().toISOString(), purpose: 'skewed', home }))
+  const old = new Date(Date.now() - 2 * 60 * 60_000)
+  fs.utimesSync(lockPath(), old, old)
+  await assert.rejects(
+    () => service.acquireRtkFileLock({ home, purpose: 'skewed-waiter', env: { ...env }, timeoutMs: 250, staleMs: 1_000 }),
+    (error: { reason?: string; message?: string }) => {
+      assert.equal(error?.reason, 'rtk_lock_timeout')
+      assert.match(String(error?.message), /时钟疑似不一致/)
+      return true
+    },
+  )
+  fs.rmSync(lockPath())
+})

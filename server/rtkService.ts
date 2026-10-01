@@ -116,6 +116,12 @@ export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   lockDisabled?: boolean
   /** 释放时锁已被别人接管（如实上报）。 */
   lockLost?: boolean
+  /** 失去锁的原因（token_mismatch / renew_failed / lock_file_unreadable …）。 */
+  lockLostReason?: string
+  /** 心跳续期失败次数（首次失败即 > 0）。 */
+  lockRenewFailures?: number
+  /** 最近一次心跳失败的脱敏错误。 */
+  lockRenewLastError?: string
   lock?: RtkLockInfo
 }
 export type RTKInstallResult = RTKStatusView & { ok: true; plane: RtkPlaneId; readPlane: RtkPlaneId }
@@ -215,6 +221,12 @@ export type RtkLockInfo = {
   stolen: boolean
   /** 释放时发现锁已不属于自己（被接管/被删），此时不会去删别人的锁 */
   lost: boolean
+  /** 失去锁或被判定不再持锁的原因（token_mismatch / renew_failed / lock_file_missing 等）。 */
+  lostReason?: string
+  /** 心跳续期失败次数（首次失败就会 > 0，见 R10-B）。 */
+  renewFailures?: number
+  /** 最近一次心跳失败的脱敏错误码/信息。 */
+  renewLastError?: string
   stolenFromPid?: number
   stolenFromAgeMs?: number
 }
@@ -305,7 +317,9 @@ const LOCK_AT_MTIME_TOLERANCE_MS = 5_000
  * - 参与互斥的两个实例必须共享同一时钟（同机/同一 VPS 容器）。跨主机、或时钟偏移超过
  *   `LOCK_AT_MTIME_TOLERANCE_MS` 的场景**不支持**：此时 `at` 与 mtime 分歧，我们宁可
  *   不接管（返回 suspicious），也不冒险夺走一个活着的持有者。
- * - 因此「mtime 被人为改老」不再能夺锁（活着 + at 新鲜 → suspicious，不接管）。
+ * - 因此「只改 mtime」不再能夺锁（活着 + at 新鲜 → suspicious，不接管）。
+ *   ⚠️ 措辞收紧：at×mtime 是**时钟偏移探测器，不是防篡改机制**——同时改掉 at 与 mtime 仍然会被
+ *   判为超时并可接管；它防的是「时钟不同步」这类误判，不防恶意改写本地文件（本机同用户本来就能改）。
  *
  * 判据：① pid 已不存在 → holder_dead；② 内容不可解析且超过 5s → unreadable_lock；
  * ③ pid 活着、at 与 mtime 一致、且都超过 staleMs → holder_timeout（**跨 home 共用备份目录时不接管**）。
@@ -360,25 +374,127 @@ export function inspectRtkLock(lockPath: string, now = Date.now(), staleMs = rtk
  * 目的：临界区超过 `staleMs` 时（rtk CLI 卡住、慢盘、被杀毒扫描阻塞）也不会被误判陈旧夺锁。
  * 心跳定时器自身 unref（它不需要把进程留活；真正持锁的是调用方的临界区）。
  */
-function startLockHeartbeat(lockPath: string, payload: LockPayload, staleMs: number): () => void {
-  const intervalMs = Math.max(1_000, Math.floor(staleMs / 3))
-  const timer = setInterval(() => {
+/** 心跳周期：既要远小于 staleMs（否则活锁会被误判陈旧），也不能小到空转。保证 interval ≤ staleMs。 */
+export function rtkLockHeartbeatMs(staleMs: number): number {
+  return Math.max(200, Math.min(Math.floor(staleMs / 3), Math.max(200, staleMs)))
+}
+
+const renewTempName = (lockPath: string) => `${lockPath}.renew-${process.pid}-${randomBytes(3).toString('hex')}`
+
+/** 清理崩溃残留的 *.renew-*（同一个锁目录、够老的才算，避免误删正在进行中的续期）。 */
+export function sweepStaleRenewTemps(lockPath: string, olderThanMs = 30_000, now = Date.now()): string[] {
+  const dir = path.dirname(lockPath)
+  const prefix = `${path.basename(lockPath)}.renew-`
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const removed: string[] = []
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue
+    const file = path.join(dir, name)
     try {
-      const temp = `${lockPath}.renew-${process.pid}`
-      fs.writeFileSync(temp, JSON.stringify({ ...payload, at: new Date().toISOString() }), { mode: 0o600 })
-      fs.renameSync(temp, lockPath)
+      if (now - fs.statSync(file).mtimeMs < olderThanMs) continue
+      fs.rmSync(file)
+      removed.push(name)
     } catch {
-      // 续期失败不抛：真正的失败会在 release 时体现为 lost
+      // 清理失败不影响主流程
     }
-  }, intervalMs)
-  timer.unref?.()
-  return () => clearInterval(timer)
+  }
+  return removed
+}
+
+type HeartbeatOptions = {
+  lockPath: string
+  token: string
+  payload: LockPayload
+  staleMs: number
+  /** 每次成功续期后告诉我们新的 inode（rename 会换 inode）。 */
+  onRenewed: (ino: number) => void
+  onLost: (reason: string) => void
+  onFailure: (error: unknown, failures: number) => void
 }
 
 /**
- * 获取跨进程写入锁：`fs.open(lock, 'wx')`（O_EXCL）+ 退避重试 + 陈旧锁接管。
- * 返回的 `release()` 必须在 finally 里调用；锁已被别人接管时不会去删别人的锁，而是标记 `lost`。
+ * 心跳续期。
+ *
+ * R10-A（高）：续期**必须先校验锁还是自己的**（token + inode 双校验），不匹配就**不续期**、
+ * 停表并置 lost —— 否则被接管之后，原持有者会按计划周期性地把锁「抢回来」，又变回两个持有者。
+ * 写回采用「校验 → 写临时文件 → 再校验 → rename」，残余窗口只有两次校验之间的微秒级；
+ * 即使撞上，下一次 tick 的校验会立刻发现（`token_mismatch` → lost），且 `release()` 的
+ * token 守卫也保证不会删掉接管者的锁。
+ *
+ * R10-B（中）：续期失败不再静默吞掉 —— 计数 + 记录脱敏错误码，首次失败即可见；
+ * 连续 N 次失败后主动置 lost（假活锁会让人以为还持锁，实际 mtime 不前进、随时被夺）。
  */
+function startLockHeartbeat(options: HeartbeatOptions): { stop: () => void } {
+  const { lockPath, token, payload, staleMs } = options
+  const intervalMs = rtkLockHeartbeatMs(staleMs)
+  let failures = 0
+  let ino: number | undefined
+  try {
+    ino = fs.statSync(lockPath).ino
+  } catch {
+    ino = undefined
+  }
+  const MAX_RENEW_FAILURES = 3
+
+  const ownsLock = (): 'yes' | 'stolen' | 'unreadable' => {
+    let currentIno: number | undefined
+    try {
+      currentIno = fs.statSync(lockPath).ino
+    } catch {
+      return 'stolen' // 文件都没了：被接管/被删
+    }
+    if (ino !== undefined && currentIno !== ino) return 'stolen' // 换过 inode = 被别人重建过
+    const current = readLockPayload(lockPath)
+    if (!current) return 'unreadable'
+    return current.token === token ? 'yes' : 'stolen'
+  }
+
+  const timer = setInterval(() => {
+    const state = ownsLock()
+    if (state !== 'yes') {
+      clearInterval(timer)
+      options.onLost(state === 'unreadable' ? 'lock_file_unreadable' : 'token_mismatch')
+      return
+    }
+    const temp = renewTempName(lockPath)
+    try {
+      fs.writeFileSync(temp, JSON.stringify({ ...payload, at: new Date().toISOString() }), { mode: 0o600 })
+      const tempIno = fs.statSync(temp).ino
+      // 第二次校验：确认这期间锁没有被别人接管，才允许 rename 覆盖
+      if (ownsLock() !== 'yes') {
+        fs.rmSync(temp, { force: true })
+        clearInterval(timer)
+        options.onLost('token_mismatch')
+        return
+      }
+      fs.renameSync(temp, lockPath)
+      ino = tempIno
+      failures = 0
+      options.onRenewed(tempIno)
+    } catch (error) {
+      try {
+        fs.rmSync(temp, { force: true })
+      } catch {
+        // 清理失败不影响判定
+      }
+      failures += 1
+      options.onFailure(error, failures)
+      if (failures >= MAX_RENEW_FAILURES) {
+        // 连续失败：锁的 mtime 已经不再前进，随时会被判陈旧夺走 —— 如实降级
+        clearInterval(timer)
+        options.onLost('renew_failed')
+      }
+    }
+  }, intervalMs)
+  timer.unref?.()
+  return { stop: () => clearInterval(timer) }
+}
+
 export async function acquireRtkFileLock(options: {
   home?: string
   purpose?: string
@@ -445,13 +561,29 @@ export async function acquireRtkFileLock(options: {
       } finally {
         fs.closeSync(fd)
       }
-      const stopHeartbeat = startLockHeartbeat(lockPath, payload, staleMs)
+      // 崩溃残留的续期临时文件：只清够老的，避免误删正在进行的续期
+      sweepStaleRenewTemps(lockPath, Math.max(30_000, staleMs))
+      const heartbeat = startLockHeartbeat({
+        lockPath, token, payload, staleMs,
+        onRenewed: () => { info.renewFailures = 0; delete info.renewLastError },
+        onFailure: (error, failures) => {
+          info.renewFailures = failures
+          info.renewLastError = redact(String((error as { code?: string } | null)?.code || (error instanceof Error ? error.message : String(error)))).slice(0, 120)
+          console.warn(`[rtk] 写入锁心跳续期失败（第 ${failures} 次）：${info.renewLastError}（锁：${lockPath}）`)
+        },
+        onLost: (reason) => {
+          lost = true
+          info.lost = true
+          info.lostReason = reason
+          console.warn(`[rtk] 写入锁已不再属于本进程（${reason}），后续不再续期、也不删除他人的锁（锁：${lockPath}）`)
+        },
+      })
       info.waitedMs = Date.now() - startedAt
       info.stolen = stolen
       if (stolenFromPid !== undefined) info.stolenFromPid = stolenFromPid
       if (stolenFromAgeMs !== undefined) info.stolenFromAgeMs = stolenFromAgeMs
       const releaseWithHeartbeat = () => {
-        stopHeartbeat()
+        heartbeat.stop()
         release()
       }
       return { info, release: releaseWithHeartbeat, get lost() { return lost } }
@@ -478,7 +610,9 @@ export async function acquireRtkFileLock(options: {
     }
     if (Date.now() - startedAt >= timeoutMs) {
       throw new RtkPlaneError(503, 'local', 'rtk_lock_timeout',
-        `等待跨进程写入锁超时（${timeoutMs}ms，锁：${lockPath}，持有者 pid=${state.pid ?? '?'}${state.note ? `；${state.note}` : ''}）`)
+        `等待跨进程写入锁超时（${timeoutMs}ms，锁：${lockPath}，持有者 pid=${state.pid ?? '?'}`
+        + `${state.suspicious ? '；时钟疑似不一致：两个实例必须共享同一时钟，请检查时钟偏移' : ''}`
+        + `${state.note ? `；${state.note}` : ''}）`)
     }
     await sleep(8 + Math.floor(Math.random() * 22))
   }
@@ -1514,7 +1648,8 @@ export async function applyLocalAgentHook(
     }
     try {
       const result = await runLocked()
-      return { ...result, lock: { ...lock.info, lost: lock.lost } }
+      // 传活对象：release()/心跳在 finally 里对 lost/lostReason/renewFailures 的更新也要进响应
+      return { ...result, lock: lock.info }
     } finally {
       lock.release()
     }
@@ -1645,6 +1780,9 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     ...(lockInfo?.disabled ? { lockDisabled: true } : {}),
     ...(lockInfo?.stolen ? { lockStolen: true } : {}),
     ...(lockInfo?.lost ? { lockLost: true } : {}),
+    ...(lockInfo?.lostReason ? { lockLostReason: lockInfo.lostReason } : {}),
+    ...(lockInfo?.renewFailures ? { lockRenewFailures: lockInfo.renewFailures } : {}),
+    ...(lockInfo?.renewLastError ? { lockRenewLastError: lockInfo.renewLastError } : {}),
     ...(lockInfo ? { lock: lockInfo } : {}),
   }
 }
@@ -1713,7 +1851,9 @@ export async function rollbackRTK(options: RtkRollbackOptions = {}): Promise<RTK
         lockWaitMs: lock.info.waitedMs,
         ...(lock.info.stolen ? { lockStolen: true } : {}),
         ...(lock.info.lost ? { lockLost: true } : {}),
-        lock: { ...lock.info, lost: lock.lost },
+        ...(lock.info.lostReason ? { lockLostReason: lock.info.lostReason } : {}),
+        ...(lock.info.renewFailures ? { lockRenewFailures: lock.info.renewFailures } : {}),
+        lock: lock.info,
       }
     } finally {
       lock.release()
