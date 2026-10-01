@@ -112,6 +112,8 @@ export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   lockWaitMs: number
   /** 本次接管了陈旧锁（持锁进程已死或超时）。 */
   lockStolen?: boolean
+  /** 跨进程写入锁被 RTK_LOCK_DISABLED 旁路（生产不得设置）。 */
+  lockDisabled?: boolean
   /** 释放时锁已被别人接管（如实上报）。 */
   lockLost?: boolean
   lock?: RtkLockInfo
@@ -205,6 +207,8 @@ export async function withFileLock<T>(key: string, run: () => Promise<T> | T): P
 
 export type RtkLockInfo = {
   path: string
+  /** 是否走了 RTK_LOCK_DISABLED 旁路（此时没有创建任何锁文件，必须能观测到）。 */
+  disabled: boolean
   /** 为了拿到锁等了多久（毫秒）；0 表示一次就拿到 */
   waitedMs: number
   /** 本次是否接管了一个陈旧锁 */
@@ -222,12 +226,23 @@ export type RtkFileLock = {
   readonly lost: boolean
 }
 
-const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms).unref?.() })
+// 注意：这里**不能** unref。unref 掉的定时器不会让事件循环保持存活：短命进程/脚本在
+// 锁被占用时会「既不拿锁也不报错」地静默退出（红队 R9-B 的验证脚本就卡在这里）。
+const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms) })
 
 /** 跨进程写入锁超时（默认 15s，可配 0–300s）。 */
 export function rtkLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.RTK_LOCK_TIMEOUT_MS)
   return Number.isFinite(raw) && raw >= 0 && raw <= 300_000 ? Math.floor(raw) : 15_000
+}
+
+let lockBypassWarned = false
+
+/** 旁路必须可观测：响应里有 disabled，日志里有这条一次性告警。 */
+function warnLockBypass(lockPath: string): void {
+  if (lockBypassWarned) return
+  lockBypassWarned = true
+  console.warn(`[rtk] RTK_LOCK_DISABLED 已启用：跨进程写入锁被旁路（${lockPath}）。仅供对照实验，生产环境不得设置。`)
 }
 
 /** 陈旧锁判定阈值（默认 60s，可配 1s–3600s）：持锁进程还活着但超过这个时间也算陈旧。 */
@@ -266,18 +281,43 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** 陈旧判定：① 解析出的 pid 已不存在；② 锁存在时间超过 staleMs；③ 内容不可解析且超过 5s（写到一半就被杀）。 */
-export function inspectRtkLock(lockPath: string, now = Date.now(), staleMs = rtkLockStaleMs()): {
+export type RtkLockProbe = {
   stale: boolean
   reason?: string
   pid?: number
   ageMs?: number
-} {
+  /** 载荷里的 at 与文件 mtime 明显分歧（时钟偏移/被外部改动）时为 true —— 此时**不**基于超时接管。 */
+  suspicious?: boolean
+  /** 载荷记录的 home 与本次不同（两个 home 共用同一个 RTK_BACKUP_DIR 的情形）。 */
+  foreignHome?: boolean
+  /** 给诊断/测试看的补充说明。 */
+  note?: string
+}
+
+/** at 与 mtime 允许的最大分歧（超过就认为时钟/文件被改动，而不是「持有者卡死」）。 */
+const LOCK_AT_MTIME_TOLERANCE_MS = 5_000
+
+/**
+ * 陈旧判定。
+ *
+ * 时钟假设（红队 R9-C，写进契约）：
+ * - 判定只使用**本机时钟**与文件 mtime；载荷里的 `at` 只用于**交叉校验**。
+ * - 参与互斥的两个实例必须共享同一时钟（同机/同一 VPS 容器）。跨主机、或时钟偏移超过
+ *   `LOCK_AT_MTIME_TOLERANCE_MS` 的场景**不支持**：此时 `at` 与 mtime 分歧，我们宁可
+ *   不接管（返回 suspicious），也不冒险夺走一个活着的持有者。
+ * - 因此「mtime 被人为改老」不再能夺锁（活着 + at 新鲜 → suspicious，不接管）。
+ *
+ * 判据：① pid 已不存在 → holder_dead；② 内容不可解析且超过 5s → unreadable_lock；
+ * ③ pid 活着、at 与 mtime 一致、且都超过 staleMs → holder_timeout（**跨 home 共用备份目录时不接管**）。
+ */
+export function inspectRtkLock(lockPath: string, now = Date.now(), staleMs = rtkLockStaleMs(), home?: string): RtkLockProbe {
   if (!fs.existsSync(lockPath)) return { stale: false }
   const payload = readLockPayload(lockPath)
   let ageMs: number | undefined
+  let mtimeMs: number | undefined
   try {
-    ageMs = Math.max(0, now - fs.statSync(lockPath).mtimeMs)
+    mtimeMs = fs.statSync(lockPath).mtimeMs
+    ageMs = Math.max(0, now - mtimeMs)
   } catch {
     ageMs = undefined
   }
@@ -288,9 +328,51 @@ export function inspectRtkLock(lockPath: string, now = Date.now(), staleMs = rtk
       ? { stale: true, reason: 'unreadable_lock', ageMs: age }
       : { stale: false, ageMs: age }
   }
-  if (!pidAlive(payload.pid)) return { stale: true, reason: 'holder_dead', pid: payload.pid, ageMs: ageMs ?? 0 }
-  if ((ageMs ?? 0) > staleMs) return { stale: true, reason: 'holder_timeout', pid: payload.pid, ageMs: ageMs ?? 0 }
-  return { stale: false, pid: payload.pid, ageMs: ageMs ?? 0 }
+  const foreignHome = Boolean(home) && typeof payload.home === 'string' && payload.home !== home
+  if (!pidAlive(payload.pid)) {
+    return { stale: true, reason: 'holder_dead', pid: payload.pid, ageMs: ageMs ?? 0, ...(foreignHome ? { foreignHome } : {}) }
+  }
+  // at 与 mtime 交叉校验：分歧说明时钟不可信（或文件被改），不基于超时接管
+  const atMs = Date.parse(String(payload.at))
+  const divergence = Number.isFinite(atMs) && mtimeMs !== undefined ? Math.abs(atMs - mtimeMs) : 0
+  const suspicious = divergence > LOCK_AT_MTIME_TOLERANCE_MS
+  if (suspicious) {
+    return {
+      stale: false, pid: payload.pid, ageMs: ageMs ?? 0, suspicious,
+      ...(foreignHome ? { foreignHome } : {}),
+      note: `载荷 at 与文件 mtime 相差 ${Math.round(divergence)}ms（超过 ${LOCK_AT_MTIME_TOLERANCE_MS}ms）：按「时钟不可信」处理，不接管；需要时请人工确认持有者 pid=${payload.pid}`,
+    }
+  }
+  if ((ageMs ?? 0) > staleMs) {
+    if (foreignHome) {
+      return {
+        stale: false, pid: payload.pid, ageMs: ageMs ?? 0, foreignHome,
+        note: `锁属于另一个 home（${payload.home}）：共用同一个备份目录时只接管已死进程的锁，不基于超时接管`,
+      }
+    }
+    return { stale: true, reason: 'holder_timeout', pid: payload.pid, ageMs: ageMs ?? 0 }
+  }
+  return { stale: false, pid: payload.pid, ageMs: ageMs ?? 0, ...(foreignHome ? { foreignHome } : {}) }
+}
+
+/**
+ * 续期（心跳）：重写载荷里的 at 并刷新 mtime，token 不变。
+ * 目的：临界区超过 `staleMs` 时（rtk CLI 卡住、慢盘、被杀毒扫描阻塞）也不会被误判陈旧夺锁。
+ * 心跳定时器自身 unref（它不需要把进程留活；真正持锁的是调用方的临界区）。
+ */
+function startLockHeartbeat(lockPath: string, payload: LockPayload, staleMs: number): () => void {
+  const intervalMs = Math.max(1_000, Math.floor(staleMs / 3))
+  const timer = setInterval(() => {
+    try {
+      const temp = `${lockPath}.renew-${process.pid}`
+      fs.writeFileSync(temp, JSON.stringify({ ...payload, at: new Date().toISOString() }), { mode: 0o600 })
+      fs.renameSync(temp, lockPath)
+    } catch {
+      // 续期失败不抛：真正的失败会在 release 时体现为 lost
+    }
+  }, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
 }
 
 /**
@@ -320,30 +402,24 @@ export async function acquireRtkFileLock(options: {
   let stolenFromAgeMs: number | undefined
   let lost = false
 
-  const info: RtkLockInfo = { path: lockPath, waitedMs: 0, stolen: false, lost: false }
+  const info: RtkLockInfo = { path: lockPath, disabled, waitedMs: 0, stolen: false, lost: false }
   const release = () => {
     try {
       const payload = readLockPayload(lockPath)
-      if (payload) {
-        if (payload.token !== token) {
-          // 锁已经被别人接管（例如我们卡住超过 staleMs），绝不删别人的锁
-          lost = true
-          info.lost = true
-          return
-        }
-      } else {
-        // 内容不可解析：只删除明确属于本次获取时间窗的文件，避免误删接管者的锁
-        let mtimeMs = 0
-        try {
-          mtimeMs = fs.statSync(lockPath).mtimeMs
-        } catch {
-          return
-        }
-        if (mtimeMs < startedAt - 1_000) {
-          lost = true
-          info.lost = true
-          return
-        }
+      if (!payload) {
+        // 读不出载荷时**一律不删**（红队 R9-A）：
+        // 比我们更晚出现的空文件/坏文件，更可能是「接管者刚 open('wx') 还没 write」的半成品；
+        // 删掉它会让接管者往已 unlink 的 inode 上写、路径却空着 —— 两个持有者同时写。
+        // 回收交给陈旧判据：不可解析 + 阈值之后自然可接管。这里只如实告诉调用方我们已不再持锁。
+        lost = true
+        info.lost = true
+        return
+      }
+      if (payload.token !== token) {
+        // 锁已经被别人接管（例如我们卡住超过 staleMs），绝不删别人的锁
+        lost = true
+        info.lost = true
+        return
       }
       fs.rmSync(lockPath)
     } catch {
@@ -353,23 +429,32 @@ export async function acquireRtkFileLock(options: {
   }
 
   if (disabled) {
+    // RTK_LOCK_DISABLED 只用于「去掉锁」的对照实验：这里明确标记旁路 + 打一条一次性告警，
+    // 生产环境不得设置（launchd 当前未设）。
+    warnLockBypass(lockPath)
     info.waitedMs = 0
     return { info, release: () => {}, get lost() { return lost } }
   }
 
   while (true) {
     try {
+      const payload: LockPayload = { token, pid: process.pid, at: new Date().toISOString(), purpose, home }
       const fd = fs.openSync(lockPath, 'wx', 0o600)
       try {
-        fs.writeSync(fd, JSON.stringify({ token, pid: process.pid, at: new Date().toISOString(), purpose, home }))
+        fs.writeSync(fd, JSON.stringify(payload))
       } finally {
         fs.closeSync(fd)
       }
+      const stopHeartbeat = startLockHeartbeat(lockPath, payload, staleMs)
       info.waitedMs = Date.now() - startedAt
       info.stolen = stolen
       if (stolenFromPid !== undefined) info.stolenFromPid = stolenFromPid
       if (stolenFromAgeMs !== undefined) info.stolenFromAgeMs = stolenFromAgeMs
-      return { info, release, get lost() { return lost } }
+      const releaseWithHeartbeat = () => {
+        stopHeartbeat()
+        release()
+      }
+      return { info, release: releaseWithHeartbeat, get lost() { return lost } }
     } catch (error) {
       const code = (error as { code?: string }).code
       if (code !== 'EEXIST') {
@@ -379,7 +464,7 @@ export async function acquireRtkFileLock(options: {
       }
     }
 
-    const state = inspectRtkLock(lockPath, Date.now(), staleMs)
+    const state = inspectRtkLock(lockPath, Date.now(), staleMs, home)
     if (state.stale) {
       try {
         fs.rmSync(lockPath)
@@ -393,7 +478,7 @@ export async function acquireRtkFileLock(options: {
     }
     if (Date.now() - startedAt >= timeoutMs) {
       throw new RtkPlaneError(503, 'local', 'rtk_lock_timeout',
-        `等待跨进程写入锁超时（${timeoutMs}ms，锁：${lockPath}，持有者 pid=${state.pid ?? '?'}）`)
+        `等待跨进程写入锁超时（${timeoutMs}ms，锁：${lockPath}，持有者 pid=${state.pid ?? '?'}${state.note ? `；${state.note}` : ''}）`)
     }
     await sleep(8 + Math.floor(Math.random() * 22))
   }
@@ -1557,6 +1642,7 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     ...(collateralSkipped?.length ? { collateralSkipped } : {}),
     ...(preservedBak?.length ? { preservedBak } : {}),
     lockWaitMs: lockInfo?.waitedMs ?? 0,
+    ...(lockInfo?.disabled ? { lockDisabled: true } : {}),
     ...(lockInfo?.stolen ? { lockStolen: true } : {}),
     ...(lockInfo?.lost ? { lockLost: true } : {}),
     ...(lockInfo ? { lock: lockInfo } : {}),

@@ -1076,8 +1076,9 @@ test('锁：持锁进程还活着但超时 → 也算陈旧并可接管', async 
   const env = { ...process.env, RTK_BACKUP_DIR: backupDir }
   const lockPath = service.rtkLockPath(home, env as NodeJS.ProcessEnv)
   fs.mkdirSync(path.dirname(lockPath), { recursive: true })
-  fs.writeFileSync(lockPath, JSON.stringify({ token: 'hung-token', pid: process.pid, at: new Date().toISOString(), purpose: 'hung', home }))
+  // 「卡死的持有者」= 活着的 pid + at 与 mtime **一致地**过期（R9-C 之后：只改 mtime 不再算陈旧）
   const old = new Date(Date.now() - 10 * 60_000)
+  fs.writeFileSync(lockPath, JSON.stringify({ token: 'hung-token', pid: process.pid, at: old.toISOString(), purpose: 'hung', home }))
   fs.utimesSync(lockPath, old, old)
   const state = service.inspectRtkLock(lockPath, Date.now(), 1000)
   assert.equal(state.stale, true)
