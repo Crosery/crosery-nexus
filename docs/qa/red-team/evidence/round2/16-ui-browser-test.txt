@@ -1,0 +1,109 @@
+# UI 实测（ego-browser，space 名 "redteam rtk page verify"，页面 http://127.0.0.1:8791/rtk）
+
+## 0. 前置状态
+
+- dist 由 Lead 于 08:45 重建；服务 pid 46769（runs=3），`/rtk` 可正常打开（HTTP 200，无白屏）。
+- 浏览器：新开自己的 TaskSpace（Lead 已在群里放行；`/tmp/cac-browser.lock` 当时由 ab-harness 持有，我未 rmdir）。
+  未 adopt/close 别人的 space，未清 cookie/存储/缓存，未动 profile。结束时 `await task.finish({ keep: [] })` 调用一次。
+- 全程**没有点过任何「确认执行」作用在本机 agent 配置上的开关**；唯一点过的一次确认是「安装 rtk」，该接口固定返回 501（不写任何东西）。
+
+## 1. 平面徽标（诚实性）——通过
+
+页面可见文本（快照）：
+
+```
+RTK
+RTK Token 压缩
+按「内核 → 中转站 → 本机」顺序解析权威平面，逐平面如实上报可用性；开关只写本机 agent 配置，远端默认只读。
+RTK CONTROL PLANE / RTK 平面
+权威数据来自本机：内核与中转站都不可用（或都没有 RTK 接口），已如实回退。
+权威平面：本机（回退）
+内核（沙箱 HOME）   未提供该接口   kernel_rtk_seam_missing
+  内核以 HOME=<runtime>/home 运行，不含本机 agent 配置。
+  HTTP 400: 内核运行时未包含 /internal/rtk（可能为旧构建），需要重新构建内核
+中转站              未提供该接口   relay_route_missing
+  中转站是否暴露 RTK 管理面由对方部署决定（当前实测 404）。
+  中转站未暴露 /api/library/rtk（当前指向的可能是 CPA 主机）
+本机                已接通         local_host
+  本机 = 控制台所在机器，开关真正生效的地方。
+本机 rtk 已安装
+权威平面连通 是 (v0.50.0) | 本机 rtk 已安装 (v0.50.0) | Token 节省 36.2% · 75,950 tokens | 写入模式 本机可写
+```
+
+结论：与 `/api/rtk/status` 的 planes 一致，**没有把「本机装了 rtk」说成「已接通中转站」**；
+唯一措辞风险：本机卡片的绿标是「已接通」（`RtkBoard.vue:35` 的 `available` 文案），
+而顶部 VersionWidget 对同一状态写「本机：可用 (v0.50.0)」（`VersionWidget.vue:243`），两处措辞不一致（次要）。
+
+截图：`shots/round2/01-rtk-top.png`、`08-narrow-390.png`
+
+## 2. per-agent 开关 —— 通过（可达、有确认）
+
+- 11 个「可全局开关」的 agent 各有一个 Toggle（codex/claude/cursor/gemini/copilot/trae/droid/omp/pi/hermes/vibe），
+  5 个项目级 agent（windsurf/cline/kilocode/antigravity/kimi）显示「仅项目级 / 不可全局切换」。
+- 已挂载的显示绿色「已挂载」，未安装目录的显示「未检测到安装目录」。
+- 点击任一 Toggle 会弹出确认框（截图 `02-confirm-open.png`），文案：
+  「确认操作 / 将挂载 cursor 的 RTK 钩子到本机 agent 配置。/ 写入前会备份 ~/.cursor 相关文件，只增删 rtk 自己那一条，
+   第三方钩子保持不变；失败自动还原。/ 取消 / 确认执行」
+  → **这段保证与实测不符**：见 `10-cursor-claude-collateral.txt`（cursor 会连带写 claude 并留下残留）
+    与 `12-failure-restore.txt`（失败时坏内容留在原地，没有「自动还原」）。
+
+## 3. 危险操作确认框的键盘行为 —— **缺陷（Escape 不可靠）**
+
+同一页面、同一会话，连续 4 次「打开确认框 → 只按一次 Escape」：
+
+```
+escape trials: [{"i":0,"opened":true,"closedByOneEscape":false},
+                {"i":1,"opened":true,"closedByOneEscape":false},
+                {"i":2,"opened":true,"closedByOneEscape":false},
+                {"i":3,"opened":true,"closedByOneEscape":false}]
+```
+
+另一次会话里观察到的相反表现（说明是竞态/焦点依赖，不是稳定可用）：
+
+```
+after click (modal open): {"overlays":8,"hasConfirmTitle":true,"focus":"确认操作将挂载 cursor 的 RTK 钩子到","focusInOverlay":true}
+after Escape #1: {"overlays":2,"hasConfirmTitle":false,...}     ← 这一次一次就关掉了
+```
+
+还有一次：Tab 把焦点移到「取消」后按 Escape，**对话框不关**（`{"modal":true,"focusInModal":false}`），
+只能鼠标点「取消」才关。
+
+焦点陷阱本身是正常的（Tab 循环：容器 → 取消 → 确认执行 → 容器，焦点不出 modal）。
+结论：**Escape 关闭不稳定**，与 Lead 在 `/keys` 的观测同源（TxModal 的 Escape 绑在遮罩上，是否命中取决于焦点/时序）。
+
+截图：`03-after-escapes.png`、`04-modal-keyboard.png`、`05-escape-stuck.png`
+
+## 4. 失败态展示 —— **缺陷（错误提示被随后的状态刷新清掉）**
+
+点击「安装 rtk」→「确认执行」，接口固定 501（`/api/rtk/install` 实测 501 `local_install_not_supported`）。
+用 20ms 间隔的 DOM 观察器可以看到提示出现后立即消失：
+
+```
+alert timeline: [{ "at": 1303, "text": "操作失败（未做任何静默降级） | HTTP 501 · 控制台不代为安装本机 rtk，请人工执行：curl -fsSL https://www.rtk-ai.app/install.sh | sh · 平面=local · 原因=local_install_not_supported" }]
+alerts visible now: 0
+API /api/rtk/install -> 501 {"error":"控制台不代为安装本机 rtk，请人工执行：curl -fsSL https://www.rtk-ai.app/install.sh | sh","plane":"local","reason":"local_install_not_supported"}
+```
+
+代码根因：`src/pages/RtkPage.vue:75-80` catch 里写 `errorText`，`finally` 里 `await load()`，
+而 `load()` 成功时第 42 行 `errorText.value = ''` → 提示被自己清空；同页 `TxAlert`(第 102 行) 因此一闪而过。
+影响面：**所有失败路径**（501 安装/升级、403 确认缺失、409 坏 JSON、503 rtk 缺失、远端 401/404）在 UI 上都表现为「点了没反应」。
+
+## 5. 窄屏 390×844 —— 通过（无横向溢出）
+
+```
+$ page.cdp("Emulation.setDeviceMetricsOverride", {width:390,height:844,mobile:true})
+narrow: {"w":390,"switches":11,"horizontalOverflow":false,"scrollWidth":390,"bodyW":390}
+narrow metrics: {"vw":390,"page":{"left":0,"right":390,"width":390},"card":{"left":0,"right":390},
+                 "head":{"left":0,"right":390},"overflowers":[],"htmlScrollW":390,"overflowX":"visible"}
+```
+
+平面卡片纵向堆叠、徽标与 reason 可读、开关可点，无横向滚动条。
+次要观感：390 宽下卡片左右贴边（`.rtk-page` 宽正好 390），没有留白。
+
+截图：`08-narrow-390.png`、`09-narrow-390-full.png`、`10-narrow-detail.png`
+
+## 6. 顶部版本组件的 RTK 文案 —— 通过（源码 + 页面）
+
+`src/components/VersionWidget.vue:223-243` 已按 planes 真源渲染逐平面徽标（`not_supported: '未接通'`），
+注释明确写了「以前把『本机装了』显示成『已接通』——中转站侧其实没有 RTK 路由（404）」。
+页面头部实读文本：`控制台 | rtk | Magpie 3fe2ff9 | / | v0.1.0`。

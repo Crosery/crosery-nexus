@@ -1,0 +1,65 @@
+# rtk init flag probe in THROWAWAY HOME=/tmp/rtk-init-probe (real ~/.codex untouched, verified by sha256)  (2026-10-01T00:17:49Z)
+
+$ rtk --version
+rtk 0.50.0
+
+$ rtk init --help   (flag list; note: --codex exists, --claude does NOT)
+      --opencode
+      --gemini
+      --agent <AGENT>
+          Possible values:
+          - claude:      Claude Code (default)
+          - cursor:      Cursor Agent (editor and CLI)
+          - omp:         Oh My Pi (OMP)
+      --show
+      --claude-md
+      --uninstall
+      --codex
+      --copilot
+
+$ rtk init -g --codex --dry-run --no-patch
+rtk: --codex cannot be combined with --no-patch
+exit=1
+
+$ rtk init -g --codex --dry-run
+
+[dry-run] Nothing written.
+exit=0
+
+$ rtk init -g --claude      # what rtkService.ts:327 produces for agentId='claude'
+error: unexpected argument '--claude' found
+
+  tip: a similar argument exists: '--claude-md'
+
+Usage: rtk init --global --claude-md
+
+For more information, try '--help'.
+exit=2
+
+$ rtk init -g --omp         # agentId='omp'
+error: unexpected argument '--omp' found
+
+Usage: rtk init --global
+
+For more information, try '--help'.
+exit=2
+
+$ rtk init -g --cursor      # agentId='cursor'
+error: unexpected argument '--cursor' found
+
+Usage: rtk init --global
+
+For more information, try '--help'.
+exit=2
+
+$ rtk init --uninstall      # what rtkService.ts:329 runs for on=false
+rtk: Uninstall only works with --global flag. For local projects, manually remove RTK from CLAUDE.md
+exit=1
+fresh-HOME dry-run exit=0
+
+# fresh-HOME first-run dry-run (HOME=/tmp/rtk-shape-probe)
+[dry-run] would create RTK.md: /tmp/rtk-shape-probe/.codex/RTK.md
+[dry-run] would add @/tmp/rtk-shape-probe/.codex/RTK.md reference to AGENTS.md: /tmp/rtk-shape-probe/.codex/AGENTS.md
+[dry-run] would patch Codex hooks: /tmp/rtk-shape-probe/.codex/hooks.json
+
+[dry-run] Nothing written.

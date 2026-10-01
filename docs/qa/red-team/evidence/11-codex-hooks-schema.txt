@@ -1,0 +1,43 @@
+# Codex hooks schema — independent cross-check  (2026-10-01T00:24:49Z)
+
+$ codex --version
+codex-cli 0.159.2
+
+$ ls -l <codex native binary>
+-rwxr-xr-x  1 crosery  staff  240184096 Sep 30 09:39 /Users/crosery/.bun/install/global/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+
+$ codex --help | grep -i hook   # Codex has a persisted hook-TRUST gate
+      --dangerously-bypass-hook-trust
+          Run enabled hooks without requiring persisted hook trust for this invocation. DANGEROUS.
+          Intended only for automation that already vets hook sources
+
+$ strings -a -n 6 <binary> | grep -E 'hooks/src|hook |matcher'   (excerpt)
+35671:hooks/src/output_spill.rs
+35674:hooks/src/types.rs
+35675:hooks/src/engine/dispatcher.rs
+35676:hooks/src/engine/mcp_runner.rs
+35677:hooks/src/engine/command_runner.rs
+35679:hooks/src/engine/mod.rs
+35681:hooks/src/events/session_end.rs
+35683:hooks/src/events/pre_tool_use.rs
+35685:hooks/src/events/post_tool_use.rs
+35688:hooks/src/events/session_start.rs
+35690:hooks/src/events/permission_request.rs
+35692:hooks/src/events/user_prompt_submit.rs
+35695:hooks/src/events/stop.rs
+35697:hooks/src/events/compact.rs
+35700:hooks/src/events/interrupt.rs
+35701:hooks/src/registry.rs
+38123:8 hook returned decision:block without a non-empty reason
+38124:invalid generated hooks schema 
+38125:hooks/src/engine/schema_loader.rs
+38126:hook exited with code 
+38165:hooks/src/legacy_notify.rs
+38166:failed to parse hooks config 
+
+# => Codex 0.159.2 ships a strict hooks engine (serde: 'missing field', 'unknown variant', 'unknown field');
+#    entries are matcher-scoped and carry a nested command-handler array; empty commands are skipped with a warning.
+
+$ CODEX_HOME=/tmp/codex-probe-{wrong,ok} codex doctor --json   # attempted end-to-end verification
+   -> doctor reports installation/config/auth health but does NOT surface hooks parse results; both shapes: overallStatus=fail (fresh CODEX_HOME, unrelated checks).
+   -> 结论：Codex 是否会因缺 matcher/hooks[] 拒绝该条目，未能在本次闭环验证（标为推断，见反例测试 T15）。

@@ -1,0 +1,29 @@
+# 缺陷4：备份无保留策略，每次 toggle 全量备份一份（含最多 13 个文件）
+
+隔离 HOME（/tmp/cac-r2/home）在一次 ~25 次 toggle 的探测脚本之后：
+
+```
+$ ls /tmp/cac-r2/home/.agents/crosery/magpie-console/backups/ | wc -l
+46
+$ du -sh /tmp/cac-r2/home/.agents/crosery/magpie-console/backups/
+1.3M
+```
+
+（真实机器上蓝队只做过 1 次写操作 → 1 个备份目录：）
+
+```
+104K  /Users/crosery/.agents/crosery/magpie-console/backups/2026-10-01T00-35-54-541Z/
+```
+
+代码里没有任何清理/上限/轮转逻辑，只能改目录：
+
+```
+$ grep -n "retention\|prune\|maxBackups\|BACKUP" server/rtkService.ts server/rtkPlane.ts
+server/rtkService.ts:194:  const override = String(env.RTK_BACKUP_DIR || '').trim()
+```
+
+补充：每次 toggle 的 HTTP 响应还会把最近 10 个备份目录及其完整文件清单整包返回
+（见 10-cursor-claude-collateral.txt 里 `backups[]` 的长度），响应体随历史线性增长。
+
+影响：按 104K/次估算，一个用户点 100 次开关 ≈ 10MB 常驻在 ~/.agents 下，且没有 UI 清理入口
+（`/api/rtk/rollback` 只恢复、不删除）。

@@ -1,0 +1,22 @@
+{"label":"T8-codex-OFF","http":200,"ok":true,"mechanism":"rtk-cli","codex":{"file":".codex/hooks.json","exists":true,"bytes":335,"events":{"PreToolUse":[{"matcher":null,"nested":1,"cmds":["echo third-party-a"]},{"matcher":null,"nested":1,"cmds":["echo third-party-b"]}]}}}
+{"label":"T8-detect-after-OFF","detected":false}
+{"label":"T7-codex-ON","http":200,"ok":true,"mechanism":"rtk-cli","codex":{"file":".codex/hooks.json","exists":true,"bytes":503,"events":{"PreToolUse":[{"matcher":null,"nested":1,"cmds":["echo third-party-a"]},{"matcher":null,"nested":1,"cmds":["echo third-party-b"]},{"matcher":"Bash","nested":1,"cmds":["rtk hook codex"]}]}}}
+{"label":"T16-codex-OFF-again","http":200,"ok":true,"codex":{"file":".codex/hooks.json","exists":true,"bytes":335,"events":{"PreToolUse":[{"matcher":null,"nested":1,"cmds":["echo third-party-a"]},{"matcher":null,"nested":1,"cmds":["echo third-party-b"]}]}}}
+{"label":"T14-claude-ON","http":200,"ok":true,"mechanism":"rtk-cli","claude":{"file":".claude/settings.json","exists":true,"bytes":375,"events":{"PreToolUse":[{"matcher":"","nested":1,"cmds":["echo claude-third-party"]},{"matcher":"Bash","nested":1,"cmds":["rtk hook claude"]}],"UserPromptSubmit":[{"matcher":null,"nested":1,"cmds":["echo prompt-hook"]}]}}}
+{"label":"T14-gemini-ON","http":200,"ok":true,"mechanism":"rtk-cli","gemini":{"file":".gemini/settings.json","exists":true,"bytes":497,"events":{"AfterAgent":[{"matcher":"*","nested":1,"cmds":["echo gemini-third"]}],"BeforeTool":[{"matcher":"run_shell_command","nested":1,"cmds":["/tmp/cac-r2/home/.gemini/hooks/rtk-hook-"]}]}}}
+{"label":"T9-bad-json","http":409,"reason":"hook_file_unparsable","err":"codex 的 .codex/hooks.json 不是合法 JSON，拒绝覆盖","unchanged":true}
+{"label":"T4-concurrent-ON","http":[200,200],"ok":[true,true],"codex":{"file":".codex/hooks.json","exists":true,"bytes":503,"events":{"PreToolUse":[{"matcher":null,"nested":1,"cmds":["echo third-party-a"]},{"matcher":null,"nested":1,"cmds":["echo third-party-b"]},{"matcher":"Bash","nested":1,"cmds":["rtk hook codex"]}]}},"rtkEntryCount":1,"validJson":true}
+{"label":"T5-real-config-unchanged","identical":true}
+
+# T10 agent 矩阵（11 个 agent，on/off 全部 200/ok，检测随动）
+codex: on=200/true/detected=true off=200/true/detected=false
+claude: on=200/true/detected=true off=200/true/detected=false
+gemini: on=200/true/detected=true off=200/true/detected=false
+copilot: on=200/true/detected=true off=200/true/detected=false
+cursor: on=200/true/detected=true off=200/true/detected=false
+omp: on=200/true/detected=true off=200/true/detected=false
+pi: on=200/true/detected=true off=200/true/detected=false
+droid: on=200/true/detected=true off=200/true/detected=false
+hermes: on=200/true/detected=true off=200/true/detected=false
+trae: on=200/true/detected=true off=200/true/detected=false
+vibe: on=200/true/detected=true off=200/true/detected=false

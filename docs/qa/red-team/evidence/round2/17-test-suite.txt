@@ -1,0 +1,23 @@
+# 蓝队主张6：测试套件
+
+$ npm run test:magpie
+ℹ tests 55
+ℹ suites 0
+ℹ pass 54
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 758.481375
+
+# 与前一轮断言重复的关键用例名（原文）
+✔ T5/T10 本机开关：codex 经 rtk CLI 落地，形状与实测一致且 exitCode=0/stderr 为空
+✔ T10 agent 覆盖矩阵：11 个全局 agent 各自 ON→OFF，退出码 0、stderr 为空、状态独立
+✔ rtk 的真实耦合：cursor 目标会同时注册 Claude 钩子（UI 需如实展示，不能藏）
+✔ T7 关闭时只移除 rtk 自己那一条，第三方 hook 全部保留
+✔ T9 坏 JSON 不覆盖：返回 409、原文件字节不变、备份存在
+✔ T4/T6 并发与幂等：连续/并发 ON 之后 rtk 条目只有一条，第三方数量不变
+✔ 测试上下文拒绝对真实 home 写入 agent 配置
+
+# 独立断言：测试运行前后真实 agent 配置 sha256 完全一致
+real configs unchanged by test run: YES

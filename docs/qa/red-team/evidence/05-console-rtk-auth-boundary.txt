@@ -1,0 +1,13 @@
+# console /api/rtk/* auth boundary (no cookie)  (2026-10-01T00:17:36Z)
+$ curl -s -X POST http://127.0.0.1:8791/api/rtk/toggle -d '{"agent":"codex","on":false}'
+{"error":"请先登录"}
+HTTP 401
+
+$ curl -s http://127.0.0.1:8791/api/rtk/status
+{"error":"请先登录"}
+HTTP 401
+
+# server/index.ts:249 app.use('/api', requireAuth) precedes :1116/:1126 handlers
+
+# rtk rows in /api/audit (last 100):
+matched: 0
