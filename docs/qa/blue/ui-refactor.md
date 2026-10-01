@@ -80,7 +80,7 @@
 - 改后：全部改走 `await confirm({danger: true})`（全局唯一确认框）：
   - 删除密钥、重置今日/本周/**总计**用量（文案写明「这是密钥因超额停用后唯一的恢复手段，且不可撤销」）；
   - 删除渠道、批量剪枝（列出将删除的失效渠道名）、停用渠道（影响线上流量）。
-- 实测（点开但不确认）：确认框标题「删除密钥」、正文「…将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。」；`Esc` 关闭后行数仍为 14（未删除）；焦点回到触发按钮 `删除 龚翰林`。
+- 实测（点开但不确认）：确认框标题「删除密钥」、正文「…将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。」；`Esc` 关闭后行数仍为 14（未删除）；焦点回到触发按钮 `删除 龚翰林`。**注**：该轮「Escape 稳定性」后被 Lead 复验为 flaky（修复前 3 轮 1 轮可关），最终修复与 4/4 判据见 §5.1.1 / §5.1.2。
 - 截图：`docs/qa/blue/shots/after-keys-delete-confirm-focus.png`
 
 ### D19 / D20（高，随 P0 一并收口）
@@ -100,6 +100,7 @@
 | 编号 | 状态 | 说明 |
 | --- | --- | --- |
 | D7 部分 | **部分** | 已迁移的 8 个页面不再手写确认弹窗；`OAuthPage` / `ModelsPage` 未迁移（本轮优先 P0）。 |
+| **新发现（本轮未修，已停手待下一批）** | **未修** | `MonitorPage.vue` 的重置按钮 `aria-label="重置账号 X 的窗口配额"` **不含可见文案「重置额度」**（WCAG 2.5.3 label-in-name，与 D10 同类）。修法一行：`aria-label="重置额度：X 的窗口配额"`。之所以还没改：Lead 已要求停手等 task-10 第二轮取证。 |
 | D12 | **部分** | 已加**分页**（Keys/Channels/Analytics/Usage）；**排序/批量/列控**未做；`/models` 仍是 527 行一次渲染（且该页本轮未迁移）。 |
 | D15 | **部分** | Keys/Channels/Analytics/Usage/Cache/Monitor 空态为中文且有下一步；`ModelsPage` 仍会用 Tuffex 默认英文串。 |
 | D16 | **部分** | 迁移过的页面已收口到 `src/lib/format.ts`；`ModelsPage.vue` / `OAuthPage.vue` / `RequestDetail.vue` 仍有各自的时间/金额写法。 |
@@ -113,6 +114,21 @@
 | D32 | 未修 | `ConsoleNav.vue` 属 Lead 写范围。 |
 
 ① `HelpPage.vue` / `RtkPage.vue` 按 task-4 约定属蓝队 A，未动。
+
+## 5.1 Lead 复验发现与修复（2026-10-01，收尾轮）
+
+1. **确认框关闭后焦点没回到触发元素**（Lead 复验不通过 → 已修，含在 `ccee64e`）。
+   - 根因：TxModal 自带的还原目标取自它自己的 props 变化时刻，部分路径下落到了 body/顶栏。
+   - 修法：`src/lib/confirm.ts` 在 `confirm()` **同步调用点**抓 `document.activeElement`（`getConfirmTrigger()`）；`src/components/ConfirmHost.vue` 在关闭（Escape / 遮罩 / 右上角关闭三条路径）后显式 `focus()` 回该元素，`isConnected === false` 时退回页面主区第一个可聚焦控件；`ConsoleShell.vue` 给 `.shell__content` 加 `tabindex="-1"` 作为兜底落点。
+   - **判据**（Lead 给定）：`document.activeElement.getAttribute("aria-label") === 触发按钮 aria-label`。我方复测 4 条路径：Escape ✅ / 遮罩点击 ✅ / 右上角关闭 ✅（三条都回到 `删除 龚翰林`）；把触发按钮从 DOM 移除后再 Escape ✅ 落到页面主区的「创建 API Key」，**不是 body**。
+2. **Escape 关闭不稳定**（Lead 复验发现的真缺陷 → Lead 直接补丁，含在 `ccee64e`）。
+   - 根因：Tuffex 的 Escape 绑在遮罩元素上（`modal/src/TxModal2.vue.js:36-58`），焦点一旦不在遮罩子树内就关不掉——而焦点修复后焦点会回到触发按钮，于是「弹窗留在原地、Esc 无效」。Lead 实测修复前 3 轮只 1 轮能关，在 `ConfirmHost.vue` 用 window 捕获阶段处理 Escape 后 **4/4 轮可关且焦点回归**。
+   - **教训记录**：我早前两次「Escape 关闭 + 焦点回归 ✅」的结论是**在焦点仍在遮罩内的时序下测得的**，属于 flaky 通过，不应写成稳定结论。本文件先前的相应表述以此节为准。
+3. **Monitor「额度重置」丢弃 `cooldownCleared`**（Lead 要求 → 已修，含在 `ccee64e`）。
+   - 改法：接住 `reset-codex-quota` / `reset-claude-quota` 的返回值；`cooldownCleared === true` → success「已重置…失败冷却已清除」；`false` 或字段缺失 → **warning**「已重置，但上游失败冷却可能仍未清除，客户端可能仍被 429 挡住…稍后重试或联系管理员」；失败分支仍走 error 提示（顺手把 `TxAlert` 的 `type: 'danger'` 改成组件真正认的 `'error'`）。
+   - **证据口径**：Lead 已实测两条分支；我方原计划的「浏览器里 patch `window.fetch` 造两种 `cooldownCleared` 各截一图」**未完成**（第一次尝试因按钮 `aria-label` 覆盖了可见文案、定位器没命中而中止，随后按 Lead 指示停手）。因此 `docs/qa/blue/shots/` 里**没有** `after-monitor-cooldown-*.png`，本条只有代码路径 + Lead 复验，不声称有我方截图。
+4. **deploy-reconciler 的过期结论（记录用）**：其报告称「`VersionWidget.vue:184` 仍渲染已接通 (v0.50.0)」——那是基于旧快照的结论。当前实现以 `/api/rtk/status` 的 `planes[]` 为真源（`PLANE_LABEL` + `rtkPlanes`），实测显示「内核：未接通 / 中转站：未接通 / 本机：可用」，**已修，无需再改**。
+5. **停手状态**：至 `ccee64e` 后我方不再改动 `src/**`（工作区无我方未提交改动），等 ux-auditor 的 task-10 第二轮取证结束再领下一批（Lead 计划：D12 `/models` 527 行无排序/分页/批量、D24 OAuth 轮询无超时）。
 
 ## 6. 未验证项与证据时间戳（重要）
 
