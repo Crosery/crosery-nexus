@@ -7,6 +7,17 @@
 - **发布不做删除**（Lead 决定）：release 里 `src/**/*.tsx` 沿用 BASE 版本，本地对死树的删除不同步进 release，见 §4.4。
 - **本方案遵守** `deploy/edge/README.md:37-44`：**以 BASE 复制为基底再叠加**，不用本地树整体替换。
 
+### 0.2.1 再刷新（React 移除后）：发布源 = \`8fa05fe\`
+
+| 项 | \`526fdfc\` | **\`8fa05fe\`** |
+| --- | --- | --- |
+| 组装树 | 413 文件 / 7.19 MB，MANIFEST 412 | **414 文件 / 6.83 MB，MANIFEST 413** |
+| 缺失生产文件 | 0 | **0** |
+| dist | 77 文件 | **77 文件**（vite manifest 47，其中 \`.vue\` 18、\`.tsx\` **0**） |
+| 结果 | PASS | **PASS（1 条警告：本地 node v26 vs engines）** |
+
+体积下降来自 **React 全家桶彻底移除**（\`/docs\` 迁到 Vue：6 个直接依赖 + \`recharts\` + 其传递引入的 redux 系；\`npm ls react --all\` 为空）。发布包仍按 \`--frontend=vue\` 组装；**keep-prod 模式同样需要生产 dist 快照，上机前务必重跑**。
+
 ---
 
 ## 0.2 【第 10 轮刷新】发布源 = `526fdfc`（当初写此文时为 `fabd4fe`）
