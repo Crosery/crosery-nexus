@@ -125,3 +125,66 @@ $ npm test          → test_exit=0 · ℹ tests 606 · pass 605 · fail 0 · ca
 1. 上述两处 `RtkBoard.vue` 例外仍在（待授权）。
 2. `.mono` 的 `0.93em` 仍会影响**非 `.muted`** 的等宽文本（例如表格里的数字 `12.09px`）——本轮只把 `.muted`/`code` 两个角色从它的乘数效应里摘出来；`.mono` 自身是否该去掉字号增量属于另一个角色决策，**未动**（改它会影响全站 80 余处，需要单独一轮评估）。
 3. 结论基于桌面视口 1557×958 的 13 页实测；窄屏下这些是纯字号/行高角色，未逐页复测（task-32 的页头窄屏项也仍是未验证项）。
+
+---
+
+# 附：RtkBoard 两处例外归入主角色（task-35，2026-10-01）
+
+来源：本文 §5 登记的两处越界例外，Lead 授权后修复。写范围**仅** `src/components/RtkBoard.vue` 的两处 + 本文件。
+
+## 改动（`git diff -- src/components/RtkBoard.vue`，只有这两处）
+
+```diff
+ .agent-id {
+-  font-size: 11.5px;
++  /* 字号交给全局行内 code 主角色（task-34：12px/18px），这里只保留颜色。 */
+   color: var(--tx-text-color-secondary, #535b85);
+ }
+-.busy,
+-.muted {
++.busy {                                  /* 运行中指示是独立角色，保留紧凑的 12px */
+   font-size: 12px;
+   color: var(--tx-text-color-secondary, #535b85);
+ }
++.muted {                                 /* 不再覆盖字号：交给全局 .muted 主角色 13px/19.5px */
++  color: var(--tx-text-color-secondary, #535b85);
++}
+```
+
+## 唯一性实测（`/rtk`，浏览器计算样式）
+
+| 角色 | 改前 | 改后 | 全站主角色 |
+| --- | --- | --- | --- |
+| `.muted`（页内 7 处） | `12px/19.5px`（**全站唯一例外**） | **`13px/19.5px`（唯一值）** | `13px/19.5px` ✅ |
+| 行内 `code`（含 `<code class="mono agent-id">`） | `12px/18px` + `11.5px/18px`（**例外**） | **`12px/18px`（唯一值）** | `12px/18px` ✅ |
+| `.busy`（运行中指示） | `12px` | `12px`（未变） | 独立角色 |
+| `.agent-name` | `13px/normal` | `13px/normal`（未变） | — |
+
+编译产物交叉验证（作用域样式编译结果，证明只删了 `.muted` 那一半）：
+
+```console
+$ grep -o '\.busy\[data-v-[a-z0-9]*\]{[^}]*}' dist/assets/*.css
+.busy[data-v-01b873ff]{color:var(--tx-text-color-secondary,#535b85);font-size:12px}
+$ grep -o '\.muted\[data-v-01b873ff\]{[^}]*}' dist/assets/*.css
+.muted[data-v-01b873ff]{color:var(--tx-text-color-secondary,#535b85)}      ← 已无 font-size
+```
+
+至此 **`.muted`、行内 `code`、表格单元格（含空表）、代码块、h1/h2** 五组角色在全站都是唯一取值（`.muted` 在 `.page-head` 散文内由 `.page-head p` 接管的组合值除外，见 §2）。
+
+## 无视觉回归确认（`/rtk` 实拍）
+
+- agent 行：`Codex CLI` / `Claude Code` / `Cursor` 行高实测 **21 / 21 / 20px**（与改前同量级），`agent-name` 13px、`agent-id` 12px/18px，两行文本**未重叠、未截断**，可读性正常；
+- `busy` 态：规则未动（编译结果 `font-size:12px`），且与 `.muted` 拆开后不再互相牵连；
+- 页面无横向溢出：`scrollWidth == clientWidth`（1557×958）；
+- 截图：改前 `docs/qa/blue/shots/r13-rtk-before.png`、改后 `docs/qa/blue/shots/r13-rtk-after.png`。
+
+> 探针说明：我试过临时插入一个 `.busy` 节点量计算样式，但 RtkBoard 是 **scoped 样式**（`[data-v-01b873ff]`），无作用域属性的注入节点匹配不到规则（量到的是继承值 14px），所以 `.busy` 的证据改用「源码 diff + 编译产物规则」给出；注入节点已即时移除（`document.querySelectorAll('.busy').length === 0`）。
+
+## 命令与退出码
+
+```
+$ npx tsc -b        → tsc_exit=0
+$ npm run lint      → lint_exit=0（仅 2 条既存 no-control-regex warning）
+$ npm run build     → build_exit=0 · ✓ built in 632ms
+$ npm test          → test_exit=0 · ℹ tests 606 · pass 605 · fail 0 · cancelled 0 · skipped 1
+```

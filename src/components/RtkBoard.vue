@@ -349,7 +349,8 @@ const authorityHint = computed(() => {
   color: var(--tx-text-color-primary, #151b45);
 }
 .agent-id {
-  font-size: 11.5px;
+  /* 字号交给全局行内 code 主角色（task-34：12px/18px），这里只保留颜色。
+     原来写 11.5px 是 `/rtk` 行内 code 在全站的唯一例外。 */
   color: var(--tx-text-color-secondary, #535b85);
 }
 .agent-action {
@@ -357,9 +358,14 @@ const authorityHint = computed(() => {
   align-items: center;
   gap: 8px;
 }
-.busy,
-.muted {
+.busy {
+  /* 运行中指示是独立角色，保持紧凑的 12px。 */
   font-size: 12px;
+  color: var(--tx-text-color-secondary, #535b85);
+}
+.muted {
+  /* 不再覆盖字号：`.muted` 是全局次要文字主角色（task-34：13px/19.5px）。
+     原来这里与 .busy 共用一条 12px，是 `/rtk` 在全站的唯一例外。 */
   color: var(--tx-text-color-secondary, #535b85);
 }
 .remote-actions {
