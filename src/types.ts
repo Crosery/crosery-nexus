@@ -160,7 +160,37 @@ export type ModelSyncResult = {
   }
 }
 
+export type RtkPlaneId = 'kernel' | 'relay' | 'local'
+
+/** 未配置 / 配置了但不可达 / 未授权 / 路由不存在 / 可用 —— UI 必须如实区分。 */
+export type RtkPlaneState = 'available' | 'not_configured' | 'unreachable' | 'unauthorized' | 'not_supported'
+
+export type RtkPlaneProbe = {
+  id: RtkPlaneId
+  available: boolean
+  configured: boolean
+  state: RtkPlaneState
+  reason: string
+  detail?: string
+}
+
+export type RtkAgentStatus = {
+  id: string
+  name: string
+  icon: string
+  on: boolean
+  supported: boolean
+  plane: RtkPlaneId
+  installed?: boolean
+  blocked?: string
+}
+
+export type RtkBackupSummary = { id: string; at: string; files: string[] }
+
 export type RTKStatusResponse = {
+  /** 权威读取平面：kernel → relay → local，第一个真正应答的。 */
+  plane: RtkPlaneId
+  planes: RtkPlaneProbe[]
   connected: boolean
   path: string | null
   version: string | null
@@ -178,15 +208,30 @@ export type RTKStatusResponse = {
     pct: number
   }>
   latest: string | null
-  agents: Array<{
-    id: string
-    name: string
-    icon: string
-    on: boolean
-    blocked?: string
-  }>
+  agents: RtkAgentStatus[]
+  /** 本机（控制台所在机器）的 agent 开关状态，独立于权威平面。 */
+  localAgents: RtkAgentStatus[]
+  local: { connected: boolean; path: string | null; version: string | null }
+  backups: RtkBackupSummary[]
+  writeMode: 'local' | 'confirm' | 'off'
+  remoteWriteEnabled: boolean
+  kernelWriteEnabled: boolean
+  installEnabled: boolean
+  install?: string
   url: string
+  /** 权威平面读取失败并回退时的原因，如实展示。 */
+  error?: string
 }
+
+export type RTKToggleResponse = RTKStatusResponse & {
+  ok: true
+  mechanism?: 'rtk-cli' | 'hooks-json'
+  backup?: string
+  fallbackReason?: string
+  collateralRestored?: string[]
+}
+
+export type RTKRollbackResponse = RTKStatusResponse & { ok: true; backupId: string; restored: string[] }
 
 export type OAuthStartResult = {
   status: string

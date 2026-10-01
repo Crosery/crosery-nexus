@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
+import { TxAlert } from '@talex-touch/tuffex/alert'
 import type { ModelIndexData } from '../types'
 
 defineProps<{
@@ -31,6 +32,7 @@ const TOC = [
   { id: 'responses', label: '5. Responses / Codex' },
   { id: 'images', label: '6. 图片生成与视觉' },
   { id: 'clients', label: '7. 常见 Agent 客户端' },
+  { id: 'rtk', label: '8. 本机 RTK（可选，省 token）' },
 ]
 
 const crapiInstallMac = `curl -fsSL https://cdn.jsdelivr.net/gh/crosery/crapi/install.sh | sh`
@@ -77,6 +79,29 @@ const curlImage = `curl https://ai.crosery.com/v1/images/generations \\
     "prompt": "Cyberpunk city in mist, highly detailed",
     "size": "1024x1024"
   }'`
+
+// 以下命令均按 rtk 0.50.0 的 `rtk init --help` 与实测核对过；全程作用于「本机客户端」，
+// 与中转站 https://ai.crosery.com/v1（推理端点）无关。
+const rtkInstall = `curl -fsSL https://www.rtk-ai.app/install.sh | sh`
+
+const rtkHooks = `# 按你实际用的客户端选一条（-g = 全局，作用于本机配置）
+rtk init -g --codex                          # Codex CLI
+rtk init -g --agent claude --auto-patch      # Claude Code
+rtk init -g --agent cursor --auto-patch      # Cursor（会连带写 Claude 的钩子）
+rtk init -g --gemini --auto-patch            # Gemini CLI
+rtk init -g --copilot                        # GitHub Copilot
+rtk init -g --agent trae --auto-patch        # 其它全局 agent：trae / droid / omp / pi / hermes / vibe
+
+# 只能按项目初始化的 agent（在项目目录里执行，没有全局开关）
+rtk init --agent windsurf    # 或 cline / kilocode / antigravity / kimi`
+
+const rtkVerify = `# 看当前配置与节省情况：期待 summary.total_saved > 0
+rtk gain --daily --format json
+rtk init --show
+
+# 卸载（必须带 agent 目标，且 -g 不能省）
+rtk init -g --codex --uninstall
+rtk init -g --agent claude --uninstall`
 </script>
 
 <template>
@@ -257,6 +282,53 @@ const curlImage = `curl https://ai.crosery.com/v1/images/generations \\
               <strong>Cline / Roo Code</strong>
               <span>Provider 选择 <code>OpenAI Compatible</code>，Base URL 填入 <code>https://ai.crosery.com/v1</code>。</span>
             </div>
+          </div>
+        </TxCard>
+        <!-- 8. 本机 RTK -->
+        <TxCard id="rtk" :padding="20" class="section-card">
+          <div class="section-head">
+            <TxTag label="08" color="#3346c8" size="sm" />
+            <h2>本机 RTK（可选，省 token）</h2>
+          </div>
+          <p class="section-desc">
+            RTK 把命令输出压缩后再喂给模型，省的是<strong>你本机客户端</strong>的 token。
+            <code>{{ BASE_URL }}</code> 是推理端点，<strong>不承载配置下发</strong>；把 RTK 装在中转站上不会让你本机省 token。
+            控制台侧栏的 <a href="/rtk">RTK 页面</a>可以查看/切换本机各客户端的挂载状态。
+          </p>
+
+          <div class="code-wrapper">
+            <div class="code-header">
+              <span>1. 安装（本机）</span>
+              <TxButton size="sm" variant="ghost" @click="copyCode(rtkInstall, 'rtk-install')">
+                {{ copiedIndex === 'rtk-install' ? '已复制' : '复制命令' }}
+              </TxButton>
+            </div>
+            <pre class="code-block mono">{{ rtkInstall }}</pre>
+          </div>
+
+          <div class="code-wrapper mt-3">
+            <div class="code-header">
+              <span>2. 挂载 hook（本机，按客户端选一条）</span>
+              <TxButton size="sm" variant="ghost" @click="copyCode(rtkHooks, 'rtk-hooks')">
+                {{ copiedIndex === 'rtk-hooks' ? '已复制' : '复制命令' }}
+              </TxButton>
+            </div>
+            <pre class="code-block mono">{{ rtkHooks }}</pre>
+          </div>
+
+          <TxAlert type="warning" title="--auto-patch 不能省" :closable="false">
+            不带 <code>--auto-patch</code> 时，rtk 在非交互环境会对「是否写入 settings.json」默认选 N：
+            命令退出码是 0，但 hook 根本没写进去，看起来「装了却不生效」。
+          </TxAlert>
+
+          <div class="code-wrapper mt-3">
+            <div class="code-header">
+              <span>3. 验证与卸载（本机）</span>
+              <TxButton size="sm" variant="ghost" @click="copyCode(rtkVerify, 'rtk-verify')">
+                {{ copiedIndex === 'rtk-verify' ? '已复制' : '复制命令' }}
+              </TxButton>
+            </div>
+            <pre class="code-block mono">{{ rtkVerify }}</pre>
           </div>
         </TxCard>
       </main>
