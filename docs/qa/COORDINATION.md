@@ -96,3 +96,19 @@ launchctl print gui/$(id -u)/com.crosery.console-magpie >/dev/null 2>&1 && echo 
 - 分「已验证 / 未验证 / 推断」三类；未验证就写未验证，不许脑补中转站或远端行为。
 - 凭据只在环境变量/Keychain/stdin 里引用，**不得**出现在源码、日志、文档、截图或命令行明文参数里。
 - 不新增生产依赖。测试里禁止读写真实 `~/.codex`、`~/.claude`、真实业务库；用临时 HOME/临时目录。
+
+
+## 生产主机上的进程操作（第 35 轮真实事故）
+
+**禁止**在生产主机上用宽泛的 `pgrep -f <脚本名>` 做批量 kill：它同时匹配到生产进程树里的
+`sh -c tsx` / `node .bin/tsx` / 真正的 node 三个进程，而白名单只跳过 `MainPID` 是不够的——
+**它的子进程不在白名单里**。第 35 轮我这样杀掉了生产 child，服务停在 `inactive/dead`：
+systemd 是 `Restart=on-failure`，而 SIGTERM 退出码为 0（干净退出）⇒ **不会自动拉起**。
+
+规则：
+
+1. **要停的是临时实例，就按"端口 / 临时 DATA_DIR"精确定位**，别按脚本名：
+   `ss -ltnp | grep :18787` 拿到 PID，再 `ps -o pid,ppid,cmd -p <PID>` 确认它的父进程是 `npm run start`，然后 **`kill -- -<PGID>`** 杀整个进程组（`setsid` 启动的临时实例才有独立进程组）。
+2. **杀之前先列生产进程树并存档**：`systemctl show -p MainPID` + `pgrep -P <MainPID>`，逐个比对，别靠一个 PID。
+3. **改任何"靠近生产"的东西之前，先确认回退动作**（`systemctl start` 是否能把它拉回来——本轮能，8 秒恢复）。
+4. `Restart=on-failure` **不等于**"杀了会自动回来"：干净退出不会重启。写 runbook 时别把这条当默认。
