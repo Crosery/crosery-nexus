@@ -252,3 +252,76 @@ export function migrateUsageRollup(database: DatabaseSync) {
     `)
   }
 }
+
+/* ─────────────────── rollup 漂移自检（task-64） ─────────────────── */
+
+/**
+ * rollup 表会**静默漂移**：它由 3 个 `AFTER INSERT` 的**累加式**触发器维护
+ * （见本文件顶部的 `trg_usage_hourly_rollup_insert`），而 schema 里没有 `AFTER DELETE`。
+ * 任何把同一条逻辑事件写入两次的路径（回填脚本跑两遍、重建中断后重跑、手工重放…）
+ * 都会**永久**放大 rollup，而所有走 rollup 的 loader 会安静地显示错数。
+ *
+ * events 侧因为有 `request_id UNIQUE` + `INSERT OR IGNORE` 保持正确，正好是可信参照：
+ * 同一窗口内 `SUM(usage_hourly_rollup.request_count)` 应当等于 `COUNT(*) FROM usage_events`。
+ *
+ * 窗口**对齐到整点**：不对齐时首个不完整小时会被 rollup 侧整点丢弃/多算，产生 1–3% 的假漂移
+ * （生产 3h 窗口实测 1.023 就是这么来的）。
+ */
+export type RollupHealth = {
+  windowHours: number
+  /** 对齐到整点后的窗口起点（ms）。 */
+  cutoffMs: number
+  rollupRequests: number
+  eventRequests: number
+  /** rollup / events；两侧都为空时按 1 记。 */
+  ratio: number
+  /** 相对偏差（绝对百分比），例如 0.3 表示 0.3%。 */
+  driftPct: number
+  severity: 'ok' | 'warn' | 'alert' | 'unknown'
+  checkedAt: string
+}
+
+/** 对齐到整点的窗口起点：避免首个不完整小时带来的假漂移。 */
+export const alignedCutoffMs = (windowHours: number, now = Date.now()) =>
+  Math.floor((now - windowHours * 3_600_000) / 3_600_000) * 3_600_000
+
+/** 汇总两个计数 → 分级结果（纯函数，便于单测）。 */
+export function summarizeRollupHealth(
+  rollupRequests: number,
+  eventRequests: number,
+  options: { windowHours: number; cutoffMs: number; now?: number },
+): RollupHealth {
+  const rollup = Number(rollupRequests) || 0
+  const events = Number(eventRequests) || 0
+  const ratio = events === 0 ? (rollup === 0 ? 1 : Number.POSITIVE_INFINITY) : rollup / events
+  const driftPct = events === 0 ? (rollup === 0 ? 0 : 100) : Math.abs(rollup - events) / events * 100
+  const severity: RollupHealth['severity'] = events === 0 && rollup === 0
+    ? 'ok'
+    : driftPct < 1 ? 'ok' : driftPct <= 5 ? 'warn' : 'alert'
+  return {
+    windowHours: options.windowHours,
+    cutoffMs: options.cutoffMs,
+    rollupRequests: rollup,
+    eventRequests: events,
+    ratio: Number.isFinite(ratio) ? Number(ratio.toFixed(4)) : ratio,
+    driftPct: Number(driftPct.toFixed(3)),
+    severity,
+    checkedAt: new Date(options.now ?? Date.now()).toISOString(),
+  }
+}
+
+/** 自检用的两条只读 SQL（可以交给读线程池执行，不占主线程）。 */
+export function rollupHealthOperations(cutoffMs: number) {
+  return [
+    { method: 'get' as const, sql: 'SELECT COALESCE(SUM(request_count), 0) requests FROM usage_hourly_rollup WHERE hour_ms >= ?', params: [cutoffMs] },
+    { method: 'get' as const, sql: 'SELECT COUNT(*) requests FROM usage_events WHERE timestamp_ms >= ?', params: [cutoffMs] },
+  ]
+}
+
+/** 同步库上的自检（脚本/测试用；HTTP 路由请用读线程池版本）。 */
+export function checkRollupHealth(database: DatabaseSync, windowHours = 24): RollupHealth {
+  const cutoffMs = alignedCutoffMs(windowHours)
+  const rollup = database.prepare('SELECT COALESCE(SUM(request_count), 0) requests FROM usage_hourly_rollup WHERE hour_ms >= ?').get(cutoffMs) as { requests: number }
+  const events = database.prepare('SELECT COUNT(*) requests FROM usage_events WHERE timestamp_ms >= ?').get(cutoffMs) as { requests: number }
+  return summarizeRollupHealth(rollup.requests, events.requests, { windowHours, cutoffMs })
+}

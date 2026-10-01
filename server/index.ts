@@ -56,6 +56,7 @@ import { ReportSnapshotCache } from './reportSnapshotCache.js'
 import { loadMonitorQuotaShare } from './monitorQuotaShare.js'
 import { loadModelCatalog, visibleModelIds, refreshGatewayPricing } from './modelCatalog.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
+import { alignedCutoffMs, rollupHealthOperations, summarizeRollupHealth } from './usageRollup.js'
 
 const app = express()
 const credentialUploadGate = new UploadGate()
@@ -1219,6 +1220,28 @@ app.get('/api/rtk/status', async (_req, res) => {
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
     res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
+  }
+})
+
+/**
+ * rollup 漂移自检（task-64，**只读**）：同窗口内 rollup 的 SUM(request_count) 与 events 的 COUNT(*)
+ * 应当相等；窗口对齐到整点以避免首个不完整小时的假漂移。走读线程池，不占主线程。
+ * 分级：<1% ok、1–5% warn、>5% alert（判据与重建路径见 docs/qa/blue/rollup-drift-detection.md）。
+ */
+app.get('/api/usage/rollup-health', async (req, res) => {
+  try {
+    const windowHours = boundedInteger(req.query.hours, 24, 1, 24 * 31)
+    const cutoffMs = alignedCutoffMs(windowHours)
+    const [rollupRow, eventsRow] = await usageReader.run(rollupHealthOperations(cutoffMs))
+    const health = summarizeRollupHealth(
+      Number((rollupRow as { requests?: number })?.requests ?? 0),
+      Number((eventsRow as { requests?: number })?.requests ?? 0),
+      { windowHours, cutoffMs },
+    )
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(health)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'rollup 自检失败' })
   }
 })
 
