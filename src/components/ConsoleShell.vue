@@ -93,7 +93,8 @@ async function signOut() {
         </div>
       </header>
 
-      <div class="shell__content">
+      <!-- tabindex="-1"：焦点兜底落点，确认框关闭后触发元素若已消失，焦点回到页面主区而不是 body -->
+      <div class="shell__content" tabindex="-1">
         <RouterView />
       </div>
     </main>

@@ -23,7 +23,25 @@ export const confirmState = reactive({
   resolve: null as ((ok: boolean) => void) | null,
 })
 
+/**
+ * 触发确认框的元素。关闭后要把焦点还给它——TxModal 自己也会尝试还原
+ * （`modal/src/TxModal2.vue.js:39-52`），但它的目标取自 props 变化时刻，未必等于真正的触发者。
+ * 必须在 `confirm()` 同步调用点抓取：那一刻 `document.activeElement` 才是点下按钮的人。
+ */
+let confirmTrigger: HTMLElement | null = null
+
+export function getConfirmTrigger(): HTMLElement | null {
+  return confirmTrigger
+}
+
+export function clearConfirmTrigger() {
+  confirmTrigger = null
+}
+
 export function confirm(options: ConfirmOptions): Promise<boolean> {
+  confirmTrigger = typeof document !== 'undefined' && document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
   // 上一个还没答复就被新的替换时，按「取消」结束它，不让调用方永远挂起。
   confirmState.resolve?.(false)
   return new Promise<boolean>((resolve) => {

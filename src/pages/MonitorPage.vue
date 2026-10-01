@@ -26,7 +26,8 @@ const accounts = computed(() => currentData.value?.accounts || [])
 const quotaShare = computed(() => currentData.value?.quotaShare || null)
 
 const resetting = ref(false)
-const resultNotice = ref<{ type: 'success' | 'warning' | 'danger'; message: string } | null>(null)
+// TxAlert 的 type 只认 info/success/warning/error，失败态原来是 'danger'（不生效）——改为 'error'。
+const resultNotice = ref<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null)
 
 const PROVIDERS: Record<string, { label: string; logo: string; color: string }> = {
   claude: { label: 'Claude', logo: 'AI', color: '#d97757' },
@@ -74,15 +75,25 @@ async function resetQuota(account: any) {
   resetting.value = true
   resultNotice.value = null
   try {
-    if (account.type === 'claude') {
-      await api.resetClaudeQuota(String(account.auth_index))
+    // 服务端 20260928 补丁起会返回 cooldownCleared：重置成功了但上游失败冷却没清掉时，
+    // 客户端仍会被 429 挡住（2026-09-27 那次冷却挂了 5.6 天没人发现）。所以必须把结果读出来，
+    // 不能像原来那样把返回值丢掉、无条件报「成功」。
+    const result = (account.type === 'claude'
+      ? await api.resetClaudeQuota(String(account.auth_index))
+      : await api.resetCodexQuota(String(account.auth_index))) as { ok?: boolean; cooldownCleared?: boolean } | undefined
+    if (result?.cooldownCleared === true) {
+      resultNotice.value = { type: 'success', message: `已重置「${name}」的额度，失败冷却已清除。` }
     } else {
-      await api.resetCodexQuota(String(account.auth_index))
+      resultNotice.value = {
+        type: 'warning',
+        message:
+          `已重置「${name}」的额度，但上游失败冷却可能仍未清除：客户端可能仍会被 429 挡住。` +
+          '请稍后重试重置，或联系管理员检查 CPA 侧冷却状态。',
+      }
     }
-    resultNotice.value = { type: 'success', message: `已成功重置「${name}」的额度。` }
     await loadMonitor()
   } catch (e) {
-    resultNotice.value = { type: 'danger', message: `额度重置失败：${e instanceof Error ? e.message : '未知错误'}` }
+    resultNotice.value = { type: 'error', message: `额度重置失败：${e instanceof Error ? e.message : '未知错误'}` }
   } finally {
     resetting.value = false
   }
