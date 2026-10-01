@@ -16,14 +16,10 @@ export const EMBEDDED_HEADING_KEY: InjectionKey<boolean> = Symbol('crosery-embed
 
 <script setup lang="ts">
 import { computed, inject } from 'vue'
-import { useRouter } from 'vue-router'
-import { TxBreadcrumb } from '@talex-touch/tuffex/breadcrumb'
 
 /**
- * 页头：面包屑 + 标题 + 一句说明 + 右侧操作槽。
+ * 页头：标题 + 一句说明 + 右侧操作槽（面包屑由外壳 `ConsoleShell` 统一负责，见下）。
  *
- * 对照参考实现 `geek_main/app/console/src/components/PageHeader.vue:1-37`：面包屑走站内路由，
- * 不给 TxBreadcrumb 传 href，点击后由 click 事件 router.push，避免整页刷新。
  * 样式复用全局 `src/styles/layout.css:14-48` 的 `.page-head` 规范，页面里不再各写一套标题排版。
  */
 export type Crumb = { label: string; to?: string }
@@ -31,6 +27,12 @@ export type Crumb = { label: string; to?: string }
 const props = defineProps<{
   title: string
   description?: string
+  /**
+   * @deprecated 页内面包屑已废弃（第 34 轮）。外壳 `ConsoleShell` 在顶栏已经画了一条
+   * 「控制台 › 当前页」，页内再画一条会出现**两个面包屑**，而且父级常常互相矛盾
+   * （顶栏写「控制台」，页内写「接入」）。保留 prop 只是为了避免一次性改遍所有页面，
+   * 渲染层已经忽略它。
+   */
   crumbs?: Crumb[]
   /**
    * 标题层级（默认 1）。显式传值时**优先于**内嵌上下文：
@@ -42,20 +44,11 @@ const props = defineProps<{
 /** 被内嵌时自动降级为 h2（见 EMBEDDED_HEADING_KEY）；显式 `level` 优先。 */
 const embedded = inject(EMBEDDED_HEADING_KEY, false)
 const headingTag = computed(() => `h${props.level ?? (embedded ? 2 : 1)}`)
-
-const router = useRouter()
-const items = computed(() => (props.crumbs ?? []).map((crumb) => ({ label: crumb.label })))
-
-function onCrumb(_item: unknown, index: number) {
-  const to = props.crumbs?.[index]?.to
-  if (to) void router.push(to)
-}
 </script>
 
 <template>
   <header class="page-head">
     <div class="page-head__text">
-      <TxBreadcrumb v-if="items.length" class="page-head__crumbs" :items="items" @click="onCrumb" />
       <component :is="headingTag" class="page-head__title">{{ title }}</component>
       <p v-if="description">{{ description }}</p>
       <slot name="meta" />

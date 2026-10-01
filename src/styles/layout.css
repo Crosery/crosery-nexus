@@ -11,6 +11,20 @@
   min-width: 0;
 }
 
+/*
+ * 页面主栈（7 个页面在用）。此前**没有定义**，于是每个页面自己写 `.xxx-page { gap: 16px }`，
+ * 结果"页头 / 提示 / 内容"之间的距离（16px）比卡片之间（24px）还小——**外层比内层更挤**，
+ * 一眼看过去就是用户说的"紧凑粘连"。区块之间的距离必须大于组内距离：这里 28px。
+ * 页面自己的 `.xxx-page` 不要再设 gap（scoped 规则会盖过这一条）。
+ */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  width: 100%;
+  min-width: 0;
+}
+
 .page-head {
   display: flex;
   flex-wrap: wrap;
@@ -272,7 +286,11 @@ pre code,
 
 @media (max-width: 900px) {
   .page {
-    padding: 16px 16px 40px;
+    /*
+     * 顶部留白 12px 时，页面标题会贴到顶栏下沿（390px 实测：标题几乎粘在菜单按钮下方）。
+     * 20px 让"标题属于这一页"这件事在视觉上成立——顶栏与内容是两件事，不该粘连。
+     */
+    padding: 20px 16px 40px;
   }
   .grid-2,
   .form-grid {

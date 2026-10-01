@@ -163,8 +163,7 @@ onMounted(load)
   <div class="page-stack rtk-page">
     <PageHeader
       title="RTK Token 压缩"
-      description="按「内核 → 远端网关（即中转站）→ 本机」顺序解析权威平面，逐平面如实上报可用性；开关只写本机 agent 配置，远端默认只读。"
-      :crumbs="[{ label: '接入', to: '/channels' }, { label: 'RTK 优化' }]"
+      description="按「内核 → 远端网关（即中转站）→ 本机」顺序解析权威平面，逐平面如实上报可用性。开关只写本机 agent 配置，远端默认只读。"
     >
       <template #meta>
         <p class="role-note">角色：RTK 控制面（只在本机写配置；远端网关只读）</p>
@@ -195,10 +194,8 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* 间距交给共享的 .page-stack（28px）；这里只管本页特有的东西。 */
 .rtk-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
   width: 100%;
 }
 /* 页头统一走共享 PageHeader（全局 .page-head 角色：h1 = 22px/600/30px、p = 14px/22px）。

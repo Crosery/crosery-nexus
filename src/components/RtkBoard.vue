@@ -71,7 +71,6 @@ const authorityHint = computed(() => {
     <TxCard :padding="0" class="board-card">
       <div class="board-head">
         <div>
-          <p class="eyebrow">RTK CONTROL PLANE</p>
           <h2>RTK 平面</h2>
           <p class="hint">{{ authorityHint }}</p>
         </div>
@@ -97,22 +96,25 @@ const authorityHint = computed(() => {
 
       <p v-if="status?.error" class="warn-line">{{ status.error }}</p>
 
-      <div v-if="status" class="authority">
-        <div class="authority-item">
-          <span>权威平面连通</span>
-          <strong>{{ status.connected ? `是${status.version ? ` (v${status.version})` : ''}` : '否' }}</strong>
-        </div>
-        <div class="authority-item">
-          <span>本机 rtk</span>
-          <strong>{{ status.local?.connected ? `已安装${status.local.version ? ` (v${status.local.version})` : ''}` : '未安装' }}</strong>
-        </div>
-        <div class="authority-item">
-          <span>Token 节省</span>
-          <strong>{{ status.gain && status.gain.commands > 0 ? `${status.gain.pct.toFixed(1)}% · ${fmtNumber(status.gain.saved)} tokens` : '暂无数据' }}</strong>
-        </div>
-        <div class="authority-item">
-          <span>写入模式</span>
-          <strong>{{ status.writeMode === 'off' ? '全只读' : status.writeMode === 'confirm' ? '需显式确认' : '本机可写' }}</strong>
+      <div v-if="status" class="authority-block">
+        <p class="authority-title">关键事实</p>
+        <div class="authority">
+          <div class="authority-item">
+            <span>权威平面连通</span>
+            <strong>{{ status.connected ? `是${status.version ? ` (v${status.version})` : ''}` : '否' }}</strong>
+          </div>
+          <div class="authority-item">
+            <span>本机 rtk</span>
+            <strong>{{ status.local?.connected ? `已安装${status.local.version ? ` (v${status.local.version})` : ''}` : '未安装' }}</strong>
+          </div>
+          <div class="authority-item">
+            <span>Token 节省</span>
+            <strong>{{ status.gain && status.gain.commands > 0 ? `${status.gain.pct.toFixed(1)}% · ${fmtNumber(status.gain.saved)} tokens` : '暂无数据' }}</strong>
+          </div>
+          <div class="authority-item">
+            <span>写入模式</span>
+            <strong>{{ status.writeMode === 'off' ? '全只读' : status.writeMode === 'confirm' ? '需显式确认' : '本机可写' }}</strong>
+          </div>
         </div>
       </div>
     </TxCard>
@@ -122,10 +124,11 @@ const authorityHint = computed(() => {
         <div>
           <h2>本机客户端钩子</h2>
           <p class="hint">开关直接改本机 agent 配置（写前备份、写后校验、失败回滚）。rtk 0.50.0 只有 11 个 agent 支持全局钩子，其余只能按项目初始化。</p>
-          <p class="hint hint--warning">
-            改完需要<strong>重启对应客户端</strong>才生效（运行中的进程不会热加载 hook）；首次触发时若客户端询问是否信任 hook，必须允许。
-            判断是否真生效：新开会话跑 <code class="mono">rtk gain --daily</code> 看 <code class="mono">total_saved</code> 是否增长。
-          </p>
+          <ul class="note-list">
+            <li>改完要<strong>重启该客户端</strong>：运行中的进程不会热加载 hook。</li>
+            <li>首次触发若客户端询问是否信任 hook，需要允许。</li>
+            <li>想确认真的生效：新开一次会话，跑 <code class="mono">rtk gain --daily</code> 看 <code class="mono">total_saved</code> 有没有涨。</li>
+          </ul>
         </div>
       </div>
 
@@ -195,12 +198,13 @@ const authorityHint = computed(() => {
       <div class="board-head">
         <div>
           <h2>备份与回退</h2>
-          <p class="hint">
-            每次写入前把目标文件原样备份，失败自动回填；只保留最近 {{ status?.backupKeep ?? 10 }} 份（RTK_BACKUP_KEEP 可调），
-            超出自动轮转，但 {{ Math.round((status?.backupGraceMs ?? 120000) / 1000) }} 秒内新建的备份受保护、不会被轮转删掉（并发写入时刚返回的 backupId 仍可回退）。
-            <template v-if="status?.backupOrphans">另有 {{ status.backupOrphans }} 个无 manifest 的孤儿目录，过保护窗口后自动清理。</template>
-            <template v-if="status?.backupForeign">备份目录里还有 {{ status.backupForeign }} 个不认识的目录，控制台只计数不删（避免误删你自己的东西）。</template>
-          </p>
+          <p class="hint">写入前原样备份，失败自动回填。</p>
+          <dl class="fact-list">
+            <div><dt>保留份数</dt><dd>{{ status?.backupKeep ?? 10 }} 份（RTK_BACKUP_KEEP 可调），超出自动轮转</dd></div>
+            <div><dt>保护窗口</dt><dd>{{ Math.round((status?.backupGraceMs ?? 120000) / 1000) }} 秒内新建的备份不会被轮转删掉</dd></div>
+            <div v-if="status?.backupOrphans"><dt>孤儿目录</dt><dd>{{ status.backupOrphans }} 个（无 manifest），过保护窗口自动清理</dd></div>
+            <div v-if="status?.backupForeign"><dt>外来目录</dt><dd>{{ status.backupForeign }} 个，只计数不删</dd></div>
+          </dl>
         </div>
       </div>
       <div class="backup-list">
@@ -221,19 +225,23 @@ const authorityHint = computed(() => {
 .rtk-board {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  /* 卡片之间 24px、卡片内 20px：**外部间隔 > 内部留白**，否则一排卡片会粘成一块。
+     这是"紧凑粘连"的根因，别调回 16。 */
+  gap: 24px;
 }
 .board-card {
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  gap: 12px;
+  padding: 20px 22px;
+  gap: 16px;
 }
 .board-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
+  gap: 16px;
+  /* 标题上方留白（卡片 padding 20px）大于下方（12px），符合"标题上多下少"的排版规范。 */
+  margin-bottom: 4px;
 }
 .board-head h2 {
   margin: 0;
@@ -241,24 +249,45 @@ const authorityHint = computed(() => {
   font-weight: 700;
   color: var(--tx-text-color-primary, #151b45);
 }
-.eyebrow {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--tx-color-primary, #3346c8);
-  margin: 0 0 2px;
-}
 .hint {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   font-size: 12.5px;
   color: var(--tx-text-color-secondary, #535b85);
   line-height: 1.5;
 }
-/* 「写完 ≠ 生效」提示：与普通说明区分，避免用户以为点了开关就立刻省 token。 */
-.hint--warning {
-  margin-top: 6px;
-  padding-left: 8px;
-  border-left: 2px solid var(--tx-color-warning, #d97706);
+/* 「写完 ≠ 生效」：三条短句，扫一眼就能记住，不用读整段。 */
+.note-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--tx-text-color-secondary, #535b85);
+}
+.note-list strong {
+  color: var(--tx-text-color-primary, #1f2547);
+}
+/* 事实行：标签在左、值在右。把一整段说明拆成可逐行扫读的结构。 */
+.fact-list {
+  margin: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.fact-list > div {
+  display: flex;
+  gap: 12px;
+}
+.fact-list dt {
+  flex: none;
+  width: 72px;
+  color: var(--tx-text-color-secondary, #535b85);
+}
+.fact-list dd {
+  margin: 0;
   color: var(--tx-text-color-primary, #1f2547);
 }
 .head-actions {
@@ -269,13 +298,13 @@ const authorityHint = computed(() => {
 .plane-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 .plane-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px;
+  gap: 8px;
+  padding: 14px;
   background: var(--tx-fill-color, #eceff8);
   border: 1px solid var(--tx-border-color, #d5daec);
   border-radius: 6px;
@@ -299,10 +328,23 @@ const authorityHint = computed(() => {
 .plane-detail {
   color: #78350f;
 }
+/* 关键事实：与上方平面卡片之间用一条分隔线 + 更大的上间距分开，
+   否则两组数据在同一张卡里会读成连续的一坨（用户报的"紧凑粘连"）。 */
+.authority-block {
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--tx-border-color-light, #e3e7f3);
+}
+.authority-title {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tx-text-color-secondary, #535b85);
+}
 .authority {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 10px;
+  gap: 20px;
 }
 .authority-item {
   display: flex;
@@ -324,7 +366,7 @@ const authorityHint = computed(() => {
 .agent-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .agent-row {
   display: flex;

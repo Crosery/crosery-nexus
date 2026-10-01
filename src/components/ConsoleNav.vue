@@ -6,6 +6,7 @@ import type { SidebarNavItem } from '@talex-touch/tuffex/sidebar-nav'
 import { TxCardItem } from '@talex-touch/tuffex/card-item'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxAvatar } from '@talex-touch/tuffex/avatar'
+import { NAV_AS_SIDEBAR_ITEMS, NAV_GROUPS, NAV_ITEMS } from '../lib/nav'
 
 const emit = defineEmits<{
   navigate: []
@@ -16,46 +17,25 @@ const route = useRoute()
 const router = useRouter()
 const query = ref('')
 
-const groups = [
-  { id: 'overview', label: '总览' },
-  { id: 'access', label: '接入管理' },
-  { id: 'analytics', label: '用量分析' },
-  { id: 'monitor', label: '运行监控' },
-  { id: 'help', label: '帮助' },
-]
+/**
+ * 分组与条目都来自 `lib/nav.ts`（单一真源）。
+ *
+ * 这里曾经传 `{ id, label }` 给 `groups`，而 tuffex 的契约是 `SidebarNavGroup = { key, label }`，
+ * 条目靠 `item.group === group.key` 归组 ⇒ 一条都匹配不上 ⇒ 五个分类标题全不渲染
+ * （用户报的"之前的 tab 分类没了"）。别再改回 `id`。
+ */
+const groups = NAV_GROUPS
+const navEntries = NAV_ITEMS
 
-const navEntries = [
-  { value: 'dashboard', label: '运行概览', group: 'overview', icon: 'i-carbon-dashboard', to: '/dashboard' },
-  { value: 'keys', label: 'API Key', group: 'access', icon: 'i-carbon-password', to: '/keys' },
-  { value: 'channels', label: '渠道', group: 'access', icon: 'i-carbon-connection-signal', to: '/channels' },
-  { value: 'oauth', label: 'OAuth 登录', group: 'access', icon: 'i-carbon-globe', to: '/oauth' },
-  { value: 'models', label: '模型总览', group: 'access', icon: 'i-carbon-chip', to: '/models' },
-  { value: 'rtk', label: 'RTK 优化', group: 'access', icon: 'i-carbon-terminal', to: '/rtk' },
-  { value: 'usage', label: '统计和使用情况', group: 'analytics', icon: 'i-carbon-gauge', to: '/usage' },
-  { value: 'charts', label: '图表分析', group: 'analytics', icon: 'i-carbon-chart-line', to: '/charts' },
-  { value: 'analytics', label: '请求明细', group: 'analytics', icon: 'i-carbon-data-table', to: '/analytics' },
-  { value: 'cache', label: '缓存命中率', group: 'analytics', icon: 'i-carbon-flash', to: '/cache' },
-  { value: 'monitor', label: '账号监控', group: 'monitor', icon: 'i-carbon-activity', to: '/monitor' },
-  { value: 'help', label: '接入帮助', group: 'help', icon: 'i-carbon-help', to: '/help' },
-  { value: 'ab', label: 'A/B 实验台', group: 'help', icon: 'i-carbon-chemistry', to: '/ab' },
-]
-
-const items = computed<SidebarNavItem[]>(() => {
-  return navEntries.map(entry => ({
-    value: entry.value,
-    label: entry.label,
-    group: entry.group,
-    icon: entry.icon,
-  }))
-})
+const items = computed<SidebarNavItem[]>(() => NAV_AS_SIDEBAR_ITEMS)
 
 const active = computed(() => {
   const currentPath = route.path.replace(/^\//, '') || 'dashboard'
-  const found = navEntries.find(e => e.value === currentPath)
+  const found = navEntries.find(e => e.id === currentPath)
   // 红队 D32：没有匹配项时**不高亮任何一条**。原来的 `: 'dashboard'` 兜底会让
   // 未登记的路由（或将来新增但忘了加导航的页面）都显示成「运行概览已选中」，
   // 用户会以为自己在这个页面上，是典型的假状态。
-  return found ? found.value : ''
+  return found ? found.id : ''
 })
 
 const workspace = {
@@ -64,7 +44,7 @@ const workspace = {
 }
 
 function onSelect(item: SidebarNavItem) {
-  const target = navEntries.find(entry => entry.value === item.value)
+  const target = navEntries.find(entry => entry.id === String(item.value))
   if (!target) return
   void router.push(target.to)
   emit('navigate')
@@ -137,6 +117,16 @@ function openDocs() {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+/*
+ * 分组标题（总览 / 接入管理 / …，第 34 轮才真正渲染出来）。
+ * tuffex 默认色是 rgb(111,118,153)，在白底上只有 **4.44:1**，差 0.06 不满足 4.5:1；
+ * 换成 --tx-text-color-secondary(#535b85) = **6.56:1**。别改回默认色——
+ * 那个 4.44 是扫描器 `qa-contrast` 会红的值。
+ */
+.console-nav :deep(.tx-bui-sidebar-nav__group-label) {
+  color: var(--tx-text-color-secondary, #535b85);
 }
 
 .console-nav :deep(.tx-bui-sidebar-nav__body) {
