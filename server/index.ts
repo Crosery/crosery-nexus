@@ -453,6 +453,31 @@ app.get('/api/keys/:id/reveal', (req, res) => {
   res.json({ key })
 })
 
+/**
+ * 总并发的显式解析：**不再静默改写用户输入**（R6-B 的服务端一半）。
+ *
+ * 旧行为有两个方向相反的静默改写：
+ * - POST：`Number(v || 4)` —— 空串/缺字段被悄悄变成 **4**（用户从没输入过这个数字）；
+ * - PATCH：`Number(v ?? row.total_concurrency)` —— 空串被 `Number('')` 变成 **0 = 不限速**（更危险）。
+ *
+ * 现在：空串一律 400；POST 缺字段也 400（不再有隐式默认值）；PATCH 缺字段才表示「保持原值」。
+ * 文案与 `server/policy.ts:10` 的规则同源。
+ */
+const TOTAL_CONCURRENCY_RULE = '总并发必须是 0 到 500 的整数，0 表示不限速'
+
+function parseTotalConcurrency(raw: unknown, fallback?: number): number {
+  if (raw === undefined || raw === null) {
+    if (fallback !== undefined) return fallback
+    throw new Error(`请填写总并发数：${TOTAL_CONCURRENCY_RULE}`)
+  }
+  if (typeof raw === 'string' && raw.trim() === '') {
+    throw new Error(`总并发数不能为空：${TOTAL_CONCURRENCY_RULE}`)
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0 || value > 500) throw new Error(TOTAL_CONCURRENCY_RULE)
+  return value
+}
+
 app.post('/api/keys', async (req, res) => {
   try {
   const name = String(req.body?.name || '').trim()
@@ -461,7 +486,7 @@ app.post('/api/keys', async (req, res) => {
   const value = buildNamedAPIKey(slug, crypto.randomBytes(16).toString('hex'))
   // 新 Key 必须明确选渠道，不能因总开关开启而自动获得 Mox 等全部上游。
   const groups = Array.isArray(req.body?.groups) ? req.body.groups : []
-  const totalConcurrency = req.body?.totalConcurrency === 0 ? 0 : Number(req.body?.totalConcurrency || 4)
+  const totalConcurrency = parseTotalConcurrency(req.body?.totalConcurrency)
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : {}
   validatePolicy({ enabled: true, groups, totalConcurrency, groupConcurrency })
   const cpaKeys = await getCPAKeys()
@@ -484,7 +509,7 @@ app.patch('/api/keys/:id', async (req, res) => {
   const note = String(req.body?.note ?? row.note)
   const enabled = req.body?.enabled === undefined ? Boolean(row.enabled) : Boolean(req.body.enabled)
   const groups = Array.isArray(req.body?.groups) ? req.body.groups : parseJson(String(row.groups_json), [] as string[])
-  const totalConcurrency = Number(req.body?.totalConcurrency ?? row.total_concurrency)
+  const totalConcurrency = parseTotalConcurrency(req.body?.totalConcurrency, Number(row.total_concurrency))
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : parseJson(String(row.group_concurrency_json), {})
   validatePolicy({ enabled, groups, totalConcurrency, groupConcurrency })
   const value = String(row.key_value)

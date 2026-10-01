@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxInput } from '@talex-touch/tuffex/input'
 import { TxAlert } from '@talex-touch/tuffex/alert'
+import { TxFilterChips } from '@talex-touch/tuffex/filter-chips'
 import { toast } from '@talex-touch/tuffex/utils'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
-import type { OAuthStartResult } from '../types'
-
-defineProps<{
-  onNavigateChannels?: () => void
-}>()
+import { useResource } from '../lib/resource'
+import { useQueryState } from '../lib/listState'
+import { fmtInt } from '../lib/format'
+import type { ChannelsData, OAuthStartResult } from '../types'
 
 const emit = defineEmits<{
   (e: 'navigate-channels'): void
@@ -20,6 +24,53 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+
+/**
+ * D15/D17：迁移到共享原语。
+ * - `useResource` 读上游账号池（`/api/channels`）：加载中 / 失败可重试 / 有旧数据时用非阻断横幅；
+ * - `useQueryState` 把提供商与状态筛选写进 URL（可分享、可后退）；
+ * - 空态给出下一步动作，而不是留一句「暂无数据」。
+ */
+const pool = useResource<ChannelsData>(() => api.channels())
+const accounts = computed(() => pool.data.value?.credentials ?? [])
+
+const scope = useQueryState({ provider: 'all', status: 'all' })
+
+const providerOptions = computed(() => [
+  { value: 'all', label: `全部提供商 (${PROVIDERS.length})` },
+  ...PROVIDERS.map((item) => ({ value: item.id, label: item.label })),
+])
+
+const STATUS_FILTERS = [
+  { value: 'all', label: '全部状态' },
+  { value: 'idle', label: '未开始' },
+  { value: 'waiting', label: '等待授权' },
+  { value: 'success', label: '已授权' },
+  { value: 'error', label: '需要处理' },
+]
+
+const providerGrid = ref<HTMLElement | null>(null)
+
+const visibleProviders = computed(() => {
+  const provider = scope.state.provider
+  const status = scope.state.status
+  return PROVIDERS.filter((item) => {
+    if (provider !== 'all' && item.id !== provider) return false
+    if (status !== 'all' && getSession(item.id).status !== status) return false
+    return true
+  })
+})
+
+const hasFilter = computed(() => scope.state.provider !== 'all' || scope.state.status !== 'all')
+
+function clearFilters() {
+  scope.patch({ provider: 'all', status: 'all' })
+  scope.flush()
+}
+
+function scrollToProviders() {
+  providerGrid.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 type ProviderItem = {
   id: string
@@ -269,32 +320,116 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
-    <!-- 头部横幅 -->
-    <header class="page-head">
-      <div class="page-head__text">
-        <div class="eyebrow-tag">AUTHENTICATION</div>
-        <h1>OAuth 授权登录</h1>
-        <p>通过官方 OAuth 授权或设备码机制将上游供应商账号连接至网关，安全接管并上线模型矩阵。</p>
-      </div>
-      <div class="page-head__actions">
+    <PageHeader
+      title="OAuth 授权登录"
+      description="通过官方 OAuth 授权或设备码，把上游供应商账号接入网关并上线模型；授权完成后账号会出现在上游账号池里。"
+      :crumbs="[{ label: '接入', to: '/channels' }, { label: 'OAuth 授权登录' }]"
+    >
+      <template #actions>
         <TxButton variant="secondary" icon="i-carbon-network-4" @click="handleGoChannels">
           查看渠道与上游账号池
         </TxButton>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
-    <div class="oauth-section-title">
-      <div>
-        <h2 class="section-title">AI 提供商登录池</h2>
-        <span class="muted text-12">支持浏览器授权、回调回填与设备码确认；每个账号均可独立配置出口代理。</span>
+    <!-- 上游账号池：加载中 / 失败 / 空态 / 列表 -->
+    <section class="pool-section" aria-labelledby="pool-title">
+      <div class="oauth-section-title">
+        <div>
+          <h2 id="pool-title" class="section-title">上游账号池</h2>
+          <span class="muted text-12">已完成授权的上游账号会出现在这里；OAuth 授权结果与渠道页共用同一份账号数据。</span>
+        </div>
+        <div class="pool-actions">
+          <TxTag size="sm" variant="soft" color="var(--tx-color-primary)" :label="`共 ${fmtInt(accounts.length)} 个账号`" />
+          <TxButton variant="ghost" size="sm" icon="i-carbon-renew" @click="pool.reload()">刷新</TxButton>
+        </div>
       </div>
-      <TxTag size="sm" variant="soft" color="var(--tx-color-primary)" :label="`支持 ${PROVIDERS.length} 种认证方式`" />
-    </div>
 
-    <!-- 登录卡片网格 -->
-    <div class="oauth-grid">
+      <!--
+        顺序很重要：`useResource.initial` 的语义是「**从未成功加载过**」，只在成功时置 false；
+        首次加载失败时它仍然是 true。若把 LoadingBlock 放在错误分支之前，读取失败会永远停在骨架上、
+        错误态永远不可达（本轮实测踩到）。所以「失败且没有旧数据」必须排在骨架之前。
+      -->
+      <ErrorPanel
+        v-if="pool.error.value && accounts.length === 0"
+        :error="pool.error.value"
+        title="上游账号池读取失败"
+        :retry="pool.reload"
+      />
+      <LoadingBlock v-else-if="pool.initial.value" :lines="2" label="正在读取上游账号池" />
+      <template v-else>
+        <ErrorPanel
+          v-if="pool.error.value"
+          inline
+          :error="pool.error.value"
+          stale-hint="下方为最近一次成功读取的账号"
+          :retry="pool.reload"
+        />
+        <EmptyState
+          v-if="accounts.length === 0"
+          title="还没有上游账号"
+          description="选下面的提供商开始一次授权；授权成功后账号会自动进入上游账号池，并在渠道页可单独启停。"
+          icon="i-carbon-user-multiple"
+          action-label="去选择提供商"
+          variant="empty"
+          @action="scrollToProviders"
+        />
+        <ul v-else class="pool-list">
+          <li v-for="account in accounts" :key="account.name" class="pool-item">
+            <span :class="account.disabled ? 'i-carbon-pause-outline' : 'i-carbon-checkmark-outline'" class="pool-icon" />
+            <div class="pool-text">
+              <strong>{{ account.label || account.name }}</strong>
+              <small class="muted text-12">{{ account.type }} · {{ fmtInt(account.modelCount) }} 个模型 · {{ account.status || '就绪' }}</small>
+            </div>
+            <TxTag
+              size="sm"
+              variant="soft"
+              :color="account.disabled ? 'var(--tx-color-warning)' : 'var(--tx-color-success)'"
+              :label="account.disabled ? '已停用' : '已启用'"
+            />
+          </li>
+        </ul>
+      </template>
+    </section>
+
+    <section ref="providerGrid" class="providers-section" aria-labelledby="providers-title">
+      <div class="oauth-section-title">
+        <div>
+          <h2 id="providers-title" class="section-title">授权提供商</h2>
+          <span class="muted text-12">支持浏览器授权、回调回填与设备码确认；筛选条件写在地址栏里，可直接分享。</span>
+        </div>
+        <TxTag size="sm" variant="soft" color="var(--tx-color-primary)" :label="`支持 ${PROVIDERS.length} 种认证方式`" />
+      </div>
+
+      <div class="provider-filters">
+        <TxFilterChips
+          :model-value="scope.state.provider"
+          :items="providerOptions"
+          aria-label="按提供商筛选"
+          @update:model-value="(value) => { scope.patch({ provider: String(value) }); scope.flush() }"
+        />
+        <TxFilterChips
+          :model-value="scope.state.status"
+          :items="STATUS_FILTERS"
+          aria-label="按授权状态筛选"
+          @update:model-value="(value) => { scope.patch({ status: String(value) }); scope.flush() }"
+        />
+        <TxButton v-if="hasFilter" variant="ghost" size="sm" icon="i-carbon-close" @click="clearFilters">清除筛选</TxButton>
+      </div>
+
+      <EmptyState
+        v-if="visibleProviders.length === 0"
+        title="没有符合筛选的提供商"
+        description="当前筛选条件下没有提供商；清除筛选即可看到全部认证方式。"
+        variant="search-empty"
+        action-label="清除筛选"
+        @action="clearFilters"
+      />
+
+      <!-- 登录卡片网格 -->
+      <div v-else class="oauth-grid">
       <TxCard
-        v-for="item in PROVIDERS"
+        v-for="item in visibleProviders"
         :key="item.id"
         class="oauth-card"
         :class="{
@@ -417,11 +552,74 @@ onUnmounted(() => {
           </div>
         </div>
       </TxCard>
-    </div>
+      </div>
+    </section>
+
+    <!-- 页面级失败提示：授权失败在卡片内已有出口，这里只兜住「手动提交回调」这条手动路径的提示 -->
+    <p class="muted text-12 oauth-footnote">
+      授权未完成时，卡片里始终有两条出路：点「重新发起」重来一次，或把浏览器地址栏里的完整回调链接粘贴到底部输入框后提交。
+    </p>
   </div>
 </template>
 
 <style scoped>
+.pool-section,
+.providers-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pool-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pool-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--tx-border-color);
+  border-radius: 10px;
+  background: var(--tx-fill-color-light);
+}
+
+.pool-icon {
+  font-size: 18px;
+  color: var(--tx-color-success);
+}
+
+.pool-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.provider-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.oauth-footnote {
+  margin: 4px 0 0;
+}
+
 .polling-hint {
   margin: 0 0 8px;
 }
