@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -1021,5 +1021,362 @@ test('红队 ⑥ 宽并发下 rtk CLI 不再互相干扰：6 个 agent × 2 次�
   for (const agent of agents) {
     const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
     assert.equal(status.localAgents.find(item => item.id === agent)?.on, true, `${agent} 应已挂载`)
+  }
+})
+
+
+/* ------------------------------------------------------------------ */
+/* 跨进程写入锁（task-30）                                             */
+/* ------------------------------------------------------------------ */
+
+const lockPathFor = (backupDir: string) => path.join(path.dirname(backupDir), 'rtk-write.lock')
+
+test('锁：基本获取/释放，内容可诊断，释放后无残留', async () => {
+  const home = tempHome('lock-basic')
+  const backupDir = path.join(workspace, 'lock-basic-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'unit-test', env: { ...process.env, RTK_BACKUP_DIR: backupDir } })
+  const lockPath = service.rtkLockPath(home, { ...process.env, RTK_BACKUP_DIR: backupDir } as NodeJS.ProcessEnv)
+  assert.equal(lockPath, lockPathFor(backupDir))
+  assert.ok(fs.existsSync(lockPath))
+  const payload = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
+  assert.equal(payload.pid, process.pid)
+  assert.equal(payload.purpose, 'unit-test')
+  assert.ok(typeof payload.at === 'string')
+  assert.ok(lock.info.waitedMs >= 0)
+  assert.equal(lock.info.stolen, false)
+  lock.release()
+  assert.equal(fs.existsSync(lockPath), false, '释放后不能留锁文件')
+})
+
+test('锁：持锁进程已死 → 接管并如实上报 stolenFromPid', async () => {
+  const home = tempHome('lock-dead-holder')
+  const backupDir = path.join(workspace, 'lock-dead-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  const env = { ...process.env, RTK_BACKUP_DIR: backupDir }
+  const { execFileSync } = await import('node:child_process')
+  // 拿一个「确定已经退出」的 pid
+  const deadPid = Number(execFileSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).trim())
+  const lockPath = service.rtkLockPath(home, env as NodeJS.ProcessEnv)
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+  fs.writeFileSync(lockPath, JSON.stringify({ token: 'dead-token', pid: deadPid, at: new Date().toISOString(), purpose: 'crash-sim', home }))
+  assert.equal(service.inspectRtkLock(lockPath).stale, true)
+
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'takeover', env })
+  assert.equal(lock.info.stolen, true, '必须接管陈旧锁')
+  assert.equal(lock.info.stolenFromPid, deadPid)
+  lock.release()
+  assert.equal(fs.existsSync(lockPath), false)
+})
+
+test('锁：持锁进程还活着但超时 → 也算陈旧并可接管', async () => {
+  const home = tempHome('lock-timeout-holder')
+  const backupDir = path.join(workspace, 'lock-timeout-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  const env = { ...process.env, RTK_BACKUP_DIR: backupDir }
+  const lockPath = service.rtkLockPath(home, env as NodeJS.ProcessEnv)
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+  fs.writeFileSync(lockPath, JSON.stringify({ token: 'hung-token', pid: process.pid, at: new Date().toISOString(), purpose: 'hung', home }))
+  const old = new Date(Date.now() - 10 * 60_000)
+  fs.utimesSync(lockPath, old, old)
+  const state = service.inspectRtkLock(lockPath, Date.now(), 1000)
+  assert.equal(state.stale, true)
+  assert.equal(state.reason, 'holder_timeout')
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'takeover-timeout', env, staleMs: 1000 })
+  assert.equal(lock.info.stolen, true)
+  assert.ok((lock.info.stolenFromAgeMs ?? 0) > 1000)
+  lock.release()
+})
+
+test('锁：等待超时 → 503 rtk_lock_timeout，且不删别人的锁', async () => {
+  const home = tempHome('lock-wait-timeout')
+  const backupDir = path.join(workspace, 'lock-wait-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  const env = { ...process.env, RTK_BACKUP_DIR: backupDir }
+  const lockPath = service.rtkLockPath(home, env as NodeJS.ProcessEnv)
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+  const held = JSON.stringify({ token: 'other-process', pid: process.pid, at: new Date().toISOString(), purpose: 'held', home })
+  fs.writeFileSync(lockPath, held)
+  await expectPlaneError(
+    () => service.acquireRtkFileLock({ home, purpose: 'should-timeout', env, timeoutMs: 250, staleMs: 60_000 }),
+    503, 'rtk_lock_timeout',
+  )
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), held, '超时不得删除别人持有的锁')
+  fs.rmSync(lockPath)
+})
+
+test('锁：释放时锁已被接管 → 不删别人的锁并上报 lost', async () => {
+  const home = tempHome('lock-lost')
+  const backupDir = path.join(workspace, 'lock-lost-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  const env = { ...process.env, RTK_BACKUP_DIR: backupDir }
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'victim', env })
+  const lockPath = service.rtkLockPath(home, env as NodeJS.ProcessEnv)
+  const thief = JSON.stringify({ token: 'thief-token', pid: process.pid, at: new Date().toISOString(), purpose: 'thief', home })
+  fs.writeFileSync(lockPath, thief)
+  lock.release()
+  assert.equal(lock.lost, true)
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), thief, '失去锁的一方不能删接管者的锁')
+  fs.rmSync(lockPath)
+})
+
+test('锁：进程被杀留下的残留锁会被下一次写入自动清理，并在响应里如实上报', async () => {
+  const home = tempHome('lock-residual')
+  const backupDir = path.join(workspace, 'lock-residual-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  process.env.RTK_BACKUP_DIR = backupDir
+  try {
+    const { execFileSync } = await import('node:child_process')
+    const deadPid = Number(execFileSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).trim())
+    const lockPath = service.rtkLockPath(home)
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+    fs.writeFileSync(lockPath, JSON.stringify({ token: 'killed', pid: deadPid, at: new Date().toISOString(), purpose: 'killed-mid-write', home }))
+
+    const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+    assert.equal(result.ok, true)
+    assert.equal(result.lockStolen, true, '接管残留锁必须如实上报')
+    assert.equal(typeof result.lockWaitMs, 'number')
+    assert.equal(fs.existsSync(lockPath), false, '写入结束后不能留锁文件')
+  } finally {
+    process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
+  }
+})
+
+test('锁：异常路径（409）也必须释放，不留残留锁', async () => {
+  const home = tempHome('lock-409')
+  const backupDir = path.join(workspace, 'lock-409-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  process.env.RTK_BACKUP_DIR = backupDir
+  try {
+    const cli = writeFakeCli('fake-rtk-lock-garbage.sh', 'printf \'NOT JSON\' > "$HOME/.codex/hooks.json"')
+    const filePath = path.join(home, '.codex/hooks.json')
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+    await expectPlaneError(
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: cli, ...offlineTargets }),
+      409, 'hook_file_unparsable',
+    )
+    assert.equal(fs.existsSync(service.rtkLockPath(home)), false, '失败路径也要在 finally 释放锁')
+  } finally {
+    process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
+  }
+})
+
+test('锁：同进程并发不退化（6 个 agent 并发仍全部完成且带 lockWaitMs）', async () => {
+  const home = tempHome('lock-same-process')
+  const agents = ['codex', 'claude', 'cursor', 'trae', 'droid', 'copilot']
+  const started = Date.now()
+  const results = await Promise.all(agents.map(agent =>
+    service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+  ))
+  const elapsed = Date.now() - started
+  assert.equal(results.length, 6)
+  for (const result of results) {
+    assert.equal(result.ok, true)
+    assert.equal(typeof result.lockWaitMs, 'number')
+  }
+  assert.ok(elapsed < 20_000, `同进程 6 路并发不应退化：${elapsed}ms`)
+})
+
+test('锁：RTK_LOCK_DISABLED=1 时不创建锁文件（仅供「去掉锁」的对照实验）', async () => {
+  const home = tempHome('lock-disabled')
+  const backupDir = path.join(workspace, 'lock-disabled-backups')
+  fs.mkdirSync(backupDir, { recursive: true })
+  const env = { ...process.env, RTK_BACKUP_DIR: backupDir, RTK_LOCK_DISABLED: '1' }
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'disabled', env })
+  assert.equal(fs.existsSync(service.rtkLockPath(home, env as NodeJS.ProcessEnv)), false)
+  lock.release()
+  assert.equal(lock.lost, false)
+})
+
+/* ---- 双实例端到端：同一个 RTK_HOME，跨进程并发 ON/OFF ---- */
+
+const freePort = async (): Promise<number> => {
+  const { createServer } = await import('node:net')
+  const server = createServer()
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const port = (server.address() as { port: number }).port
+  await new Promise<void>(resolve => server.close(() => resolve()))
+  return port
+}
+
+type StageInstance = { port: number; stop: () => void }
+
+async function startInstance(options: { dir: string; home: string; backups: string; lockDisabled?: boolean }): Promise<StageInstance> {
+  const port = await freePort()
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1', PORT: String(port), COOKIE_SECURE: 'false',
+      CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: 'lock-test-password', SESSION_SECRET: 'lock-test-session-secret',
+      DATA_DIR: path.join(options.dir, 'data'), RTK_HOME: options.home, RTK_BACKUP_DIR: options.backups,
+      GATEWAY_ENGINE: 'cpa', MAGPIE_CHANNELS_FILE: path.join(options.dir, 'data/magpie-channels.json'),
+      ...(options.lockDisabled ? { RTK_LOCK_DISABLED: '1' } : {}),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let log = ''
+  child.stdout.on('data', chunk => { log += chunk })
+  child.stderr.on('data', chunk => { log += chunk })
+  for (let i = 0; i < 120; i += 1) {
+    if (child.exitCode !== null) throw new Error(`实例提前退出：${log.slice(-400)}`)
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/session`)
+      if (response.status === 200) break
+    } catch {
+      // 还没起来
+    }
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  const login = await fetch(`http://127.0.0.1:${port}/api/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'lock-test-password' }),
+  })
+  const cookie = String(login.headers.get('set-cookie') || '').split(';')[0]
+  assert.ok(cookie.startsWith('crosery_console_session='), `登录失败：${login.status}`)
+  return {
+    port,
+    stop: () => { child.kill('SIGTERM') },
+    ...( { cookie } as object ),
+  } as StageInstance & { cookie: string }
+}
+
+/**
+ * 双实例交叉并发：同一 RTK_HOME、不同 PORT/DATA_DIR。
+ * 返回实测结果，供「有锁 / 无锁」两次运行对比。
+ */
+async function runCrossProcessToggle(options: { lockDisabled?: boolean; rounds?: number }): Promise<{
+  statuses: number[]
+  finalOn: boolean
+  lastIntent: boolean
+  backupIdsAlive: boolean
+  invalidJsonSamples: number
+  residualLock: boolean
+  waitMs: number[]
+  samples: number
+}> {
+  const dir = path.join(workspace, `xp-${options.lockDisabled ? 'nolock' : 'lock'}`)
+  const home = path.join(dir, 'home')
+  const backups = path.join(dir, 'backups')
+  for (const sub of ['data', 'home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const a = await startInstance({ dir: path.join(dir, 'a'), home, backups, lockDisabled: options.lockDisabled }) as StageInstance & { cookie: string }
+  const b = await startInstance({ dir: path.join(dir, 'b'), home, backups, lockDisabled: options.lockDisabled }) as StageInstance & { cookie: string }
+  const hookFile = path.join(home, '.codex/hooks.json')
+  let invalidJsonSamples = 0
+  let samples = 0
+  const sampler = setInterval(() => {
+    const content = fs.existsSync(hookFile) ? fs.readFileSync(hookFile, 'utf8') : ''
+    if (!content.trim()) return
+    samples += 1
+    try {
+      JSON.parse(content)
+    } catch {
+      invalidJsonSamples += 1
+    }
+  }, 4)
+  const toggle = async (instance: StageInstance & { cookie: string }, on: boolean, index: number) => {
+    const response = await fetch(`http://127.0.0.1:${instance.port}/api/rtk/toggle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: instance.cookie },
+      body: JSON.stringify({ agent: 'codex', on, plane: 'local', confirm: true }),
+    })
+    const body = await response.json().catch(() => ({}))
+    return { index, on, status: response.status, body, completedAt: Date.now() }
+  }
+  const rounds = options.rounds ?? 8
+  const requests: Array<Promise<Awaited<ReturnType<typeof toggle>>>> = []
+  for (let i = 0; i < rounds; i += 1) {
+    requests.push(toggle(i % 2 === 0 ? a : b, i % 4 < 2, i))
+    requests.push(toggle(i % 2 === 0 ? b : a, i % 4 >= 2, i + 100))
+  }
+  let results: Awaited<ReturnType<typeof toggle>>[] = []
+  try {
+    results = await Promise.all(requests)
+  } finally {
+    clearInterval(sampler)
+    a.stop()
+    b.stop()
+    await new Promise(resolve => setTimeout(resolve, 400))
+  }
+  const ok = results.filter(result => result.status === 200).sort((left, right) => left.completedAt - right.completedAt)
+  const last = ok[ok.length - 1]
+  const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+  const finalOn = Boolean(status.localAgents.find(agent => agent.id === 'codex')?.on)
+  const backupIdsAlive = ok.every(result => {
+    const id = result.body?.backupId as string | undefined
+    return Boolean(id && fs.existsSync(path.join(backups, id, 'manifest.json')))
+  })
+  return {
+    statuses: results.map(result => result.status),
+    finalOn,
+    lastIntent: Boolean(last?.on),
+    backupIdsAlive,
+    invalidJsonSamples,
+    residualLock: fs.existsSync(path.join(path.dirname(backups), 'rtk-write.lock')),
+    waitMs: ok.map(result => Number(result.body?.lockWaitMs ?? -1)),
+    samples,
+  }
+}
+
+test('双实例并发（有跨进程锁）：最终状态=最后一次成功写入的意图，backupId 都还在，无残留锁', { timeout: 90_000 }, async () => {
+  const result = await runCrossProcessToggle({})
+  assert.deepEqual(result.statuses.filter(status => status !== 200), [], '不应有失败请求')
+  assert.equal(result.finalOn, result.lastIntent, '最终状态必须等于最后一次成功写入的意图')
+  assert.equal(result.backupIdsAlive, true, '成功响应返回的 backupId 目录必须仍然存在（不能被另一个进程轮转掉）')
+  assert.equal(result.invalidJsonSamples, 0, '钩子文件在并发期间不允许出现非法 JSON（写出半截）')
+  assert.equal(result.residualLock, false, '结束后不允许有残留锁文件')
+  assert.equal(result.waitMs.every(ms => ms >= 0), true, '每个成功响应都要带 lockWaitMs')
+})
+
+
+const toggleViaInstance = async (instance: StageInstance & { cookie: string }, agent: string, on: boolean) => {
+  const response = await fetch(`http://127.0.0.1:${instance.port}/api/rtk/toggle`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: instance.cookie },
+    body: JSON.stringify({ agent, on, plane: 'local', confirm: true }),
+  })
+  return { status: response.status, body: await response.json().catch(() => ({})) }
+}
+
+const hookHasMarker = (home: string, rel: string, marker: string): boolean => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(home, rel), 'utf8')).hooks?.PreToolUse?.some?.((entry: unknown) =>
+      JSON.stringify(entry).includes(marker)) ?? JSON.stringify(JSON.parse(fs.readFileSync(path.join(home, rel), 'utf8'))).includes(marker)
+  } catch {
+    return false
+  }
+}
+
+test('双实例跨进程「连带还原」竞态：A 的 cursor ON 不得被 B 的 claude OFF 撤回', { timeout: 120_000 }, async () => {
+  // 无锁对照（/tmp 脚本，见 docs/qa/blue/rtk-cross-process-lock.md）里 6 轮复现出 1 轮：
+  // A 返回 200 但 cursor 钩子被 B 当成「rtk 的连带改动」撤回。有锁时同一场景 6/6 正常。
+  for (let round = 0; round < 3; round += 1) {
+    const dir = path.join(workspace, `xp-race-${round}`)
+    const home = path.join(dir, 'home')
+    const backups = path.join(dir, 'backups')
+    for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.claude/settings.json'), `${JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook claude' }] }] },
+    }, null, 2)}\n`)
+
+    const a = await startInstance({ dir: path.join(dir, 'a'), home, backups }) as StageInstance & { cookie: string }
+    const b = await startInstance({ dir: path.join(dir, 'b'), home, backups }) as StageInstance & { cookie: string }
+    let results: Array<{ status: number; body: Record<string, unknown> }>
+    try {
+      results = await Promise.all([toggleViaInstance(a, 'cursor', true), toggleViaInstance(b, 'claude', false)])
+    } finally {
+      a.stop()
+      b.stop()
+      await new Promise(resolve => setTimeout(resolve, 300))
+    }
+    assert.equal(results[0].status, 200, `round ${round}: cursor ON 应成功`)
+    assert.equal(results[1].status, 200, `round ${round}: claude OFF 应成功`)
+    assert.equal(hookHasMarker(home, '.cursor/hooks.json', 'rtk hook cursor'), true,
+      `round ${round}: A 的成功写入不能被另一个进程撤回`)
+    assert.equal(hookHasMarker(home, '.claude/settings.json', 'rtk hook claude'), false,
+      `round ${round}: B 的 claude OFF 必须生效`)
+    assert.equal(fs.existsSync(path.join(path.dirname(backups), 'rtk-write.lock')), false, `round ${round}: 不能留残留锁`)
   }
 })

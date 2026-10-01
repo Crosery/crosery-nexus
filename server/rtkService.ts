@@ -108,6 +108,13 @@ export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
   /** 被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
   preservedBak?: string[]
+  /** 跨进程写入锁：等锁时长（毫秒，0 = 一次拿到；远端平面恒为 0）。 */
+  lockWaitMs: number
+  /** 本次接管了陈旧锁（持锁进程已死或超时）。 */
+  lockStolen?: boolean
+  /** 释放时锁已被别人接管（如实上报）。 */
+  lockLost?: boolean
+  lock?: RtkLockInfo
 }
 export type RTKInstallResult = RTKStatusView & { ok: true; plane: RtkPlaneId; readPlane: RtkPlaneId }
 export type RTKRollbackResult = RTKStatusView & { ok: true; plane: RtkPlaneId; backupId: string; restored: string[] }
@@ -177,7 +184,14 @@ function fileContains(filePath: string, search: string): boolean {
 }
 
 /* ------------------------------------------------------------------ */
-/* 写入锁（同一进程内的并发 toggle）                                   */
+/* 写入锁                                                              */
+/*                                                                     */
+/* 两层锁，**固定顺序：先进程内闸，再跨进程文件锁**，释放顺序相反。    */
+/* 死锁论证：任何路径都按同一顺序获取；文件锁的持有者只做本地写入，    */
+/* 从不等待别的进程的内存锁，因此不可能形成等待环。                    */
+/* 为什么不是「先文件锁」：同进程的两个 toggle 会先抢文件锁，而文件锁  */
+/* 被本进程另一个请求长时间持有（每个请求的临界区包含 rtk CLI 调用）， */
+/* 白白消耗跨进程锁的等待预算；先过进程内闸能让同进程请求自然排队。    */
 /* ------------------------------------------------------------------ */
 
 const fileLocks = new Map<string, Promise<unknown>>()
@@ -187,6 +201,202 @@ export async function withFileLock<T>(key: string, run: () => Promise<T> | T): P
   const next = previous.then(run, run)
   fileLocks.set(key, next.then(() => undefined, () => undefined))
   return next
+}
+
+export type RtkLockInfo = {
+  path: string
+  /** 为了拿到锁等了多久（毫秒）；0 表示一次就拿到 */
+  waitedMs: number
+  /** 本次是否接管了一个陈旧锁 */
+  stolen: boolean
+  /** 释放时发现锁已不属于自己（被接管/被删），此时不会去删别人的锁 */
+  lost: boolean
+  stolenFromPid?: number
+  stolenFromAgeMs?: number
+}
+
+export type RtkFileLock = {
+  info: RtkLockInfo
+  /** 幂等；异常路径也必须在 finally 里调用 */
+  release: () => void
+  readonly lost: boolean
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms).unref?.() })
+
+/** 跨进程写入锁超时（默认 15s，可配 0–300s）。 */
+export function rtkLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.RTK_LOCK_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw >= 0 && raw <= 300_000 ? Math.floor(raw) : 15_000
+}
+
+/** 陈旧锁判定阈值（默认 60s，可配 1s–3600s）：持锁进程还活着但超过这个时间也算陈旧。 */
+export function rtkLockStaleMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.RTK_LOCK_STALE_MS)
+  return Number.isFinite(raw) && raw >= 1_000 && raw <= 3_600_000 ? Math.floor(raw) : 60_000
+}
+
+/** 锁文件与备份目录同源：尊重 RTK_BACKUP_DIR / RTK_HOME 覆盖，跨进程共享的就是这个状态目录。 */
+export function rtkLockPath(home: string = resolveHome(), env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(path.dirname(rtkBackupRoot(home, env)), 'rtk-write.lock')
+}
+
+type LockPayload = { token: string; pid: number; at: string; purpose: string; home: string }
+
+function readLockPayload(lockPath: string): LockPayload | null {
+  const content = readFileIfExists(lockPath)
+  if (content === null) return null
+  try {
+    const parsed = JSON.parse(content) as Partial<LockPayload>
+    return typeof parsed?.token === 'string' && typeof parsed?.pid === 'number'
+      ? parsed as LockPayload
+      : null
+  } catch {
+    return null
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM = 进程存在但不属于我们；ESRCH = 已不存在
+    return (error as { code?: string }).code === 'EPERM'
+  }
+}
+
+/** 陈旧判定：① 解析出的 pid 已不存在；② 锁存在时间超过 staleMs；③ 内容不可解析且超过 5s（写到一半就被杀）。 */
+export function inspectRtkLock(lockPath: string, now = Date.now(), staleMs = rtkLockStaleMs()): {
+  stale: boolean
+  reason?: string
+  pid?: number
+  ageMs?: number
+} {
+  if (!fs.existsSync(lockPath)) return { stale: false }
+  const payload = readLockPayload(lockPath)
+  let ageMs: number | undefined
+  try {
+    ageMs = Math.max(0, now - fs.statSync(lockPath).mtimeMs)
+  } catch {
+    ageMs = undefined
+  }
+  if (!payload) {
+    // 只有 mkdir/open 成功、内容还没写完就被杀，或者文件被外部改坏
+    const age = ageMs ?? 0
+    return age > 5_000
+      ? { stale: true, reason: 'unreadable_lock', ageMs: age }
+      : { stale: false, ageMs: age }
+  }
+  if (!pidAlive(payload.pid)) return { stale: true, reason: 'holder_dead', pid: payload.pid, ageMs: ageMs ?? 0 }
+  if ((ageMs ?? 0) > staleMs) return { stale: true, reason: 'holder_timeout', pid: payload.pid, ageMs: ageMs ?? 0 }
+  return { stale: false, pid: payload.pid, ageMs: ageMs ?? 0 }
+}
+
+/**
+ * 获取跨进程写入锁：`fs.open(lock, 'wx')`（O_EXCL）+ 退避重试 + 陈旧锁接管。
+ * 返回的 `release()` 必须在 finally 里调用；锁已被别人接管时不会去删别人的锁，而是标记 `lost`。
+ */
+export async function acquireRtkFileLock(options: {
+  home?: string
+  purpose?: string
+  env?: NodeJS.ProcessEnv
+  timeoutMs?: number
+  staleMs?: number
+} = {}): Promise<RtkFileLock> {
+  const env = options.env ?? process.env
+  const home = options.home ?? resolveHome()
+  const lockPath = rtkLockPath(home, env)
+  const timeoutMs = options.timeoutMs ?? rtkLockTimeoutMs(env)
+  const staleMs = options.staleMs ?? rtkLockStaleMs(env)
+  const token = randomBytes(8).toString('hex')
+  const purpose = String(options.purpose || 'rtk local write').slice(0, 80)
+  // RTK_LOCK_DISABLED 只用于「去掉锁」的对照实验，正常部署不要设
+  const disabled = ['1', 'true', 'yes', 'on'].includes(String(env.RTK_LOCK_DISABLED || '').toLowerCase())
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 })
+  const startedAt = Date.now()
+  let stolen = false
+  let stolenFromPid: number | undefined
+  let stolenFromAgeMs: number | undefined
+  let lost = false
+
+  const info: RtkLockInfo = { path: lockPath, waitedMs: 0, stolen: false, lost: false }
+  const release = () => {
+    try {
+      const payload = readLockPayload(lockPath)
+      if (payload) {
+        if (payload.token !== token) {
+          // 锁已经被别人接管（例如我们卡住超过 staleMs），绝不删别人的锁
+          lost = true
+          info.lost = true
+          return
+        }
+      } else {
+        // 内容不可解析：只删除明确属于本次获取时间窗的文件，避免误删接管者的锁
+        let mtimeMs = 0
+        try {
+          mtimeMs = fs.statSync(lockPath).mtimeMs
+        } catch {
+          return
+        }
+        if (mtimeMs < startedAt - 1_000) {
+          lost = true
+          info.lost = true
+          return
+        }
+      }
+      fs.rmSync(lockPath)
+    } catch {
+      lost = true
+      info.lost = true
+    }
+  }
+
+  if (disabled) {
+    info.waitedMs = 0
+    return { info, release: () => {}, get lost() { return lost } }
+  }
+
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx', 0o600)
+      try {
+        fs.writeSync(fd, JSON.stringify({ token, pid: process.pid, at: new Date().toISOString(), purpose, home }))
+      } finally {
+        fs.closeSync(fd)
+      }
+      info.waitedMs = Date.now() - startedAt
+      info.stolen = stolen
+      if (stolenFromPid !== undefined) info.stolenFromPid = stolenFromPid
+      if (stolenFromAgeMs !== undefined) info.stolenFromAgeMs = stolenFromAgeMs
+      return { info, release, get lost() { return lost } }
+    } catch (error) {
+      const code = (error as { code?: string }).code
+      if (code !== 'EEXIST') {
+        // 目录不可写等：如实报错，不假装拿到锁
+        const failure = new RtkPlaneError(500, 'local', 'rtk_lock_unavailable', `无法创建写入锁（${code || 'unknown'}）：${lockPath}`)
+        throw failure
+      }
+    }
+
+    const state = inspectRtkLock(lockPath, Date.now(), staleMs)
+    if (state.stale) {
+      try {
+        fs.rmSync(lockPath)
+        stolen = true
+        stolenFromPid = state.pid
+        stolenFromAgeMs = state.ageMs
+        continue
+      } catch {
+        // 别人先接管了：继续重试
+      }
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new RtkPlaneError(503, 'local', 'rtk_lock_timeout',
+        `等待跨进程写入锁超时（${timeoutMs}ms，锁：${lockPath}，持有者 pid=${state.pid ?? '?'}）`)
+    }
+    await sleep(8 + Math.floor(Math.random() * 22))
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -759,6 +969,8 @@ export type LocalHookResult = {
   collateralFiles?: string[]
   /** 操作前就存在、被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
   preservedBak?: string[]
+  /** 跨进程写入锁的可观测信息（等锁时长 / 是否接管陈旧锁 / 释放时是否已失去锁）。 */
+  lock?: RtkLockInfo
 }
 
 type GuardEntry = { rel: string; kind: 'hook' | 'extra' | 'bak'; owner: string }
@@ -1096,120 +1308,130 @@ export async function applyLocalAgentHook(
   // 复现是 12 路并发全部返回 200，但最终只有最后一个 agent 还是挂载状态。
   // 进程内全局闸（按 home 区分）；跨进程并发仍不安全，见交付文档「未验证」。
   return withFileLock(`rtk-local-write:${home}`, async () => {
-    // 目标文件自己的 .bak 也纳管：rtk CLI 会覆写 <file>.bak，用户原件不能被静默吞掉（P1）。
-    const hookBak = spec.hookFile ? `${spec.hookFile}.bak` : null
-    const targets = [spec.hookFile, hookBak, ...(spec.extraFiles || [])].filter((rel): rel is string => Boolean(rel))
-    const guards = guardEntries(spec.id)
-    const allFiles = [...new Set([...targets, ...guards.map(entry => entry.rel)])]
-    // 备份与快照都必须发生在 CLI **之前**：CLI 可能把目标文件写坏，
-    // 之后再读就等于把坏内容当原件（红队第二轮缺陷 3）。
-    const backup = createRtkBackup(home, allFiles)
-    beginRtkBackupUse(backup.id)
-    const snapshot = new Map<string, string | null>()
-    for (const rel of allFiles) snapshot.set(rel, readFileIfExists(path.join(home, rel)))
-    pruneRtkBackups(home, rtkBackupKeep(), { protect: [backup.id] })
+    // 固定顺序：① 进程内闸（上一行）→ ② 跨进程文件锁（下面这行）。见文件顶部死锁论证。
+    const lock = await acquireRtkFileLock({ home, purpose: `toggle ${spec.id} ${on ? 'on' : 'off'}` })
+    const runLocked = async (): Promise<LocalHookResult> => {
+      // 目标文件自己的 .bak 也纳管：rtk CLI 会覆写 <file>.bak，用户原件不能被静默吞掉（P1）。
+      const hookBak = spec.hookFile ? `${spec.hookFile}.bak` : null
+      const targets = [spec.hookFile, hookBak, ...(spec.extraFiles || [])].filter((rel): rel is string => Boolean(rel))
+      const guards = guardEntries(spec.id)
+      const allFiles = [...new Set([...targets, ...guards.map(entry => entry.rel)])]
+      // 备份与快照都必须发生在 CLI **之前**：CLI 可能把目标文件写坏，
+      // 之后再读就等于把坏内容当原件（红队第二轮缺陷 3）。
+      const backup = createRtkBackup(home, allFiles)
+      beginRtkBackupUse(backup.id)
+      const snapshot = new Map<string, string | null>()
+      for (const rel of allFiles) snapshot.set(rel, readFileIfExists(path.join(home, rel)))
+      pruneRtkBackups(home, rtkBackupKeep(), { protect: [backup.id] })
 
-    const restoreTargets = () => {
-      for (const rel of targets) {
-        const target = path.join(home, rel)
-        const before = snapshot.get(rel) ?? null
-        const after = readFileIfExists(target)
-        if (after !== before) restoreToSnapshot(target, before, after)
+      const restoreTargets = () => {
+        for (const rel of targets) {
+          const target = path.join(home, rel)
+          const before = snapshot.get(rel) ?? null
+          const after = readFileIfExists(target)
+          if (after !== before) restoreToSnapshot(target, before, after)
+        }
       }
-    }
-    /** 成功路径也把「用户原本就有的 .bak」还回去（rtk 会覆写它，属于静默数据丢失）。 */
-    const preserveUserBaks = (): string[] => {
-      if (!hookBak) return []
-      const before = snapshot.get(hookBak) ?? null
-      if (before === null) return []
-      const target = path.join(home, hookBak)
-      if (readFileIfExists(target) === before) return []
-      restoreToSnapshot(target, before, readFileIfExists(target))
-      return [hookBak]
-    }
-
-    // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
-    for (const rel of targets) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
-    fs.mkdirSync(path.join(home, spec.dir), { recursive: true })
-
-    const success = (mechanism: 'rtk-cli' | 'hooks-json', detail: string, cli: RtkCliAttempt, fallbackReason?: string): LocalHookResult => {
-      const collateral = reconcileCollateral(home, snapshot, guards)
-      const preservedBak = preserveUserBaks()
-      return {
-        mechanism, detail, cli,
-        ...(fallbackReason ? { fallbackReason } : {}),
-        backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
-        ...collateralFields(collateral),
-        ...(preservedBak.length ? { preservedBak } : {}),
+      /** 成功路径也把「用户原本就有的 .bak」还回去（rtk 会覆写它，属于静默数据丢失）。 */
+      const preserveUserBaks = (): string[] => {
+        if (!hookBak) return []
+        const before = snapshot.get(hookBak) ?? null
+        if (before === null) return []
+        const target = path.join(home, hookBak)
+        if (readFileIfExists(target) === before) return []
+        restoreToSnapshot(target, before, readFileIfExists(target))
+        return [hookBak]
       }
-    }
 
-    try {
-      const args = on ? spec.initFlags! : [...spec.initFlags!, '--uninstall']
-      let cli: RtkCliAttempt
-      if (fs.existsSync(bin)) {
-        const runOnce = () => runRtkCliSerialized(bin, args, home, options.timeoutMs ?? 20_000)
-        cli = await runOnce()
-        // ON / OFF 共用同一套写后校验：目标状态 + 文件仍是合法 JSON（P0-2）
-        let integrity = hookFileIntegrity(spec, home)
-        if (!integrity && cli.ok && !verifyLocalHook(spec, on, home)) {
-          // 「exit 0 但状态没生效」是并发干扰的典型症状：串行重试一次再判定（红队 ⑥）
+      // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
+      for (const rel of targets) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
+      fs.mkdirSync(path.join(home, spec.dir), { recursive: true })
+
+      const success = (mechanism: 'rtk-cli' | 'hooks-json', detail: string, cli: RtkCliAttempt, fallbackReason?: string): LocalHookResult => {
+        const collateral = reconcileCollateral(home, snapshot, guards)
+        const preservedBak = preserveUserBaks()
+        return {
+          mechanism, detail, cli,
+          ...(fallbackReason ? { fallbackReason } : {}),
+          backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
+          ...collateralFields(collateral),
+          ...(preservedBak.length ? { preservedBak } : {}),
+        }
+      }
+
+      try {
+        const args = on ? spec.initFlags! : [...spec.initFlags!, '--uninstall']
+        let cli: RtkCliAttempt
+        if (fs.existsSync(bin)) {
+          const runOnce = () => runRtkCliSerialized(bin, args, home, options.timeoutMs ?? 20_000)
           cli = await runOnce()
-          integrity = hookFileIntegrity(spec, home)
+          // ON / OFF 共用同一套写后校验：目标状态 + 文件仍是合法 JSON（P0-2）
+          let integrity = hookFileIntegrity(spec, home)
+          if (!integrity && cli.ok && !verifyLocalHook(spec, on, home)) {
+            // 「exit 0 但状态没生效」是并发干扰的典型症状：串行重试一次再判定（红队 ⑥）
+            cli = await runOnce()
+            integrity = hookFileIntegrity(spec, home)
+          }
+          if (integrity) {
+            restoreTargets()
+            reconcileCollateral(home, snapshot, guards)
+            throw brokenHookFileError(spec, integrity, backup.dir)
+          }
+          if (cli.ok && verifyLocalHook(spec, on, home)) {
+            return success('rtk-cli', `rtk init -g ${args.join(' ')}`, cli)
+          }
+          cli = cli.ok ? { ...cli, ok: false, stderr: 'rtk 执行成功但目标状态未生效' } : cli
+        } else {
+          cli = { command: `rtk init -g ${args.join(' ')}`, exitCode: null, stderr: `${bin} 不存在`, ok: false }
         }
-        if (integrity) {
-          restoreTargets()
-          reconcileCollateral(home, snapshot, guards)
-          throw brokenHookFileError(spec, integrity, backup.dir)
-        }
-        if (cli.ok && verifyLocalHook(spec, on, home)) {
-          return success('rtk-cli', `rtk init -g ${args.join(' ')}`, cli)
-        }
-        cli = cli.ok ? { ...cli, ok: false, stderr: 'rtk 执行成功但目标状态未生效' } : cli
-      } else {
-        cli = { command: `rtk init -g ${args.join(' ')}`, exitCode: null, stderr: `${bin} 不存在`, ok: false }
-      }
 
-      const jsonSpec = HOOK_JSON[spec.id]
-      if (spec.hookFile && jsonSpec) {
-        const filePath = path.join(home, spec.hookFile)
-        fs.mkdirSync(path.dirname(filePath), { recursive: true })
-        try {
-          applyHookJson(spec, jsonSpec, filePath, on)
-        } catch (error) {
-          restoreTargets()
-          if (error instanceof RtkPlaneError) {
-            error.backup = backup.dir
-            error.message = `${error.message}；原文件已按备份回填，也可用 /api/rtk/rollback 恢复`
+        const jsonSpec = HOOK_JSON[spec.id]
+        if (spec.hookFile && jsonSpec) {
+          const filePath = path.join(home, spec.hookFile)
+          fs.mkdirSync(path.dirname(filePath), { recursive: true })
+          try {
+            applyHookJson(spec, jsonSpec, filePath, on)
+          } catch (error) {
+            restoreTargets()
+            if (error instanceof RtkPlaneError) {
+              error.backup = backup.dir
+              error.message = `${error.message}；原文件已按备份回填，也可用 /api/rtk/rollback 恢复`
+              throw error
+            }
             throw error
           }
-          throw error
-        }
-        const integrity = hookFileIntegrity(spec, home)
-        if (integrity) {
+          const integrity = hookFileIntegrity(spec, home)
+          if (integrity) {
+            restoreTargets()
+            throw brokenHookFileError(spec, integrity, backup.dir)
+          }
+          if (verifyLocalHook(spec, on, home)) {
+            return success('hooks-json', `${spec.hookFile}（已核实 schema）`, cli, cli.stderr)
+          }
           restoreTargets()
-          throw brokenHookFileError(spec, integrity, backup.dir)
+          throw new RtkPlaneError(502, 'local', 'hook_write_unverified',
+            `写入 ${spec.hookFile} 后仍检测不到目标状态（rtk CLI: ${cli.stderr}）；原文件已按备份回填，可用 /api/rtk/rollback 恢复`)
         }
-        if (verifyLocalHook(spec, on, home)) {
-          return success('hooks-json', `${spec.hookFile}（已核实 schema）`, cli, cli.stderr)
-        }
-        restoreTargets()
-        throw new RtkPlaneError(502, 'local', 'hook_write_unverified',
-          `写入 ${spec.hookFile} 后仍检测不到目标状态（rtk CLI: ${cli.stderr}）；原文件已按备份回填，可用 /api/rtk/rollback 恢复`)
-      }
 
-      restoreTargets()
-      const cliFailure = new RtkPlaneError(502, 'local', 'hook_cli_failed',
-        `${spec.name} 的钩子文件形状未经验证，且 rtk CLI 失败：${cli.stderr}；原文件已按备份回填`)
-      cliFailure.backup = backup.dir
-      throw cliFailure
-    } catch (error) {
-      // 失败路径同样要把被连带改动的其他 agent 文件还原（CLI 可能已经动过它们）。
-      reconcileCollateral(home, snapshot, guards)
-      if (error instanceof RtkPlaneError) throw error
-      throw structuredWriteError(error, spec, backup.dir)
+        restoreTargets()
+        const cliFailure = new RtkPlaneError(502, 'local', 'hook_cli_failed',
+          `${spec.name} 的钩子文件形状未经验证，且 rtk CLI 失败：${cli.stderr}；原文件已按备份回填`)
+        cliFailure.backup = backup.dir
+        throw cliFailure
+      } catch (error) {
+        // 失败路径同样要把被连带改动的其他 agent 文件还原（CLI 可能已经动过它们）。
+        reconcileCollateral(home, snapshot, guards)
+        if (error instanceof RtkPlaneError) throw error
+        throw structuredWriteError(error, spec, backup.dir)
+      } finally {
+        endRtkBackupUse(backup.id)
+      }
+    }
+    try {
+      const result = await runLocked()
+      return { ...result, lock: { ...lock.info, lost: lock.lost } }
     } finally {
-      endRtkBackupUse(backup.id)
+      lock.release()
     }
   })
 }
@@ -1268,6 +1490,7 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
   let collateral: RtkCollateralEntry[] | undefined
   let collateralSkipped: Array<{ agent: string; file: string; reason: string }> | undefined
   let preservedBak: string[] | undefined
+  let lockInfo: RtkLockInfo | undefined
 
   if (plane === 'local') {
     const spec = rtkAgentSpec(agent)
@@ -1286,6 +1509,7 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     collateral = result.collateral
     collateralSkipped = result.collateralSkipped
     preservedBak = result.preservedBak
+    lockInfo = result.lock
   } else if (plane === 'kernel') {
     // 内核由 scripts/magpie-console.mjs:91-93 以 HOME=<runtime>/home 启动，它的 agent
     // 配置在沙箱 HOME 里，写内核不会影响用户真实的 ~/.codex / ~/.claude。
@@ -1332,6 +1556,10 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     ...(collateral?.length ? { collateral } : {}),
     ...(collateralSkipped?.length ? { collateralSkipped } : {}),
     ...(preservedBak?.length ? { preservedBak } : {}),
+    lockWaitMs: lockInfo?.waitedMs ?? 0,
+    ...(lockInfo?.stolen ? { lockStolen: true } : {}),
+    ...(lockInfo?.lost ? { lockLost: true } : {}),
+    ...(lockInfo ? { lock: lockInfo } : {}),
   }
 }
 
@@ -1387,9 +1615,24 @@ export async function rollbackRTK(options: RtkRollbackOptions = {}): Promise<RTK
   }
   assertLocalWrite(true, policy)
   assertNotRealHomeInTests(home)
-  const { id, restored } = await withFileLock(path.join(home, '.rtk-rollback'), () => restoreRtkBackup(home, options.backup))
-  const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
-  return { ...toStatusView(read, policy, home), ok: true, plane: 'local', backupId: id, restored }
+  // 与 toggle 用同一把进程内闸（此前 rollback 用的是另一把 key，和 toggle 并不互斥），再拿跨进程锁
+  return withFileLock(`rtk-local-write:${home}`, async () => {
+    const lock = await acquireRtkFileLock({ home, purpose: `rollback ${options.backup || 'latest'}` })
+    try {
+      const { id, restored } = restoreRtkBackup(home, options.backup)
+      const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
+      return {
+        ...toStatusView(read, policy, home),
+        ok: true as const, plane: 'local' as const, backupId: id, restored,
+        lockWaitMs: lock.info.waitedMs,
+        ...(lock.info.stolen ? { lockStolen: true } : {}),
+        ...(lock.info.lost ? { lockLost: true } : {}),
+        lock: { ...lock.info, lost: lock.lost },
+      }
+    } finally {
+      lock.release()
+    }
+  })
 }
 
 /* ------------------------------------------------------------------ */
