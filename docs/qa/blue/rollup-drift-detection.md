@@ -129,3 +129,94 @@ verdict     rebuilt-and-verified          （整轮 0.315s）
 | `server/usageRollupDrift.test.ts` | 6 条：分级判据、整点对齐、脚本 check/rebuild 端到端、幂等、护栏、同步库自检 |
 
 验证：`tsc -b` **0** · `lint` **0**（4 条既存 warning）· `build` **0** · `npm test` **0**（`663 / 662 / 0 / 1 skipped`）。已重启 `com.crosery.console-magpie`：`/api/usage/rollup-health` 认证后 200（24h 67ms、168h 40ms 首次调用含预热）、无 cookie **401**。生产库只读自检 **ratio 1.000 / ok**（24h、168h）。**全程未在生产执行任何重建、未写入任何文件。**
+
+---
+
+# 附：task-67 —— 补上红队实证的两个盲区（多维度 + 抵消型）
+
+红队第十八轮在副本上实证：旧自检（只比 `request_count` 总量）**看不见**两类真实漂移——
+① **抵消型**：一行 `+1`、另一行 `−1`，总量完全相等，逐行已错；② **只改 token/cost**（+234 万 tokens、+$9.99），
+一个维度都不比。金额错恰恰最贵。本节的改动**保留原有总量判据**（`requests` 的 ratio/driftPct/severity 字段语义不变），
+在其之上补维度与行级差异。
+
+## 1. 新载荷
+
+`GET /api/usage/rollup-health?hours=N`（只读、走既有鉴权、读线程池执行）：
+
+```json
+{ "windowHours": 24, "cutoffMs": …, "rollupRequests": 12206, "eventRequests": 12206,
+  "ratio": 1, "driftPct": 0, "severity": "ok", "checkedAt": "…",      // ← 与 task-64 完全一致，客户端无需改
+  "metrics": [ { "id": "requests|totalTokens|cachedTokens|latencySumMs|costUsdSum",
+                 "label": "…", "rollup": …, "events": …, "ratio": …, "driftPct": …, "severity": "ok|warn|alert" } ],
+  "rowDrift": { "driftingRows": 0, "sumAbsRequests": 0, "maxAbsRequests": 0,
+                "sumAbsTokens": 0, "maxAbsTokens": 0, "sumAbsCost": 0, "maxAbsCost": 0, "severity": "ok" } }
+```
+
+- **多维度**：`requests` / `totalTokens` / `cachedTokens` / `latencySumMs` / `costUsdSum` 各自给 ratio + driftPct + severity（同一套 <1% ok / 1–5% warn / >5% alert 判据）。
+- **行级差异**：把 rollup 与「按 rollup 主键重新聚合的 events」两边 `UNION ALL` 后按主键分组，得到
+  `driftingRows`（有多少行不一致）、`sumAbs*`（`SUM(ABS(diff))`）、`maxAbs*`（最大绝对差）。
+  **抵消型漂移在这里必然暴露**（逐行 delta 不全为 0）。整体 `severity` = 所有维度与行级差异里最差的那个。
+- 金额用 `1e-6` 绝对阈值判等：浮点求和顺序不同会带来 1e-12 级噪声（生产实测 `sumAbsCost` = 4.5e-14），**不会**被误判成漂移。
+
+## 2. 两个盲区的必红用例（已进测试，`server/usageRollupDriftV2.test.ts`）
+
+| 用例 | 构造 | 旧判据（只看 requests 总量） | 新判据 |
+| --- | --- | --- | --- |
+| **① 抵消型** | 5 小时前那行 `request_count +1`，3 小时前那行 `−1` | ratio **1**、driftPct **0**、severity **ok**（盲区确认） | `driftingRows ≥ 2`、`sumAbsRequests ≥ 2`、severity 被拉起来（2/4 行 = 50% → **alert**） |
+| **② 金额/token** | 只 `total_tokens +2,345,678`、`cost_usd_sum +9.99` | requests 维度 **ok**（盲区确认） | `totalTokens` **alert**、`costUsdSum` **alert**、`driftingRows ≥ 1`、整体 **alert** |
+| ③ 合法数据 | 忠实聚合（与触发器同语义） | ok | 五维度全 ok、`driftingRows 0`（**不误报**） |
+| ④ 边界 | events 为空、rollup 有 7 条 | — | 该维度 `ratio = null`、`driftPct = 100`、**alert** |
+
+**负向验证**：用例 ② 里显式断言「如果只保留 requests 维度（= 旧行为），这条用例就会通过」——
+证明抓到它的是**新维度**本身，而不是别的巧合；用例 ① 同理（`ratio`/`driftPct` 仍为 1/0，只有 `rowDrift` 报）。
+
+## 3. 成本（诚实数字：比只比 requests 贵，但仍是一次分组扫描）
+
+设计上**只用一条 SQL**：两边 `UNION ALL` 后按主键分组，同一次扫描同时得出「两边总量」与「逐行差异」，
+所以没有把两个昂贵查询叠加起来（分开做的实测是 245ms + 176ms，合并后 210ms）。
+
+| 环境 | 窗口 | 旧自检（仅 requests） | 新自检（五维度 + 行级） |
+| --- | --- | --- | --- |
+| 生产规模合成库（95.7 万 events / 3.4 万 rollup，本机） | 24h | 7.5ms | **31.2ms** |
+| 同上 | 168h | 50ms | **210.2ms** |
+| 本机实例（`/api/usage/rollup-health`，含 HTTP + 读线程） | 24h / 168h | — | 76ms / 81ms |
+| **生产库**（3.7GB / 958k events，SSH 只读） | 24h | 7.5ms（基线） | **62.3ms** |
+| 同上 | 168h | 50ms（基线） | **1,891ms** |
+
+结论与建议：
+- **24h 窗口 62ms** —— 适合作为常规巡检窗口（发版后、每日一次都没问题）；
+- **168h 窗口 ~1.9s**（生产机器上逐行分组 14.7 万行）—— 属于「深挖」用途，**不要高频轮询**；
+  若要高频，请用 24h，或另开一个只比 requests 的快速模式（本次未加，避免把载荷再分叉）。
+- 全部只读、跑在独立读线程上，不阻塞登录/导航/SSE/静态文件。
+
+## 4. 边界（红队点名要求写清）
+
+1. `events = 0 且 rollup > 0` ⇒ 该维度 **`ratio = null`、`driftPct = 100`、severity `alert`**（只有一侧有数据 = 必然漂移）；客户端**必须处理 `null`**（不要直接相除）。
+2. 两侧都为 0 ⇒ `ratio = 1`、`driftPct = 0`、`ok`（没有数据不等于漂移）。
+3. **窗口外的历史漂移看不见** —— 这是有意的取舍（对比全表意味着每次都要扫 95 万行）。要看全表用
+   `node scripts/rollup-rebuild.mjs check --db <path> --all`（`--all` = 不做窗口过滤，把历史漂移一起算出来）。
+   实测成本：生产规模合成库（95.7 万 events）全表自检 **3.67s**（含 node 启动）——所以默认仍是窗口模式。
+   顺带用它复验了两件事：① `--all` 在 Lead 修过的开发库上现在也是 **ok / ratio 1 / driftingRows 0**（此前的 37.5× 已消失）；
+   ② 用 `rollup-rebuild` 重建过的副本在更强的多维检查下仍是 **ok / 0 行漂移**（重建路径经得起新判据）。
+4. 行级比较按 rollup 主键（hour × key_hash × provider × model × model_group × endpoint × client_type × success × status_code × error_category）；**同一主键内部**的抵消（例如同一行 `request_count +1` 且 `total_tokens` 相应减少）会被多维度判据抓到，但**跨主键的字段级抵消**（A 行 tokens 多、B 行 tokens 少且行数也对调）属于行级 diff 的粒度上限，已在载荷里通过 `driftingRows` + `sumAbs*` 显式暴露。
+
+## 5. 生产只读抽验（本轮，未重启/未停任何服务、未写入任何文件）
+
+```
+24h : ms 62.3   rollup requests 12,206 = events 12,206 | tokens 2,946,974,516 = 2,946,974,516
+                | cached 2,863,447,148 = 2,863,447,148 | latency 147,183,779 = 147,183,779 | cost 218.933511 = 218.933511
+      severity: requests ok / totalTokens ok / cachedTokens ok / latencySumMs ok / costUsdSum ok
+      rowDrift: driftingRows 0, sumAbsRequests 0, sumAbsCost 4.5e-14（浮点噪声，正确未判为漂移）→ ok
+168h: ms 1891.2 rollup requests 147,237 = events 147,237 | tokens 28,581,576,500 = 28,581,576,500
+                | cached 27,180,256,459 = … | latency 1,580,754,620 = … | cost 8044.324216 = 8044.324216
+      rowDrift: driftingRows 0, sumAbsCost 6.3e-12 → ok
+```
+
+**生产仍是 1.000 ok**（与 Lead 的只读复验一致）。本机实例（`DATA_DIR` = 仓库 `data/`，Lead 已修复）也是 `ok / ratio 1 / driftingRows 0`；
+无 cookie 访问 `/api/usage/rollup-health` → **401**。
+
+## 6. 验证
+
+- 测试：`server/usageRollupDriftV2.test.ts` 5 条（两个盲区必红用例 + 不误报 + 边界 + 判据负向）+ 原 `server/usageRollupDrift.test.ts` 6 条，**11/11 通过**。
+- `tsc -b` **0** · `lint` **0**（4 条既存 warning）· `build` **0** · `npm test` **0**（`677 / 676 / 0 / 1 skipped`）。
+- 已重启本机服务（`launchctl kickstart -k`，**未用 bootout**）并抽验接口；**生产仅只读 SSH 查询**。

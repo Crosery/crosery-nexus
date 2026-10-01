@@ -78,7 +78,7 @@ import { ReportSnapshotCache } from './reportSnapshotCache.js'
 import { loadMonitorQuotaShare } from './monitorQuotaShare.js'
 import { loadModelCatalog, visibleModelIds, refreshGatewayPricing } from './modelCatalog.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
-import { alignedCutoffMs, rollupHealthOperations, summarizeRollupHealth } from './usageRollup.js'
+import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
 const app = express()
 const credentialUploadGate = new UploadGate()
@@ -1301,20 +1301,22 @@ app.get('/api/rtk/status', async (_req, res) => {
 })
 
 /**
- * rollup 漂移自检（task-64，**只读**）：同窗口内 rollup 的 SUM(request_count) 与 events 的 COUNT(*)
- * 应当相等；窗口对齐到整点以避免首个不完整小时的假漂移。走读线程池，不占主线程。
- * 分级：<1% ok、1–5% warn、>5% alert（判据与重建路径见 docs/qa/blue/rollup-drift-detection.md）。
+ * rollup 漂移自检（task-64 起，task-67 扩到多维度 + 行级差异；**只读**）。
+ *
+ * 返回：
+ * - 顶层 `rollupRequests/eventRequests/ratio/driftPct/severity`（**与 task-64 语义一致**，客户端无需改动）；
+ * - `metrics[]`：requests / totalTokens / cachedTokens / latencySumMs / costUsdSum 各自 ratio + driftPct + severity；
+ * - `rowDrift`：按 rollup 主键逐行比对的 `driftingRows` / `sumAbs*` / `maxAbs*` —— 用来抓**抵消型漂移**
+ *   （一行 +1 一行 -1，总量相等但逐行已错）。
+ * 窗口对齐到整点；`events=0 且 rollup>0` 时该维度 `ratio=null`、`driftPct=100`。只覆盖窗口内，
+ * 窗口外历史漂移是设计取舍（整表检查见 scripts/rollup-rebuild.mjs check --all）。
  */
 app.get('/api/usage/rollup-health', async (req, res) => {
   try {
     const windowHours = boundedInteger(req.query.hours, 24, 1, 24 * 31)
     const cutoffMs = alignedCutoffMs(windowHours)
-    const [rollupRow, eventsRow] = await usageReader.run(rollupHealthOperations(cutoffMs))
-    const health = summarizeRollupHealth(
-      Number((rollupRow as { requests?: number })?.requests ?? 0),
-      Number((eventsRow as { requests?: number })?.requests ?? 0),
-      { windowHours, cutoffMs },
-    )
+    const [row] = await usageReader.run(rollupHealthV2Operations(cutoffMs))
+    const health = summarizeRollupHealthV2((row ?? {}) as never, { windowHours, cutoffMs })
     res.setHeader('Cache-Control', 'no-store')
     res.json(health)
   } catch (error) {

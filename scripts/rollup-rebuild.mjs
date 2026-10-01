@@ -21,6 +21,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { rollupDriftSql } from '../server/usageRollup.ts'
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -50,13 +51,36 @@ const alignedCutoffMs = (hours, now = Date.now()) => Math.floor((now - hours * 3
 
 const severityOf = (driftPct) => (driftPct < 1 ? 'ok' : driftPct <= 5 ? 'warn' : 'alert')
 
-function checkHealth(db, hours = windowHours) {
-  const cutoffMs = alignedCutoffMs(hours)
-  const rollup = db.prepare('SELECT COALESCE(SUM(request_count), 0) requests FROM usage_hourly_rollup WHERE hour_ms >= ?').get(cutoffMs).requests
-  const events = db.prepare('SELECT COUNT(*) requests FROM usage_events WHERE timestamp_ms >= ?').get(cutoffMs).requests
-  const driftPct = events === 0 ? (rollup === 0 ? 0 : 100) : Math.abs(rollup - events) / events * 100
-  return { windowHours: hours, cutoffMs, cutoffIso: new Date(cutoffMs).toISOString(), rollupRequests: rollup, eventRequests: events,
-    ratio: events === 0 ? (rollup === 0 ? 1 : null) : Number((rollup / events).toFixed(4)), driftPct: Number(driftPct.toFixed(3)), severity: severityOf(driftPct) }
+/**
+ * 自检（task-67 起为多维度 + 行级差异版）：一次分组扫描同时给出两边总量与逐行差异。
+ * `all = true` 时不做窗口过滤（整表，含历史漂移）——这是窗口自检看不见的那部分。
+ */
+function checkHealth(db, hours = windowHours, all = false) {
+  const cutoffMs = all ? 0 : alignedCutoffMs(hours)
+  const sql = rollupDriftSql(cutoffMs)
+  const row = db.prepare(sql).get(cutoffMs, cutoffMs)
+  const metrics = [
+    ['requests', '请求数', row.rollupRequests, row.eventRequests],
+    ['totalTokens', '总 token', row.rollupTokens, row.eventTokens],
+    ['cachedTokens', '缓存命中 token', row.rollupCached, row.eventCached],
+    ['latencySumMs', '延迟合计(ms)', row.rollupLatency, row.eventLatency],
+    ['costUsdSum', '金额(USD)', row.rollupCost, row.eventCost],
+  ].map(([id, label, rollup, events]) => {
+    const driftPct = events === 0 ? (rollup === 0 ? 0 : 100) : Math.abs(rollup - events) / events * 100
+    return { id, label, rollup, events, ratio: events === 0 ? (rollup === 0 ? 1 : null) : Number((rollup / events).toFixed(6)),
+      driftPct: Number(driftPct.toFixed(3)), severity: severityOf(driftPct) }
+  })
+  const driftingRows = Number(row.driftingRows) || 0
+  const relative = Number(row.eventRequests) === 0 ? (driftingRows > 0 ? 100 : 0) : (Number(row.sumAbsRequests) / Number(row.eventRequests)) * 100
+  const rowDrift = { driftingRows, sumAbsRequests: Number(row.sumAbsRequests) || 0, maxAbsRequests: Number(row.maxAbsRequests) || 0,
+    sumAbsTokens: Number(row.sumAbsTokens) || 0, maxAbsTokens: Number(row.maxAbsTokens) || 0,
+    sumAbsCost: Number(row.sumAbsCost) || 0, maxAbsCost: Number(row.maxAbsCost) || 0,
+    severity: driftingRows === 0 ? 'ok' : relative > 5 ? 'alert' : 'warn' }
+  const rank = { ok: 0, warn: 1, alert: 2 }
+  const severity = [...metrics.map((m) => m.severity), rowDrift.severity].reduce((worst, current) => (rank[current] > rank[worst] ? current : worst), 'ok')
+  return { windowHours: all ? 0 : hours, cutoffMs, cutoffIso: new Date(cutoffMs).toISOString(),
+    rollupRequests: metrics[0].rollup, eventRequests: metrics[0].events, ratio: metrics[0].ratio,
+    driftPct: metrics[0].driftPct, severity, metrics, rowDrift }
 }
 
 /** rollup 表指纹：重建幂等性的判据。 */
@@ -106,9 +130,10 @@ function rebuild(db) {
   }
 }
 
+const checkAll = has('all')
 const db = new DatabaseSync(dbPath)
 try {
-  const before = checkHealth(db, windowHours)
+  const before = checkHealth(db, windowHours, checkAll)
   console.log(JSON.stringify({ command, db: dbPath, phase: 'before', ...before }))
 
   if (command === 'check') {
