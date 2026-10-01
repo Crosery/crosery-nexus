@@ -188,7 +188,7 @@ async function submit() {
       <ul class="ab-lab__safety">
         <li>本页只做只读浏览；不会替你点删除、重置、剪枝等破坏性动作（走到确认框就停手）。</li>
         <li>投票写入 <code>data/ab-preferences.jsonl</code>：只记流程、选择、一句话理由、时间、浏览器 UA。</li>
-        <li><strong>不会记录密钥 / 密码 / Prompt 内容</strong>；粘贴到理由里的疑似密钥会被服务端替换成「[已隐去疑似密钥]」。</li>
+        <li><strong>不会记录 API Key / 密码 / Prompt 内容</strong>；粘贴到理由里的疑似密钥会被服务端替换成「[已隐去疑似密钥]」。</li>
         <li>汇总查看：<code>node scripts/ab-report.mjs</code>（按流程统计 A/B 票数与理由摘要）。</li>
       </ul>
     </section>
@@ -326,7 +326,7 @@ async function submit() {
         </button>
       </div>
       <label class="ab-lab__field">
-        <span>一句话理由（不会记录密钥 / 密码 / Prompt）</span>
+        <span>一句话理由（不会记录 API Key / 密码 / Prompt）</span>
         <TxTextarea v-model="note" :rows="2" :maxlength="AB_NOTE_MAX" placeholder="例如：B 的搜索进 URL，刷新不丢；A 的删除确认叠在编辑弹窗上，我差点点错。" />
       </label>
       <label class="ab-lab__field">

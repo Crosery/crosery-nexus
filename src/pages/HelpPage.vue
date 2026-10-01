@@ -81,7 +81,7 @@ const curlImage = `curl https://ai.crosery.com/v1/images/generations \\
   }'`
 
 // 以下命令均按 rtk 0.50.0 的 `rtk init --help` 与实测核对过；全程作用于「本机客户端」，
-// 与中转站 https://ai.crosery.com/v1（推理端点）无关。
+// 与远端网关（中转站）https://ai.crosery.com/v1（推理端点）无关。
 const rtkInstall = `curl -fsSL https://www.rtk-ai.app/install.sh | sh`
 
 const rtkHooks = `# 按你实际用的客户端选一条（-g = 全局，作用于本机配置）
@@ -292,7 +292,7 @@ rtk init -g --agent claude --uninstall`
           </div>
           <p class="section-desc">
             RTK 把命令输出压缩后再喂给模型，省的是<strong>你本机客户端</strong>的 token。
-            <code>{{ BASE_URL }}</code> 是推理端点，<strong>不承载配置下发</strong>；把 RTK 装在中转站上不会让你本机省 token。
+            <code>{{ BASE_URL }}</code> 是推理端点，<strong>不承载配置下发</strong>；把 RTK 装在远端网关（中转站）上不会让你本机省 token。
             控制台侧栏的 <a href="/rtk">RTK 页面</a>可以查看/切换本机各客户端的挂载状态。
           </p>
 

@@ -27,7 +27,7 @@ const groups = [
 const navEntries = [
   { value: 'dashboard', label: '运行概览', group: 'overview', icon: 'i-carbon-dashboard', to: '/dashboard' },
   { value: 'keys', label: 'API Key', group: 'access', icon: 'i-carbon-password', to: '/keys' },
-  { value: 'channels', label: '渠道账号', group: 'access', icon: 'i-carbon-connection-signal', to: '/channels' },
+  { value: 'channels', label: '渠道', group: 'access', icon: 'i-carbon-connection-signal', to: '/channels' },
   { value: 'oauth', label: 'OAuth 登录', group: 'access', icon: 'i-carbon-globe', to: '/oauth' },
   { value: 'models', label: '模型总览', group: 'access', icon: 'i-carbon-chip', to: '/models' },
   { value: 'rtk', label: 'RTK 优化', group: 'access', icon: 'i-carbon-terminal', to: '/rtk' },

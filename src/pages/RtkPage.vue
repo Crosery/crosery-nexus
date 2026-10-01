@@ -16,7 +16,7 @@ const busy = ref<string | null>(null)
 const errorText = ref('')
 const notice = ref('')
 
-const PLANE_LABEL: Record<RtkPlaneId, string> = { kernel: '内核（沙箱 HOME）', relay: '中转站', local: '本机' }
+const PLANE_LABEL: Record<RtkPlaneId, string> = { kernel: '内核（沙箱 HOME）', relay: '远端网关', local: '本机' }
 
 function describeError(error: unknown): string {
   if (error instanceof RtkApiError) {
@@ -164,7 +164,7 @@ onMounted(load)
       <div class="page-head__text">
         <p class="eyebrow">RTK</p>
         <h1>RTK Token 压缩</h1>
-        <p>按「内核 → 中转站 → 本机」顺序解析权威平面，逐平面如实上报可用性；开关只写本机 agent 配置，远端默认只读。</p>
+        <p>按「内核 → 远端网关（即中转站）→ 本机」顺序解析权威平面，逐平面如实上报可用性；开关只写本机 agent 配置，远端默认只读。</p>
       </div>
     </section>
 
