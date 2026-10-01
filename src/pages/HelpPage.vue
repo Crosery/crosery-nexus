@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageHeader from '../components/PageHeader.vue'
 import { ref } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxButton } from '@talex-touch/tuffex/button'
@@ -106,13 +107,15 @@ rtk init -g --agent claude --uninstall`
 
 <template>
   <div class="page-stack help-page">
-    <section class="page-head">
-      <div class="page-head__text">
-        <p class="eyebrow">DOCUMENTATION</p>
-        <h1>接入帮助指南</h1>
-        <p>提供多协议、跨语言客户端配置教程，每个代码示例均支持一键复制直接运行。</p>
-      </div>
-    </section>
+    <PageHeader
+      title="接入帮助指南"
+      description="提供多协议、跨语言客户端配置教程，每个代码示例均支持一键复制直接运行。"
+      :crumbs="[{ label: '首页', to: '/dashboard' }, { label: '接入帮助' }]"
+    >
+      <template #meta>
+        <p class="role-note">文档 · DOCUMENTATION</p>
+      </template>
+    </PageHeader>
 
     <div class="help-layout">
       <!-- 侧边导航目录 -->
@@ -350,23 +353,13 @@ rtk init -g --agent claude --uninstall`
   gap: 16px;
   width: 100%;
 }
-.page-head__text h1 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--tx-text-color-primary, #151b45);
-}
-.page-head__text p {
-  margin: 4px 0 0;
-  color: var(--tx-text-color-secondary, #535b85);
-  font-size: 13.5px;
-}
-.eyebrow {
-  font-size: 11px;
-  font-weight: 700;
+/* 页头统一走共享 PageHeader（TUF 标准 h1 = 22px/600/30px）。 */
+.role-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
   letter-spacing: 0.05em;
   color: var(--tx-color-primary, #3346c8);
-  margin-bottom: 2px;
 }
 .help-layout {
   display: grid;
@@ -429,8 +422,10 @@ rtk init -g --agent claude --uninstall`
 }
 .section-head h2 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
+  /* 与共享页面的 .section-title 同角色：15px/600/22px（原来是 16px/700，行高随字体默认）。 */
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
   color: var(--tx-text-color-primary, #151b45);
 }
 .section-desc {

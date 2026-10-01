@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageHeader from '../components/PageHeader.vue'
 import { onMounted, ref } from 'vue'
 import { TxAlert } from '@talex-touch/tuffex/alert'
 import { TxButton } from '@talex-touch/tuffex/button'
@@ -160,13 +161,15 @@ onMounted(load)
 
 <template>
   <div class="page-stack rtk-page">
-    <section class="page-head">
-      <div class="page-head__text">
-        <p class="eyebrow">RTK</p>
-        <h1>RTK Token 压缩</h1>
-        <p>按「内核 → 远端网关（即中转站）→ 本机」顺序解析权威平面，逐平面如实上报可用性；开关只写本机 agent 配置，远端默认只读。</p>
-      </div>
-    </section>
+    <PageHeader
+      title="RTK Token 压缩"
+      description="按「内核 → 远端网关（即中转站）→ 本机」顺序解析权威平面，逐平面如实上报可用性；开关只写本机 agent 配置，远端默认只读。"
+      :crumbs="[{ label: '接入', to: '/channels' }, { label: 'RTK 优化' }]"
+    >
+      <template #meta>
+        <p class="role-note">角色：RTK 控制面（只在本机写配置；远端网关只读）</p>
+      </template>
+    </PageHeader>
 
     <!-- 失败提示常驻：只有下一次操作或手动关闭才消失（不再被随后的状态刷新清空） -->
     <TxAlert v-if="errorText" type="error" title="操作失败（未做任何静默降级）" :closable="false">
@@ -198,17 +201,19 @@ onMounted(load)
   gap: 16px;
   width: 100%;
 }
-.page-head__text h1 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--tx-text-color-primary, #151b45);
-}
-.page-head__text p {
-  margin: 4px 0 0;
+/* 页头统一走共享 PageHeader（全局 .page-head 角色：h1 = 22px/600/30px、p = 14px/22px）。
+   这里只保留本页特有的一行角色说明。 */
+.role-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--tx-text-color-secondary, #535b85);
-  font-size: 13.5px;
-  line-height: 1.5;
+}
+/* 平面卡片标题（RtkBoard 内的 h2）对齐同角色页面的 section-title：15px/600/22px。 */
+:deep(.board-head h2) {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
 }
 .eyebrow {
   font-size: 11px;

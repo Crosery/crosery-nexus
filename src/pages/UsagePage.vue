@@ -315,6 +315,18 @@ function handleKeyChange(val: string | number) {
 </template>
 
 <style scoped>
+/*
+ * 表格单元格角色统一（task-32 ②）。
+ * 根因：Tuffex 只给 `.tx-data-table__cell` 设了 `font-size:13px; line-height:1.5`（= 13px/19.5px），
+ * 而 `.tx-data-table__empty` 只设了 padding/color，**没有字体规则** → 空表时会继承页面/卡片层的
+ * 14px + normal。于是「同一张表，有数据是 13px/19.5px、没数据是 14px/normal」。
+ * 这里把空单元格拉回与数据单元格同一角色，页面内两种状态一致。
+ * （通用做法是在 `src/styles/layout.css` 里加一条全局规则，那不在本任务写范围，已在交付文档登记。）
+ */
+:deep(.tx-data-table__empty) {
+  font-size: 13px;
+  line-height: 1.5;
+}
 .usage-page {
   display: flex;
   flex-direction: column;

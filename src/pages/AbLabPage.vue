@@ -8,6 +8,7 @@
  * 3. **深链**：`?flow=<id>&v=a|b|split`，刷新保持、可分享（Lead 负责挂 `/ab` 路由）。
  * 4. **失败要留痕**：提交失败给持久错误 + 重试，不用一闪而过的 toast（红队 D2 的教训）。
  */
+import PageHeader from '../components/PageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
@@ -162,21 +163,23 @@ async function submit() {
 
 <template>
   <div class="ab-lab">
-    <header class="ab-lab__hero">
-      <div class="ab-lab__hero-text">
-        <p class="ab-lab__eyebrow">Crosery Console · A/B 实验台（自助，不打断）</p>
-        <h1>A / B 交互对照台</h1>
+    <PageHeader
+      title="A / B 交互对照台"
+      description="自助，不打断：随时自己打开比较、投一票就走，不需要任何人讲解。"
+      :crumbs="[{ label: '首页', to: '/dashboard' }, { label: 'A/B 实验台' }]"
+    >
+      <template #meta>
         <p class="ab-lab__lede">
           同一个真实流程的新旧两版放在这里。A = 迁移前（提交 <code>281c30e</code> 的冻结副本），B = 迁移后（当前线上页面）。
           你可以随时自己打开比较，投一票就走；不需要任何人讲解，也不会有人来问你。
         </p>
-      </div>
-      <div class="ab-lab__hero-actions">
+      </template>
+      <template #actions>
         <TxButton variant="secondary" size="sm" icon="i-carbon-copy" @click="copyLink(labLink(state.flow, state.view))">复制当前深链</TxButton>
         <TxButton variant="ghost" size="sm" @click="toggleIntro">{{ showIntro ? '只看对照' : '显示使用说明' }}</TxButton>
-      </div>
+      </template>
       <p v-if="copyState" class="ab-lab__copy" role="status">{{ copyState }}</p>
-    </header>
+    </PageHeader>
 
     <section v-if="showIntro" class="ab-lab__panel" aria-label="怎么用">
       <h2>怎么用（约 2 分钟）</h2>
@@ -348,16 +351,14 @@ async function submit() {
 
 <style scoped>
 .ab-lab { display: flex; flex-direction: column; gap: 18px; padding-bottom: 48px; }
-.ab-lab__hero { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
-.ab-lab__hero-text { max-width: 76ch; }
-.ab-lab__eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--tx-text-color-secondary, #535b85); }
-.ab-lab__hero h1 { margin: 0 0 8px; font-size: 26px; line-height: 1.25; }
-.ab-lab__lede { margin: 0; color: var(--tx-color-text-secondary, #4b5563); line-height: 1.7; }
-.ab-lab__hero-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.ab-lab__copy { flex-basis: 100%; margin: 0; font-size: 13px; color: var(--tx-color-text-secondary, #4b5563); word-break: break-all; }
+/* 页头统一走共享 PageHeader（TUF 标准 h1 = 22px/600/30px）。
+   原来这里的 .ab-lab__hero h1（26px/1.25）、.ab-lab__eyebrow 全部是手写页头的一部分，已删除。
+   .ab-lab__lede 现在放在 PageHeader 的 meta 槽里，继承全局 .page-head p（14px/22px）。 */
+.ab-lab__lede { margin: 4px 0 0; max-width: 72ch; color: var(--tx-text-color-secondary); }
+.ab-lab__copy { margin: 4px 0 0; font-size: 13px; color: var(--tx-color-text-secondary, #4b5563); word-break: break-all; }
 
 .ab-lab__panel { border: 1px solid var(--tx-color-border, #e5e7eb); border-radius: 10px; padding: 14px 18px; background: var(--tx-color-surface, #fff); }
-.ab-lab__panel h2 { margin: 0 0 8px; font-size: 16px; }
+.ab-lab__panel h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; line-height: 22px; }
 .ab-lab__steps { margin: 0 0 10px; padding-left: 20px; line-height: 1.8; }
 .ab-lab__safety { margin: 0; padding-left: 20px; line-height: 1.8; color: var(--tx-color-text-secondary, #4b5563); font-size: 13px; }
 .ab-lab code { padding: 1px 5px; border-radius: 4px; background: var(--tx-color-fill, #f3f4f6); font-size: 12px; }
@@ -371,7 +372,7 @@ async function submit() {
 
 .ab-lab__task { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
 .ab-lab__task-card { border: 1px solid var(--tx-color-border, #e5e7eb); border-radius: 10px; padding: 14px 18px; background: var(--tx-color-surface, #fff); }
-.ab-lab__task-card h2 { margin: 0 0 8px; font-size: 15px; }
+.ab-lab__task-card h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; line-height: 22px; }
 .ab-lab__task-steps { margin: 0; padding-left: 20px; line-height: 1.8; }
 .ab-lab__hint, .ab-lab__gap { margin: 10px 0 0; font-size: 12px; color: var(--tx-color-text-secondary, #4b5563); line-height: 1.7; }
 .ab-lab__criteria-scroll { overflow-x: auto; }
@@ -424,7 +425,7 @@ async function submit() {
 :deep(.lab-frame__state--error) { color: var(--tx-color-danger, #b91c1c); }
 
 .ab-lab__vote { display: flex; flex-direction: column; gap: 10px; }
-.ab-lab__vote h2 { margin: 0; font-size: 17px; }
+.ab-lab__vote h2 { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
 .ab-lab__vote-lede { margin: 0; font-size: 13px; color: var(--tx-color-text-secondary, #4b5563); line-height: 1.7; }
 .ab-lab__vote-last { display: inline-block; margin-left: 6px; }
 .ab-lab__choices { display: flex; gap: 8px; flex-wrap: wrap; }
