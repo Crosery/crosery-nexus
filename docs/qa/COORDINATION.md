@@ -44,6 +44,21 @@ rmdir /tmp/cac-build.lock 2>/dev/null
 - **要重启就用** `launchctl kickstart -k gui/$(id -u)/com.crosery.console-magpie`（对已注册服务有效；不需要写运行时目录）。若真的需要停服务，**先确认自己能把它拉回来**。
 - 需要写运行时目录或动 launchd 的操作，**一次性的提权请求是正确做法**，不要用"换个路径/换个端口"绕过（那会让用户的实例与真实运行时目录脱节）。
 
+### 停服务前的 pre-flight（红队 R18-D 补强，关键判据不是"能 kickstart"）
+
+`kickstart` 不需要写 runtime 目录，`bootstrap` 需要——这正是当时判断失误的地方。**想 bootout 之前必须先跑这三项，全绿才允许**：
+
+```sh
+RT=~/.agents/crosery/magpie-console
+touch "$RT/.preflight" && rm "$RT/.preflight" && echo "1) runtime 可写 ✓"      # 关键判据
+test -f ~/Library/LaunchAgents/com.crosery.console-magpie.plist && echo "2) plist 在 ✓"
+launchctl print gui/$(id -u)/com.crosery.console-magpie >/dev/null 2>&1 && echo "3) 当前已注册 ✓"
+```
+
+- **无提权通道时的退路**（默认禁止停服 + 声明式例外）：① 请用户在自己的终端跑 `launchctl bootstrap`；② 在工作区内的临时 runtime 起前台实例并**明确标注"不是用户真实实例"**；③ 直接放弃停服，改用不需要冻结写入的修复方式。
+- **停服前声明停机时间预算与观察窗口**，超时立即升级（当时没有预算，所以"十几分钟"是无意识的）。
+- **恢复后验证清单**：`/api/session` 200 + 8790 `/health` 200 + `launchctl print` 的 `state = running` 且 PID 已变化 + 抽一条真实请求，并留证据。
+
 ## Git（共享工作区，血泪教训）
 
 多个成员共用**同一个索引与同一个分支**，所以：

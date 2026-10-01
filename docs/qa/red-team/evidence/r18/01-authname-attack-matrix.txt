@@ -1,0 +1,27 @@
+# (A) 凭据名穿越修复：我方攻击矩阵（临时实例 8870，magpie+local）
+
+判据：每条都要「拒绝 + 目标文件不受影响」。哨兵 = /tmp/cac-r18-XXXX/outside/sentinel.txt（DATA_DIR 之外）
+
+状态码 | 哨兵 | 攻击
+400 | 完好 | 穿越删除 (URL 编码斜杠 ..%2F..%2F)
+400 | 完好 | 穿越删除 (小写编码 ..%2f..%2f)
+400 | 完好 | 穿越删除 (%2e%2e%2f%2e%2e%2f)
+400 | 完好 | 穿越删除 (大写编码 %2E%2E%2F)
+200 | 完好 | 双重编码 %252f（被判为普通文件名，文件不存在 → 幂等删除返回 ok，无副作用）
+400 | 完好 | 绝对路径 %2Fetc%2Fpasswd
+400 | 完好 | 尾部斜杠
+400 | 完好 | 反斜杠 ..%5C..%5C
+400 | 完好 | NUL 字节 canary%00.txt
+400 | 完好 | 超长名字 (4000 字符，reason=credential_path_invalid)
+200 | 完好 | 全角 ．．／（普通文件名，无副作用）
+404 | 完好 | 名字为 . / ..（Express 归并路径，未命中路由）
+400 | 完好 | 穿越读取 GET ..%2F..%2Foutside.json/proxy
+400 | 完好 | 穿越读取 GET %2e%2e%2f
+400 | 完好 | 穿越 PATCH 状态
+400 | 完好 | 穿越 PATCH 代理
+400 | 完好 | 软链 link-to-outside.json（reason=credential_path_escape，软链与目标都在）
+400 | 完好 | 硬链 hardlink-to-outside.json（reason=credential_hardlink_rejected，硬链与目标都在）
+200 | —    | 合法读取 codex-legit.json/proxy → {"proxyUrl":""}
+200 | —    | 合法删除 codex-legit.json → 文件确实被删
+
+最终哨兵状态：完好（内容未变）

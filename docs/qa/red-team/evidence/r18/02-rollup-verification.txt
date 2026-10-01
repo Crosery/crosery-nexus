@@ -1,0 +1,31 @@
+# (C) rollup 自检：生产只读 + 我方独立 SQL 核对
+
+## 接口（生产 8791，只读 GET）
+$ curl -b ck "http://127.0.0.1:8791/api/usage/rollup-health?hours=24"
+{"windowHours":24,"cutoffMs":1790758800000,"rollupRequests":2910,"eventRequests":2910,"ratio":1,"driftPct":0,"severity":"ok","checkedAt":"2026-10-01T09:04:56.593Z"}
+（hours=3 → 两侧均 0，ratio 1，ok）
+
+## 我方 SQL（把生产库只读复制到 /tmp 后用 node:sqlite 计算，cutoff 取接口给的 1790758800000）
+rollupRequests = 2910  eventRequests = 2910  drift% = 0.000        ← 与接口一致
+按小时（rollup/events）：09T09 424/424、09T10 319/319、09T11 192/192、09T12 127/127、09T13 28/28、
+                        09T14 122/122、09T15 137/137、09T16 320/320、09T17 548/548、09T18 504/504、09T19 189/189
+tokens：rollup 499,649,438 / events 499,649,438（差 0）
+cost  ：rollup 84.0870 / events 84.0870（差 0）
+
+## 盲区实证（在副本上注入漂移）
+盲区1 同一窗口内一行 +1、另一行 -1：rollup/events 仍 2910/2910 → severity=ok（逐行已错）
+盲区2 只改 token/cost（+2,345,678 tokens、+9.99 USD）：计数不变 → severity=ok，tokenDrift=2345678
+
+## 重建（副本，脚本自带护栏与幂等自证）
+$ node scripts/rollup-rebuild.mjs rebuild --db /opt/crosery-api-console/data/console.db
+Error: 拒绝直接操作生产库路径；运行手册要求在生产上只跑 check。确需演练同一路径请加 --allow-production
+
+$ node scripts/rollup-rebuild.mjs rebuild --db /tmp/cac-r18-db-XXXX/rebuild.db --hours 24
+{"phase":"backup","backupPath":".../console-before-rollup-rebuild-2026-10-01T09-05-59-880Z.db","backupMb":75.1,"backupMs":178}
+{"phase":"rebuild#1","ms":56,...driftPct":0,"severity":"ok"}
+{"phase":"rebuild#2","ms":54,...driftPct":0,"severity":"ok"}
+{"idempotent":true,"fingerprint":{"rows":804,"requests":26004,...},"verdict":"rebuilt-and-verified"}
+
+## 重建是否修掉自检看不见的 token/cost 漂移（我方 SQL 复核）
+注入漂移的副本 : 请求 2910/2910（差 0）  token 501,995,116/499,649,438（差 +2,345,678）  cost 94.08/84.09（差 +9.99）
+重建后的副本   : 请求 2910/2910（差 0）  token 499,649,438/499,649,438（差 0）        cost 84.09/84.09（差 0）
