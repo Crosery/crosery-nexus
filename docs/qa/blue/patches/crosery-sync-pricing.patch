@@ -1,0 +1,212 @@
+--- a/sync.mjs
++++ b/sync.mjs
+@@ -55,6 +55,7 @@
+ const SHRINK_CONFIRM_SMALL_AFTER_MS = 60 * 60 * 1000;
+ 
+ let APPLY = false;
++let DUMP_PRICING = false;
+ let QUIET = false;
+ let PRINT = false;
+ let AUDIT_HOSTS = false;
+@@ -64,6 +65,7 @@
+ for (let i = 2; i < process.argv.length; i += 1) {
+   const arg = process.argv[i];
+   if (arg === "--apply") APPLY = true;
++  if (arg === "--dump-pricing") DUMP_PRICING = true;
+   else if (arg === "--quiet") QUIET = true;
+   else if (arg === "--print") PRINT = true;
+   else if (arg === "--audit-hosts") AUDIT_HOSTS = true;
+@@ -75,7 +77,7 @@
+ }
+ 
+ function printUsage() {
+-  console.log("node sync.mjs [--apply] [--quiet] [--print] [--force-prune] [--keep-missing] [--refresh-catalog]");
++  console.log("node sync.mjs [--apply] [--quiet] [--print] [--force-prune] [--keep-missing] [--refresh-catalog] [--dump-pricing]");
+ }
+ function log(message) {
+   if (!QUIET) console.log(message);
+@@ -155,6 +157,52 @@
+   const supported = value.filter((item) => item === "text" || item === "image");
+   return supported.length ? supported : undefined;
+ }
++/**
++ * task-78：把两个来源的价格归一化成同一形状（USD / 百万 token）。
++ * - OpenRouter：`pricing.prompt` / `completion` 是**每 token** 的美元字符串；缓存价在
++ *   `input_cache_read` / `input_cache_write`（部分模型没有）。
++ * - models.dev：`cost.input` / `output` / `cache_read` / `cache_write` 已经是**每百万 token**。
++ * 取不到就是 undefined（**不许用 0 冒充免费**）。
++ */
++function perMillion(value) {
++  const number = typeof value === "string" ? Number(value) : typeof value === "number" ? value : NaN;
++  if (!Number.isFinite(number) || number < 0) return undefined;
++  return number;
++}
++function openRouterPrice(row) {
++  const pricing = object(row.pricing);
++  const input = perMillion(pricing.prompt);
++  const output = perMillion(pricing.completion);
++  if (input === undefined && output === undefined) return undefined;
++  const cacheRead = perMillion(pricing.input_cache_read);
++  const cacheWrite = perMillion(pricing.input_cache_write);
++  return defined({
++    input: input === undefined ? undefined : input * 1e6,
++    output: output === undefined ? undefined : output * 1e6,
++    cacheRead: cacheRead === undefined ? undefined : cacheRead * 1e6,
++    cacheWrite: cacheWrite === undefined ? undefined : cacheWrite * 1e6,
++    unit: "usd-per-million-tokens",
++  });
++}
++function modelsDevPrice(row) {
++  const cost = object(row.cost);
++  const input = perMillion(cost.input);
++  const output = perMillion(cost.output);
++  if (input === undefined && output === undefined) return undefined;
++  return defined({
++    input,
++    output,
++    cacheRead: perMillion(cost.cache_read),
++    cacheWrite: perMillion(cost.cache_write),
++    unit: "usd-per-million-tokens",
++  });
++}
++/** 与各 host 的 `normalizeModelForPricing` 同语义：小写 + 去掉渠道前缀（第一个 `/` 之前）。 */
++function normalizePricingId(id) {
++  const lower = String(id).toLowerCase();
++  const slash = lower.indexOf("/");
++  return slash >= 0 ? lower.slice(slash + 1) : lower;
++}
+ function defined(row) {
+   return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined));
+ }
+@@ -168,21 +216,30 @@
+   if (!force) {
+     try {
+       const parsed = JSON.parse(readFileSync(PUBLIC_CATALOG_CACHE, "utf8"));
+-      if (parsed.version === 1 && Array.isArray(parsed.entries) && Date.now() - parsed.refreshedAt < PUBLIC_CATALOG_TTL_MS) {
+-        return { entries: new Map(parsed.entries), refreshedAt: parsed.refreshedAt, fetched: false };
++      if (parsed.version === 2 && Array.isArray(parsed.entries) && Date.now() - parsed.refreshedAt < PUBLIC_CATALOG_TTL_MS) {
++        return { entries: new Map(parsed.entries), refreshedAt: parsed.refreshedAt, fetched: false, sources: object(parsed.sources) };
+       }
+       cached = parsed;
+     } catch { /* 首次运行没有缓存 */ }
+   }
+   const next = new Map(Array.isArray(cached?.entries) ? cached.entries : []);
+   let successes = 0;
++  const sourceStatus = {
++    openrouter: object(cached?.sources?.openrouter),
++    "models.dev": object(cached?.sources?.["models.dev"]),
++  };
++  let openrouterRows = 0;
++  let modelsDevRows = 0;
+   try {
+     const catalog = await getJson("https://openrouter.ai/api/v1/models");
+     if (!Array.isArray(catalog.data) || catalog.data.length === 0) throw new Error("OpenRouter 目录为空");
+     for (const value of catalog.data) {
+       const row = object(value);
+       if (typeof row.id !== "string") continue;
++      const price = openRouterPrice(row);
++      if (price) openrouterRows += 1;
+       next.set("openrouter:" + row.id.toLowerCase(), defined({
++        pricing: price && { openrouter: price },
+         name: typeof row.name === "string" ? row.name : undefined,
+         contextWindow: positive(row.context_length),
+         maxTokens: positive(object(row.top_provider).max_completion_tokens),
+@@ -194,7 +251,14 @@
+       }));
+     }
+     successes += 1;
++    sourceStatus.openrouter = { ok: true, fetchedAt: Date.now(), entries: openrouterRows };
+   } catch (error) {
++    sourceStatus.openrouter = defined({
++      ok: false,
++      fetchedAt: sourceStatus.openrouter?.fetchedAt ?? object(cached?.sources?.openrouter).fetchedAt ?? 0,
++      entries: openrouterRows,
++      error: String(error?.message ?? error).slice(0, 200),
++    });
+     logLine("public catalog openrouter failed: " + (error?.message ?? error));
+   }
+   try {
+@@ -205,7 +269,10 @@
+       for (const [id, value] of Object.entries(object(object(catalog[provider]).models))) {
+         const row = object(value);
+         const options = Array.isArray(row.reasoning_options) ? row.reasoning_options : [];
++        const price = modelsDevPrice(row);
++        if (price) modelsDevRows += 1;
+         next.set(provider + ":" + id.toLowerCase(), defined({
++          pricing: price && { "models.dev": price },
+           name: typeof row.name === "string" ? row.name : undefined,
+           contextWindow: positive(object(row.limit).context),
+           maxTokens: positive(object(row.limit).output),
+@@ -218,19 +285,26 @@
+       }
+     }
+     successes += 1;
++    sourceStatus["models.dev"] = { ok: true, fetchedAt: Date.now(), entries: modelsDevRows };
+   } catch (error) {
++    sourceStatus["models.dev"] = defined({
++      ok: false,
++      fetchedAt: sourceStatus["models.dev"]?.fetchedAt ?? object(cached?.sources?.["models.dev"]).fetchedAt ?? 0,
++      entries: modelsDevRows,
++      error: String(error?.message ?? error).slice(0, 200),
++    });
+     logLine("public catalog models.dev failed: " + (error?.message ?? error));
+   }
+   if (successes === 0) {
+-    if (next.size > 0) return { entries: next, refreshedAt: cached?.refreshedAt ?? 0, fetched: false };
++    if (next.size > 0) return { entries: next, refreshedAt: cached?.refreshedAt ?? 0, fetched: false, sources: sourceStatus };
+     throw new Error("公开目录两次都拉不到，也没有可用缓存");
+   }
+   const refreshedAt = successes === 2 ? Date.now() : 0;
+   try {
+     mkdirSync(CACHE_DIR, { recursive: true });
+-    writeFileSync(PUBLIC_CATALOG_CACHE, JSON.stringify({ version: 1, refreshedAt, entries: [...next] }), { mode: 0o600 });
++    writeFileSync(PUBLIC_CATALOG_CACHE, JSON.stringify({ version: 2, refreshedAt, entries: [...next], sources: sourceStatus }), { mode: 0o600 });
+   } catch { /* 缓存写失败不影响本次匹配 */ }
+-  return { entries: next, refreshedAt, fetched: true };
++  return { entries: next, refreshedAt, fetched: true, sources: sourceStatus };
+ }
+ 
+ // ── Codex 客户端目录（host 中立产物）────────────────────────────────────────
+@@ -990,6 +1064,25 @@
+     log("迟滞按住  : " + held.map((item) => `${item.id}.${item.field}=${JSON.stringify(item.seen)}（本次不改）`).join("、"));
+   }
+ 
++  // task-78：把「两个价格来源」原样带进产物（各 host 的薄 adapter 只读这个，不再各自联网）
++  const pricingRows = [];
++  for (const [key, entry] of publicCatalog.entries) {
++    const entryPricing = object(entry.pricing);
++    const sources = Object.keys(entryPricing);
++    if (!sources.length) continue;
++    const sourceName = key.slice(0, key.indexOf(":"));
++    const rawId = key.slice(key.indexOf(":") + 1);
++    pricingRows.push({
++      id: normalizePricingId(key),
++      source: sourceName === "openrouter" ? "openrouter" : "models.dev",
++      sourceId: sourceName === "openrouter" ? rawId : key,
++      name: typeof entry.name === "string" ? entry.name : undefined,
++      contextWindow: entry.contextWindow,
++      maxTokens: entry.maxTokens,
++      prices: entryPricing,
++    });
++  }
++  pricingRows.sort((left, right) => left.id.localeCompare(right.id) || left.source.localeCompare(right.source));
+   const catalog = {
+     version: 1,
+     generatedAt: Date.now(),
+@@ -998,8 +1091,16 @@
+     source: "~/.agents/crosery/sync.mjs",
+     models: rows,
+     dropped,
++    pricing: { sources: object(publicCatalog.sources), rows: pricingRows },
+   };
+   if (PRINT) log(JSON.stringify(rows, null, 1));
++  if (DUMP_PRICING) {
++    log("价格来源  : " + JSON.stringify(object(publicCatalog.sources)));
++    log("价格条目  : " + pricingRows.length + " 行（两个来源合计）");
++    for (const row of pricingRows.slice(0, 12)) {
++      log("  " + row.source.padEnd(11) + " " + row.id.padEnd(38) + " " + JSON.stringify(row.prices[row.source]));
++    }
++  }
+   if (AUDIT_HOSTS) {
+     const report = auditHosts(rows);
+     log(report.length ? "host 漂移  :\n  " + report.join("\n  ") : "host 漂移  : 三家配置与 catalog 一致");

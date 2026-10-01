@@ -6,6 +6,7 @@ import { getCompatChannels, putCompatChannels } from './cpa.js'
 import { invalidateGatewaySnapshot } from './channels.js'
 import { modelDiscoveryUrls, normalizeDiscoveredModels, defaultModelAlias, type DiscoveredModel } from './channelDiscovery.js'
 import { readMagpieChannels, writeChannels, type MagpieChannel } from './magpieControl.js'
+import { applySharedPricing, type PriceSourceId, type SourcePrice } from './pricing.js'
 
 export type ModelSyncResult = {
   addedModels: string[]
@@ -32,9 +33,25 @@ export type SharedCatalogModel = {
   }
 }
 
+/** task-78：共享产物里的 `pricing` 段（双源价格 + 各自时间戳）。 */
+export type SharedPricingSection = {
+  sources?: Record<string, { ok?: boolean; fetchedAt?: number; entries?: number; error?: string }>
+  rows?: Array<{
+    id: string
+    source: PriceSourceId
+    sourceId?: string
+    name?: string
+    contextWindow?: number
+    maxTokens?: number
+    prices?: Partial<Record<PriceSourceId, SourcePrice>>
+  }>
+}
+
 export type SharedCatalog = {
   version: number
   generatedAt: number
+  /** task-78：双源价格段（由共享同步实现写入；老产物没有这段 ⇒ adapter 如实降级） */
+  pricing?: SharedPricingSection
   provider: string
   baseUrl: string
   models: SharedCatalogModel[]
@@ -55,6 +72,25 @@ export function readSharedCatalog(): SharedCatalog | null {
     // ignore read/parse errors
   }
   return null
+}
+
+/**
+ * 薄 adapter（task-78）：把共享产物里的 `pricing` 段灌进 `pricing.ts` 的来源价格表。
+ *
+ * **不联网**：唯一的联网实现是 `~/.agents/crosery/sync.mjs`，它把两个来源的价格写进
+ * `catalog.json`；本仓库只读产物。取不到就如实返回 `degraded`（展示层要能看见，
+ * 而不是把旧值冒充成新值）。
+ */
+export function loadSharedPricing(): { ok: boolean; models: number; rows: number; degraded: string[]; path: string } {
+  const file = sharedCatalogPath()
+  const catalog = readSharedCatalog()
+  const pricing = catalog?.pricing
+  if (!pricing || !Array.isArray(pricing.rows)) {
+    const result = applySharedPricing(null)
+    return { ok: false, models: 0, rows: 0, degraded: result.degraded, path: file }
+  }
+  const result = applySharedPricing({ rows: pricing.rows, sources: pricing.sources })
+  return { ok: result.models > 0, models: result.models, rows: result.rows, degraded: result.degraded, path: file }
 }
 
 async function probeChannelModels(baseUrl: string, apiKey?: string): Promise<DiscoveredModel[]> {

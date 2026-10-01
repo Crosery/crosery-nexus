@@ -2,7 +2,10 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from './config.js'
-import { applyGatewayPricing, getModelPricing, getPriceHistory, normalizeModelForPricing, type ModelPricing, type PriceEntry } from './pricing.js'
+import {
+  applyGatewayPricing, getModelPricing, getPriceHistory, getPricingSources, normalizeModelForPricing,
+  pricingSourceModelIds, pricingSourceStatus, type ModelPricing, type PriceEntry, type PriceSourceId, type SourcePrice,
+} from './pricing.js'
 
 export type ModelDefinition = {
   id?: string
@@ -48,6 +51,16 @@ export type CatalogModel = {
     dynamic_allowed?: boolean
   } | null
   pricing: ModelPricing | null
+  /**
+   * task-78：两个外部价格来源各自的报价（models.dev / openrouter），带各自抓取时间戳。
+   * 缺失的来源**不出现**在这里；两个都缺 + 本地/网关也没有价格 ⇒ `unpriced === true`，
+   * 前端必须显示「未收录」而**不是** 0（0 会被读成"免费"）。
+   */
+  pricingSources?: Partial<Record<PriceSourceId, SourcePrice>>
+  /** 是否在网关上可用；价格来源里有、但网关没有的模型 ⇒ false（并集里的"目录已知"部分） */
+  availableOnGateway?: boolean
+  /** 任何来源都没有价格 ⇒ true（前端显示「未收录」） */
+  unpriced?: boolean
   priceHistory: PriceEntry[]
 }
 
@@ -225,6 +238,7 @@ export function buildModelCatalog(definitions: Array<{ provider: string; models:
           // 与入账同一口径：价格表（静态核定价 + 已并入的网关价）优先，网关价只兜底本轮刚出现的模型
           pricing: getModelPricing(canonical) ?? pricingFromGateway(definition),
           priceHistory: getPriceHistory(canonical),
+          ...pricingSourceFields(canonical, true),
         })
         continue
       }
@@ -232,6 +246,7 @@ export function buildModelCatalog(definitions: Array<{ provider: string; models:
       current.context_length = Math.max(current.context_length || 0, context || 0) || null
       current.total_context_length = Math.max(current.total_context_length || 0, numberOrNull(definition.total_context_length) || 0) || null
       current.pricing = current.pricing ?? getModelPricing(canonical) ?? pricingFromGateway(definition)
+      Object.assign(current, pricingSourceFields(canonical, true))
       current.max_completion_tokens = Math.max(current.max_completion_tokens || 0, output || 0) || null
       if (thinking) {
         current.thinking = {
@@ -324,9 +339,67 @@ export async function visibleModelIds(apiKey: string): Promise<string[] | null> 
   }
 }
 
+/** task-78：把一个模型的「双源价格 + 是否在网关可用 + 是否完全无价」拼成展示字段。 */
+function pricingSourceFields(id: string, availableOnGateway: boolean): Pick<CatalogModel, 'pricingSources' | 'availableOnGateway' | 'unpriced'> {
+  const { sources } = getPricingSources(id)
+  const hasSourcePrice = Object.keys(sources).length > 0
+  const local = getModelPricing(id)
+  return {
+    ...(hasSourcePrice ? { pricingSources: sources } : {}),
+    availableOnGateway,
+    unpriced: !local && !hasSourcePrice,
+  }
+}
+
+/**
+ * task-78 的「并集」：把两个价格来源里出现、但网关目录里没有的模型补进总览。
+ *
+ * 为什么只补进"全量视图"：`allowedIds` 是**按 Key 的可见范围**，把范围外的模型补进来等于越权展示，
+ * 所以只有不限范围的调用（控制台自己的总览）才做并集。
+ */
+export function mergePricingSourceModels(catalog: CatalogModel[]): CatalogModel[] {
+  const seen = new Set(catalog.map((model) => model.id))
+  const extra: CatalogModel[] = []
+  for (const id of pricingSourceModelIds()) {
+    if (seen.has(id)) continue
+    extra.push({
+      id,
+      providers: [],
+      context_length: null,
+      total_context_length: null,
+      max_completion_tokens: null,
+      thinking: null,
+      pricing: getModelPricing(id),
+      priceHistory: getPriceHistory(id),
+      ...pricingSourceFields(id, false),
+    })
+    seen.add(id)
+  }
+  if (!extra.length) return catalog
+  return [...catalog, ...extra].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+/**
+ * task-78：把共享产物里的双源价格懒加载进来（TTL 10 分钟）。
+ * 失败/缺失一律**不影响目录本身**，只把降级原因记在 `pricingSourceStatus()` 里由展示层如实标注。
+ */
+let sharedPricingLoadedAt = 0
+
+export async function refreshSharedPricingIfStale(ttlMs = 10 * 60 * 1000): Promise<number> {
+  if (Date.now() - sharedPricingLoadedAt >= ttlMs) {
+    try {
+      const { loadSharedPricing } = await import('./modelSync.js')
+      loadSharedPricing()
+    } catch { /* 读不到就保持上一次状态（degraded 会说明） */ }
+    sharedPricingLoadedAt = Date.now()
+  }
+  return pricingSourceStatus().models
+}
+
 export async function loadModelCatalog(allowedIds?: Iterable<string>): Promise<CatalogModel[]> {
+  await refreshSharedPricingIfStale()
   const catalog = buildModelCatalog(await loadDefinitions(), allowedIds)
-  if (!allowedIds) return catalog
+  if (!allowedIds) return mergePricingSourceModels(catalog)
   const seen = new Set(catalog.map((model) => model.id))
   for (const rawId of allowedIds) {
     const id = normalizeModelForPricing(String(rawId))

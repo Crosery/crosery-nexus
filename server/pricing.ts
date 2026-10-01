@@ -275,3 +275,112 @@ export function priceRequest(model: string, tokens: RequestTokens): number | nul
   const promptTokens = tokens.promptTokens ?? tokens.newInputTokens + tokens.cacheReadTokens + cacheWriteTokens
   return estimateCost(model, tokens.newInputTokens, tokens.outputTokens, tokens.cacheReadTokens, cacheWriteTokens, { at: tokens.at, promptTokens })
 }
+
+/* ────────────────────────── task-78：双源外部价格（models.dev / openrouter） ──────────────────────────
+ *
+ * 数据来自**共享产物** `~/.agents/crosery/catalog.json` 的 `pricing` 段（由唯一的同步实现
+ * `~/.agents/crosery/sync.mjs` 联网抓取并原子写入）。本文件只做**落地与查询**，**不联网**——
+ * 跨 harness 的"一个实现 + 一个产物 + 每 host 一个薄 adapter"契约见 `~/.agents/crosery/README.md`。
+ *
+ * 两条硬规则：
+ * 1. 两个来源**各自**保存（能看出是否一致、差多少），并带上该来源的抓取时间戳；
+ * 2. **缺失就是缺失**：取不到写 `undefined`，绝不用 0 冒充"免费"（展示层据此写"未收录"）。
+ */
+export type PriceSourceId = 'models.dev' | 'openrouter'
+
+/** 某个来源对某个模型的报价；字段缺省表示该来源**没给这一项**（不是 0）。 */
+export type SourcePrice = {
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+  unit?: string
+  /** 来源里的原始 id（例如 openrouter 的 `vendor/model`） */
+  sourceId?: string
+  /** 该来源本次抓取时间（毫秒）；来自产物 `pricing.sources[].fetchedAt` */
+  fetchedAt?: number
+}
+
+export type PricingSourceStatus = { ok?: boolean; fetchedAt?: number; entries?: number; error?: string }
+
+/** 产物 `pricing.rows` 的一行（一个模型 × 一个来源）。 */
+export type SharedPricingRow = {
+  id: string
+  source: PriceSourceId
+  sourceId?: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+  prices?: Partial<Record<PriceSourceId, SourcePrice>>
+}
+
+export type SharedPricingSnapshot = {
+  rows?: SharedPricingRow[]
+  sources?: Partial<Record<PriceSourceId, PricingSourceStatus>>
+  degraded?: string[]
+}
+
+const SOURCE_PRICES = new Map<string, Partial<Record<PriceSourceId, SourcePrice>>>()
+let SOURCE_STATUS: Partial<Record<PriceSourceId, PricingSourceStatus>> = {}
+let SOURCE_LOADED_AT: number | null = null
+let SOURCE_DEGRADED: string[] = ['shared-pricing-not-loaded']
+
+/**
+ * 灌入一份共享产物快照（幂等：同一份快照重复调用结果相同）。
+ * `degraded` 明确列出降级原因（产物缺失 / 段缺失 / 某来源 ok=false / 空），供展示层如实标注。
+ */
+export function applySharedPricing(snapshot: SharedPricingSnapshot | null | undefined, now = Date.now()): { models: number; rows: number; degraded: string[] } {
+  const degraded: string[] = []
+  const rows = Array.isArray(snapshot?.rows) ? snapshot!.rows! : []
+  if (!snapshot || !Array.isArray(snapshot.rows)) degraded.push('shared-pricing-missing')
+  SOURCE_PRICES.clear()
+  let applied = 0
+  for (const row of rows) {
+    const id = normalizeModelForPricing(String(row?.id || ''))
+    const source = row?.source
+    const price = row?.prices?.[source]
+    if (!id || (source !== 'models.dev' && source !== 'openrouter') || !price || typeof price !== 'object') continue
+    const bucket = SOURCE_PRICES.get(id) || {}
+    const fetchedAt = snapshot?.sources?.[source]?.fetchedAt
+    bucket[source] = { ...price, ...(row.sourceId ? { sourceId: row.sourceId } : {}), ...(fetchedAt ? { fetchedAt } : {}) }
+    SOURCE_PRICES.set(id, bucket)
+    applied += 1
+  }
+  SOURCE_STATUS = snapshot?.sources && typeof snapshot.sources === 'object' ? snapshot.sources : {}
+  for (const [source, status] of Object.entries(SOURCE_STATUS)) {
+    if (status && status.ok === false) degraded.push(`source-unavailable:${source}`)
+  }
+  if (!rows.length) degraded.push('shared-pricing-empty')
+  SOURCE_LOADED_AT = now
+  SOURCE_DEGRADED = degraded
+  return { models: SOURCE_PRICES.size, rows: applied, degraded }
+}
+
+/** 某模型在两个来源各自的报价（顺序稳定，缺失的来源不出现）。 */
+export function getPricingSources(model: string): { sources: Partial<Record<PriceSourceId, SourcePrice>>; degraded: string[] } {
+  const id = normalizeModelForPricing(String(model || ''))
+  return { sources: (id && SOURCE_PRICES.get(id)) || {}, degraded: [...SOURCE_DEGRADED] }
+}
+
+/** 供展示层使用的整体状态：每个来源的 ok / 抓取时间 / 条目数 + 降级原因。 */
+export function pricingSourceStatus(): {
+  sources: Partial<Record<PriceSourceId, PricingSourceStatus>>
+  loadedAt: number | null
+  degraded: string[]
+  models: number
+} {
+  return { sources: { ...SOURCE_STATUS }, loadedAt: SOURCE_LOADED_AT, degraded: [...SOURCE_DEGRADED], models: SOURCE_PRICES.size }
+}
+
+/** 两个来源里出现过的全部模型 id（已归一化）——"并集"用。 */
+export function pricingSourceModelIds(): string[] {
+  return [...SOURCE_PRICES.keys()].sort()
+}
+
+/** 仅供测试：清空来源价格表。 */
+export function resetSharedPricing(): void {
+  SOURCE_PRICES.clear()
+  SOURCE_STATUS = {}
+  SOURCE_LOADED_AT = null
+  SOURCE_DEGRADED = ['shared-pricing-not-loaded']
+}
