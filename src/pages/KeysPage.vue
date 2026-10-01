@@ -21,7 +21,7 @@ import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
 import { confirm } from '../lib/confirm'
 import { focusInModal } from '../lib/focus'
-import { fieldError, rules as fieldRules, validateAll, type FieldRules } from '../lib/validation'
+import { CONCURRENCY_LIMITS, fieldError, rules as fieldRules, validateAll, type FieldRules } from '../lib/validation'
 import { debounce, paginate, useQueryState } from '../lib/listState'
 import { useResource } from '../lib/resource'
 import { fmtClock, fmtUsd } from '../lib/format'
@@ -83,11 +83,28 @@ const editorRules: FieldRules = {
   ],
   note: [fieldRules.maxLength(100, '备注最多 100 个字符，请精简后再保存')],
   groups: [fieldRules.required('至少选择一个渠道分组，否则这个 API Key 无法调用任何模型')],
-  totalConcurrency: [fieldRules.integerInRange(1, 1000, '并发数请填 1–1000 的整数；不限速请打开「不限速」开关')],
+  totalConcurrency: [
+    fieldRules.integerInRange(
+      CONCURRENCY_LIMITS.min,
+      CONCURRENCY_LIMITS.max,
+      `请填写最大总并发数（${CONCURRENCY_LIMITS.min}–${CONCURRENCY_LIMITS.max} 的整数，与服务端一致）；不想限速请打开「不限速」开关`,
+      { allowEmpty: false },
+    ),
+  ],
 }
 const editorFieldErrors = reactive<Record<string, string>>({})
 /** 只有被提交或失焦过的字段才显示错误，避免一打开弹窗就满屏红。 */
 const editorTouched = reactive<Record<string, boolean>>({})
+
+/**
+ * R6-A：底部汇总从字段错误**派生**，而不是提交时写一次。
+ * 原来只在提交时算一次，字段改好了汇总还挂着「还有 1 处需要修改」，直到下次提交成功才消失。
+ */
+const editorSummary = computed(() => {
+  const count = Object.keys(editorFieldErrors).length
+  if (count) return `还有 ${count} 处需要修改，已定位到第一个字段。`
+  return editorError.value
+})
 
 function validateEditorField(name: string) {
   editorTouched[name] = true
@@ -273,11 +290,11 @@ async function saveKeyEditor() {
   for (const key of Object.keys(editorFieldErrors)) delete editorFieldErrors[key]
   Object.assign(editorFieldErrors, outcome.errors)
   if (!outcome.valid) {
-    const count = Object.keys(outcome.errors).length
-    editorError.value = `还有 ${count} 处需要修改，已定位到第一个字段。`
+    editorError.value = ''
     focusFirstInvalidField(outcome.firstInvalid)
     return
   }
+  editorError.value = ''
 
   editorSaving.value = true
   editorError.value = ''
@@ -350,6 +367,13 @@ const quotaRules: FieldRules = {
 }
 const quotaFieldErrors = reactive<Record<string, string>>({})
 
+/** 同上：额度弹窗的汇总也从字段错误派生。 */
+const quotaSummary = computed(() => {
+  const count = Object.keys(quotaFieldErrors).length
+  if (count) return `还有 ${count} 处需要修改，已定位到第一个字段。`
+  return quotaError.value
+})
+
 function validateQuotaField(name: string) {
   const message = quotaUnlimited.value ? null : fieldError(quotaRules, quotaValues, name)
   if (message) quotaFieldErrors[name] = message
@@ -366,7 +390,7 @@ async function saveQuota() {
   for (const key of Object.keys(quotaFieldErrors)) delete quotaFieldErrors[key]
   Object.assign(quotaFieldErrors, outcome.errors)
   if (!outcome.valid) {
-    quotaError.value = '额度数值需要修改，已定位到第一个字段。'
+    quotaError.value = ''
     focusFirstInvalidField(outcome.firstInvalid)
     return
   }
@@ -773,7 +797,7 @@ async function copyNewKey() {
           </div>
         </div>
 
-        <TxAlert v-if="editorError" type="error" :message="editorError" />
+        <TxAlert v-if="editorSummary" type="error" :message="editorSummary" />
       </TxForm>
 
       <template #footer>
@@ -897,7 +921,7 @@ async function copyNewKey() {
           </div>
         </div>
 
-        <TxAlert v-if="quotaError" type="error" :message="quotaError" />
+        <TxAlert v-if="quotaSummary" type="error" :message="quotaSummary" />
       </div>
 
       <template #footer>

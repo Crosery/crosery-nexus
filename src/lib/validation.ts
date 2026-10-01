@@ -9,6 +9,14 @@
  * - 纯函数 → 行为级测试直接跑（见 `server/libValidation.test.ts`）。
  */
 
+/**
+ * 总并发的**客户端镜像区间**，以服务端为权威：`server/policy.ts:9-11` 只接受 0–500 的整数
+ * （0 表示不限速，由「不限速」开关表达；输入框本身只接受 1 起）。
+ * 这个常量与规则一起被 `server/concurrencyContract.test.ts` 用来断言「客户端区间 == 服务端接受区间」——
+ * 任一侧漂移，测试就红（R6-C：第五轮客户端曾写 1–1000，服务端必然拒绝 501+）。
+ */
+export const CONCURRENCY_LIMITS = { min: 1, max: 500 } as const
+
 export type FieldRule = {
   /** 必填：空值直接给 message。 */
   required?: boolean
@@ -72,24 +80,29 @@ export const rules = {
   maxLength(length: number, message: string): FieldRule {
     return { message, test: (value) => value.length <= length }
   },
-  /** 允许留空的数字范围（例如额度上限留空 = 不限制）。 */
-  numberInRange(min: number, max: number, message: string): FieldRule {
+  /**
+   * 数字范围。`allowEmpty` **必须显式表态**：
+   * - `true`：留空合法（额度上限 = 不限制）；
+   * - `false`：留空非法（例如并发数——留空会被服务端 `Number(v || 4)` 静默变成 4，
+   *   用户没输入却生效了一个数字，R6-B）。
+   */
+  numberInRange(min: number, max: number, message: string, options: { allowEmpty: boolean } = { allowEmpty: true }): FieldRule {
     return {
       message,
       test: (value) => {
-        if (value.trim() === '') return true
+        if (value.trim() === '') return options.allowEmpty
         if (!/^\d+(\.\d+)?$/.test(value.trim())) return false
         const parsed = Number(value)
         return parsed >= min && parsed <= max
       },
     }
   },
-  /** 整数范围（并发数这类）。 */
-  integerInRange(min: number, max: number, message: string): FieldRule {
+  /** 整数范围（并发数这类）。同样必须显式表态 `allowEmpty`。 */
+  integerInRange(min: number, max: number, message: string, options: { allowEmpty: boolean } = { allowEmpty: true }): FieldRule {
     return {
       message,
       test: (value) => {
-        if (value.trim() === '') return true
+        if (value.trim() === '') return options.allowEmpty
         if (!/^\d+$/.test(value.trim())) return false
         const parsed = Number(value)
         return parsed >= min && parsed <= max
