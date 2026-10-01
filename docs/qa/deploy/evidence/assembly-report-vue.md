@@ -1,17 +1,17 @@
 # 组装报告（由 assemble-release.mjs 生成）
 
 - releaseId: `20261001-tuffex-rtk` ｜ 模式: `vue` ｜ 基底: `20260928-reset-clears-cooldown`
-- 本地 commit: `26554bd4bf8e4230b52e651e63772cd8561446c9`（工作区干净）
-- 组装树: 415 个文件 / 7.09 MB；MANIFEST 条目 412
-- 本地文件动作统计: replace=21 keep-prod=221 add=94
-- dist: 74 个文件，树哈希 `3419fe9f14af2d9333c586ca60b8f08ad40d7d1bf55bd30ab37d3d4ad24484a9`
+- 本地 commit: `fabd4fe6365925af09401e401556102e71176faf`（工作区干净）
+- 组装树: 416 个文件 / 7.10 MB；MANIFEST 条目 413
+- 本地文件动作统计: replace=36 keep-prod=179 add=95
+- dist: 74 个文件，树哈希 `5b69bbf75fbedd4717f1cc22e8b6b415c4e15cedd7b77aef36fb45588b18310f`
 
 ## 校验结论
 
 | 校验 | 结果 | 说明 |
 | --- | --- | --- |
-| V1 不缺失生产文件 | PASS | 生产 MANIFEST 299 条；缺失 0；预期缺失（构建元数据/AppleDouble）5；内容变化 24；非 dist 新增 95；dist 替换 38+63 |
-| V2 dist 与源码一致 | PASS | dist/index.html 引用 4 个资源，缺失 0；vite manifest 条目 44（其中 .vue 18 / .tsx 0）；入口 src/main.ts 在产物中：false；仓库源码最新 mtime − dist 最新 mtime = 3s（负值=dist 更新） |
+| V1 不缺失生产文件 | PASS | 生产 MANIFEST 299 条；缺失 0；预期缺失（构建元数据/AppleDouble）5；内容变化 39；非 dist 新增 96；dist 替换 38+63 |
+| V2 dist 与源码一致 | PASS | dist/index.html 引用 4 个资源，缺失 0；vite manifest 条目 44（其中 .vue 18 / .tsx 0）；入口 src/main.ts 在产物中：false；仓库源码最新 mtime − dist 最新 mtime = 2s（负值=dist 更新） |
 | V3 Node 版本 | WARN | 本地构建用的 node：v26.7.0；生产 runtime（/opt/crosery-node-current）：v24.20.0；package.json engines.node：>=24 <25；本地 node major 26 是否落在 >=24 <25：false |
 | V4 MANIFEST 自洽 | PASS | 逐条重算比对 |
 | V5 禁运清单 | PASS | docs/qa、.env、data、node_modules、*.log、*.tar.gz 均未进入 |
@@ -25,9 +25,9 @@
 
 - 缺失的生产文件（必须为空）：无
 - 预期缺失（`.cache/*.tsbuildinfo` 构建元数据、AppleDouble）：._.DS_Store, .cache/tsconfig.app.tsbuildinfo, .cache/tsconfig.node.tsbuildinfo, .cache/tsconfig.server.tsbuildinfo, src/._.DS_Store
-- 相对生产内容不同的文件：24 个（见 release-plan.md 逐文件表）
+- 相对生产内容不同的文件：39 个（见 release-plan.md 逐文件表）
 - 生产 dist 被替换：38 个旧 chunk 移除、63 个新 chunk 加入（Vue 构建，整体替换，见 V2）
-- 新增且生产没有的文件：95 个：.DS_Store, deploy/magpie/CONSOLE-KERNEL.md, deploy/magpie/README.md, deploy/magpie/UPSTREAM.md, deploy/magpie/build.sh, deploy/magpie/kernel/main.go, deploy/magpie/local.mjs, deploy/magpie/upstream/API.md, deploy/magpie/upstream/LICENSE, deploy/magpie/upstream/api.json, docs/research/magpie-cpa-integration.md, packages/contracts/magpie-upstream.generated.ts, packages/contracts/magpie-upstream.ts, scripts/ab-report.mjs, scripts/build-magpie-kernel.mjs, scripts/magpie-api/main.go, scripts/magpie-api/main_test.go, scripts/magpie-console-password.mjs, scripts/magpie-console-password.test.mjs, scripts/magpie-console-smoke.mjs, scripts/magpie-console.mjs, scripts/magpie-local.mjs, scripts/magpie-local.test.mjs, scripts/magpie-service.mjs, scripts/magpie-smoke.mjs, scripts/magpie-upstream.mjs, scripts/magpie-upstream.test.mjs, scripts/tuffex-icon-classes.mjs, server/abLab.ts, server/magpieControl.test.ts, server/magpieControl.ts, server/magpieEngine.test.ts, server/magpieEngine.ts, server/magpieMigration.test.ts, server/magpieMigration.ts, server/magpieOAuth.test.ts, server/magpieOAuth.ts, server/magpieRuntime.ts, server/magpieUpstream.test.ts, server/magpieUpstream.ts …
+- 新增且生产没有的文件：96 个：.DS_Store, deploy/magpie/CONSOLE-KERNEL.md, deploy/magpie/README.md, deploy/magpie/UPSTREAM.md, deploy/magpie/build.sh, deploy/magpie/kernel/main.go, deploy/magpie/local.mjs, deploy/magpie/upstream/API.md, deploy/magpie/upstream/LICENSE, deploy/magpie/upstream/api.json, docs/research/magpie-cpa-integration.md, packages/contracts/magpie-upstream.generated.ts, packages/contracts/magpie-upstream.ts, scripts/ab-report.mjs, scripts/build-magpie-kernel.mjs, scripts/magpie-api/main.go, scripts/magpie-api/main_test.go, scripts/magpie-console-password.mjs, scripts/magpie-console-password.test.mjs, scripts/magpie-console-smoke.mjs, scripts/magpie-console.mjs, scripts/magpie-local.mjs, scripts/magpie-local.test.mjs, scripts/magpie-service.mjs, scripts/magpie-smoke.mjs, scripts/magpie-upstream.mjs, scripts/magpie-upstream.test.mjs, scripts/tuffex-icon-classes.mjs, server/abLab.ts, server/magpieControl.test.ts, server/magpieControl.ts, server/magpieEngine.test.ts, server/magpieEngine.ts, server/magpieMigration.test.ts, server/magpieMigration.ts, server/magpieOAuth.test.ts, server/magpieOAuth.ts, server/magpieRuntime.ts, server/magpieUpstream.test.ts, server/magpieUpstream.ts …
 
 ## 本地文件的发布动作（逐文件，完整）
 
@@ -128,14 +128,14 @@
 | add | `server/abLab.ts` | `111357b3ad2be12e…` | — |
 | keep-prod | `server/accountQuota.test.ts` | `49bcb5a530ea9b50…` | `49bcb5a530ea9b50…` |
 | keep-prod | `server/accountQuota.ts` | `73532b3c51123dcb…` | `73532b3c51123dcb…` |
-| keep-prod | `server/analyticsNavigationFallback.test.ts` | `411e8a529b0d2dae…` | `411e8a529b0d2dae…` |
-| keep-prod | `server/antigravityQuota.test.ts` | `0162edd7827a86ba…` | `0162edd7827a86ba…` |
+| replace | `server/analyticsNavigationFallback.test.ts` | `8e87d2bcbb4d3da8…` | `411e8a529b0d2dae…` |
+| replace | `server/antigravityQuota.test.ts` | `44de2215884703af…` | `0162edd7827a86ba…` |
 | keep-prod | `server/antigravityQuota.ts` | `6cafbc02a1b0b970…` | `6cafbc02a1b0b970…` |
 | keep-prod | `server/auth.test.ts` | `cc52c9f602fb2f1d…` | `cc52c9f602fb2f1d…` |
 | keep-prod | `server/auth.ts` | `3f7f0a2a00cc1319…` | `3f7f0a2a00cc1319…` |
-| keep-prod | `server/cacheAnalytics.test.ts` | `556b3ff49ffdf238…` | `556b3ff49ffdf238…` |
+| replace | `server/cacheAnalytics.test.ts` | `6f5151dc3bf0041a…` | `556b3ff49ffdf238…` |
 | keep-prod | `server/cacheAnalytics.ts` | `ab8febcfb26eb3c2…` | `ab8febcfb26eb3c2…` |
-| keep-prod | `server/cacheLiveHistory.test.ts` | `5ab8f7f638ab09d9…` | `5ab8f7f638ab09d9…` |
+| replace | `server/cacheLiveHistory.test.ts` | `95c7cad7df211478…` | `5ab8f7f638ab09d9…` |
 | keep-prod | `server/cacheLiveHistory.ts` | `4bf4370817b810d8…` | `4bf4370817b810d8…` |
 | keep-prod | `server/cacheStats.test.ts` | `b56f7106b7b2eeec…` | `b56f7106b7b2eeec…` |
 | keep-prod | `server/cacheStats.ts` | `8840b20be1ac0be4…` | `8840b20be1ac0be4…` |
@@ -144,9 +144,9 @@
 | keep-prod | `server/channelDiscovery.test.ts` | `9d27632bdd37f6fa…` | `9d27632bdd37f6fa…` |
 | keep-prod | `server/channelDiscovery.ts` | `a34a33780080f420…` | `a34a33780080f420…` |
 | keep-prod | `server/channels.ts` | `80df0acd7cf85149…` | `80df0acd7cf85149…` |
-| keep-prod | `server/channelView.test.ts` | `c92163cf69a1ed2b…` | `c92163cf69a1ed2b…` |
+| replace | `server/channelView.test.ts` | `6719f1d8fd8baa15…` | `c92163cf69a1ed2b…` |
 | keep-prod | `server/channelView.ts` | `08378191ed1f0080…` | `08378191ed1f0080…` |
-| keep-prod | `server/claudeQuotaCache.test.ts` | `8946efb08b6f4d7f…` | `8946efb08b6f4d7f…` |
+| replace | `server/claudeQuotaCache.test.ts` | `207b6eec6c104b12…` | `8946efb08b6f4d7f…` |
 | keep-prod | `server/claudeQuotaCache.ts` | `ae69b7a0fb67cf3a…` | `ae69b7a0fb67cf3a…` |
 | keep-prod | `server/clientAgent.test.ts` | `1af7aa6355a5a80b…` | `1af7aa6355a5a80b…` |
 | keep-prod | `server/clientAgent.ts` | `a21dca71702505c4…` | `a21dca71702505c4…` |
@@ -165,7 +165,7 @@
 | keep-prod | `server/credentialUploadBatch.ts` | `06828e245f6db222…` | `06828e245f6db222…` |
 | keep-prod | `server/credentialUploadMerge.test.ts` | `8537bba575bfa83f…` | `8537bba575bfa83f…` |
 | keep-prod | `server/credentialUploadMerge.ts` | `88d7b75c73c2d88f…` | `88d7b75c73c2d88f…` |
-| keep-prod | `server/currentChannels.test.ts` | `7ed4cb7b11967b83…` | `7ed4cb7b11967b83…` |
+| replace | `server/currentChannels.test.ts` | `6bf797b02237e0ee…` | `7ed4cb7b11967b83…` |
 | keep-prod | `server/currentChannels.ts` | `0b5144a8a75c3582…` | `0b5144a8a75c3582…` |
 | keep-prod | `server/dashboardSnapshot.test.ts` | `7bffc75d20697c4d…` | `7bffc75d20697c4d…` |
 | keep-prod | `server/dashboardSnapshot.ts` | `7984158b99ca12a1…` | `7984158b99ca12a1…` |
@@ -173,39 +173,39 @@
 | keep-prod | `server/dataPlane.ts` | `995e3b667cd37e8d…` | `995e3b667cd37e8d…` |
 | keep-prod | `server/db.ts` | `e2dd87e441702b41…` | `e2dd87e441702b41…` |
 | replace | `server/gatewayStatus.test.ts` | `5f5dc4a37868b39b…` | `b92fd0198f58270c…` |
-| keep-prod | `server/groups.test.ts` | `0e4e9717f4788593…` | `0e4e9717f4788593…` |
+| replace | `server/groups.test.ts` | `c94f1633e0453872…` | `0e4e9717f4788593…` |
 | keep-prod | `server/groups.ts` | `31b0fba921f552ce…` | `31b0fba921f552ce…` |
 | replace | `server/index.ts` | `e64bb0ad13497977…` | `6d070bcde589beb5…` |
-| keep-prod | `server/keyChannelAccess.test.ts` | `1aa76dd9ebc6d235…` | `1aa76dd9ebc6d235…` |
+| replace | `server/keyChannelAccess.test.ts` | `7b658726830f5fb6…` | `1aa76dd9ebc6d235…` |
 | keep-prod | `server/keyChannelAccess.ts` | `e13a1c640b01ee9e…` | `e13a1c640b01ee9e…` |
-| keep-prod | `server/keyModelAccess.test.ts` | `d67f09a24f728fc6…` | `d67f09a24f728fc6…` |
+| replace | `server/keyModelAccess.test.ts` | `2301ea81133cca23…` | `d67f09a24f728fc6…` |
 | keep-prod | `server/keyModelAccess.ts` | `a1b08bce500000c5…` | `a1b08bce500000c5…` |
 | keep-prod | `server/keyNaming.test.ts` | `5acfec7d95c80675…` | `5acfec7d95c80675…` |
 | keep-prod | `server/keyNaming.ts` | `5a321e480e46b45d…` | `5a321e480e46b45d…` |
 | keep-prod | `server/keyPoolReconcile.test.ts` | `4b3d3487a6df8def…` | `4b3d3487a6df8def…` |
 | keep-prod | `server/keySecrets.test.ts` | `9b9e12beb8dc0ecd…` | `9b9e12beb8dc0ecd…` |
 | keep-prod | `server/keySecrets.ts` | `cce4bdd8eff3c316…` | `cce4bdd8eff3c316…` |
-| keep-prod | `server/liveStream.test.ts` | `d96bf9c640a07a53…` | `d96bf9c640a07a53…` |
+| replace | `server/liveStream.test.ts` | `209860b4eb27bf30…` | `d96bf9c640a07a53…` |
 | keep-prod | `server/liveStream.ts` | `b6fdfe65aec41362…` | `b6fdfe65aec41362…` |
-| add | `server/magpieControl.test.ts` | `123b9c1b850d198d…` | — |
+| add | `server/magpieControl.test.ts` | `c662efb31e0bd0b5…` | — |
 | add | `server/magpieControl.ts` | `974d0a392a0b554f…` | — |
-| add | `server/magpieEngine.test.ts` | `952bb46c0207d44c…` | — |
+| add | `server/magpieEngine.test.ts` | `d01cd41969adade6…` | — |
 | add | `server/magpieEngine.ts` | `a82a2607ad512379…` | — |
-| add | `server/magpieMigration.test.ts` | `8786f8418e9743dc…` | — |
+| add | `server/magpieMigration.test.ts` | `2b2fae02fb29d47d…` | — |
 | add | `server/magpieMigration.ts` | `87847d283ebf18b2…` | — |
-| add | `server/magpieOAuth.test.ts` | `f0bf64b7c4799fc3…` | — |
+| add | `server/magpieOAuth.test.ts` | `01be9f9e6add54f4…` | — |
 | add | `server/magpieOAuth.ts` | `ec6b04d55e13391c…` | — |
 | add | `server/magpieRuntime.ts` | `5eec1ed5edfa167a…` | — |
 | add | `server/magpieUpstream.test.ts` | `f5861e3c9121e313…` | — |
 | add | `server/magpieUpstream.ts` | `e249ed65cc1d9765…` | — |
 | keep-prod | `server/managementCapability.ts` | `091cf1bf71fac007…` | `091cf1bf71fac007…` |
 | keep-prod | `server/managementDegrade.test.ts` | `7892c9f5f2569e7a…` | `7892c9f5f2569e7a…` |
-| keep-prod | `server/modelCatalog.test.ts` | `e812f06e631b78cc…` | `e812f06e631b78cc…` |
+| replace | `server/modelCatalog.test.ts` | `9656e1fd5989e465…` | `e812f06e631b78cc…` |
 | replace | `server/modelCatalog.ts` | `51b579e4fdd25c72…` | `d4f87beca5437777…` |
 | keep-prod | `server/modelIdentity.ts` | `212977c1676ac893…` | `212977c1676ac893…` |
-| keep-prod | `server/modelIndex.test.ts` | `b64d4f9d34828f3f…` | `b64d4f9d34828f3f…` |
+| replace | `server/modelIndex.test.ts` | `fc48934dae1ea399…` | `b64d4f9d34828f3f…` |
 | keep-prod | `server/modelIndex.ts` | `47716f08d79d3ffc…` | `47716f08d79d3ffc…` |
-| add | `server/modelSync.test.ts` | `add8593e141cd2a0…` | — |
+| add | `server/modelSync.test.ts` | `28c33d1bc5c618b1…` | — |
 | add | `server/modelSync.ts` | `8df6e0551a9132ed…` | — |
 | keep-prod | `server/monitorQuotaShare.test.ts` | `f6dbb518fd1933cb…` | `f6dbb518fd1933cb…` |
 | keep-prod | `server/monitorQuotaShare.ts` | `8cbae44d73923090…` | `8cbae44d73923090…` |
@@ -223,9 +223,8 @@
 | keep-prod | `server/nginxUnlimitedReconciler.ts` | `75688b5b827a8804…` | `75688b5b827a8804…` |
 | keep-prod | `server/nginxUnlimitedSync.test.ts` | `f40586e62ab1d871…` | `f40586e62ab1d871…` |
 | keep-prod | `server/nginxUnlimitedSync.ts` | `d34350028263ca0d…` | `d34350028263ca0d…` |
-| keep-prod | `server/oauthAndVersion.test.ts` | `fb79e45f3f044b64…` | `fb79e45f3f044b64…` |
-| keep-prod | `server/oauthGroupResilience.test.ts` | `e9e67abf2cc31627…` | `e9e67abf2cc31627…` |
-| keep-prod | `server/pageMotionVisibility.test.ts` | `4655833b1deeb9ca…` | `4655833b1deeb9ca…` |
+| replace | `server/oauthAndVersion.test.ts` | `1f0f210bf00a4e67…` | `fb79e45f3f044b64…` |
+| replace | `server/oauthGroupResilience.test.ts` | `1d5ca0d4b0dafe2d…` | `e9e67abf2cc31627…` |
 | keep-prod | `server/policy.test.ts` | `2f0e7562dc0f1864…` | `2f0e7562dc0f1864…` |
 | keep-prod | `server/policy.ts` | `ae1d1dc5bebe3f44…` | `ae1d1dc5bebe3f44…` |
 | keep-prod | `server/pricing.data.json` | `db0f549fce0af2ec…` | `db0f549fce0af2ec…` |
@@ -240,11 +239,11 @@
 | keep-prod | `server/quotaEnforcer.ts` | `312b8a55e9e37ec2…` | `312b8a55e9e37ec2…` |
 | keep-prod | `server/quotaLedger.test.ts` | `90af559b1b56a2c4…` | `90af559b1b56a2c4…` |
 | keep-prod | `server/quotaLedger.ts` | `eadeb292f475c7fd…` | `eadeb292f475c7fd…` |
-| keep-prod | `server/reportingGroups.test.ts` | `b646da46af40ec42…` | `b646da46af40ec42…` |
+| replace | `server/reportingGroups.test.ts` | `b9c4c55db67cc36a…` | `b646da46af40ec42…` |
 | keep-prod | `server/reportingGroups.ts` | `6ddce90549b099b5…` | `6ddce90549b099b5…` |
-| keep-prod | `server/reportPageFrontend.test.ts` | `a373e24e9fe7dd55…` | `a373e24e9fe7dd55…` |
-| keep-prod | `server/reportPageLoads.test.ts` | `5cd24591dd6919ce…` | `5cd24591dd6919ce…` |
-| keep-prod | `server/reportRouteWiring.test.ts` | `503682fc2362b2c1…` | `503682fc2362b2c1…` |
+| replace | `server/reportPageFrontend.test.ts` | `c8fe759c7a4856a2…` | `a373e24e9fe7dd55…` |
+| replace | `server/reportPageLoads.test.ts` | `e290afdcf88a9245…` | `5cd24591dd6919ce…` |
+| replace | `server/reportRouteWiring.test.ts` | `163848739b104331…` | `503682fc2362b2c1…` |
 | keep-prod | `server/reportSnapshotCache.test.ts` | `2b8601caf4d510e5…` | `2b8601caf4d510e5…` |
 | keep-prod | `server/reportSnapshotCache.ts` | `62ae986b65b90ab3…` | `62ae986b65b90ab3…` |
 | keep-prod | `server/requestCoordinator.test.ts` | `4e5907ac058b3223…` | `4e5907ac058b3223…` |
@@ -260,6 +259,7 @@
 | keep-prod | `server/staticEntryCaching.test.ts` | `687cd9fc6d54aba2…` | `687cd9fc6d54aba2…` |
 | keep-prod | `server/sync.ts` | `dd5e282313ef9320…` | `dd5e282313ef9320…` |
 | keep-prod | `server/syncScheduler.test.ts` | `031da32bcee017f2…` | `031da32bcee017f2…` |
+| add | `server/testDataDir.ts` | `2cb6077a8987d9af…` | — |
 | keep-prod | `server/timeRange.test.ts` | `1b71007ee4f735fc…` | `1b71007ee4f735fc…` |
 | keep-prod | `server/timeRange.ts` | `4d846e10252d6476…` | `4d846e10252d6476…` |
 | keep-prod | `server/timeWindow.test.ts` | `c164ba079af26cc3…` | `c164ba079af26cc3…` |
@@ -268,7 +268,7 @@
 | keep-prod | `server/uploadGate.ts` | `2ee7ecaa6fc17ccf…` | `2ee7ecaa6fc17ccf…` |
 | keep-prod | `server/usageBreakdown.test.ts` | `0332e9dcd32e7ab8…` | `0332e9dcd32e7ab8…` |
 | keep-prod | `server/usageBreakdown.ts` | `3cad15fa41541ed5…` | `3cad15fa41541ed5…` |
-| keep-prod | `server/usageDetails.test.ts` | `94379992c260d85c…` | `94379992c260d85c…` |
+| replace | `server/usageDetails.test.ts` | `09db903b5169ac74…` | `94379992c260d85c…` |
 | keep-prod | `server/usageDetails.ts` | `c5c26ed4399eadde…` | `c5c26ed4399eadde…` |
 | keep-prod | `server/usageOverview.test.ts` | `b08e9d86a5ca413e…` | `b08e9d86a5ca413e…` |
 | keep-prod | `server/usageOverview.ts` | `f2110d34576031a4…` | `f2110d34576031a4…` |
@@ -285,8 +285,6 @@
 | add | `src/ab/variants/legacy/KeysPage.legacy.vue` | `39d601c36f093839…` | — |
 | add | `src/ab/variants/legacy/OAuthPage.legacy.vue` | `c6b6a72fa3ebb67b…` | — |
 | replace | `src/api.ts` | `d9333809675a39d4…` | `7e5b1b993b0e1014…` |
-| replace | `src/App.css` | `7579fc9fa72e82b0…` | `8a690b2a9505ee4f…` |
-| replace | `src/App.tsx` | `b66ab3dd0bf1c5c2…` | `cf8cff86c20935a6…` |
 | add | `src/App.vue` | `8ee2b3d7ea0c32b8…` | — |
 | keep-prod | `src/assets/hero.png` | `881ffbcaafc212e4…` | `881ffbcaafc212e4…` |
 | keep-prod | `src/assets/react.svg` | `35ef61ed53b323ae…` | `35ef61ed53b323ae…` |
@@ -294,25 +292,15 @@
 | keep-prod | `src/channelLabels.ts` | `70e927dcd550e045…` | `70e927dcd550e045…` |
 | keep-prod | `src/chartTheme.ts` | `3887b8f74c5f15e6…` | `3887b8f74c5f15e6…` |
 | keep-prod | `src/clientLabels.ts` | `5a0b4697ff6d8bbb…` | `5a0b4697ff6d8bbb…` |
-| keep-prod | `src/components/ChannelCreateDialog.tsx` | `aab389c9b72de5a4…` | `aab389c9b72de5a4…` |
-| keep-prod | `src/components/ConfirmDialog.tsx` | `3824d2c8cbba9054…` | `3824d2c8cbba9054…` |
 | add | `src/components/ConfirmHost.vue` | `3bc77b7f1d6dc3ba…` | — |
 | add | `src/components/ConsoleNav.vue` | `9314cab5829b13fd…` | — |
 | add | `src/components/ConsoleShell.vue` | `1604d9e86545b56c…` | — |
 | add | `src/components/EmptyState.vue` | `5a7dfe18159ff0f4…` | — |
 | add | `src/components/ErrorPanel.vue` | `c87697151c57124e…` | — |
 | add | `src/components/LoadingBlock.vue` | `b7ecb1cb93897603…` | — |
-| keep-prod | `src/components/Modal.tsx` | `96fea9b5a91baaa0…` | `96fea9b5a91baaa0…` |
-| keep-prod | `src/components/OAuthLoginDialog.tsx` | `ff9abe9dd5ec8cd1…` | `ff9abe9dd5ec8cd1…` |
 | add | `src/components/PageHeader.vue` | `f1d936c18335131f…` | — |
-| keep-prod | `src/components/QuotaEditor.tsx` | `8c96ef473d5e5071…` | `8c96ef473d5e5071…` |
-| keep-prod | `src/components/RequestDetail.tsx` | `84809c95d34523d8…` | `84809c95d34523d8…` |
 | add | `src/components/RequestDetail.vue` | `6f775f2cd51a2135…` | — |
-| keep-prod | `src/components/ResultDialog.tsx` | `d9ef20126e1f8ae4…` | `d9ef20126e1f8ae4…` |
 | add | `src/components/RtkBoard.vue` | `3ac36bab330ef08e…` | — |
-| keep-prod | `src/components/Select.tsx` | `c403234d9930bbab…` | `c403234d9930bbab…` |
-| keep-prod | `src/components/UsageQueryDialog.tsx` | `50db0f10a65bf2a3…` | `50db0f10a65bf2a3…` |
-| replace | `src/components/VersionWidget.tsx` | `ae82637f324ff95a…` | `211d11d8d62ff0ed…` |
 | add | `src/components/VersionWidget.vue` | `fe7eb9a9c4ebaab1…` | — |
 | keep-prod | `src/docs-entry.tsx` | `380cd962508bf6c8…` | `380cd962508bf6c8…` |
 | keep-prod | `src/docs.css` | `d917fd13a5b569cc…` | `d917fd13a5b569cc…` |
@@ -330,33 +318,19 @@
 | add | `src/lib/resource.ts` | `c37db61cc2893352…` | — |
 | add | `src/lib/viewport.ts` | `ad01626b02c892bc…` | — |
 | add | `src/main.ts` | `4852c7a26490ffcd…` | — |
-| keep-prod | `src/main.tsx` | `74831db3ec773f7e…` | `74831db3ec773f7e…` |
 | add | `src/pages/AbLabPage.vue` | `7a4a7c40f52c795c…` | — |
-| keep-prod | `src/pages/AnalyticsPage.tsx` | `d23ab1b23863ea1e…` | `d23ab1b23863ea1e…` |
 | add | `src/pages/AnalyticsPage.vue` | `c1b286acd95efafa…` | — |
-| keep-prod | `src/pages/CachePage.tsx` | `51763ea282c1dd39…` | `51763ea282c1dd39…` |
 | add | `src/pages/CachePage.vue` | `b1ef27b19217f74f…` | — |
-| keep-prod | `src/pages/ChannelsPage.tsx` | `134d107a0ed32778…` | `134d107a0ed32778…` |
 | add | `src/pages/ChannelsPage.vue` | `49c23e73d2683fd1…` | — |
-| keep-prod | `src/pages/ChartsPage.tsx` | `7a37f4db0ec8e54c…` | `7a37f4db0ec8e54c…` |
 | add | `src/pages/ChartsPage.vue` | `75f72618696242c7…` | — |
-| keep-prod | `src/pages/CredentialUploadPage.tsx` | `ef953a23401ac3a6…` | `ef953a23401ac3a6…` |
-| replace | `src/pages/DashboardPage.tsx` | `b293a278be6f2185…` | `9822b49060d9831e…` |
 | add | `src/pages/DashboardPage.vue` | `ea3d4f37811a0c63…` | — |
-| keep-prod | `src/pages/HelpPage.tsx` | `a33a286da78b3a31…` | `a33a286da78b3a31…` |
 | add | `src/pages/HelpPage.vue` | `b28f1aa08ed55c29…` | — |
-| keep-prod | `src/pages/KeysPage.tsx` | `b714d94d55e89e38…` | `b714d94d55e89e38…` |
 | add | `src/pages/KeysPage.vue` | `33644af6b3f697e2…` | — |
-| keep-prod | `src/pages/LoginPage.tsx` | `8286c8e036676eb3…` | `8286c8e036676eb3…` |
 | add | `src/pages/LoginPage.vue` | `8c25e66626fad378…` | — |
-| replace | `src/pages/ModelsPage.tsx` | `b6950bebe329bba2…` | `e29c6d44a1f5ffd2…` |
-| add | `src/pages/ModelsPage.vue` | `8c332cae0a7c1681…` | — |
-| keep-prod | `src/pages/MonitorPage.tsx` | `024c3d55a3c23a10…` | `024c3d55a3c23a10…` |
+| add | `src/pages/ModelsPage.vue` | `860663072834ddca…` | — |
 | add | `src/pages/MonitorPage.vue` | `9319809044fa1780…` | — |
-| keep-prod | `src/pages/OAuthPage.tsx` | `3a8ecd39fd4d2f09…` | `3a8ecd39fd4d2f09…` |
 | add | `src/pages/OAuthPage.vue` | `c106c0be5395af24…` | — |
 | add | `src/pages/RtkPage.vue` | `3a214a0a504422aa…` | — |
-| keep-prod | `src/pages/UsagePage.tsx` | `2e327c46877f82db…` | `2e327c46877f82db…` |
 | add | `src/pages/UsagePage.vue` | `e3e8b7bb1a2442d2…` | — |
 | keep-prod | `src/request-details.css` | `bdc3e0f267d2a2f1…` | `bdc3e0f267d2a2f1…` |
 | add | `src/router.ts` | `cf6df21d1353b619…` | — |
@@ -372,7 +346,7 @@
 
 ## 被排除的本地文件（不进入 release）
 
-- 统计：工作区缺失 × 73；never-ship 规则 × 110
-- 明细（前 40）："docs/Crosery-API-Console-\347\256\241\347\220\206\345\221\230\344\275\277\347\224\250\350\257\264\346\230\216.docx", docs/qa/COORDINATION.md, docs/qa/ab/README.md, docs/qa/ab/comparison.md, "docs/qa/ab/shots/00-lab-\345\205\245\345\217\243.png", "docs/qa/ab/shots/01-lab-\346\212\225\347\245\250\346\210\220\345\212\237.png", "docs/qa/ab/shots/f1-keys-a-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-a-\345\210\240\351\231\244\347\241\256\350\256\244\345\217\240\345\261\202.png", "docs/qa/ab/shots/f1-keys-a-\345\210\267\346\226\260\345\220\216\344\270\242\345\244\261.png", "docs/qa/ab/shots/f1-keys-a-\346\220\234\347\264\242\345\220\216.png", "docs/qa/ab/shots/f1-keys-a-\351\242\235\345\272\246\345\274\271\347\252\227.png", "docs/qa/ab/shots/f1-keys-b-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-b-\345\210\240\351\231\244\347\241\256\350\256\244.png", "docs/qa/ab/shots/f1-keys-b-\345\210\267\346\226\260\345\220\216\344\277\235\346\214\201.png", "docs/qa/ab/shots/f1-keys-b-\351\207\215\347\275\256\346\234\211\347\241\256\350\256\244.png", "docs/qa/ab/shots/f2-rtk-a-\344\270\273\350\247\206\345\233\276.png", "docs/qa/ab/shots/f2-rtk-a-\346\226\207\346\241\243\351\235\242.png", "docs/qa/ab/shots/f2-rtk-b-\346\226\260\345\242\236RTK\351\235\242.png", "docs/qa/ab/shots/f3-dash-a-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-a-\351\246\226\345\261\217.png", "docs/qa/ab/shots/f3-dash-b-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-b-\351\246\226\345\261\217.png", "docs/qa/ab/shots/r1-dashboard-a-\346\227\240\345\206\231\350\267\257\345\276\204.png", "docs/qa/ab/shots/r1-help-a-\345\244\215\345\210\266\346\227\240\350\257\267\346\261\202.png", "docs/qa/ab/shots/r1-keys-a-\351\207\215\347\275\256\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-oauth-a-\345\274\200\345\247\213\347\231\273\345\275\225\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-vote-\351\200\232\351\201\223\346\201\242\345\244\215.png", docs/qa/blue/rtk-control-plane.md, docs/qa/blue/rtk-round2-fixes.md, docs/qa/blue/rtk-round3-fixes.md, docs/qa/blue/shots/after-analytics-deeplink-30d.png, docs/qa/blue/shots/after-analytics-mobile-390.png, docs/qa/blue/shots/after-channels-mobile-390.png, docs/qa/blue/shots/after-charts-desktop.png, docs/qa/blue/shots/after-dashboard-desktop.png, docs/qa/blue/shots/after-keys-deeplink-search.png, docs/qa/blue/shots/after-keys-delete-confirm-focus.png, docs/qa/blue/shots/after-keys-delete-confirm.png, docs/qa/blue/shots/after-keys-desktop.png, docs/qa/blue/shots/after-keys-error-retry.png …
+- 统计：工作区缺失 × 73；never-ship 规则 × 123
+- 明细（前 40）："docs/Crosery-API-Console-\347\256\241\347\220\206\345\221\230\344\275\277\347\224\250\350\257\264\346\230\216.docx", docs/qa/COORDINATION.md, docs/qa/ab/README.md, docs/qa/ab/comparison.md, "docs/qa/ab/shots/00-lab-\345\205\245\345\217\243.png", "docs/qa/ab/shots/01-lab-\346\212\225\347\245\250\346\210\220\345\212\237.png", "docs/qa/ab/shots/f1-keys-a-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-a-\345\210\240\351\231\244\347\241\256\350\256\244\345\217\240\345\261\202.png", "docs/qa/ab/shots/f1-keys-a-\345\210\267\346\226\260\345\220\216\344\270\242\345\244\261.png", "docs/qa/ab/shots/f1-keys-a-\346\220\234\347\264\242\345\220\216.png", "docs/qa/ab/shots/f1-keys-a-\351\242\235\345\272\246\345\274\271\347\252\227.png", "docs/qa/ab/shots/f1-keys-b-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-b-\345\210\240\351\231\244\347\241\256\350\256\244.png", "docs/qa/ab/shots/f1-keys-b-\345\210\267\346\226\260\345\220\216\344\277\235\346\214\201.png", "docs/qa/ab/shots/f1-keys-b-\351\207\215\347\275\256\346\234\211\347\241\256\350\256\244.png", "docs/qa/ab/shots/f2-rtk-a-\344\270\273\350\247\206\345\233\276.png", "docs/qa/ab/shots/f2-rtk-a-\346\226\207\346\241\243\351\235\242.png", "docs/qa/ab/shots/f2-rtk-b-\346\226\260\345\242\236RTK\351\235\242.png", "docs/qa/ab/shots/f3-dash-a-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-a-\351\246\226\345\261\217.png", "docs/qa/ab/shots/f3-dash-b-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-b-\351\246\226\345\261\217.png", "docs/qa/ab/shots/r1-dashboard-a-\346\227\240\345\206\231\350\267\257\345\276\204.png", "docs/qa/ab/shots/r1-help-a-\345\244\215\345\210\266\346\227\240\350\257\267\346\261\202.png", "docs/qa/ab/shots/r1-keys-a-\351\207\215\347\275\256\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-oauth-a-\345\274\200\345\247\213\347\231\273\345\275\225\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-vote-\351\200\232\351\201\223\346\201\242\345\244\215.png", docs/qa/blue/dead-tree-cleanup.md, docs/qa/blue/rtk-control-plane.md, docs/qa/blue/rtk-round2-fixes.md, docs/qa/blue/rtk-round3-fixes.md, docs/qa/blue/shots/after-analytics-deeplink-30d.png, docs/qa/blue/shots/after-analytics-mobile-390.png, docs/qa/blue/shots/after-channels-mobile-390.png, docs/qa/blue/shots/after-charts-desktop.png, docs/qa/blue/shots/after-dashboard-desktop.png, docs/qa/blue/shots/after-keys-deeplink-search.png, docs/qa/blue/shots/after-keys-delete-confirm-focus.png, docs/qa/blue/shots/after-keys-delete-confirm.png, docs/qa/blue/shots/after-keys-desktop.png …
 
 > 本脚本只在临时目录组装；真实上机时基底用 `cp -a` 从生产 release 复制（含 node_modules），本演练快照不含 node_modules。

@@ -1,20 +1,29 @@
 {
-  "releaseId": "20260925-official-oauth-page-aligned",
-  "createdAt": "2026-09-25T12:15:00+00:00",
-  "baseRelease": "/opt/crosery-api-console-releases/20260925-oauth-modes-ui-refine",
-  "sourceRepository": "/opt/crosery-api-console",
-  "source": "对标 CPA 官方管理面板完整重构 OAuth 登录能力：新增独立的「OAuth 授权登录」一级页面与提供商卡片网格；全面对齐官方接口协议（追加 is_webui=true 启动回环监听、支持完整回调 URL 与授权码深度解析回填、实时轮询检测状态并在认证成功后自动持久化凭据与上线模型）；凭据导入支持通用 CPA 认证文件；渠道账号管理一键直达 OAuth 页面。",
-  "baseline": "For the next release, copy THIS directory.",
-  "changes": [
-    "src/pages/OAuthPage.tsx",
-    "src/pages/ChannelsPage.tsx",
-    "src/App.tsx",
-    "src/App.css",
-    "server/cpa.ts",
-    "server/credentialUpload.ts",
-    "server/oauthAndVersion.test.ts",
-    "dist/**",
-    "MANIFEST.sha256",
-    "RELEASE.json"
-  ]
+ "releaseId": "local-working-tree-20261001",
+ "createdAt": "2026-10-01T01:54:00.106Z",
+ "baseline": "LOCAL COPY — 本文件描述的是**本地仓库工作树**，不是任何已发布的生产 release。 生产 release 的元数据以 release 目录里的那份为准：`/opt/crosery-api-console-releases/<release-id>/RELEASE.json`（例如当前生产 `20260928-reset-clears-cooldown`）。发布时由 docs/qa/deploy/assemble-release.mjs 按 `deploy/edge/README.md:37-44`「复制当前 release 再叠加」的流程重新生成 release 内的 RELEASE.json。",
+ "sourceRepository": "/Users/crosery/work_file/crosery-api-console",
+ "source": "本地工作树：Tuffex/Vue 3 前端迁移（React 死树已移除）+ Magpie 内核适配与动态模型同步 + RTK 三平面控制面 + 生产补丁回移（清冷却、凭据导入收口、gpt-image 默认开放）+ 测试夹具每进程独立 DATA_DIR。",
+ "baseRelease": "/opt/crosery-api-console-releases/20260928-reset-clears-cooldown",
+ "changes": [
+  "src/**（Vue 3 + Tuffex 重写；React 死树于 e52617a / fabd4fe 移除，清单中已无任何 .tsx）",
+  "server/rtkService.ts, server/rtkPlane.ts, src/pages/RtkPage.vue（RTK 三平面控制面：kernel/relay/local）",
+  "server/magpie*.ts, server/modelSync.ts, deploy/magpie/**（Magpie 内核适配与动态模型同步）",
+  "server/cpa.ts, server/index.ts, server/cooldownClear.test.ts, server/credentialUpload.ts（生产 20260926/20260928 补丁回移）",
+  "server/testDataDir.ts 与 22 个 server/*.test.ts（测试夹具：每进程独立 DATA_DIR）",
+  "MANIFEST.sha256",
+  "RELEASE.json"
+ ],
+ "provenance": {
+  "localHead": "fabd4fe6365925af09401e401556102e71176faf",
+  "generatedBy": "docs/qa/deploy/refresh-root-metadata.mjs",
+  "workingTreeDirty": true,
+  "workingTreeChanges": [
+   " M MANIFEST.sha256",
+   " M RELEASE.json",
+   "?? docs/qa/deploy/refresh-root-metadata.mjs",
+   "?? public/tuffex-dashboard-preview.png"
+  ],
+  "manifestEntries": 310
+ }
 }

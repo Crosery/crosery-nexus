@@ -2,7 +2,7 @@
 
 - **日期**：2026-10-01 ｜ **任务**：task-15 ｜ **执行**：deploy-reconciler ｜ **状态**：准备与本地演练完成，**未触碰生产**
 - **目标 release 基底**：`/opt/crosery-api-console-current` → `20260928-reset-clears-cooldown`（下面简称 **BASE**）
-- **发布源（本轮刷新）**：**`26554bd`（本地 HEAD）** —— 定义：以「组装时 `git rev-parse HEAD` 的提交」为发布源，本次 = `26554bd docs(qa): record the RTK round-3 adversarial verification`；其代码内容 = `9e78045`（最后一个非 docs 提交），`docs/qa/**` 属 QA 产物、被组装脚本排除（不进入 release）。上机前请再用 `git rev-parse HEAD` 复核一次（见 §3.0）
+- **发布源（本轮刷新）**：**`fabd4fe`（本地 HEAD）** —— 定义：以「组装时 `git rev-parse HEAD` 的提交」为发布源。本轮序列：`26554bd`（task-18 刷新点）→ `9a9b9db`/`527bb47`（测试夹具 + 本轮文档）→ `e52617a`（删除 25 个 React 死文件）→ **`fabd4fe`（删除死树残留 `src/App.css`、`server/pageMotionVisibility.test.ts`，当前 HEAD）**。上机前请再用 `git rev-parse HEAD` 复核；HEAD 一动就重跑组装（§A2 命令）。
 - **配套**：[assemble-release.mjs](<docs/qa/deploy/assemble-release.mjs>)（组装+校验）、[release-runbook.md](<docs/qa/deploy/release-runbook.md>)（上机步骤与回退）
 - **发布不做删除**（Lead 决定）：release 里 `src/**/*.tsx` 沿用 BASE 版本，本地对死树的删除不同步进 release，见 §4.4。
 - **本方案遵守** `deploy/edge/README.md:37-44`：**以 BASE 复制为基底再叠加**，不用本地树整体替换。
@@ -11,7 +11,7 @@
 
 ## 0. 结论（TL;DR）
 
-1. 发布内容 = **BASE 全量文件** + **115 个本地非 dist 文件**（replace 21 / add 94）+ **可选的新 dist**。本地演练两种模式都通过校验：**0 个生产文件缺失**。
+1. 发布内容 = **BASE 全量文件** + **131 个本地非 dist 文件**（replace 36 / add 95）+ **可选的新 dist**（发布源 `fabd4fe`）。本地演练两种模式都通过校验：**0 个生产文件缺失**。
 2. **前端要不要一起发，是产品决策**（§1）：本地这批工作把前端从 React 换成了 Vue/Tuffex，且**本地已无法再构建 React 控制台**（证据 §1.3）——所以「保留 React」等于冻结现有 UI、以后只能手改生产里的预构建 dist。
 3. 服务端变更面很小且大部分**只在 magpie 模式下生效**：生产 `.env` 未设置 `GATEWAY_ENGINE`（=默认 `cpa`），所以 Magpie/RTK 代码路径在生产默认**休眠**；真正会在生产生效的只有 **① 额度重置清冷却（事故修复）② 凭据导入端点安全收口 ③ bootstrap 并发读 ④ 新增 `/api/rtk/*`、`/api/ab/preference` 端点**。
 4. **schema 无变化**：`server/db.ts`、`server/quotaLedger.ts`、`server/usageRollup.ts` 与生产**逐字节相同**（§7.1）——生产 3.7GB 的 `console.db` 不会因这次发布重新迁移。
@@ -26,8 +26,8 @@
 | | **选项 A：全量发布（含 Vue）** | **选项 B：只发服务端（保留 React）** |
 | --- | --- | --- |
 | 组装命令 | `--frontend=vue` | `--frontend=keep-prod` |
-| 组装树 | **415 文件 / 7.09 MB**；MANIFEST 412 条 | **341 文件 / 5.87 MB**；MANIFEST 338 条 |
-| 非 dist 变更 | **replace 21 / add 94（共 115）** | **replace 11 / add 45（共 56）** |
+| 组装树 | **416 文件 / 7.10 MB**；MANIFEST 413 条 | **342 文件 / 5.88 MB**；MANIFEST 339 条 |
+| 非 dist 变更 | **replace 36 / add 95（共 131）** | **replace 31 / add 46（共 77）** |
 | `dist/**` | 本地 Vue 构建 74 个文件**整体替换**生产的 49 个 | **保留生产原样 49 个文件**（不重建） |
 | 用户可见变化 | 全站 UI 换 Vue/Tuffex；新增 RTK 页与 A/B 实验室；**「凭据导入」入口消失**（`92a0835` 有意下线，服务端端点仍在且有安全收口）；路由改为 history 模式（深度链接可用，回退已存在，见 §1.2） | UI 与今天完全一致（React 老界面，含「凭据导入」入口） |
 | 服务端能力 | 安全收口 + 冷却清除 + bootstrap 并发 + RTK/AB 端点 + Magpie 代码（默认休眠） | 同上（完全一致） |
@@ -65,9 +65,9 @@
 | 类别 | 数量 | 说明 |
 | --- | --- | --- |
 | BASE 原样保留 | 221 个本地跟踪文件与生产逐字节相同（不复制、不覆盖） | 组装脚本按哈希判定，动作标 `keep-prod` |
-| 生产侧文件被替换 | 21（vue 模式）/ 11（keep-prod） | 见 §3 表 A |
-| 生产没有的新文件 | 94（vue）/ 45（keep-prod） | 同上 |
-| V1「内容变化」（含 dist 同名路径） | 24（vue）/ 11（keep-prod） | dist 的 `favicon.ico`、`icon-*.png`、`docs.html` 等在两版 dist 中同名不同内容 |
+| 生产侧文件被替换 | 36（vue 模式）/ 31（keep-prod） | 见 §3 表 A |
+| 生产没有的新文件 | 95（vue）/ 46（keep-prod） | 同上 |
+| V1「内容变化」（含 dist 同名路径） | 39（vue）/ 31（keep-prod） | dist 的 `favicon.ico`、`icon-*.png`、`docs.html` 等在两版 dist 中同名不同内容 |
 | `dist/**` | 74（vue，整体替换）/ 49（keep-prod，原样） | 见 §4 |
 | 预期缺失（可接受） | 5 = `.cache/*.tsbuildinfo` ×3 + `._.DS_Store` ×2 类 | 构建元数据与 AppleDouble，不参与运行 |
 | 生产文件缺失 | **0** | 校验 V1 通过 |
@@ -80,35 +80,182 @@
 > 生成方式：`/tmp/cac-deploy-recon/clean-repo`（本地 HEAD `0e27b9e` 的干净克隆）与 `prod-release-snapshot`（BASE 的只读快照）逐文件 sha256 对比；`来源 commit` = `git log -1 -- <path>`。
 > 完整 64 位哈希见 `docs/qa/deploy/evidence/assembly-report-vue.md` 的逐文件表；下表为 16 位前缀。
 
-### 3.0 相对上一版草稿的 delta（发布源 `0e27b9e` → `26554bd`）
+### 3.0 相对上一版草稿的 delta（`26554bd` → `fabd4fe`）
 
-**文件集合没有任何增减**（两版都是 115 个非 dist 文件、same 22 replace / 94 add），delta 全部是**内容与来源 commit 的位移**，共 **16 个文件**（`e0ac1ec` = /models 分页排序筛选与陈旧数据横幅、`3118990`/`9e78045` = RTK 备份保护与串行闸）：
+上一版草稿发布于 task-18（发布源 `26554bd`，115 个非 dist 文件）。此后本地推进了 4 个提交，清单与哈希变化如下（**净 +16 个文件**）：
 
-| 文件 | 动作 | 上一版 sha256 | 新版 sha256 | 变更 | 新来源 commit |
+| 变化 | 数量 | 明细 |
+| --- | --- | --- |
+| **新进入清单** | **+21** | task-18 给 22 个测试文件加了 `import './testDataDir.js'`，其中 21 个从「与生产逐字节相同」变成 `replace`（`server/antigravityQuota.test.ts`、`cacheAnalytics`、`cacheLiveHistory`、`channelView`、`claudeQuotaCache`、`currentChannels`、`groups`、`keyChannelAccess`、`keyModelAccess`、`liveStream`、`magpieControl`、`magpieEngine`、`magpieMigration`、`magpieOAuth`、`modelCatalog`、`modelIndex`、`modelSync`、`oauthAndVersion`、`oauthGroupResilience`、`reportPageLoads`、`reportingGroups`） |
+| **移出清单** | **−5** | `e52617a`/`fabd4fe` 删掉且**本地曾改过**的文件：`src/App.css`、`src/App.tsx`、`src/components/VersionWidget.tsx`、`src/pages/DashboardPage.tsx`、`src/pages/ModelsPage.tsx` —— 删除后不再被本地覆盖，release 里回落到 **BASE 版本**（即 §4.4 的「发布不做删除」决定） |
+| **清单内哈希变化** | **6** | `server/magpie{Control,Engine,Migration,OAuth}.test.ts`、`server/modelSync.test.ts`（同上的 import）、`src/pages/ModelsPage.vue`（`e0ac1ec` 之后的又一次 UI 调整） |
+| **合计** | **115 → 131** | `replace` 21 → 36；`add` 94 → 95；`keep-prod` 221 → 179 |
+
+配套产物变化：`dist` 树哈希 `3419fe9f…` → **`5b69bbf7…`**（仍是 74 个文件）；`keep-prod` 模式保留生产 dist（`655bec5e…` 不变）。
+校验结论：**两模式依旧 PASS、缺失生产文件 = 0**（V1/V2/V4/V5 PASS，V3 同一对已知 WARN），**没有放宽任何规则**。
+另外：`fabd4fe` 后 `vite manifest` 里 `.tsx` 条目为 **0**（死树清理完成），`.vue` 条目 18。
+
+### 3.1 逐文件清单（发布源 `fabd4fe`）
+
+## 表 A：发布内容逐文件清单（vue 模式，非 dist，发布源 HEAD=fabd4fe）
+
+### A.server（43 个）
+
+| 文件 | 动作 | 本地 sha256 | 生产 sha256 | 来源 commit | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `server/rtkService.test.ts` | add | `6e483564af47b649…` | `d52fad22169bc5ca…` | 内容更新（commit f653bef → 9e78045） | `9e78045` |
-| `server/rtkService.ts` | add | `2d05ed259fd7a2ac…` | `2d1d039ab9437e59…` | 内容更新（commit f653bef → 9e78045） | `9e78045` |
-| `src/components/ErrorPanel.vue` | add | `983c25e2ab16fbd0…` | `c87697151c57124e…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/components/RtkBoard.vue` | add | `c16b4ab881c07bfe…` | `3ac36bab330ef08e…` | 内容更新（commit 0e27b9e → 9e78045） | `9e78045` |
-| `src/pages/AnalyticsPage.vue` | add | `d5f4de969d129b04…` | `c1b286acd95efafa…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/CachePage.vue` | add | `6b02c180bef9b989…` | `b1ef27b19217f74f…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/ChannelsPage.vue` | add | `c0facf966c98944b…` | `49c23e73d2683fd1…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/ChartsPage.vue` | add | `d451e34704e712de…` | `75f72618696242c7…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/DashboardPage.vue` | add | `bd759422058fa870…` | `ea3d4f37811a0c63…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/KeysPage.vue` | add | `c1f63e004d51f990…` | `33644af6b3f697e2…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/ModelsPage.vue` | add | `6b79ccd08d4a3d46…` | `8c332cae0a7c1681…` | 内容更新（commit 7b71f6d → e0ac1ec） | `e0ac1ec` |
-| `src/pages/MonitorPage.vue` | add | `5c5976d7bbf6a7a9…` | `9319809044fa1780…` | 内容更新（commit ccee64e → e0ac1ec） | `e0ac1ec` |
-| `src/pages/OAuthPage.vue` | add | `3e989763a3d8c603…` | `c106c0be5395af24…` | 内容更新（commit 12f7699 → e0ac1ec） | `e0ac1ec` |
-| `src/pages/RtkPage.vue` | add | `8383fe251cbe0697…` | `3a214a0a504422aa…` | 内容更新（commit f653bef → 3118990） | `3118990` |
-| `src/pages/UsagePage.vue` | add | `4df05baf5629f5a9…` | `e3e8b7bb1a2442d2…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
-| `src/types.ts` | replace | `887b6781c04ee8a0…` | `2ee08a2ce25c436e…` | 内容更新（commit f653bef → 9e78045） | `9e78045` |
+| `server/abLab.ts` | add | `111357b3ad2be12e…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `server/analyticsNavigationFallback.test.ts` | replace | `8e87d2bcbb4d3da8…` | `411e8a529b0d2dae…` | `e52617a` | chore(console): 删除 25 个无人引用的 React 死文件，测试改为断言活代码 |
+| `server/antigravityQuota.test.ts` | replace | `44de2215884703af…` | `0162edd7827a86ba…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/cacheAnalytics.test.ts` | replace | `6f5151dc3bf0041a…` | `556b3ff49ffdf238…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/cacheLiveHistory.test.ts` | replace | `95c7cad7df211478…` | `5ab8f7f638ab09d9…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/channelView.test.ts` | replace | `6719f1d8fd8baa15…` | `c92163cf69a1ed2b…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/claudeQuotaCache.test.ts` | replace | `207b6eec6c104b12…` | `8946efb08b6f4d7f…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/config.ts` | replace | `66f5760e727e6ef8…` | `77cdbf772bcaed66…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `server/cpa.ts` | replace | `cd3ac927d23aeb61…` | `bd97f7ed62279405…` | `c91b592` | fix(server): merge production cooldown patch and honest rtk/oauth connection status |
+| `server/currentChannels.test.ts` | replace | `6bf797b02237e0ee…` | `7ed4cb7b11967b83…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/gatewayStatus.test.ts` | replace | `5f5dc4a37868b39b…` | `b92fd0198f58270c…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `server/groups.test.ts` | replace | `c94f1633e0453872…` | `0e4e9717f4788593…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/index.ts` | replace | `e64bb0ad13497977…` | `6d070bcde589beb5…` | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
+| `server/keyChannelAccess.test.ts` | replace | `7b658726830f5fb6…` | `1aa76dd9ebc6d235…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/keyModelAccess.test.ts` | replace | `2301ea81133cca23…` | `d67f09a24f728fc6…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/liveStream.test.ts` | replace | `209860b4eb27bf30…` | `d96bf9c640a07a53…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/magpieControl.test.ts` | add | `c662efb31e0bd0b5…` | — | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/magpieControl.ts` | add | `974d0a392a0b554f…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
+| `server/magpieEngine.test.ts` | add | `d01cd41969adade6…` | — | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/magpieEngine.ts` | add | `a82a2607ad512379…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `server/magpieMigration.test.ts` | add | `2b2fae02fb29d47d…` | — | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/magpieMigration.ts` | add | `87847d283ebf18b2…` | — | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `server/magpieOAuth.test.ts` | add | `01be9f9e6add54f4…` | — | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/magpieOAuth.ts` | add | `ec6b04d55e13391c…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
+| `server/magpieRuntime.ts` | add | `5eec1ed5edfa167a…` | — | `92a0835` | feat(ui): remove credentials upload from navigation and harden runtime channel resolution |
+| `server/magpieUpstream.test.ts` | add | `f5861e3c9121e313…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `server/magpieUpstream.ts` | add | `e249ed65cc1d9765…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
+| `server/modelCatalog.test.ts` | replace | `9656e1fd5989e465…` | `e812f06e631b78cc…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/modelCatalog.ts` | replace | `51b579e4fdd25c72…` | `d4f87beca5437777…` | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
+| `server/modelIndex.test.ts` | replace | `fc48934dae1ea399…` | `b64d4f9d34828f3f…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/modelSync.test.ts` | add | `28c33d1bc5c618b1…` | — | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/modelSync.ts` | add | `8df6e0551a9132ed…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
+| `server/oauthAndVersion.test.ts` | replace | `1f0f210bf00a4e67…` | `fb79e45f3f044b64…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/oauthGroupResilience.test.ts` | replace | `1d5ca0d4b0dafe2d…` | `e9e67abf2cc31627…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/reportPageFrontend.test.ts` | replace | `c8fe759c7a4856a2…` | `a373e24e9fe7dd55…` | `e52617a` | chore(console): 删除 25 个无人引用的 React 死文件，测试改为断言活代码 |
+| `server/reportPageLoads.test.ts` | replace | `e290afdcf88a9245…` | `5cd24591dd6919ce…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/reportRouteWiring.test.ts` | replace | `163848739b104331…` | `503682fc2362b2c1…` | `e52617a` | chore(console): 删除 25 个无人引用的 React 死文件，测试改为断言活代码 |
+| `server/reportingGroups.test.ts` | replace | `b9c4c55db67cc36a…` | `b646da46af40ec42…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/rtkPlane.ts` | add | `94b19d02d95e4493…` | — | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
+| `server/rtkService.test.ts` | add | `d52fad22169bc5ca…` | — | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
+| `server/rtkService.ts` | add | `2d1d039ab9437e59…` | — | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
+| `server/testDataDir.ts` | add | `2cb6077a8987d9af…` | — | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
+| `server/usageDetails.test.ts` | replace | `09db903b5169ac74…` | `94379992c260d85c…` | `9a9b9db` | test(server): isolate DATA_DIR per test process and refresh the relay release plan |
 
-delta 文件数：16
+### A.packages（2 个）
 
-配套产物变化：`dist` 树哈希 `e38301a4…` → **`3419fe9f…`**（74 个文件）；`keep-prod` 模式的 dist 保持生产 49 个文件（树哈希 `655bec5e…` 不变，因为不重建）。
-校验结论两版一致：**V1 缺失生产文件 = 0**、V2/V3/V4/V5 无新增失败（V3 仍是同一对已知 WARN）。
+| 文件 | 动作 | 本地 sha256 | 生产 sha256 | 来源 commit | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `packages/contracts/magpie-upstream.generated.ts` | add | `1af18692eeef76d6…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `packages/contracts/magpie-upstream.ts` | add | `438eb6e44b811eba…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
 
-> 上机前复核发布源：`git rev-parse HEAD` 必须等于本文记录的 `26554bd`（或按 §3.2 重新生成 delta）；若 HEAD 已推进，请重跑一次组装而不是直接用旧草稿。
+### A.frontend（54 个）
+
+| 文件 | 动作 | 本地 sha256 | 生产 sha256 | 来源 commit | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `index.html` | replace | `84463748f75abca8…` | `cbaebd60a21b9086…` | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `src/App.vue` | add | `8ee2b3d7ea0c32b8…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/ab/flows.ts` | add | `2ff6305ade41f03a…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/labState.ts` | add | `33d80d748637b2cd…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/preference.ts` | add | `fe9b0c086e536ae1…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/readOnlyGate.ts` | add | `99d31b006b9d1d86…` | — | `9df1c04` | fix(qa): gate the lab read-only across api, fetch and XHR without blocking votes |
+| `src/ab/registry.ts` | add | `9f757cb717bac6fb…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/variants/legacy/DashboardPage.legacy.vue` | add | `d98e83ded8187317…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/variants/legacy/HelpPage.legacy.vue` | add | `750c2edb312b6cef…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/variants/legacy/KeysPage.legacy.vue` | add | `39d601c36f093839…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/ab/variants/legacy/OAuthPage.legacy.vue` | add | `c6b6a72fa3ebb67b…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/api.ts` | replace | `d9333809675a39d4…` | `7e5b1b993b0e1014…` | `c91b592` | fix(server): merge production cooldown patch and honest rtk/oauth connection status |
+| `src/components/ConfirmHost.vue` | add | `3bc77b7f1d6dc3ba…` | — | `ccee64e` | fix(console): keep confirm dialogs closable and surface un-cleared cooldowns |
+| `src/components/ConsoleNav.vue` | add | `9314cab5829b13fd…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/components/ConsoleShell.vue` | add | `1604d9e86545b56c…` | — | `ccee64e` | fix(console): keep confirm dialogs closable and surface un-cleared cooldowns |
+| `src/components/EmptyState.vue` | add | `5a7dfe18159ff0f4…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/components/ErrorPanel.vue` | add | `c87697151c57124e…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/components/LoadingBlock.vue` | add | `b7ecb1cb93897603…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/components/PageHeader.vue` | add | `f1d936c18335131f…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/components/RequestDetail.vue` | add | `6f775f2cd51a2135…` | — | `7b71f6d` | feat(ui): migrate data and monitor pages to vue 3 and tuffex |
+| `src/components/RtkBoard.vue` | add | `3ac36bab330ef08e…` | — | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
+| `src/components/VersionWidget.vue` | add | `fe7eb9a9c4ebaab1…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/env.d.ts` | add | `53e97f03f7ace951…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `src/gatewayStatus.ts` | replace | `d8dc7050850fdd90…` | `a9435f81748fb301…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `src/lib/breadcrumbs.ts` | add | `68bf3508bcc87ce0…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/lib/confirm.ts` | add | `0e48845bbe992ab5…` | — | `ccee64e` | fix(console): keep confirm dialogs closable and surface un-cleared cooldowns |
+| `src/lib/errors.ts` | add | `1764ace314df5cd6…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/lib/focus.ts` | add | `b4fd0e763fe9f521…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/lib/format.ts` | add | `51550fac4126cd7a…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/lib/icons.ts` | add | `f1160a1b2dfff230…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `src/lib/listState.ts` | add | `e4609b9d1e2c5449…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/lib/resource.ts` | add | `c37db61cc2893352…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/lib/viewport.ts` | add | `ad01626b02c892bc…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/main.ts` | add | `4852c7a26490ffcd…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `src/pages/AbLabPage.vue` | add | `7a4a7c40f52c795c…` | — | `9df1c04` | fix(qa): gate the lab read-only across api, fetch and XHR without blocking votes |
+| `src/pages/AnalyticsPage.vue` | add | `c1b286acd95efafa…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/CachePage.vue` | add | `b1ef27b19217f74f…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/ChannelsPage.vue` | add | `49c23e73d2683fd1…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/ChartsPage.vue` | add | `75f72618696242c7…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/DashboardPage.vue` | add | `ea3d4f37811a0c63…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/HelpPage.vue` | add | `b28f1aa08ed55c29…` | — | `0e27b9e` | docs(rtk): say that a hook change needs a client restart before it takes effect |
+| `src/pages/KeysPage.vue` | add | `33644af6b3f697e2…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/LoginPage.vue` | add | `8c25e66626fad378…` | — | `281c30e` | fix(auth): fix login navigation guard and purge emojis across auth views |
+| `src/pages/ModelsPage.vue` | add | `860663072834ddca…` | — | `e52617a` | chore(console): 删除 25 个无人引用的 React 死文件，测试改为断言活代码 |
+| `src/pages/MonitorPage.vue` | add | `9319809044fa1780…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/OAuthPage.vue` | add | `c106c0be5395af24…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/RtkPage.vue` | add | `3a214a0a504422aa…` | — | `3118990` | fix(rtk): protect in-flight backups and make OFF verification symmetric |
+| `src/pages/UsagePage.vue` | add | `e3e8b7bb1a2442d2…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/router.ts` | add | `cf6df21d1353b619…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `src/styles/layout.css` | add | `21604277e5f8db32…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `src/styles/theme.css` | add | `c0faf6b9ea7002b2…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `src/types.ts` | replace | `2ee08a2ce25c436e…` | `94262fb670c47f66…` | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
+| `uno.config.ts` | add | `eb0a11117187bfcb…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+| `vite.config.ts` | replace | `0d082af13221f81b…` | `cfb852aedcaeaf7f…` | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+
+### A.ops（24 个）
+
+| 文件 | 动作 | 本地 sha256 | 生产 sha256 | 来源 commit | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `deploy/magpie/CONSOLE-KERNEL.md` | add | `b0708e02fd722b8a…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `deploy/magpie/README.md` | add | `d3cfc5ccf6c14eaa…` | — | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `deploy/magpie/UPSTREAM.md` | add | `a28a1dd58f207da1…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `deploy/magpie/build.sh` | add | `680ff2892d9f1fe2…` | — | `cddf0d2` | feat(magpie): add isolated CPA integration and local migration |
+| `deploy/magpie/kernel/main.go` | add | `febb89ec360db699…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
+| `deploy/magpie/local.mjs` | add | `fc9332f51251cd17…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `deploy/magpie/upstream/API.md` | add | `0a4e389cd736753c…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `deploy/magpie/upstream/LICENSE` | add | `79d2c8444715d4bc…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `deploy/magpie/upstream/api.json` | add | `3b84a81c0a5dd723…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `scripts/ab-report.mjs` | add | `38f5de98b70ec7b3…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
+| `scripts/build-magpie-kernel.mjs` | add | `5160b7de1adaff03…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `scripts/magpie-api/main.go` | add | `366bd7e9b4bbee91…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `scripts/magpie-api/main_test.go` | add | `f703f90cabeecb9e…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `scripts/magpie-console-password.mjs` | add | `a316d9d1046761fd…` | — | `d85128c` | fix(console): isolate local login password in Keychain |
+| `scripts/magpie-console-password.test.mjs` | add | `1fa1ef114d6c40d9…` | — | `d85128c` | fix(console): isolate local login password in Keychain |
+| `scripts/magpie-console-smoke.mjs` | add | `30671e4ad9799ad9…` | — | `d85128c` | fix(console): isolate local login password in Keychain |
+| `scripts/magpie-console.mjs` | add | `9e7d03379d31e0f2…` | — | `281c30e` | fix(auth): fix login navigation guard and purge emojis across auth views |
+| `scripts/magpie-local.mjs` | add | `20e8652601a96ee6…` | — | `cddf0d2` | feat(magpie): add isolated CPA integration and local migration |
+| `scripts/magpie-local.test.mjs` | add | `5a92de446579cdfc…` | — | `cddf0d2` | feat(magpie): add isolated CPA integration and local migration |
+| `scripts/magpie-service.mjs` | add | `86709ec221f5fc12…` | — | `cddf0d2` | feat(magpie): add isolated CPA integration and local migration |
+| `scripts/magpie-smoke.mjs` | add | `7639ca93a5b7a2ea…` | — | `cddf0d2` | feat(magpie): add isolated CPA integration and local migration |
+| `scripts/magpie-upstream.mjs` | add | `8d48120b273d2bec…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `scripts/magpie-upstream.test.mjs` | add | `6396a09c7501b5cd…` | — | `f30da5e` | feat(magpie): generate and track upstream API contracts |
+| `scripts/tuffex-icon-classes.mjs` | add | `9307d3f1550ea05c…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
+
+### A.root（8 个）
+
+| 文件 | 动作 | 本地 sha256 | 生产 sha256 | 来源 commit | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `.env.example` | replace | `56b919d5aeecd016…` | `01b54bc765cb9577…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `.gitignore` | replace | `50833712bbb06895…` | `4f82f9b1ddee7403…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `MANIFEST.sha256` | add | `a7d4576f2b853d62…` | — | `eb5a026` | feat: align OAuth page and callback handling with CPA official management panel |
+| `README.md` | replace | `b8f7f0654d8416eb…` | `eb6307713ac7322d…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
+| `RELEASE.json` | replace | `f0ec481579cddeea…` | `8b49a789b224a4d6…` | `eb5a026` | feat: align OAuth page and callback handling with CPA official management panel |
+| `docs/research/magpie-cpa-integration.md` | add | `0ddc3c64f2e3fe3d…` | — | `cddf0d2` | feat(magpie): add isolated CPA integration and local migration |
+| `package-lock.json` | replace | `38617c801a822441…` | `ff7c7f87525c92d2…` | `1eafa6b` | chore: add vue, tuffex and unocss dependencies |
+| `package.json` | replace | `a5ef38f7978965ea…` | `7daf307f5b4b7a09…` | `1eafa6b` | chore: add vue, tuffex and unocss dependencies |
+
+合计：131 个非 dist 文件；其中 replace 36 / add 95
 
 ### 3.1 逐文件清单（发布源 `26554bd`）
 
@@ -281,8 +428,8 @@ delta 文件数：16
 ### 4.4 显式删除语义（**刷新期新发现**：React 死树正在被删除）
 
 - **组装脚本只叠加、不删除**：它先复制 BASE 全量，再把本地跟踪文件覆盖上去。因此「本地删掉某文件」**不会**让该文件从 release 消失——它会以 **BASE 的版本**留在 release 里。
-- 现场情况（2026-10-01 刷新期间发现，**不是本任务所为**）：工作区里 **25 个 React 死树文件已被删除并暂存**（`src/App.tsx`、`src/main.tsx`、`src/components/*.tsx` ×11、`src/pages/*.tsx` ×13）。逐字节比对 BASE：**21 个与生产完全相同**，**4 个本地曾改过**（`src/App.tsx`、`src/components/VersionWidget.tsx`、`src/pages/DashboardPage.tsx`、`src/pages/ModelsPage.tsx`——正好是本文表 A 里的 `replace` 项）。
-- **影响（若该删除被提交后再刷新）**：这 4 个文件不再被本地覆盖 → release 保留 **BASE（生产）版本**，表 A 的 `replace` 由 21 降到 17、非 dist 变更由 115 降到 **111**；这 4 个文件的本地 React 侧改动**静默消失**（它们是死代码，功能无影响，但属"计划外内容变化"，必须记录）。
+- 现场情况（2026-10-01 已由 blue-ui `e52617a` 与 Lead `fabd4fe` **提交**）：**27 个死树文件已删除**（`src/App.tsx`、`src/main.tsx`、`src/components/*.tsx` ×11、`src/pages/*.tsx` ×13）。逐字节比对 BASE：**21 个与生产完全相同**，**4 个本地曾改过**（`src/App.tsx`、`src/components/VersionWidget.tsx`、`src/pages/DashboardPage.tsx`、`src/pages/ModelsPage.tsx`——正好是本文表 A 里的 `replace` 项）。
+- **影响（已发生，见 §3.0）**：这 5 个文件（4 个本地改过的 + `src/App.css`）不再被本地覆盖 → release 保留 **BASE（生产）版本**，已从表 A 移出；这 4 个文件的本地 React 侧改动**静默消失**（它们是死代码，功能无影响，但属"计划外内容变化"，必须记录）。
 - **决定（Lead，2026-10-01）：选项 1 —— 发布不做删除**（原两个选项中的「接受保留」）：
   1. **release 中 `src/**/*.tsx` 一律沿用 BASE 版本**（除 `src/docs.tsx`、`src/docs-entry.tsx` 这两项 docs 入口——它们仍在构建图里）。即：21 个与生产逐字节相同的 React 源原样保留，4 个本地曾改过的（`src/App.tsx`、`src/components/VersionWidget.tsx`、`src/pages/DashboardPage.tsx`、`src/pages/ModelsPage.tsx`）在 release 里用 **BASE 版本**，本地版本不发布。
   2. 理由：这些文件在 release 里是**死的**（`index.html` 只引 `/src/main.ts`，`docs.html` 只引 `docs-entry.tsx`），保留 BASE 版零风险；而为发布引入"删除步"要额外维护删除清单与回退，复杂度更高。
@@ -348,10 +495,10 @@ node docs/qa/deploy/assemble-release.mjs \
 
 ```
 组装目录: /tmp/cac-deploy-recon/release-20261001-tuffex-rtk
-releaseId: 20261001-tuffex-rtk | mode: vue | HEAD: 26554bd
-文件 415 个 / 7.09 MB | MANIFEST 412 条 | dist 74 个 (tree 3419fe9f14af2d93…)
-本地动作: replace=21 keep-prod=221 add=94
-V1 缺失生产文件: 0 | 预期缺失: 5 | 替换: 24 | 新增: 95
+releaseId: 20261001-tuffex-rtk | mode: vue | HEAD: fabd4fe
+文件 416 个 / 7.10 MB | MANIFEST 413 条 | dist 74 个 (tree 5b69bbf75fbedd47…)
+本地动作: replace=36 keep-prod=179 add=95
+V1 缺失生产文件: 0 | 预期缺失: 5 | 替换: 39 | 新增: 96
 V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN
 ⚠ V3 本地构建 node v26.7.0 ≠ 生产 runtime v24.20.0：dist 由非生产版本构建，建议改为在生产 release 目录内用 /opt/crosery-node-current 构建（runbook 模式 V），或至少保留本次 WARN 作为已知风险
 ⚠ V3 本地 node v26.7.0 不满足 engines >=24 <25（生产 node 满足）
@@ -363,10 +510,10 @@ V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN
 
 ```
 组装目录: /tmp/cac-deploy-recon/release-keep-react
-releaseId: 20261001-server-only | mode: keep-prod | HEAD: 26554bd
-文件 341 个 / 5.87 MB | MANIFEST 338 条 | dist 49 个 (tree 655bec5e91a5acc6…)
-本地动作: replace=11 keep-prod=180 add=45
-V1 缺失生产文件: 0 | 预期缺失: 5 | 替换: 11 | 新增: 46
+releaseId: 20261001-server-only | mode: keep-prod | HEAD: fabd4fe
+文件 342 个 / 5.88 MB | MANIFEST 339 条 | dist 49 个 (tree 655bec5e91a5acc6…)
+本地动作: replace=31 keep-prod=159 add=46
+V1 缺失生产文件: 0 | 预期缺失: 5 | 替换: 31 | 新增: 47
 V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN
 结果: PASS（含 2 条警告）
 ```
