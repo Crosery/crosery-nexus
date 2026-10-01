@@ -52,7 +52,10 @@ const items = computed<SidebarNavItem[]>(() => {
 const active = computed(() => {
   const currentPath = route.path.replace(/^\//, '') || 'dashboard'
   const found = navEntries.find(e => e.value === currentPath)
-  return found ? found.value : 'dashboard'
+  // 红队 D32：没有匹配项时**不高亮任何一条**。原来的 `: 'dashboard'` 兜底会让
+  // 未登记的路由（或将来新增但忘了加导航的页面）都显示成「运行概览已选中」，
+  // 用户会以为自己在这个页面上，是典型的假状态。
+  return found ? found.value : ''
 })
 
 const workspace = {
