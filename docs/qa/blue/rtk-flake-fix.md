@@ -166,3 +166,58 @@ launchctl print … | grep -c RTK_LOCK_DISABLED → 0（生产未开旁路）
    如果要做，用本轮这个确定性同步点很便宜：起一个实例并设 `RTK_TEST_LOCK_HOLD_MS=800` → 测试进程轮询锁文件出现后篡改 token
    → 断言 `POST /api/rtk/rollback` 返回 `409 { reason: 'lock_lost_during_write', lockLost: true }`（约 1.5-3s，确定性）。
    **本轮未做**（Lead 说明由红队独立复验该条），需要我加就说一声。
+
+---
+
+## 7. HTTP 层 `lockLost` 传播的门禁覆盖（task-47）
+
+Lead 在 `server/index.ts` 补的 5 处 `lockLost` 传播原本零测试覆盖。本轮用 §2.2 的同步点补了一条**确定性** HTTP 级用例：
+
+```
+✔ HTTP 层：锁被夺时 toggle 与 rollback 的 409 都带 reason 与 lockLost（确定性）   ~1.0s
+```
+
+**做法**：起一个实例（临时 HOME/DATA_DIR + 空闲端口）并设 `RTK_TEST_LOCK_HOLD_MS=300`；对每个请求
+「清掉上一轮残留锁 → 发请求 → 轮询锁文件出现（实例正停在同步点）→ 原地改写 token」，然后断言 HTTP 响应：
+
+| 路径 | 对应 `server/index.ts` 传播点 | 断言 |
+| --- | --- | --- |
+| `POST /api/rtk/toggle` | `/api/rtk/toggle` 的 catch（第 3 处） | `status===409` **且** `reason==='lock_lost_during_write'` **且** `lockLost===true` |
+| `POST /api/rtk/rollback` | `/api/rtk/rollback` 的 `RtkPlaneError` catch（第 4 处） | 同上 |
+
+**其余三处为什么没构造（如实说明，不是「代码上一样」）**：
+
+| 传播点 | 为什么 `lock_lost_during_write` 到不了 |
+| --- | --- |
+| `/api/rtk/status` | `readRTKStatus()` 是只读路径，函数体内 `acquireRtkFileLock` / `applyLocalAgentHook` / `rollbackRTK` 引用数 **0/0/0**（grep 实测） ⇒ 不会产生该错误 |
+| `/api/rtk/planes` | 平面解析同样不取写锁（同 grep 判据），只做探测 |
+| `/api/rtk/install`、`/api/rtk/upgrade`（共用一个 handler，第 5 处） | `installOrUpgrade()` 函数体内写路径引用数 **0/0/0**，只 shell out 安装/升级二进制，不写 hook ⇒ 同样到不了 |
+
+换句话说：这 3 处是**统一错误面**的防御性写法；真正会抛 `lock_lost_during_write` 的只有两个写路径，已被上面的用例逐一守住。
+如果将来 `install`/`upgrade` 开始写 hook（或 status 变成会写），同一条断言模式可以直接扩上去。
+
+### 7.1 负向验证（两次，证明断言真的在守这两条路径）
+
+```
+基线 shasum：0b325d1a754dac5e4a0c13874630a69dd79fd2c41bda7e8c1a750bb508b59e67  server/index.ts
+
+① 临时移除全部 5 处传播 → 用例必须红：
+   ✖ AssertionError: 只读 lockLost 的客户端不能漏判（toggle）
+② 只临时移除 rollback 路由那一处（toggle 保留）→ 用例必须红：
+   ✖ AssertionError: 只读 lockLost 的客户端不能漏判（rollback）
+
+还原后：
+   shasum：0b325d1a754dac5e4a0c13874630a69dd79fd2c41bda7e8c1a750bb508b59e67  server/index.ts   （与基线逐字节相同）
+   git diff -- server/index.ts → 空（退出码 0）
+   用例恢复 ✔
+```
+
+两次负向验证分别打在 toggle 与 rollback 的断言上，说明**两条路径是各自独立被覆盖的**，不是一条兜住另一条。
+临时改动只存在于验证过程中，`server/index.ts` 未进入任何提交（`git status` 里始终没有它）。
+
+### 7.2 耗时
+
+```
+单条新用例            : 1.01s（≤3s 要求）
+server/rtkLock.test.ts: 7.9s（20 用例）
+```

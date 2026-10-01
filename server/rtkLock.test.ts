@@ -628,3 +628,121 @@ test('RTK_TEST_LOCK_HOLD_MS：不设置时零行为差异，非法值一律视�
   assert.equal(held.heldLockFile, true)
   assert.equal(held.releasedLockFile, true)
 })
+
+/* ---------------- HTTP 层 lockLost 传播（task-47） ---------------- */
+
+/** 起一个只在测试里用的实例（临时 HOME/DATA_DIR + 空闲端口），返回 cookie 与停止函数。 */
+async function startRtkInstance(options: { dir: string; home: string; backups: string; holdMs: number }): Promise<{ port: number; cookie: string; stop: () => void }> {
+  const { createServer } = await import('node:net')
+  const probe = createServer()
+  await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve))
+  const port = (probe.address() as { port: number }).port
+  await new Promise<void>(resolve => probe.close(() => resolve()))
+  fs.mkdirSync(path.join(options.dir, 'data'), { recursive: true })
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1', PORT: String(port), COOKIE_SECURE: 'false',
+      CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: 'lock-http-password', SESSION_SECRET: 'lock-http-session-secret',
+      DATA_DIR: path.join(options.dir, 'data'), RTK_HOME: options.home, RTK_BACKUP_DIR: options.backups,
+      GATEWAY_ENGINE: 'cpa', MAGPIE_CHANNELS_FILE: path.join(options.dir, 'data/magpie-channels.json'),
+      RTK_TEST_LOCK_HOLD_MS: String(options.holdMs),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let log = ''
+  child.stdout.on('data', chunk => { log += chunk })
+  child.stderr.on('data', chunk => { log += chunk })
+  for (let i = 0; i < 160; i += 1) {
+    if (child.exitCode !== null) throw new Error(`实例提前退出：${log.slice(-400)}`)
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/session`)
+      if (response.status === 200) break
+    } catch {
+      // 还没起来
+    }
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  const login = await fetch(`http://127.0.0.1:${port}/api/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'lock-http-password' }),
+  })
+  const cookie = String(login.headers.get('set-cookie') || '').split(';')[0]
+  assert.ok(cookie.startsWith('crosery_console_session='), `登录失败：${login.status}`)
+  return { port, cookie, stop: () => child.kill('SIGTERM') }
+}
+
+test('HTTP 层：锁被夺时 toggle 与 rollback 的 409 都带 reason 与 lockLost（确定性）', { timeout: 60_000 }, async () => {
+  const dir = path.join(workspace, 'http-locklost')
+  const httpHome = path.join(dir, 'home')
+  const httpBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  fs.mkdirSync(path.join(httpHome, '.codex'), { recursive: true })
+  fs.writeFileSync(path.join(httpHome, '.codex/hooks.json'), `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+
+  // 在同一 home 里造一份真实备份（供 rollback 用），直接调服务，省一次 HTTP 往返
+  const previousHome = process.env.RTK_HOME
+  const previousBackups = process.env.RTK_BACKUP_DIR
+  process.env.RTK_HOME = httpHome
+  process.env.RTK_BACKUP_DIR = httpBackups
+  let backupId = ''
+  try {
+    const seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home: httpHome, bin: path.join(dir, 'no-rtk'), ...offlineTargets })
+    backupId = seeded.backupId ?? ''
+    assert.ok(backupId, '需要一份真实备份')
+  } finally {
+    if (previousHome === undefined) delete process.env.RTK_HOME; else process.env.RTK_HOME = previousHome
+    if (previousBackups === undefined) delete process.env.RTK_BACKUP_DIR; else process.env.RTK_BACKUP_DIR = previousBackups
+  }
+
+  const holdMs = 300 // 同步点：足够父进程 2ms 轮询到，且单条用例保持在数秒内
+  const instance = await startRtkInstance({ dir, home: httpHome, backups: httpBackups, holdMs })
+  const lockFile = service.rtkLockPath(httpHome, { ...process.env, RTK_HOME: httpHome, RTK_BACKUP_DIR: httpBackups } as NodeJS.ProcessEnv)
+  const thief = JSON.stringify({ token: 'THIEF-TOKEN', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home: httpHome })
+
+  /** 发一个请求，并在实例进入同步点时篡改锁 —— 结果是确定性的：实例必然发现锁已不是它的。 */
+  const fireAndSteal = async (url: string, body: Record<string, unknown>) => {
+    fs.rmSync(lockFile, { force: true }) // 清掉上一轮留下的「接管者锁」，让实例能正常获取
+    const pending = fetch(`http://127.0.0.1:${instance.port}${url}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: instance.cookie },
+      body: JSON.stringify(body),
+    })
+    let stolen = false
+    const deadline = Date.now() + 15_000
+    while (!stolen && Date.now() < deadline) {
+      let content: string | null = null
+      try {
+        content = fs.readFileSync(lockFile, 'utf8')
+      } catch {
+        content = null
+      }
+      if (content && !content.includes('THIEF-TOKEN')) {
+        fs.writeFileSync(lockFile, thief)
+        stolen = true
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 2))
+      }
+    }
+    assert.equal(stolen, true, `${url} 必须在同步点内被篡改（确定性握手）`)
+    const response = await pending
+    return { status: response.status, body: await response.json().catch(() => ({})) }
+  }
+
+  try {
+    // ① toggle 路径（server/index.ts 的 /api/rtk/toggle 错误面）
+    const toggle = await fireAndSteal('/api/rtk/toggle', { agent: 'codex', on: true, plane: 'local', confirm: true })
+    assert.equal(toggle.status, 409, `toggle 应 409：${JSON.stringify(toggle.body)}`)
+    assert.equal(toggle.body.reason, 'lock_lost_during_write')
+    assert.equal(toggle.body.lockLost, true, '只读 lockLost 的客户端不能漏判（toggle）')
+
+    // ② rollback 路径（/api/rtk/rollback 的 RtkPlaneError 错误面）
+    const rollback = await fireAndSteal('/api/rtk/rollback', { confirm: true, backup: backupId })
+    assert.equal(rollback.status, 409, `rollback 应 409：${JSON.stringify(rollback.body)}`)
+    assert.equal(rollback.body.reason, 'lock_lost_during_write')
+    assert.equal(rollback.body.lockLost, true, '只读 lockLost 的客户端不能漏判（rollback）')
+  } finally {
+    instance.stop()
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+})
