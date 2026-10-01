@@ -42,3 +42,17 @@ env -i PATH="<repo>/node_modules/.bin:<node dir>:/usr/bin:/bin" \
 - 它证明的是**包能启动、静态资产与鉴权正常、依赖不可达时优雅降级**；**不证明** runbook §4 的「第二实例健康检查」在 **VPS 上**能过（那里有生产 dist、生产 `.env`、systemd 的 `ProtectSystem=strict`）。
 - `node_modules` 是**外置软链**，与生产（`/opt/crosery-node-current` + 生产 node_modules）不同；本地 node 是 v26，生产 runtime 是 v24（`engines >=24 <25` 的警告仍在）。
 - 未验证 systemd 单元本身的启动路径（`ExecStart=/opt/crosery-node-current/bin/npm run start`），只验证了同一条命令 `tsx server/index.ts`。
+
+## 第二次演练（`--frontend=vue`，HEAD 含压缩层）
+
+发布源前进后重新组装并再次启动（同一套隔离手法，端口 18901）：
+
+| 项 | 结果 |
+| --- | --- |
+| 组装 | 417 文件 / 6.88 MB，MANIFEST 416，**0 个生产文件缺失**，PASS（1 条 node 版本警告） |
+| 页面 | `/`、`/docs`、`/keys` 全部 **200** |
+| 压缩（packaged 树） | identity 640,500 B → **gzip 94,463 B / br 78,047 B**，与开发树一致 |
+| 完整性 | br 解压后 sha256 = `23b80f42…2582e`，**与磁盘逐字节相同** |
+| 收尾 | 杀进程后端口不再响应；线上 8791 全程正常 |
+
+⇒ 压缩层在**打包后的产物**里同样生效（不是只在开发树里），且没有因为打包路径差异而退化。
