@@ -207,3 +207,62 @@ $ npm test      → 0 · ℹ tests 648 · pass 647 · fail 0 · cancelled 0 · s
 - 若 **rollup 表缺失/损坏或触发器被移除**，且 30 天 events 路径 P95 超过 300ms ⇒ **先修复/重建 rollup**（一次性重建 34k 行，秒级），**不要加索引**（不解决问题）。
 - 若 `usage_events` 长到 **~250 万行（当前 2.6×）**，events 720h 线性外推到 ~800ms ⇒ 同样优先保证 rollup 完整；届时应评估把 cache-trend 的预聚合**落到 rollup 的分钟维度**（`hour_ms` 之外再存一个 bucket 维度），而不是加索引。
 - 判据口径：`scripts/perf-probe.mjs` + `/tmp/perf-norollup` 式「强制 events 路径」的库，`ROUTE=cache-trend NOW_MS=<固定>` 复测。
+
+---
+
+# 附 C：task-63 —— 短窗口粒度修复「实现完成但**暂缓落地**」+ 一个更大的发现
+
+## C.1 先量：五个窗口、两条路径（生产规模临时库、窗口钉死）
+
+`events` 列是「保留 hint（供 planner 用）但不路由到 rollup」= 拟改后的短窗口行为；`rollup` 列是现状（带 hint 即路由）。
+
+| 窗口 | 桶宽 | events 桶数 / 耗时 | rollup 桶数 / 耗时 | 结论 |
+| --- | --- | --- | --- | --- |
+| 1h | 60s | **54 / 3.2ms** | 1 / 64.0ms | events 又快又细（20×） |
+| 6h | 300s | **72 / 5.9ms** | 6 / 68.6ms | 同上（11×） |
+| 24h | 900s | **97 / 13.1ms** | 24 / 70.5ms | 同上（5.4×），且 24h 实测 **24 点 vs 97 点** |
+| 72h | 3600s | **73 / 35.9ms** | 72 / 75.6ms | events 仍更快 |
+| 168h | 21600s | **29 / 64.3ms** | 29 / 71.3ms | events 略胜 |
+| 720h | 86400s | 31 / 271.1ms | **31 / 96.1ms** | **rollup 才值得**（2.8×） |
+
+rollup 路径耗时与窗口几乎无关（~64–96ms）：它的 WHERE 是 `hour_ms >= ?`，渠道过滤用不上主键前缀，等于每渠道扫一遍 3.4 万行 —— 所以短窗口**既更慢又只有小时粒度**。
+
+## C.2 改法（已实现、已验证，补丁留档）
+
+判据从「是否带 hint」扩展为「**窗口宽度 + hint**」：调用方在 SQL 里带 `/* cache-trend-window-hours:<n> */`，读线程只在 `n > 168` 时路由（阈值可用 `CACHE_TREND_ROLLUP_MIN_HOURS` 覆盖，0 = 总是路由，供对照/排障）。**没有标记时维持路由**，避免「忘记加注释就静默换路径」。
+
+验证结果（生产规模库）：
+- **桶数恢复**：24h `24 → 97` 点、1h `1 → 54`、6h `6 → 72`；
+- **数值与纯 events 路径逐项一致**：1h/6h/24h/72h/168h 五种窗口，改后（有 rollup 的库）与纯 events 库的负载**完全相同**（量化 6 位小数后 `identical: true`）——顺带把 task-62 记录的「首个不完整小时整点丢弃」在 ≤168h 上消掉了；
+- **长窗口不变**：720h 指纹**逐字节相同**（旧行为 `MIN_HOURS=0` vs 新默认），耗时 95.6 → 96.5ms；
+- **性能**：短窗口 5–20× 更快（24h 70.5 → 13.0ms）；
+- 契约测试同步重写（`server/sqliteReadWorkerContract.test.ts`：新增「窗口宽度 + hint」判据、短窗口负载与纯 events 一致；跨路径用例改为「≤168h 完全一致 / 720h 仍允许首个桶差异」），9/9 通过。
+
+补丁：`docs/qa/blue/task63-window-routing.patch`（含 `server/sqliteReadWorker.mjs`、`server/usageReports.ts`、契约测试）。
+
+## C.3 ⛔ 为什么**暂缓落地**：真实数据集里 rollup 被**翻倍**了
+
+量真实数据时（`data/console.db` 快照：26,004 事件、rollup 34,216 行）发现：**同一条 cache-trend 查询，events 路径与 rollup 路径的请求数差 2–6 倍**。逐小时核对（最近 24h，8 个小时）：
+
+| 小时 | events `COUNT(*)` | rollup `SUM(request_count)` | 倍数 |
+| --- | --- | --- | --- |
+| -1h | 189 | 369 | 1.95 |
+| -2h | 504 | 1,008 | **2.00** |
+| -3h | 548 | 1,096 | **2.00** |
+| -4h | 320 | 640 | **2.00** |
+| -5h | 137 | 274 | **2.00** |
+| -6h | 122 | 244 | **2.00** |
+| -7h | 28 | 56 | **2.00** |
+| -8h | 127 | 254 | **2.00** |
+
+全重叠范围（64 个小时）：events **26,004** vs rollup **51,999**，倍数 min 1.952 / max 2.000。**rollup 被稳定地算了两遍。**
+
+机制（可复现的代码事实，非猜测）：rollup 由 `AFTER INSERT ON usage_events` 的**累加式**触发器维护（`server/usageRollup.ts:81-83`：`request_count = usage_hourly_rollup.request_count + 1`），而 schema 里**只有 INSERT / update_key / update_cost 三个触发器，没有 `AFTER DELETE`**（`sqlite_master` 实测；`server/usageRollup.ts` 全文只有这三处 `CREATE TRIGGER`）。任何把同一条逻辑事件写入两次的路径（`INSERT OR REPLACE` 会因为 REPLACE 先删后插而双计、回填/重建脚本跑两遍、重复的补偿同步）都会**永久**放大 rollup，而 `usage_events` 因为有 `request_id UNIQUE` + `INSERT OR IGNORE`（`server/sync.ts:25`）保持正确。注意：**生产同步路径本身是 `INSERT OR IGNORE`**，所以翻倍不是它造成的，而是某个一次性/回填路径；需要单独一轮定位（`scripts/backfill-cost.mjs`、`backfill-data-plane.mjs` 与运行时的补偿同步都是候选）。
+
+**影响面**：所有走 rollup 的 loader（dashboard / analytics / usage-overview / key-summaries / breakdown）以及**长窗口**的 cache-trend，用户看到的请求数/成本都会偏高约 2×。**这不是我这次改出来的**，是既有数据状态；`server/reportPerformance.test.ts` 里「金额 == 独立 `SUM(cost_usd)`」这类对拍用的是 events/独立 SQL，不受影响。
+
+**因此暂缓落地（判据）**：如果现在就把 ≤168h 切到 events 路径，同一页面会出现「24h 正确、720h 翻倍」的**自相矛盾数字**（用户按天对比会发现两倍差）。**先修 rollup 的双计，再落这个粒度补丁**：`git apply docs/qa/blue/task63-window-routing.patch`（与 rollup 修复互不冲突，改的是读线程 + 调用方 SQL + 测试）。修 rollup 需要决定：一次性重建（按 events 重算，秒级）、或补 `AFTER DELETE` 触发器、或给回填脚本加幂等。
+
+## C.4 另一个必须记录的口径更正
+
+task-59 里我用来佐证「生产不存在 2.9s」的那次**运行实例**抽验（`cache-trend 168h` 冷 81ms / 热 13–16ms），跑的库是 `~/.agents/crosery/magpie-console/data/console.db`，它当前**只有 4 条事件、4 行 rollup**（本轮实测）——**那些数字代表的是近乎空库的路径，不代表生产规模**。真正带生产形状的数据快照是仓库里的 `data/console.db`（114MB / 26,004 事件 / rollup 34,216 行）。本附录 C.1/C.2 的性能结论都基于生产规模的合成库（957,736 行、rollup 34,848 = 生产粒度）+ 真实快照（26,004 行）双重验证；task-59 的**结论**（读线程静默路由到 rollup、events 路径分钟级分组 77× 浪费、根因是 18× 合成 rollup）不受影响，但**「生产 HTTP 冷 81ms」这句话的口径必须更正为空库实例**。
