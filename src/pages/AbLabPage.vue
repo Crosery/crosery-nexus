@@ -8,7 +8,7 @@
  * 3. **深链**：`?flow=<id>&v=a|b|split`，刷新保持、可分享（Lead 负责挂 `/ab` 路由）。
  * 4. **失败要留痕**：提交失败给持久错误 + 重试，不用一闪而过的 toast（红队 D2 的教训）。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxButton } from '@talex-touch/tuffex/button'
@@ -21,6 +21,41 @@ import { AB_VIEWS, AB_VIEW_LABEL, labLink, parseLabQuery, type AbView } from '..
 
 const route = useRoute()
 const router = useRouter()
+
+/**
+ * 只读闸门（红队第二轮 R1）。
+ *
+ * A 侧是 `281c30e` 的冻结页面副本，但它们 import 的是**活的 api 模块**，不是沙箱：
+ * 红队实测在 `/ab?flow=keys-access&v=a` 点「重置今日用量」**没有确认框**，直接发出
+ * `POST /api/keys/<id>/quota/reset` —— 本轮刚验收为「已修」的零确认重置，被自己的实验台绕过了。
+ *
+ * 对照页面本来就不该产生写副作用（要写就去真实页面写），所以实验台挂载期间拦截所有非 GET/HEAD
+ * 请求，并把拦截次数显示出来，避免「点了没反应」被误读成页面坏了。
+ */
+const blockedWrites = ref(0)
+let restoreFetch: (() => void) | null = null
+
+onMounted(() => {
+  const raw = window.fetch.bind(window)
+  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const fromInit = init?.method
+    const fromRequest = typeof input === 'object' && input !== null && 'method' in input ? (input as Request).method : undefined
+    const method = String(fromInit || fromRequest || 'GET').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') {
+      blockedWrites.value += 1
+      return Promise.reject(new Error('实验台为只读对照：写请求已被拦截，请到真实页面执行'))
+    }
+    return raw(input as RequestInfo, init)
+  }) as typeof window.fetch
+  restoreFetch = () => {
+    window.fetch = raw
+  }
+})
+
+onBeforeUnmount(() => {
+  restoreFetch?.()
+  restoreFetch = null
+})
 
 const state = computed(() => parseLabQuery(route.query as Record<string, unknown>))
 const flow = computed(() => findFlow(state.value.flow))
@@ -219,6 +254,16 @@ async function submit() {
       <span class="ab-lab__viewbar-hint">深链：<code>{{ labLink(state.flow, state.view) }}</code></span>
     </nav>
 
+    <div class="ab-lab__readonly" role="note">
+      <i class="i-carbon-locked" aria-hidden="true" />
+      <span>
+        本页是<strong>只读对照</strong>：A/B 两侧的写操作（删除、重置、剪枝、开关）都会被拦截，不会改到真实数据；要真的执行请到对应真实页面。
+      </span>
+      <span v-if="blockedWrites > 0" class="ab-lab__readonly-hit" role="status">
+        已拦截 {{ blockedWrites }} 次写请求
+      </span>
+    </div>
+
     <div class="ab-lab__stage" :class="isSplit ? 'ab-lab__stage--split' : 'ab-lab__stage--single'">
       <section v-if="showA" class="lab-frame" aria-label="A 版本：迁移前">
         <header class="lab-frame__bar">
@@ -343,6 +388,27 @@ async function submit() {
 .ab-lab__view.is-active { border-color: var(--tx-color-primary, #3346c8); color: var(--tx-color-primary, #3346c8); font-weight: 600; }
 .ab-lab__viewbar-hint { margin-left: auto; font-size: 12px; color: var(--tx-color-text-secondary, #4b5563); }
 
+.ab-lab__readonly {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--tx-color-warning, #d97706);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--tx-color-warning, #d97706) 8%, transparent);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--tx-color-text-secondary, #4b5563);
+}
+.ab-lab__readonly-hit {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--tx-color-warning, #d97706);
+  color: #fff;
+  white-space: nowrap;
+}
 .ab-lab__stage { display: grid; gap: 14px; align-items: start; }
 .ab-lab__stage--split { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .ab-lab__stage--single { grid-template-columns: minmax(0, 1fr); }
