@@ -148,3 +148,62 @@ $ npm test      → 0 · ℹ tests 648 · pass 647 · fail 0 · cancelled 0 · s
 2. **`server/sqliteReadWorker.mjs` 的字符串路由 + 位置参数**建议单独排一轮（加契约测试、改成显式标记或结构化路由），我没动它。
 3. **720h（30 天）events 路径 294ms 贴着 300ms 目标**，余量小；若生产 rollup 某段时间缺失（路由失效回落到 events），30 天窗口会顶到目标线。要更稳的话可以考虑给 `usage_events` 加一条覆盖 `(success, provider, timestamp_ms, model, client_type, tokens…)` 的索引（`server/db.ts`，不在我写范围）。
 4. **临时实例出真数据**需要把 CPA stub 做到符合 `getCompatChannels`/`getProviderChannels` 的渠道 JSON 形状；做完才能量纯本地的 HTTP p50/p95 与浏览器 TTI。
+
+---
+
+# 附：task-62 —— 读线程路由契约测试 + 覆盖索引评估
+
+## A. ② 读线程「字符串路由 + 位置参数」的契约
+
+**改动**（`server/sqliteReadWorker.mjs`，新增 `countPlaceholders` / `assertParamCount`）：在执行前比对**占位符个数与参数个数**，不匹配就**显式抛错**。
+
+为什么必须这么做（实测 `node:sqlite` 的真实行为）：
+
+| 情形 | SQLite 原生行为 | 危险度 |
+| --- | --- | --- |
+| 参数**少于**占位符 | 缺的参数被当 **NULL** → **静默返回空结果**，不报错 | 🔴 表现为「查询突然变快」（我踩到的是 0.4ms），靠指纹比对才发现 |
+| 参数**多于**占位符 | `column index out of range` | 🟠 至少会报错 |
+
+计数规则（与绑定语义对齐，且已自测）：先剥掉字符串字面量与注释里的 `?`，匿名 `?` 逐个计数，`?NNN` 取最大编号，出现命名参数（`:x`/`@x`/`$x`）时返回 `null` 表示跳过校验（本仓库不用命名参数）。
+
+**契约测试**（新增 `server/sqliteReadWorkerContract.test.ts`，7 条，全绿）：
+
+| 测试 | 钉住的契约 |
+| --- | --- |
+| SQL 文本带 `INDEXED BY idx_usage_cache_rollup` | 路由的**判定依据就是这串 hint**；同时钉住参数位置（`params[0]`=cutoff、`params[2]`=provider） |
+| 不命中路由：直连 vs 经池**逐行相等** | 真实报表 SQL（latency 明细）逐行比对。⚠️ 注意：直连行是 **null 原型对象**，跨线程回来的是 structured-clone 的普通对象，比较前需归一化 |
+| 命中路由：经池结果 == **独立写的 rollup 查询**（逐行、含全部聚合列） | 改写忠实性；并用「`minuteBucket` 全是 60 的整数倍」作为**路由确实发生**的可判定证据 |
+| 去掉 hint 后不再被路由 | 字符串契约**可红**：hint 一旦被删/改，结果形状从「小时对齐」变回「15 分钟对齐」，测试立刻红 |
+| 参数少于/多于占位符 → 显式报错 | 负向验证：先证明直连是**静默 0 行**，再证明经池是显式错误；同时验证正确个数仍可用 |
+| 字面量/注释里的 `?` 不计入 | 计数正确性 |
+| 跨路径一致性 | 见下 |
+
+**跨路径一致性（顺手量出来的两个既有差异，均已写进测试）**：把同一条 cache-trend 查询分别跑在「有 rollup」与「无 rollup」的库上（同窗口、同参数）：
+
+1. **首个不完整小时**：窗口起点落在小时中间时，rollup 路径按 `hour_ms >= cutoff` **整点丢弃**那个小时，events 路径按 `timestamp_ms >= cutoff` 保留 → 只有首个桶请求数偏小（生产 168h 实测：1,179 vs 1,284，占该桶 9%、占全窗口 0.075%）。测试断言「只允许首个桶有差异」。
+2. **浮点求和顺序**：rollup 是「小时合计再相加」，events 是「逐行相加」，非结合性带来 ~1e-17 噪声（`0.362` vs `0.36200000000000004`）→ 比较前量化到 6 位小数。
+3. **hours ≤ 72 时路由会变粗**：rollup 行是**小时**粒度，而该窗口请求的是 15 分钟/5 分钟/1 分钟桶 → 有 rollup 时拿到的小时点（实测 24h：24 点 vs events 97 点）。**这是既有行为**，不影响 6h/24h 桶的合计，但同一控制台在「rollup 填充 / 未填充」两种部署下曲线精细度不同 —— 值得单独排一轮决定要不要在 rollup 路径按分钟回补。
+
+**位置契约的第二个坑（测试里也钉住了）**：路由路径按位置读 `params[0]/[2]`，所以调用方的参数表必须恰好是 `[cutoff, cutoff, provider(, keyId)]`。参数**个数**对但**位置**错（例如两个 cutoff 写反）不会被计数校验拦住，只能靠「独立 rollup 查询逐行比对」这条测试拦 —— 这就是为什么测试比对的是**行内容**而不只是行数。
+
+## B. ③ `usage_events` 覆盖索引评估：结论**不值得加**
+
+实验环境：`/tmp/perf-norollup`（生产规模 957,736 行、无 rollup ⇒ 强制走 events 路径），720h 窗口、单渠道、`EXPLAIN QUERY PLAN` + 三次取最小值。
+
+| 项 | 结果 |
+| --- | --- |
+| 现状访问路径 | `SEARCH usage_events USING INDEX idx_usage_cache_rollup (success=? AND <expr>=? AND <expr>>?)` + `USE TEMP B-TREE FOR GROUP BY` |
+| 720h events 查询（SQL 层） | **73.6ms**（loader 294ms = 6 渠道并行查询 + JS 聚合） |
+| 加候选覆盖索引（`success, lower(trim(provider)), 规范化model, client_type, timestamp_ms, input_tokens, cached_tokens, cache_write_tokens, output_tokens, cost_usd`） | **plan 完全不变**（planner 仍选原索引），耗时 **76.7ms**（无改善） |
+| 候选索引代价 | 建索引 **1.2s**、占 **61.6MB**（库 917MB 的 6.7%）、20k 行插入 **1438ms → 1741ms（写入 +21%）** |
+| 额外发现 | rollup 由触发器增量维护（`trg_usage_hourly_rollup_insert` / `_update_key` / `_update_cost`）⇒ 每条 event 写入**已经**多一次 rollup 写；再加索引会直接叠在这条热路径上 |
+
+**判据（为什么不加）**：
+1. **planner 不用它**：现有 `idx_usage_cache_rollup` 的前缀顺序已匹配谓词；而分组键里的「展示桶」表达式**随窗口宽度变化**（1 分钟～1 天），任何单一索引都无法覆盖，`TEMP B-TREE FOR GROUP BY` 消不掉 —— 这 73.6ms 是「扫 44.8 万行 + 分组」的固有成本，加索引不改变它。
+2. **events 路径只在 rollup 缺失/损坏时才走**：生产 rollup 已填充（34,316 行），实测走 rollup 路径 **94ms**（生产 HTTP 热 13–16ms）。
+3. 代价明确且落在写热路径（+62MB、+21% 写入），收益为 0。
+
+**触发条件（什么时候必须处理，以及先做什么）**：
+- 若 **rollup 表缺失/损坏或触发器被移除**，且 30 天 events 路径 P95 超过 300ms ⇒ **先修复/重建 rollup**（一次性重建 34k 行，秒级），**不要加索引**（不解决问题）。
+- 若 `usage_events` 长到 **~250 万行（当前 2.6×）**，events 720h 线性外推到 ~800ms ⇒ 同样优先保证 rollup 完整；届时应评估把 cache-trend 的预聚合**落到 rollup 的分钟维度**（`hour_ms` 之外再存一个 bucket 维度），而不是加索引。
+- 判据口径：`scripts/perf-probe.mjs` + `/tmp/perf-norollup` 式「强制 events 路径」的库，`ROUTE=cache-trend NOW_MS=<固定>` 复测。

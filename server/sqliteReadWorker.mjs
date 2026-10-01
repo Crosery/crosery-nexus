@@ -50,7 +50,81 @@ function rewriteRollupToEvents(sql) {
   return s
 }
 
-parentPort.on('message', ({ id, operations }) => {
+/**
+ * 占位符计数（task-62 ②）。
+ *
+ * 为什么必须显式校验：`node:sqlite` 在**参数少于占位符**时不会报错，而是把缺的参数当 NULL
+ * 绑定 —— 查询静默返回空结果。2026-10-01（task-59）我两次踩到这个坑，表现都是「查询突然变快」
+ * （0.4ms），而不是失败；靠聚合指纹比对才发现。所以这里在 `prepare` 之前主动比对个数，
+ * 不匹配就抛错。
+ *
+ * 计数规则（与 SQLite 的绑定语义对齐）：
+ * - 先剥掉字符串字面量（`'…'`、`"…"`、`` `…` ``）与注释（`--` 行注释、块注释），其中的 `?` 不算占位符；
+ * - 匿名占位符 `?`（后面不跟数字）逐个计数；
+ * - 编号占位符 `?NNN` 取其**最大编号**（SQLite 允许稀疏使用，最大编号即需要的参数个数）；
+ * - 命名占位符（`:name` / `@name` / `$name`）出现时返回 `null`（表示"用数组长度无法判定"），
+ *   调用方跳过校验 —— 本仓库目前不使用命名参数。
+ */
+export function countPlaceholders(sql) {
+  if (typeof sql !== 'string') return null
+  let stripped = ''
+  let index = 0
+  let named = false
+  while (index < sql.length) {
+    const char = sql[index]
+    const next = sql[index + 1]
+    if (char === '-' && next === '-') {
+      const end = sql.indexOf('\n', index)
+      index = end === -1 ? sql.length : end + 1
+      continue
+    }
+    if (char === '/' && next === '*') {
+      const end = sql.indexOf('*/', index + 2)
+      index = end === -1 ? sql.length : end + 2
+      continue
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      index += 1
+      while (index < sql.length) {
+        if (sql[index] === char) {
+          if (sql[index + 1] === char) { index += 2; continue } // 转义的双写引号
+          index += 1
+          break
+        }
+        index += 1
+      }
+      stripped += ' '
+      continue
+    }
+    if ((char === ':' || char === '@' || char === '$') && /[A-Za-z_]/.test(next || '')) named = true
+    stripped += char
+    index += 1
+  }
+  if (named) return null
+  let anonymous = 0
+  let maxNumbered = 0
+  const matches = stripped.match(/\?(\d*)/g) || []
+  for (const match of matches) {
+    if (match === '?') anonymous += 1
+    else maxNumbered = Math.max(maxNumbered, Number(match.slice(1)) || 0)
+  }
+  return maxNumbered + anonymous
+}
+
+/** 参数个数与占位符不一致时**显式报错**（而不是让 SQLite 静默按 NULL 绑定）。 */
+export function assertParamCount(sql, params) {
+  const expected = countPlaceholders(sql)
+  if (expected === null) return
+  const actual = params?.length ?? 0
+  if (actual !== expected) {
+    const head = String(sql).replace(/\s+/g, ' ').trim().slice(0, 160)
+    throw new Error(`SQLite read worker: 参数个数与占位符不匹配（需要 ${expected} 个，收到 ${actual} 个）—— 参数不足会被 SQLite 当成 NULL 静默返回空结果，因此在此显式失败。 SQL: ${head}`)
+  }
+}
+
+// 只在 worker 线程里挂监听：测试会从主线程 import 本模块取 `countPlaceholders`，
+// 主线程的 `parentPort` 是 null，直接调用会抛错。
+if (parentPort) parentPort.on('message', ({ id, operations }) => {
   try {
     const results = operations.map(({ method, sql, params = [] }) => {
       let finalSql = sql
@@ -64,6 +138,8 @@ parentPort.on('message', ({ id, operations }) => {
       } else if (!hasCostUsd && finalSql.includes('cost_usd')) {
         finalSql = finalSql.replace(/cost_usd/g, 'NULL')
       }
+      // 改写之后再校验：路由路径的参数是 worker 自己映射的，这里能挡住映射错误（task-62 ②）。
+      assertParamCount(finalSql, finalParams)
       const statement = database.prepare(finalSql)
       return method === 'get' ? statement.get(...finalParams) : statement.all(...finalParams)
     })
