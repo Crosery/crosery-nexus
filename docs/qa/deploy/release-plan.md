@@ -625,3 +625,17 @@ V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN
 | 结果 | PASS | **PASS（1 条警告：本地 node v26 vs engines）** |
 
 **并在发布包上做了启动演练 + 安全回归**（同一套隔离手法，端口 18911）：\`/\`、\`/docs\`、深链接全部 **200**；压缩从打包产物里生效（gzip **94,463** / br **78,047**）；登录 200；**越界凭据删 → 400 \`credential_name_invalid\`**；**未认证 \`/api/bootstrap\` → 401**（默认拒绝）。
+
+### 0.3 最终验收（第 24 轮，HEAD \`fb05b52\`）：发布包 \`20261001-r5\`
+
+| 项 | 结果 |
+| --- | --- |
+| 组装树 | **431 文件 / 7.11 MB，MANIFEST 430**，缺失生产文件 **0**，**PASS**（1 条既有警告：本地 node v26 vs engines） |
+| 启动演练（隔离端口 18921，临时 HOME/DATA_DIR） | \`/\`、\`/docs\`、\`/rtk\`、深链接全部 **200** |
+| 默认拒绝 | 未认证 \`/api/usage-overview\` → **401**；\`/api/session\` → **200**（白名单） |
+| 压缩（从**打包产物**加载） | identity **640,500** / gzip **94,463** / br **78,047** |
+| 三类穿越回归 | 凭据名 → **400 \`credential_name_invalid\`**｜rollback → **400 备份 id 不合法**｜provider → **400 不支持的 OAuth 提供商（列出可选值）** |
+| 全量测试 | **677 / 676 pass / 0 fail / 1 skipped**，exit 0 |
+| 红队收口审计 | 8 条主张独立成立、无回归（\`docs/qa/red-team/closeout-verification.md\`） |
+
+**结论：发布包在当前 HEAD 上组装、启动、鉴权、压缩与三条高危回归全部通过。**
