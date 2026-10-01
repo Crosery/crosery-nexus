@@ -308,3 +308,99 @@ test('时钟疑似不一致时：等待者 503 且文案带排查提示', async 
   )
   fs.rmSync(lockPath())
 })
+
+/* ---------------- R11-A：心跳区间不变量 ---------------- */
+
+test('R11-A 心跳区间对极小 staleMs 也自洽：interval ≤ staleMs', () => {
+  for (const staleMs of [5, 10, 50, 100, 150, 199, 200, 201, 300, 600, 1_000, 60_000]) {
+    const interval = service.rtkLockHeartbeatMs(staleMs)
+    assert.ok(interval >= 10, `周期下限：${staleMs} → ${interval}`)
+    assert.ok(interval <= Math.max(10, staleMs), `interval 必须 ≤ staleMs：${staleMs} → ${interval}`)
+  }
+  // 与 env 可达区间的一致性（rtkLockStaleMs() 已把 env 钳在 ≥1000）
+  for (const staleMs of [1_000, 1_001, 3_000, 60_000]) {
+    assert.ok(service.rtkLockHeartbeatMs(staleMs) < staleMs, `常规区间要严格小于阈值：${staleMs}`)
+  }
+})
+
+/* ---------------- R11-C：提交点 fencing ---------------- */
+
+test('R11-C assertOwned/isOwned：被接管后必须拒绝提交（409 lock_lost_during_write）', async () => {
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'fencing-unit', env: { ...env }, staleMs: 5_000 })
+  assert.equal(lock.isOwned(), true)
+  lock.assertOwned() // 不抛
+  // 模拟接管：换 token（同时换 inode，与真实接管一致）
+  fs.rmSync(lockPath())
+  fs.writeFileSync(lockPath(), JSON.stringify({ token: 'THIEF', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home }))
+  assert.equal(lock.isOwned(), false)
+  assert.throws(() => lock.assertOwned(), (error: { reason?: string; status?: number }) => {
+    assert.equal(error?.reason, 'lock_lost_during_write')
+    assert.equal(error?.status, 409)
+    return true
+  })
+  assert.equal(lock.info.lost, true)
+  assert.equal(lock.info.lostReason, 'token_mismatch')
+  fs.rmSync(lockPath())
+})
+
+test('R11-C 跨进程时序 SIGSTOP → 接管 → 恢复：不会「双方都写完」', { timeout: 60_000 }, async () => {
+  const dir = path.join(workspace, 'fencing-e2e')
+  const fenceHome = path.join(dir, 'home')
+  const fenceBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const hookFile = path.join(fenceHome, '.codex/hooks.json')
+  fs.mkdirSync(path.dirname(hookFile), { recursive: true })
+  fs.writeFileSync(hookFile, `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+
+  // 慢 CLI：只发信号、不写文件（模拟「CLI 什么也没做」），让 H 的唯一写入来自 JSON 兜底提交点
+  const startedFlag = path.join(dir, 'cli-started')
+  const slowCli = path.join(dir, 'slow-rtk.sh')
+  fs.writeFileSync(slowCli, `#!/bin/sh\n[ "$1" = "init" ] || exit 0\ntouch "${startedFlag}"\nsleep 2.5\nexit 0\n`, { mode: 0o755 })
+
+  const childScript = `
+    const service = await import(${JSON.stringify(new URL('./rtkService.ts', import.meta.url).pathname)})
+    const targets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
+    try {
+      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(fenceHome)}, bin: ${JSON.stringify(slowCli)}, ...targets })
+      console.log('RESULT ' + JSON.stringify({ ok: true, lockLost: result.lockLost ?? false }))
+      process.exit(0)
+    } catch (error) {
+      console.log('RESULT ' + JSON.stringify({ ok: false, reason: error?.reason, status: error?.status, lockLost: error?.lockLost ?? null }))
+      process.exit(4)
+    }
+  `
+  const child = spawn(process.execPath, ['--import', 'tsx', '-e', childScript], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, RTK_HOME: fenceHome, RTK_BACKUP_DIR: fenceBackups, RTK_LOCK_STALE_MS: '1000' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let childOut = ''
+  child.stdout.on('data', chunk => { childOut += chunk })
+  child.stderr.on('data', chunk => { childOut += chunk })
+
+  // 1) 等 H 进入 CLI（此时 H 已持锁）
+  for (let i = 0; i < 200 && !fs.existsSync(startedFlag); i += 1) await new Promise(r => setTimeout(r, 25))
+  assert.equal(fs.existsSync(startedFlag), true, '子进程没能进入 CLI 阶段')
+  // 2) SIGSTOP 停顿（心跳也冻住，H 无从察觉）
+  child.kill('SIGSTOP')
+  // 3) 等锁过期后「合法接管」：T 拿到锁并写自己的状态
+  await new Promise(r => setTimeout(r, 1_300))
+  const taker = await service.acquireRtkFileLock({ home: fenceHome, purpose: 'taker', env: { ...process.env, RTK_BACKUP_DIR: fenceBackups }, staleMs: 1_000, timeoutMs: 5_000 })
+  assert.equal(taker.info.stolen, true, '接管者应当以「陈旧锁接管」的方式拿到锁')
+  const thiefContent = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'THIEF', hooks: [{ type: 'command', command: 'taker wrote this' }] }] } })}\n`
+  fs.writeFileSync(hookFile, thiefContent)
+  taker.release()
+  // 4) 恢复 H
+  child.kill('SIGCONT')
+  const code = await new Promise<number | null>(resolve => child.once('close', resolve))
+
+  const resultLine = childOut.split('\n').find(line => line.startsWith('RESULT ')) || ''
+  const parsed = JSON.parse(resultLine.replace('RESULT ', '') || '{}')
+  const finalContent = fs.readFileSync(hookFile, 'utf8')
+
+  assert.equal(code, 4, `H 必须以错误退出（本次没生效），实际 ${code}：${childOut.slice(-300)}`)
+  assert.equal(parsed.ok, false)
+  assert.equal(parsed.reason, 'lock_lost_during_write', `H 应报告锁被接管：${resultLine}`)
+  assert.equal(finalContent, thiefContent, 'H 不得在接管者之后写入（否则就是「双方都写完」）')
+  assert.equal(finalContent.includes('rtk hook codex'), false, 'H 的写入不能落盘')
+})

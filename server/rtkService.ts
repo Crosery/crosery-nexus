@@ -236,6 +236,13 @@ export type RtkFileLock = {
   /** 幂等；异常路径也必须在 finally 里调用 */
   release: () => void
   readonly lost: boolean
+  /**
+   * 主动读盘校验「这把锁还是不是我的」（token + inode），**不依赖心跳是否已经跑过**。
+   * 用于提交点 fencing（R11-C）：锁被接管后，已经开始的写入必须在提交前放弃。
+   */
+  isOwned: () => boolean
+  /** 提交点 fence：不持有就抛 409 lock_lost_during_write（带 plane/reason/backup）。 */
+  assertOwned: () => void
 }
 
 // 注意：这里**不能** unref。unref 掉的定时器不会让事件循环保持存活：短命进程/脚本在
@@ -374,9 +381,15 @@ export function inspectRtkLock(lockPath: string, now = Date.now(), staleMs = rtk
  * 目的：临界区超过 `staleMs` 时（rtk CLI 卡住、慢盘、被杀毒扫描阻塞）也不会被误判陈旧夺锁。
  * 心跳定时器自身 unref（它不需要把进程留活；真正持锁的是调用方的临界区）。
  */
-/** 心跳周期：既要远小于 staleMs（否则活锁会被误判陈旧），也不能小到空转。保证 interval ≤ staleMs。 */
+/**
+ * 心跳周期：既要远小于 staleMs（否则活锁会被误判陈旧），也不能小到空转。
+ * 不变量：`interval ≤ staleMs` 对任意 staleMs ≥ 10 成立（R11-A：旧式子在 staleMs < 200 时
+ * 会返回 200 > staleMs，心跳比阈值还慢，自相矛盾）。下限 10ms 只用于兜底，实际由
+ * rtkLockStaleMs() 把 env 钳在 ≥1000。
+ */
 export function rtkLockHeartbeatMs(staleMs: number): number {
-  return Math.max(200, Math.min(Math.floor(staleMs / 3), Math.max(200, staleMs)))
+  const safeStale = Math.max(10, Math.floor(staleMs))
+  return Math.max(10, Math.min(Math.max(200, Math.floor(safeStale / 3)), safeStale))
 }
 
 const renewTempName = (lockPath: string) => `${lockPath}.renew-${process.pid}-${randomBytes(3).toString('hex')}`
@@ -411,6 +424,8 @@ type HeartbeatOptions = {
   token: string
   payload: LockPayload
   staleMs: number
+  /** 由 acquire 提供的持有权校验（token + inode），与 assertOwned 共用同一实现。 */
+  owns: () => 'yes' | 'stolen' | 'unreadable'
   /** 每次成功续期后告诉我们新的 inode（rename 会换 inode）。 */
   onRenewed: (ino: number) => void
   onLost: (reason: string) => void
@@ -430,29 +445,10 @@ type HeartbeatOptions = {
  * 连续 N 次失败后主动置 lost（假活锁会让人以为还持锁，实际 mtime 不前进、随时被夺）。
  */
 function startLockHeartbeat(options: HeartbeatOptions): { stop: () => void } {
-  const { lockPath, token, payload, staleMs } = options
+  const { lockPath, payload, staleMs, owns: ownsLock } = options
   const intervalMs = rtkLockHeartbeatMs(staleMs)
   let failures = 0
-  let ino: number | undefined
-  try {
-    ino = fs.statSync(lockPath).ino
-  } catch {
-    ino = undefined
-  }
   const MAX_RENEW_FAILURES = 3
-
-  const ownsLock = (): 'yes' | 'stolen' | 'unreadable' => {
-    let currentIno: number | undefined
-    try {
-      currentIno = fs.statSync(lockPath).ino
-    } catch {
-      return 'stolen' // 文件都没了：被接管/被删
-    }
-    if (ino !== undefined && currentIno !== ino) return 'stolen' // 换过 inode = 被别人重建过
-    const current = readLockPayload(lockPath)
-    if (!current) return 'unreadable'
-    return current.token === token ? 'yes' : 'stolen'
-  }
 
   const timer = setInterval(() => {
     const state = ownsLock()
@@ -473,7 +469,6 @@ function startLockHeartbeat(options: HeartbeatOptions): { stop: () => void } {
         return
       }
       fs.renameSync(temp, lockPath)
-      ino = tempIno
       failures = 0
       options.onRenewed(tempIno)
     } catch (error) {
@@ -519,6 +514,44 @@ export async function acquireRtkFileLock(options: {
   let lost = false
 
   const info: RtkLockInfo = { path: lockPath, disabled, waitedMs: 0, stolen: false, lost: false }
+  // 当前锁文件的 inode：rename 会换 inode，「被别人删掉重建」据此立刻可见
+  let lockIno: number | undefined
+  try {
+    lockIno = fs.existsSync(lockPath) ? fs.statSync(lockPath).ino : undefined
+  } catch {
+    lockIno = undefined
+  }
+  const ownsLock = (): 'yes' | 'stolen' | 'unreadable' => {
+    let currentIno: number | undefined
+    try {
+      currentIno = fs.statSync(lockPath).ino
+    } catch {
+      return 'stolen' // 文件都没了：被接管/被删
+    }
+    if (lockIno !== undefined && currentIno !== lockIno) return 'stolen' // 换过 inode = 被别人重建过
+    const current = readLockPayload(lockPath)
+    if (!current) return 'unreadable'
+    return current.token === token ? 'yes' : 'stolen'
+  }
+  const markLost = (reason: string) => {
+    lost = true
+    info.lost = true
+    info.lostReason = reason
+  }
+  /**
+   * 提交点 fence（R11-C）：主动读盘确认锁仍属于自己。不匹配就抛结构化错误，
+   * 让调用方**放弃这次写入**并如实上报「这次没生效，请重试」。
+   */
+  const assertOwned = () => {
+    const state = disabled ? 'yes' : ownsLock()
+    if (state === 'yes') return
+    markLost(state === 'unreadable' ? 'lock_file_unreadable' : 'token_mismatch')
+    const failure = new RtkPlaneError(409, 'local', 'lock_lost_during_write',
+      `写入锁在操作期间被接管（${info.lostReason}）：已放弃本次提交，改动可能未生效，请重试`
+      + `（可用 /api/rtk/rollback 恢复；锁：${lockPath}）`)
+    throw failure
+  }
+  const isOwned = () => (disabled ? true : ownsLock() === 'yes')
   const release = () => {
     try {
       const payload = readLockPayload(lockPath)
@@ -549,8 +582,9 @@ export async function acquireRtkFileLock(options: {
     // 生产环境不得设置（launchd 当前未设）。
     warnLockBypass(lockPath)
     info.waitedMs = 0
-    return { info, release: () => {}, get lost() { return lost } }
+    return { info, release: () => {}, get lost() { return lost }, isOwned, assertOwned }
   }
+
 
   while (true) {
     try {
@@ -563,18 +597,21 @@ export async function acquireRtkFileLock(options: {
       }
       // 崩溃残留的续期临时文件：只清够老的，避免误删正在进行的续期
       sweepStaleRenewTemps(lockPath, Math.max(30_000, staleMs))
+      lockIno = fs.statSync(lockPath).ino
       const heartbeat = startLockHeartbeat({
-        lockPath, token, payload, staleMs,
-        onRenewed: () => { info.renewFailures = 0; delete info.renewLastError },
+        lockPath, token, payload, staleMs, owns: ownsLock,
+        onRenewed: (nextIno: number) => {
+          lockIno = nextIno
+          info.renewFailures = 0
+          delete info.renewLastError
+        },
         onFailure: (error, failures) => {
           info.renewFailures = failures
           info.renewLastError = redact(String((error as { code?: string } | null)?.code || (error instanceof Error ? error.message : String(error)))).slice(0, 120)
           console.warn(`[rtk] 写入锁心跳续期失败（第 ${failures} 次）：${info.renewLastError}（锁：${lockPath}）`)
         },
         onLost: (reason) => {
-          lost = true
-          info.lost = true
-          info.lostReason = reason
+          markLost(reason)
           console.warn(`[rtk] 写入锁已不再属于本进程（${reason}），后续不再续期、也不删除他人的锁（锁：${lockPath}）`)
         },
       })
@@ -586,7 +623,7 @@ export async function acquireRtkFileLock(options: {
         heartbeat.stop()
         release()
       }
-      return { info, release: releaseWithHeartbeat, get lost() { return lost } }
+      return { info, release: releaseWithHeartbeat, get lost() { return lost }, isOwned, assertOwned }
     } catch (error) {
       const code = (error as { code?: string }).code
       if (code !== 'EEXIST') {
@@ -1348,7 +1385,20 @@ function reconcileCollateral(
   home: string,
   snapshot: Map<string, string | null>,
   entries: GuardEntry[],
+  options: { fence?: () => void } = {},
 ): ReconcileOutcome {
+  // R11-C 提交点 fencing：锁一旦被接管，就不再写任何「连带还原」文件（否则可能盖掉接管者的写入）
+  if (options.fence) {
+    try {
+      options.fence()
+    } catch {
+      return {
+        entries: entries.map(entry => ({ agent: entry.owner, action: 'skipped' as const, files: [entry.rel], reason: 'lock_lost' })),
+        files: [],
+        skipped: entries.map(entry => ({ agent: entry.owner, file: entry.rel, reason: 'lock_lost' })),
+      }
+    }
+  }
   const byRel = new Map(entries.map(entry => [entry.rel, entry]))
   const perAgent = new Map<string, { action: RtkCollateralAction; files: string[]; reason?: string }>()
   const files: string[] = []
@@ -1543,7 +1593,7 @@ export async function applyLocalAgentHook(
       for (const rel of allFiles) snapshot.set(rel, readFileIfExists(path.join(home, rel)))
       pruneRtkBackups(home, rtkBackupKeep(), { protect: [backup.id] })
 
-      const restoreTargets = () => {
+      const restoreTargetsRaw = () => {
         for (const rel of targets) {
           const target = path.join(home, rel)
           const before = snapshot.get(rel) ?? null
@@ -1552,7 +1602,7 @@ export async function applyLocalAgentHook(
         }
       }
       /** 成功路径也把「用户原本就有的 .bak」还回去（rtk 会覆写它，属于静默数据丢失）。 */
-      const preserveUserBaks = (): string[] => {
+      const preserveUserBaksRaw = (): string[] => {
         if (!hookBak) return []
         const before = snapshot.get(hookBak) ?? null
         if (before === null) return []
@@ -1562,12 +1612,30 @@ export async function applyLocalAgentHook(
         return [hookBak]
       }
 
+      const preserveUserBaks = (): string[] => {
+        // 失去锁就不再写用户的 .bak（可能盖掉接管者的写入）
+        if (!lock.isOwned()) return []
+        return preserveUserBaksRaw()
+      }
+
+      // TODO(fencing): 若 rtk CLI 的写入必须可回滚/可撤销，请改为「CLI 只产出计划 + 控制台统一提交」。
+      // 现状（红队 R11-C 方案 A）：CLI 是外部进程、它自己的写入无法 fence；我们在 CLI 返回后、
+      // 任何后续写入与「报成功」之前校验锁，失去锁就放弃提交并报 409 lock_lost_during_write。
+      // 触发条件见 docs/qa/blue/rtk-fencing-and-heartbeat.md §3。
       // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
       for (const rel of targets) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
       fs.mkdirSync(path.join(home, spec.dir), { recursive: true })
 
+      const restoreTargets = () => {
+        // 失败回填同样要 fence：锁被接管后回填会盖掉接管者的写入，宁可留着让用户重试
+        if (!lock.isOwned()) return
+        restoreTargetsRaw()
+      }
+
       const success = (mechanism: 'rtk-cli' | 'hooks-json', detail: string, cli: RtkCliAttempt, fallbackReason?: string): LocalHookResult => {
-        const collateral = reconcileCollateral(home, snapshot, guards)
+        // 最终提交点：确认锁仍属于自己，否则放弃「连带还原 + .bak 还原」并如实报错
+        lock.assertOwned()
+        const collateral = reconcileCollateral(home, snapshot, guards, { fence: () => lock.assertOwned() })
         const preservedBak = preserveUserBaks()
         return {
           mechanism, detail, cli,
@@ -1597,6 +1665,8 @@ export async function applyLocalAgentHook(
             throw brokenHookFileError(spec, integrity, backup.dir)
           }
           if (cli.ok && verifyLocalHook(spec, on, home)) {
+            // 提交点：CLI 自己写过盘，但只要我们已失去锁就不能声称成功（R11-C）
+            lock.assertOwned()
             return success('rtk-cli', `rtk init -g ${args.join(' ')}`, cli)
           }
           cli = cli.ok ? { ...cli, ok: false, stderr: 'rtk 执行成功但目标状态未生效' } : cli
@@ -1608,6 +1678,8 @@ export async function applyLocalAgentHook(
         if (spec.hookFile && jsonSpec) {
           const filePath = path.join(home, spec.hookFile)
           fs.mkdirSync(path.dirname(filePath), { recursive: true })
+          // 提交点：兜底写入前确认锁还是自己的（R11-C）
+          lock.assertOwned()
           try {
             applyHookJson(spec, jsonSpec, filePath, on)
           } catch (error) {
@@ -1638,8 +1710,9 @@ export async function applyLocalAgentHook(
         cliFailure.backup = backup.dir
         throw cliFailure
       } catch (error) {
-        // 失败路径同样要把被连带改动的其他 agent 文件还原（CLI 可能已经动过它们）。
-        reconcileCollateral(home, snapshot, guards)
+        // 失败路径同样要把被连带改动的其他 agent 文件还原（CLI 可能已经动过它们）；
+        // 但如果我们已经失去锁，就不要再写别人的文件（R11-C）。
+        reconcileCollateral(home, snapshot, guards, { fence: () => lock.assertOwned() })
         if (error instanceof RtkPlaneError) throw error
         throw structuredWriteError(error, spec, backup.dir)
       } finally {
@@ -1843,6 +1916,8 @@ export async function rollbackRTK(options: RtkRollbackOptions = {}): Promise<RTK
   return withFileLock(`rtk-local-write:${home}`, async () => {
     const lock = await acquireRtkFileLock({ home, purpose: `rollback ${options.backup || 'latest'}` })
     try {
+      // 提交点 fencing（R11-C）：回滚也是一次写入，锁被接管就不能再动文件
+      lock.assertOwned()
       const { id, restored } = restoreRtkBackup(home, options.backup)
       const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
       return {
