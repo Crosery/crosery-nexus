@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxDataTable } from '@talex-touch/tuffex/data-table'
+import type { DataTableKey } from '@talex-touch/tuffex/data-table'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxSearchInput } from '@talex-touch/tuffex/search-input'
@@ -45,6 +46,7 @@ const scope = useQueryState({
   sort: 'name',
   dir: 'asc',
   size: '25',
+  cols: 'model,sources,pricing,usage',
   page: '1',
   days: '7',
   keyId: '',
@@ -221,12 +223,108 @@ function toggleDir() {
 const priceFmt = (value: number | null | undefined) => (value === null || value === undefined ? '—' : `$${value.toLocaleString('en-US', { maximumFractionDigits: 4 })}`)
 const moneyFmt = (value: number | null) => (value === null ? '未定价' : fmtUsd(value))
 
+/**
+ * 列的映射关系：
+ * - `sortable` 让 Tuffex 表格给 `<th>` 打上真正的 `aria-sort`（`data-table/src/TxDataTable2.vue.js:165-175`），
+ *   表头点击也会回报排序意图；
+ * - 排序仍然由本页在 JS 里做（未定价恒排最后），所以 `:sort-on-client="false"`，避免二次排序。
+ */
 const columns = [
-  { key: 'model', title: '模型名称', width: 260 },
-  { key: 'sources', title: '服务渠道映射', width: 300 },
-  { key: 'pricing', title: '每 1M Token 定价', width: 260 },
-  { key: 'usage', title: '用量与花费', width: 200, align: 'right' as const },
+  { key: 'model', title: '模型名称', width: 300, sortable: true },
+  { key: 'sources', title: '服务渠道映射', width: 300, sortable: true },
+  { key: 'pricing', title: '每 1M Token 定价', width: 260, sortable: true },
+  { key: 'usage', title: '用量与花费', width: 200, align: 'right' as const, sortable: true },
 ]
+
+/** 表头列 key ↔ URL 里的排序字段。 */
+const SORT_BY_COLUMN: Record<string, string> = { model: 'name', sources: 'sources', pricing: 'input', usage: 'usage' }
+const columnOfSort = computed(() => Object.entries(SORT_BY_COLUMN).find(([, key]) => key === sortKey.value)?.[0] ?? 'model')
+const tableSort = computed(() => ({ key: columnOfSort.value, order: dir.value }))
+
+function onSortChange(next: { key: string; order: 'asc' | 'desc' | null } | null) {
+  if (!next?.order) {
+    scope.patch({ sort: 'name', dir: 'asc', page: '1' })
+    return
+  }
+  scope.patch({ sort: SORT_BY_COLUMN[next.key] ?? 'name', dir: next.order, page: '1' })
+}
+
+/** 列显隐：进 URL（`cols=model,sources,pricing,usage`），可分享「只看价格」这类视图。 */
+const allColumnKeys = columns.map((column) => column.key)
+const visibleColumnKeys = computed(() => {
+  const chosen = scope.state.cols.split(',').map((key) => key.trim()).filter((key) => allColumnKeys.includes(key))
+  return chosen.length ? chosen : allColumnKeys
+})
+const visibleColumns = computed(() => columns.filter((column) => visibleColumnKeys.value.includes(column.key)))
+
+function toggleColumn(key: string) {
+  const current = visibleColumnKeys.value
+  const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+  // 至少留一列，否则表格变成空壳。
+  if (!next.length) return
+  scope.state.cols = next.join(',')
+}
+
+/** 批量操作：表格复选框选中的模型。 */
+const selectedIds = ref<DataTableKey[]>([])
+const batchRunning = ref(false)
+watch(
+  () => [scope.state.page, scope.state.q, scope.state.filter, scope.state.channel, scope.state.kind, scope.state.size],
+  () => {
+    selectedIds.value = []
+  },
+)
+
+const selectedModels = computed(() => {
+  const wanted = new Set(selectedIds.value.map(String))
+  return sortedModels.value.filter((model) => wanted.has(model.id))
+})
+
+/**
+ * 批量启用/停用：对每个选中模型的每一条渠道映射发一次写请求（接口没有批量端点），
+ * 所以顺序执行、统计成败，并把失败如实报出来——不做「点了没反应」的假成功。
+ */
+async function applyBatch(enabled: boolean) {
+  const targets = selectedModels.value.flatMap((model) =>
+    model.sources
+      .filter((source) => source.enabled !== enabled && (enabled || source.channelEnabled))
+      .map((source) => ({ model, source })),
+  )
+  if (!targets.length) {
+    notice.value = { type: 'warning', message: '选中的模型没有需要变更的渠道映射。' }
+    return
+  }
+  const ok = await confirm({
+    title: enabled ? '批量启用渠道映射' : '批量停用渠道映射',
+    body: `将对 ${selectedModels.value.length} 个模型的 ${targets.length} 条渠道映射执行「${enabled ? '启用' : '停用'}」。停用会让使用这些映射的调用失败，操作逐条执行、失败会如实列出。`,
+    confirmText: enabled ? '批量启用' : '批量停用',
+    danger: !enabled,
+  })
+  if (!ok) return
+  batchRunning.value = true
+  notice.value = null
+  const failed: string[] = []
+  let done = 0
+  for (const { model, source } of targets) {
+    try {
+      await api.setModelSourceEnabled(model.id, source.channel, source.kind, enabled)
+      done += 1
+    } catch (err) {
+      failed.push(`${model.id}@${source.channel}：${err instanceof Error ? err.message : '失败'}`)
+    }
+  }
+  await indexRes.reload()
+  selectedIds.value = []
+  batchRunning.value = false
+  if (failed.length) {
+    notice.value = {
+      type: 'error',
+      message: `批量${enabled ? '启用' : '停用'}完成 ${done}/${targets.length}，失败 ${failed.length} 条：${failed.slice(0, 3).join('；')}${failed.length > 3 ? ' …' : ''}`,
+    }
+  } else {
+    notice.value = { type: 'success', message: `批量${enabled ? '启用' : '停用'}完成：${done} 条渠道映射已更新。` }
+  }
+}
 
 async function toggleSource(model: ModelEntry, source: ModelSource) {
   const token = `${model.id}@${source.channel}`
@@ -404,18 +502,48 @@ async function handleSyncUpstream() {
           共 {{ sortedModels.length }} 个模型<template v-if="hasFilter">（已筛选，原 {{ models.length }} 个）</template>，第 {{ paged.page }} / {{ paged.totalPages }} 页
         </p>
 
+        <!-- 列显隐：进 URL（cols=...），可分享「只看价格」这类视图 -->
+        <div class="column-toggles" role="group" aria-label="显示哪些列">
+          <span class="muted text-12">显示列</span>
+          <button
+            v-for="column in columns"
+            :key="column.key"
+            type="button"
+            class="column-toggle"
+            :class="{ on: visibleColumnKeys.includes(column.key) }"
+            :aria-pressed="visibleColumnKeys.includes(column.key)"
+            @click="toggleColumn(column.key)"
+          >
+            {{ column.title }}
+          </button>
+        </div>
+
+        <!-- 批量操作条：选中行后出现 -->
+        <div v-if="selectedIds.length" class="batch-bar" role="region" aria-label="批量操作">
+          <span>已选 <strong>{{ selectedModels.length }}</strong> 个模型（{{ selectedIds.length }} 行）</span>
+          <TxButton variant="secondary" size="sm" :loading="batchRunning" @click="applyBatch(true)">批量启用渠道映射</TxButton>
+          <TxButton variant="danger" size="sm" :loading="batchRunning" @click="applyBatch(false)">批量停用渠道映射</TxButton>
+          <TxButton variant="ghost" size="sm" :disabled="batchRunning" @click="selectedIds = []">清除选择</TxButton>
+        </div>
+
         <!-- 模型数据表格 -->
         <TxDataTable
-          :columns="columns"
+          :columns="visibleColumns"
           :data="paged.rows"
           row-key="id"
           striped
           bordered
           scroll-x
+          selectable
+          :selected-keys="selectedIds"
+          :sort="tableSort"
+          :sort-on-client="false"
           :style="{ '--table-min': '1060px' }"
           :loading="indexRes.loading.value"
           aria-label="模型目录"
           class="models-table"
+          @update:selected-keys="selectedIds = $event"
+          @update:sort="onSortChange"
         >
           <template #cell-model="{ row }: { row: ModelEntryRuntime }">
             <div class="model-cell">
@@ -671,6 +799,39 @@ async function handleSyncUpstream() {
 }
 .table-count {
   margin: 10px 0 6px;
+}
+.column-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.column-toggle {
+  padding: 2px 10px;
+  border: 1px solid var(--tx-border-color);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tx-text-color-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.column-toggle.on {
+  border-color: var(--tx-color-primary);
+  color: var(--tx-color-primary);
+  background: var(--tx-color-primary-light-9);
+}
+.batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--tx-color-primary-light-7);
+  border-radius: var(--tx-border-radius-base);
+  background: var(--tx-color-primary-light-9);
 }
 .models-pager {
   display: flex;

@@ -87,15 +87,22 @@ test('bootstrap always ships a complete quotaState per key even when the quota r
   assert.match(segment, /quotaStates\.get\(String\(row\.key_hash\)\) \?\? quotaStateFor\(row as unknown as KeyQuotaRow\)/)
 })
 
-test('channels and models pages poll silently on the slow tick', () => {
-  const app = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
-  const start = app.indexOf('const refreshCurrent = () => {')
-  const end = app.indexOf('return () => clearInterval(timer)', start)
-  assert.ok(start >= 0 && end > start)
-  const block = app.slice(start, end)
-  assert.match(block, /page === 'channels'\) void loadChannels\(false, true\)/)
-  assert.match(block, /page === 'models'[^\n]*void loadModelIndex\(false, true\)/)
-  assert.match(block, /page === 'channels' \|\| page === 'models'/)
+/**
+ * 原来这条断言读 React 死树 `src/App.tsx`，检查「channels/models 页面每 N 秒静默轮询」的 `refreshCurrent`。
+ * 死树已删除（task-17），并且**这个功能在活代码（Vue 树）里不存在**：`src/pages/*.vue` 只有
+ * 显式「刷新」按钮 + `useResource` 依赖变化重取，没有任何 channels/models 轮询定时器
+ * （`grep -rn setInterval src/pages/*.vue` → 只有 OAuthPage 的授权轮询与 CachePage 的 SSE 重连）。
+ * 所以这条断言不是「换个文件继续断言」，而是它描述的行为已经不在产品里 —— 删掉，避免绿灯来自一个不存在的功能。
+ * 若「静默轮询」是期望行为，应单独立项在产品里实现，而不是留在测试里当装饰。
+ */
+test('活代码里只有授权轮询与 SSE 重连两类定时器，不存在隐式的渠道/模型轮询', () => {
+  const pagesDir = new URL('../src/pages/', import.meta.url)
+  const pages = fs.readdirSync(pagesDir).filter((name) => name.endsWith('.vue'))
+  const intervals = pages.filter((name) => /setInterval/.test(fs.readFileSync(new URL(name, pagesDir), 'utf8')))
+  assert.deepEqual(intervals, ['OAuthPage.vue'])
+
+  const app = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(app, /setInterval|refreshCurrent/)
 })
 
 test('cache trend and cache live accept key and provider filters with a v3 snapshot key', () => {
