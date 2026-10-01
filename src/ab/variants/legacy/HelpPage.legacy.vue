@@ -84,7 +84,7 @@ const curlImage = `curl https://ai.crosery.com/v1/images/generations \\
     <section class="page-head">
       <div class="page-head__text">
         <p class="eyebrow">DOCUMENTATION</p>
-        <h1>接入帮助指南</h1>
+        <h2 class="page-head__title">接入帮助指南</h2>
         <p>提供多协议、跨语言客户端配置教程，每个代码示例均支持一键复制直接运行。</p>
       </div>
     </section>
@@ -271,7 +271,8 @@ const curlImage = `curl https://ai.crosery.com/v1/images/generations \\
   gap: 16px;
   width: 100%;
 }
-.page-head__text h1 {
+.page-head__text h1,
+.page-head__text .page-head__title {
   margin: 0;
   font-size: 24px;
   font-weight: 700;

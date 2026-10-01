@@ -268,12 +268,21 @@ const liveColumns = [
         </div>
       </template>
 
+      <!--
+        R10-C：这里原来没有 `scroll-x`，Tuffex 的 `.tx-data-table` 默认 `overflow:hidden`，
+        于是 390/768 宽时右半张表（输出/缓存读/缓存写/命中率/花费/耗时）被**静默裁掉**
+        （实测 390(mobile)：scrollWidth 732 vs clientWidth 354，溢出的 378px 既无滚动条也无省略号）。
+        按 `layout.css` 既有的 `--table-min` + `.is-scroll-x` 做法改成可横向滚动，
+        低于 760px 时保列宽并让容器滚动，而不是压缩/裁切列。
+      -->
       <TxDataTable
         :columns="liveColumns"
         :data="liveEvents"
         row-key="requestId"
         striped
         bordered
+        scroll-x
+        :style="{ '--table-min': '760px' }"
         class="live-table"
       >
         <template #cell-time="{ row }">

@@ -24,7 +24,13 @@
   min-width: 0;
 }
 
-.page-head h1 {
+/*
+ * 页头标题角色（22px/600/30px，TUF 标准）。挂在类上而不是标签上：
+ * `PageHeader` 在内嵌场景（A/B 实验台）会把标题降级为 `<h2>`，字号/行高/字重必须保持一致，
+ * 否则「同一个视觉角色」会因为语义层级不同而漂移。`.page-head h1` 保留兼容旧写法。
+ */
+.page-head h1,
+.page-head .page-head__title {
   margin: 0;
   font-size: 22px;
   line-height: 30px;

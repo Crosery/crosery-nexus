@@ -124,7 +124,7 @@ onMounted(async () => {
     <header class="page-head">
       <div class="page-head__text">
         <div class="eyebrow-tag">CONTROL CENTER</div>
-        <h1>运行概览</h1>
+        <h2 class="page-head__title">运行概览</h2>
         <p>全景掌握网关请求吞吐、Token 消耗、活跃密钥及底层推理内核状态。</p>
       </div>
       <div class="page-head__actions">

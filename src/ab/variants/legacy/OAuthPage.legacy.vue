@@ -241,7 +241,7 @@ onUnmounted(() => {
     <header class="page-head">
       <div class="page-head__text">
         <div class="eyebrow-tag">AUTHENTICATION</div>
-        <h1>OAuth 授权登录</h1>
+        <h2 class="page-head__title">OAuth 授权登录</h2>
         <p>通过官方 OAuth 授权或设备码机制将上游供应商账号连接至网关，安全接管并上线模型矩阵。</p>
       </div>
       <div class="page-head__actions">

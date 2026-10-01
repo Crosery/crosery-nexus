@@ -321,7 +321,7 @@ onMounted(() => {
     <header class="page-head">
       <div class="page-head__text">
         <div class="eyebrow-tag">ACCESS CONTROL</div>
-        <h1>API Key 管理</h1>
+        <h2 class="page-head__title">API Key 管理</h2>
         <p>
           创建与管理用户访问密钥，支持细粒度的渠道分组白名单、并发保护与周期消费额度。
           <span v-if="quotaTimeZone" class="muted">（服务器时区：{{ quotaTimeZone }}）</span>

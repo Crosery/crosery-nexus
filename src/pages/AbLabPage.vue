@@ -8,8 +8,8 @@
  * 3. **深链**：`?flow=<id>&v=a|b|split`，刷新保持、可分享（Lead 负责挂 `/ab` 路由）。
  * 4. **失败要留痕**：提交失败给持久错误 + 重试，不用一闪而过的 toast（红队 D2 的教训）。
  */
-import PageHeader from '../components/PageHeader.vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import PageHeader, { EMBEDDED_HEADING_KEY } from '../components/PageHeader.vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxButton } from '@talex-touch/tuffex/button'
@@ -24,6 +24,13 @@ import { api } from '../api'
 
 const route = useRoute()
 const router = useRouter()
+
+/**
+ * R10-F：本页内嵌了整页变体（A 侧冻结副本 + B 侧真实页面），它们各自的页头必须降级为 h2，
+ * 否则 `/ab` 会出现 3 个 `<h1>`（实测：实验台自己的标题 + 两侧 KeysPage 的「API Key 管理」），
+ * 屏幕阅读器会在实验台里念出错误的一级标题。下面自己那份页头用 `:level="1"` 显式保住。
+ */
+provide(EMBEDDED_HEADING_KEY, true)
 
 /**
  * 只读闸门（红队第二轮 R1）。
@@ -164,6 +171,7 @@ async function submit() {
 <template>
   <div class="ab-lab">
     <PageHeader
+      :level="1"
       title="A / B 交互对照台"
       description="自助，不打断：随时自己打开比较、投一票就走，不需要任何人讲解。"
       :crumbs="[{ label: '首页', to: '/dashboard' }, { label: 'A/B 实验台' }]"
