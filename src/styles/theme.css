@@ -114,8 +114,48 @@ body {
   letter-spacing: 0;
 }
 
-.muted {
+/*
+ * 排版角色单一真源（task-34）：次要文字 `.muted`。
+ *
+ * 之前这里**只设颜色**，字号/行高靠继承 → 全站实测出现 4 种取值
+ * （13.02px/normal、14px/22px、14px/normal、12px/normal，见
+ * `docs/qa/blue/typography-consistency.md` 的漂移表）。
+ *
+ * 主角色取 **13px/19.5px** 的理由：
+ * 1. `.muted` 绝大多数场合紧邻表格单元格与卡片说明文字，而数据角色就是 13px/19.5px，
+ *    两者同排时不至于一大一小；
+ * 2. 4 种历史取值的中位数就是 13（12 / 13.02 / 14 / 14），改动面最小；
+ * 3. 更密的 12px 已有现成工具类（`text-12`，全站 20 处在用），默认值不该等于最小值。
+ *
+ * 用 `:where()` 保持**零特异度**：UnoCSS 的逐处工具类与组件内的局部覆盖仍能生效。
+ * 否则本文件在 main.ts 里排在 uno.css 之后，会凭源码顺序把它们**静默吃掉**——那是比漂移更糟的回归。
+ *
+ * 已知的**组合语义**（确定性，不是漂移）：`.muted` 出现在 `.page-head` 的说明段落里时，
+ * 由页头散文角色 `.page-head p { 14px/22px }` 接管（选择器更具体），全站只有这一种组合值。
+ * 另：`text-12`/`text-11`/`text-xs` 这些类名在本项目**未被生成**（dist CSS 里不存在），
+ * 属于历史死类名，对排版没有影响（本轮已实测确认）。
+ */
+:root {
+  /* 次要文字角色的取值只在这里定义一次（task-34）：下面两条规则都消费同一组 token。 */
+  --role-muted-size: 13px;
+  --role-muted-line-height: 19.5px;
+}
+
+:where(.muted) {
   color: var(--tx-text-color-secondary);
+  font-size: var(--role-muted-size);
+  line-height: var(--role-muted-line-height);
+}
+
+/*
+ * `.mono` 带 `font-size: .93em`（等宽数字略小的排版习惯），它与 `.muted` 同时出现在
+ * 一个元素上时会把字号再乘一次（13px→12.09px、14px→13.02px，实测 3 处：键值掩码、
+ * 渠道别名）。这里让 `.muted` 的角色说了算，且**消费同一组 token**，不产生第二份取值。
+ */
+.mono.muted,
+.muted.mono {
+  font-size: var(--role-muted-size);
+  line-height: var(--role-muted-line-height);
 }
 
 .sr-only {

@@ -361,7 +361,7 @@ async function submit() {
 .ab-lab__panel h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; line-height: 22px; }
 .ab-lab__steps { margin: 0 0 10px; padding-left: 20px; line-height: 1.8; }
 .ab-lab__safety { margin: 0; padding-left: 20px; line-height: 1.8; color: var(--tx-color-text-secondary, #4b5563); font-size: 13px; }
-.ab-lab code { padding: 1px 5px; border-radius: 4px; background: var(--tx-color-fill, #f3f4f6); font-size: 12px; }
+
 
 .ab-lab__switcher { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
 .ab-lab__switch { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 14px; border: 1px solid var(--tx-color-border, #e5e7eb); border-radius: 10px; background: var(--tx-color-surface, #fff); cursor: pointer; font: inherit; }

@@ -195,11 +195,47 @@
   width: 100%;
 }
 
+/*
+ * 表格空单元格（task-34 ①）：Tuffex 只给 `.tx-data-table__cell` 设了
+ * `font-size:13px; line-height:1.5`（= 13px/19.5px），而 `.tx-data-table__empty`
+ * **没有任何字体规则** → 空表时继承页面/卡片层的 14px + normal。
+ * 结果是同一张表「有数据 13px/19.5px、没数据 14px/normal」。
+ * 这里补上同一角色，任何页面的空表都与数据单元格一致。
+ */
+.tx-data-table__empty {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .tx-data-table.is-scroll-x .tx-data-table__table {
   min-width: var(--table-min, 0);
 }
 
-.pre {
+/*
+ * 行内 `code` 单一真源（task-34 ③）：之前全站没有任何 `code` 规则，
+ * 字号靠继承 → 实测 4 种取值（12.09/18.14、13.02/normal、12/normal、12/22）。
+ * 带上 `code.mono` 是必须的：`theme.css` 的 `.mono{font-size:.93em}` 会乘上所在上下文
+ * （13px→12.09、14px→13.02），把 code 角色再拆成几种；`code.mono`（0,1,1）稳定压过它。
+ */
+code,
+code.mono {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--tx-fill-color-lighter);
+  font-family: var(--console-mono);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/*
+ * 代码块单一真源：`.pre`、裸 `pre`、以及帮助页的 `.code-block` 走同一角色。
+ * `.code-block` 用类选择器是为了稳定压过 `theme.css` 的 `.mono { font-size: .93em }`
+ * （帮助页的 `<pre class="code-block mono">` 同时带这两个类，源码顺序上 layout.css 在后）。
+ * 块内 `code` 继承块的字号，不被行内 code 角色缩小。
+ */
+.pre,
+pre,
+.code-block {
   margin: 0;
   padding: 12px 16px;
   overflow: auto;
@@ -211,6 +247,15 @@
   color: var(--tx-text-color-regular);
   background: var(--tx-fill-color-lighter);
   border-radius: var(--tx-border-radius-base);
+}
+
+pre code,
+.pre code,
+.code-block code {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+  line-height: inherit;
 }
 
 @media (max-width: 1180px) {

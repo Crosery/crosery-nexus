@@ -479,12 +479,12 @@ rtk init -g --agent claude --uninstall`
   color: var(--tx-text-color-secondary, #535b85);
   font-size: 11.5px;
 }
+/* 字号/行高/底色/圆角统一由 layout.css 的代码块角色负责（原来是本地 12px/1.5，
+   与全局 `.pre` 的 12.5px/20px 冲突）。这里只保留本页需要的盒模型与横向滚动
+   —— `overflow-x: auto` 是 7b27f13 的响应式修复，必须保留。 */
 .code-block {
-  margin: 0;
   padding: 12px;
   color: var(--tx-text-color-regular, #353d68);
-  font-size: 12px;
-  line-height: 1.5;
   overflow-x: auto;
   max-width: 100%;
 }
