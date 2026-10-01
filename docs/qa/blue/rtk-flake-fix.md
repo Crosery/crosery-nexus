@@ -144,7 +144,12 @@ launchctl print … | grep -c RTK_LOCK_DISABLED → 0（生产未开旁路）
 | 开关 | 作用 | 默认 | 生产 |
 | --- | --- | --- | --- |
 | `RTK_LOCK_DISABLED` | 旁路跨进程锁，**同时关闭 fencing** | 未设 | **不得设置** |
-| `RTK_TEST_LOCK_HOLD_MS` | 在 `acquireRtkFileLock` 创建锁之后、返回之前插入等待，供测试把篡改确定性地排进窗口 | `0`（不生效） | **不得设置** |
+| `RTK_TEST_LOCK_HOLD_MS` | 在 `acquireRtkFileLock` 创建锁之后、返回之前插入等待，供测试把篡改确定性地排进窗口（用途、接线点、登记位置见本文件 §2.2 / §5） | `0`（不生效） | **不得设置** |
+
+**默认零行为差异（Lead 要求 ①，已有测试钉住）**：`RTK_TEST_LOCK_HOLD_MS` 未设置 / `0` / 负数 / 非数字 / 空串 / 超上限（>10000）
+一律返回 **0**；用例 `RTK_TEST_LOCK_HOLD_MS：不设置时零行为差异…` 做了差分验证——「未设置」与「显式 0」两次获取锁的行为字段
+（`waitedMs` 量级、锁文件是否创建/释放、`disabled`、`stolen`）**完全一致**，且都在毫秒级；正向对照设 `300` 时才真的等 300ms。
+生产路径上它只有一行 `if (testHoldMs > 0) await sleep(...)`，不设时该分支不进入、无任何业务分支。
 
 ---
 
@@ -155,3 +160,9 @@ launchctl print … | grep -c RTK_LOCK_DISABLED → 0（生产未开旁路）
    **我没有单方面这么做**，因为那会削弱 `test:magpie` 对 fence 的覆盖，需要你定。
 2. 概率性/重时序覆盖在 `scripts/rtk-lock-race-harness.mjs`（默认不跑，自带 verdict 与退出码）。
 3. `waitUntil` 上限 10s：若某天真的 10s 都没等到条件，会如实失败（那是真 bug 或极端停顿，不是 flake 掩盖）。
+4. **拆分问题（Lead 已裁决）**：**不拆**。`test:magpie` 是 RTK 专用门禁，跨进程锁/fence 正是 A 线最需要守的覆盖；
+   为了 5 秒把最重要的覆盖挪出专用门禁不划算，7.6s 的全量时长（基线 2s 是因为当时还没有跨进程 e2e）接受。
+5. **HTTP 层 `lockLost`（Lead 在 `server/index.ts` 补的 5 处）目前只有类型检查与逐点核对、没有测试覆盖**。
+   如果要做，用本轮这个确定性同步点很便宜：起一个实例并设 `RTK_TEST_LOCK_HOLD_MS=800` → 测试进程轮询锁文件出现后篡改 token
+   → 断言 `POST /api/rtk/rollback` 返回 `409 { reason: 'lock_lost_during_write', lockLost: true }`（约 1.5-3s，确定性）。
+   **本轮未做**（Lead 说明由红队独立复验该条），需要我加就说一声。

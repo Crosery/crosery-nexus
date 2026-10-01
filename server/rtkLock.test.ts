@@ -576,3 +576,55 @@ test('落盘点 e2e：rollbackRTK 的被夺锁路径（确定性同步点，不�
   assert.equal(parsed.clobberedByRollback, 0, '被夺锁的回滚不得写入目标文件（不得出现操作前内容）')
   assert.equal(parsed.other.rtk_lock_unavailable, undefined, `不应出现锁层异常：${JSON.stringify(parsed.other)}`)
 })
+
+/* ---------------- 测试专用同步点：默认零行为差异（Lead 要求 ①/②） ---------------- */
+
+test('RTK_TEST_LOCK_HOLD_MS：不设置时零行为差异，非法值一律视为 0，合法值才生效', async () => {
+  // ① 取值：未设置 / 0 / 负数 / 非数字 / 超上限 → 0；合法值 → 原值
+  const cases: Array<[string | undefined, number]> = [
+    [undefined, 0], ['0', 0], ['-5', 0], ['abc', 0], ['', 0], ['99999', 0], ['250', 250],
+  ]
+  for (const [raw, expected] of cases) {
+    const probe = { ...process.env } as NodeJS.ProcessEnv
+    if (raw === undefined) delete probe.RTK_TEST_LOCK_HOLD_MS
+    else probe.RTK_TEST_LOCK_HOLD_MS = raw
+    assert.equal(service.rtkTestLockHoldMs(probe), expected, `RTK_TEST_LOCK_HOLD_MS=${String(raw)}`)
+  }
+
+  // ② 行为等价：未设置 vs 显式 '0' 两次获取，观测到的结果必须完全一致（默认路径不含任何等待）
+  const dir = path.join(workspace, 'hold-seam')
+  const seamHome = path.join(dir, 'home')
+  const seamBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const measure = async (envValue: string | undefined) => {
+    const env = { ...process.env, RTK_HOME: seamHome, RTK_BACKUP_DIR: seamBackups } as NodeJS.ProcessEnv
+    if (envValue === undefined) delete env.RTK_TEST_LOCK_HOLD_MS
+    else env.RTK_TEST_LOCK_HOLD_MS = envValue
+    const started = Date.now()
+    const lock = await service.acquireRtkFileLock({ home: seamHome, purpose: 'hold-seam', env })
+    const lockFile = service.rtkLockPath(seamHome, env)
+    const observed = {
+      waitedMsIsSmall: lock.info.waitedMs < 500,
+      heldLockFile: fs.existsSync(lockFile),
+      disabled: lock.info.disabled,
+      stolen: lock.info.stolen,
+    }
+    lock.release()
+    return { ...observed, releasedLockFile: !fs.existsSync(lockFile), elapsed: Date.now() - started }
+  }
+  const unset = await measure(undefined)
+  const explicitZero = await measure('0')
+  // 只比较行为字段（elapsed 是墙钟，本身有 ±1ms 抖动，单独做上界断言）
+  const behavior = ({ elapsed: _elapsed, ...rest }: { elapsed: number }) => rest
+  assert.deepEqual(behavior(explicitZero), behavior(unset), '未设置与显式 0 的行为必须完全一致（默认零行为差异）')
+  assert.ok(explicitZero.elapsed < 500 && unset.elapsed < 500, '默认路径都必须是毫秒级')
+  assert.equal(unset.heldLockFile, true)
+  assert.equal(unset.releasedLockFile, true)
+  assert.ok(unset.elapsed < 500, `默认路径不应有额外等待：${unset.elapsed}ms`)
+
+  // 正向对照：设置合法值时才真的等待（证明这个开关确实接线了）
+  const held = await measure('300')
+  assert.ok(held.elapsed >= 300, `设置 300ms 后必须真的等待：${held.elapsed}ms`)
+  assert.equal(held.heldLockFile, true)
+  assert.equal(held.releasedLockFile, true)
+})
