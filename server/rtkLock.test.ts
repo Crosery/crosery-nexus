@@ -681,8 +681,12 @@ test('RTK_TEST_LOCK_HOLD_MS：不设置时零行为差异，非法值一律视�
   assert.ok(unset.elapsed < 500, `默认路径不应有额外等待：${unset.elapsed}ms`)
 
   // 正向对照：设置合法值时才真的等待（证明这个开关确实接线了）
+  // 下界留 50ms 容差：满负载跑全量套件时实测出现过 299ms（墙钟 + 事件循环调度抖动），
+  // 而"没接线"的路径是毫秒级（见上面的 upper bound），250ms 仍能把两者区分开；
+  // 上界则防止把"接线错了、等太久"当成通过。
   const held = await measure('300')
-  assert.ok(held.elapsed >= 300, `设置 300ms 后必须真的等待：${held.elapsed}ms`)
+  assert.ok(held.elapsed >= 250, `设置 300ms 后必须真的等待（容差 50ms）：${held.elapsed}ms`)
+  assert.ok(held.elapsed < 1500, `设置 300ms 不应等待过久：${held.elapsed}ms`)
   assert.equal(held.heldLockFile, true)
   assert.equal(held.releasedLockFile, true)
 })
