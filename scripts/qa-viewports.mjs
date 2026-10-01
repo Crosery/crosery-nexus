@@ -55,12 +55,14 @@ try {
   if (!authed) throw new Error("登录失败：停在 /login，拒绝以未登录状态产出结论");
 
   // 390 跑两种模拟，避免"桌面拖窄"这一主口径缺失
-  const viewports = [
+  const MIN_SUPPORTED_WIDTH = 380; // 低于此宽度整页横滚属预期（外壳最小内容宽 ~372px），只记录不判失败
+const viewports = [
     { w: 2560, h: 1200, mobile: false },
     { w: 1280, h: 800, mobile: false },
     { w: 1024, h: 768, mobile: false },
     { w: 900, h: 900, mobile: false },
     { w: 768, h: 1024, mobile: false },
+    { w: 320, h: 568, mobile: false },
     { w: 390, h: 844, mobile: false },
     { w: 390, h: 844, mobile: true },
   ];
@@ -122,6 +124,11 @@ try {
       const { pageOverflow, clipped } = await page.evaluate(PROBE);
       const silent = clipped.filter((c) => c.silent);
       silentTotal += silent.length;
+      const belowFloor = vp.w < MIN_SUPPORTED_WIDTH && silent.length === 0;
+      if (belowFloor) {
+        console.log(JSON.stringify({ viewport: vp.w, route, belowSupportedFloor: true, pageOverflow, note: "低于支持下限：整页横滚属预期，无静默截断" }));
+        continue;
+      }
       if (pageOverflow > 2 || silent.length) {
         failing += 1;
         console.log(JSON.stringify({

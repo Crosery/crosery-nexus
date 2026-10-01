@@ -274,6 +274,11 @@ const liveColumns = [
         （实测 390(mobile)：scrollWidth 732 vs clientWidth 354，溢出的 378px 既无滚动条也无省略号）。
         按 `layout.css` 既有的 `--table-min` + `.is-scroll-x` 做法改成可横向滚动，
         低于 760px 时保列宽并让容器滚动，而不是压缩/裁切列。
+
+        ⚠️ 这条性质**依赖表格仍是 `table-layout: auto`**（`--table-min` 落在 `min-width` 上，
+        是不封顶的下界）：红队注入实验证实**加列时表格会长到 992px 并仍然可滚**（760 不是天花板）。
+        若将来有人给这张表加 `table-layout: fixed`、或把 `--table-min` 改成 `width`，
+        就会重新变成静默裁列 —— 改之前请重跑 `scripts/qa-viewports.mjs`。
       -->
       <TxDataTable
         :columns="liveColumns"
