@@ -1,0 +1,17 @@
+# 任务 B：fencing（真 CLI 在环）
+
+## 配置 A：B 用**默认** stale 窗口（60s）→ 不抢，**fail closed**
+  A 持锁（pid 9423, token 40dae89820858cf1）→ SIGSTOP A → B toggle：
+  HTTP 503 {"error":"等待跨进程写入锁超时（15000ms，锁：…/rtk-write.lock，持有者 pid=9423）"}
+  ⇒ 活着的持有者不会被抢；竞争者宁可失败也不冒丢更新的风险（安全属性 ✓）
+
+## 配置 B：B 显式 RTK_LOCK_STALE_MS=3000（第 27 轮同款）→ 接管 + fencing 生效
+  A 持锁 token=f9057124b1944bfa（SIGSTOP）
+  B toggle: HTTP 200, lock={stolen:true, stolenFromPid:9423, stolenFromAgeMs:4808, waitedMs:0}
+  A 醒来: HTTP 409 {"error":"写入锁在操作期间被接管（token_mismatch）：已放弃本次提交…","reason":"lock_lost_during_write","lockLost":true,"lockLostReason":"token_mismatch"}
+  最终：356B、有效 JSON、marker=1、锁已释放 ✓
+
+## 边界（诚实记录）
+  被 spawn 的 CLI 是独立进程，锁/fencing 管的是**控制台自己的提交与校验**，不是 CLI 的写入；
+  本例中 A 的 CLI 子进程在 A 醒来后仍写了文件（两侧都是幂等的 rtk init 结果，最终状态一致）。
+  真实 CLI 单次 7ms，该窗口极小；但若未来 CLI 做非幂等写入，这层不覆盖。

@@ -1,0 +1,50 @@
+# 任务 B：真实 RTK CLI 端到端（一次性 HOME=/tmp/cac-r28b-xxxx/home，端口 8891/8892）
+
+## 环境
+  rtk 0.50.0  /Users/crosery/.local/bin/rtk (8.4MB, Sep 24)
+  spec.initFlags(codex) = ['--codex'] → 控制台执行 rtk init -g --codex（off 时加 --uninstall）
+
+## T1 正常 toggle ON（真 CLI）
+  种子 hooks.json: d8acd5877b1eb39c 199B（含 2 个第三方钩子）
+  HTTP 200，总耗时 0.112s；hooks.json → 334ce0792c376c12 575B，marker(rtk hook codex)=1，第三方钩子仍 2 个
+  .bak：hooks.json.bak 199B ← **真 CLI 自己写的**（内容=写入前的原文）
+  extraFiles：.codex/RTK.md、.codex/AGENTS.md 被创建
+  控制台备份目录：manifest(.codex/hooks.json:true, .codex/hooks.json.bak:false) + .codex__hooks.json 副本
+
+## T2 真实耗时（干净计时，直接跑二进制）
+  rtk init -g --codex           : 0.0077s / 0.0070s（两次，幂等：同 hash 334ce0792c376c12）
+  rtk init -g --codex --uninstall: 0.0066s（marker 清零，第三方钩子保留）
+  控制台一次 toggle 调用 CLI 次数：3 次（wrapper 日志计数）→ 约 21ms 的 CLI 时间
+  ⇒ 与锁 stale 窗口对比：**默认 stale=60000ms**（rtkService.ts:308，不是 3000ms），CLI/窗口 ≈ 1/8000
+
+## T3 慢 CLI（wrapper 每次调用前 sleep 4s）
+  HTTP 200，总耗时 12.10s，lock={stolen:false,lost:false,waitedMs:0}
+  ⇒ 即使单次 CLI 4s（500×真实耗时）也不会自己踩 holder_timeout（默认心跳=staleMs/3=20s 会续期）
+
+## T4 崩溃 A：真 CLI 还没开始写（wrapper pre-sleep 中 kill 控制台）
+  目标文件未变（168ab85c97b6598f 86B, marker=0）；锁残留 pid=7355（已死），inode=332811698
+
+## T5 崩溃 B：真 CLI 已写完、控制台未收尾时 kill
+  崩溃瞬间：marker=1、有效 JSON、.bak=86B（写入前原文）
+  恢复（直接重发，不清理）：HTTP 200，lock={stolen:true, stolenFromPid:8635, stolenFromAgeMs:7876}
+  最终：有效 JSON + marker=1，锁已释放
+
+## T6 半写文件 + 真 CLI 重试（**推翻第 27 轮推断**）
+  制造半写：hooks.json 截断到 40B（无效 JSON, marker=0）
+  重试：HTTP 409 {"error":"…不是合法 JSON（invalid_json），已拒绝并回填操作前原文；可用 /api/rtk/rollback 恢复","reason":"hook_file_unparsable"}
+  重试后：仍 40B / 无效 JSON / marker=0 ← **没有被修好**
+  隔离验证（直接跑真 CLI，不经控制台）：
+    $ HOME=<tmp> rtk init -g --codex
+    退出码=1
+    stderr: rtk: Failed to parse /tmp/cac-r28b-xxxx/home/.codex/hooks.json as JSON: EOF while parsing a list at line 4 column 5
+    → 真 CLI 解析失败即退出，**不做修复**
+
+## T7 真 CLI 的写是**原子**的（inode 证据）
+  uninstall: inode 332859872 → 332860018（变了）；init: 332860018 → 332860022（变了）
+  ⇒ temp+rename 替换 ⇒ **真 CLI 中途被 kill 不会留下半写文件**（旧文件保持完整）
+  ⇒ 半写状态实际上只能来自非原子写入者（如第 27 轮的假 CLI）、IO 错误或人工编辑
+
+## T8 恢复路径（人工 rollback，真 CLI 状态）
+  backupId=2026-10-01T09-47-47-033Z-6b9e74（损坏前的备份）
+  POST /api/rtk/rollback {"backup":"…","confirm":true} → 200，restored 30 个文件
+  恢复后 hooks.json: 356B、有效 JSON、marker=1 ✓

@@ -23,6 +23,19 @@
 
 ---
 
+## 0.5 运维事实（红队第二十七/二十八轮实测，发布后会用得上）
+
+- **被 OOM 或重启不会坏数据**：`usage_events` 与 `usage_hourly_rollup` 的触发器**同事务**，崩溃后零漂移（实测：写到一半 kill → `1610/1610`、0 行漂移；未提交事务原子回滚）。agent 配置写入有"备份 + 跨进程锁 + fencing"，死锁会被自动接管（三种陈旧态都实测过），fencing 实测拦下过一次**真实的丢更新**。launchd `KeepAlive=1 + ThrottleInterval=10` ⇒ **约 10 秒自动恢复**。
+- **唯一可能需要人工的情形**：某个被写入的文件停在**半写**状态（控制台会检测到并拒绝：`409 hook_file_unparsable`）。恢复用 **`POST /api/rtk/rollback` + 崩溃那次操作的 backupId**，实测可**逐字节**还原。
+  **注意**：真实的 `rtk` CLI **不会**修复半写文件（它遇到非法 JSON 直接退出 1）——不要指望"重试一次就好了"。好消息是**真 CLI 的写是原子的**（temp+rename，每次换 inode），所以真 CLI 中途被杀**不会**留下半写文件；半写只可能来自非原子写入者、IO 错误或人工编辑。
+- **排查备份内容用 `ls -a`**：备份目录里的副本可能以 `.` 开头（原始文件名如此），`ls` 看不到。
+- **别让两个实例共用同一个 `DATA_DIR`**：会直接 `database is locked (261)`（单实例设计）。重启前先确认旧进程退出。
+- **`/v1/usage` 在网关/管理面不可用时会降级而不是 500**：响应带 `X-Usage-Degraded` header 与 `degraded{…}` 字段（写明"未按 provider 过滤"）。看到这个标记说明**上游有问题**，不是用户数据的错。
+- **长期运行**：只读采样器 `docs/qa/red-team/evidence/r28/read-only-sampler.mjs` 可挂长期任务（`--port 8791 --label prod`）；判读先看 **FD 长期斜率**，heap 看**每窗口低点基线**而不是瞬时值。
+- **告警可信度**：空窗口下 `rollup-health` 与 `scripts/rollup-rebuild.mjs check` 现在**同判 ok**（曾经一条报 alert 一条报 ok，夜间无流量必然误报）。
+
+---
+
 ## 1. §1 预检（只读，无风险）
 
 ```bash
