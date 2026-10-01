@@ -1,0 +1,12 @@
+# 登录爆破 / 限流 / 枚举 / 时序（临时实例 8850）
+
+$ timeout 200 node brute.mjs 8850
+错误密码    {"median":0.93,"min":0.61,"max":14.98,"mean":2.37} 状态码集合: [401]
+不存在用户名 {"median":0.43,"min":0.33,"max":0.59,"mean":0.44} 状态码集合: [401]
+响应体是否一致: true "{\"error\":\"管理员账号或密码不正确\"}"
+20+ 次失败后正确密码登录: 200 {"ok":true}     ← 无限流、无锁定、无延迟
+
+## 更严谨的时序测量（30 样本 + 预热）
+$ timeout 200 node timing.mjs 8850
+{"n":30,"correctUsername":{"median":0.395,"p25":0.317},"unknownUsername":{"median":0.38,"p25":0.31},"ratioMedian":1.04}
+→ 实测不可区分；validateCredentials 的 && 短路只构成理论侧信道（信息级）

@@ -1,0 +1,11 @@
+# 会话与 Cookie
+
+## 生产实例登录响应头（1 次登录）
+Set-Cookie: crosery_console_session=1790881214263.f53c686e99bc7d08ff44befc57ee01e89d8fb4c001b21156b1fdf937fe0143f2; Max-Age=43200; Path=/; Expires=Thu, 01 Oct 2026 19:00:14 GMT; HttpOnly; SameSite=Strict
+
+## 篡改/伪造/重放（临时实例 8850）
+原 cookie                  -> 401
+伪造远期过期+原签名        -> 401
+改一位签名                 -> 401
+登出后重放同一 cookie      -> 401   ← 200 = 无服务端吊销
+换 SESSION_SECRET 重启后   -> 401（见报告）

