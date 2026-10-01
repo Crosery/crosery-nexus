@@ -1,0 +1,28 @@
+# 修复验证：rollback 路径穿越（commit 1084b88）——4 类绕过全部被拦
+
+## A) 恶意 backupId
+  backupId=../evil -> 400 backup_id_invalid
+  backupId=../../etc -> 400 backup_id_invalid
+  backupId=/etc -> 400 backup_id_invalid
+  backupId=.. -> 400 backup_id_invalid
+  backupId=. -> 400 backup_id_invalid
+  backupId=a/../b -> 400 backup_id_invalid
+  backupId=2026-10-01T01-10-10-661Z/../../evil -> 400 backup_id_invalid
+  backupId='2026-...Z\..\..\evil' -> 400（JSON 解析层）
+
+## B) 备份根内 symlink 指向根外
+  ln -s /tmp/.../outside/evil /tmp/.../backups/2026-10-01T00-00-00-000Z
+  -> 400 {"error":"备份目录 经符号链接解析后落在允许目录之外...","reason":"backup_path_escape"}；canary 未被删
+
+## C) manifest.rel 经 home 内 symlink 逃逸
+  -> 400 manifest_rel_outside_home；/tmp/wp-canary.txt 未被写
+
+## E) 备份侧 source 是 symlink(/etc/passwd)
+  -> 400 backup_path_escape；home/stolen.txt 未被写
+
+## H/I) manifest.id 不一致 / manifest.home 不一致
+  -> 400 manifest_invalid（两条都拦）
+
+## D) 合法回滚不误伤
+  自建合法备份（id/home/rel 均匹配）-> 200 {"ok":true,"restored":[".claude/settings.json"]}，文件内容按备份恢复
+  未带 confirm -> 403 confirmation_required

@@ -1,0 +1,14 @@
+# 执行面与信任边界取证
+
+## 唯一的 spawn（server/rtkService.ts:1707）
+  spawn(bin, ["init","-g",...args]) —— 无 shell:true（全仓库 grep 为空）
+  bin 来自 findRTKBinary()：RTK_BIN（存在才用）或固定绝对路径 ~/.local/bin/rtk、~/.cargo/bin/rtk、/usr/local/bin/rtk、/opt/homebrew/bin/rtk —— 不做 PATH 查找
+  args 来自 RTK_AGENT_SPECS 注册表 + agent 白名单校验（未知 agent → 404 unknown_agent，实测 codex; touch /tmp/... 与 $(...) 均被拦）
+
+## RTK_BIN / MAGPIE_* 的「运维面受信输入」定性复核（只读取证）
+  ~/Library/LaunchAgents/com.crosery.console-magpie.plist  -rw------- crosery staff   （仅属主/root 可写）
+  plist 内未设置 RTK_BIN（grep -c RTK_BIN = 0）
+  启动器 env 白名单仅 PATH/LANG/LC_ALL/TMPDIR（scripts/magpie-console.mjs:91），RTK_BIN 不会被转发
+  ~/.agents/crosery/magpie-console      drwx------ crosery staff
+  ~/.agents/crosery/magpie-console/bin  drwx------ crosery staff
+  → 结论：在生产服务路径上，改 RTK_BIN/MAGPIE_* 需要「以管理员身份写 plist 或 env」；能这么做的人已经能以同用户身份执行任意代码，不构成提权。定性成立（前提：plist 与 runtime 目录权限不被放宽）。

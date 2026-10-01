@@ -1,0 +1,35 @@
+# 新代码检查（最近三轮）
+
+## server/compression.ts（静态文本压缩中间件）
+    const rawUrl = String(req.url || '/')
+    const queryAt = rawUrl.indexOf('?')
+    let urlPath = queryAt >= 0 ? rawUrl.slice(0, queryAt) : rawUrl
+    try {
+      urlPath = decodeURIComponent(urlPath)
+    } catch {
+      return next()
+    }
+    if (urlPath.includes('\0')) return next()
+
+    const filePath = path.resolve(resolvedRoot, `.${urlPath.startsWith('/') ? urlPath : `/${urlPath}`}`)
+    if (filePath !== resolvedRoot && !filePath.startsWith(resolvedRoot + path.sep)) return next() // 目录穿越
+
+→ decodeURIComponent 后做 path.resolve + startsWith(resolvedRoot+sep) 包含性检查；NUL 拒绝；扩展名白名单；不通过则 next()。未发现穿越。
+
+## server/auth.ts 默认拒绝（PUBLIC_PATHS）
+153:    pattern: /^\/api\/session\/?$/,
+159:    pattern: /^\/api\/login\/?$/,
+164:    pattern: /^\/api\/logout\/?$/,
+168:    pattern: /^\/v1(\/|$)/,
+173:    pattern: /^\/docs(\/|$)/,
+→ 5 条规则都带锚点；/^\/v1(\/|$)/ 是「前缀级」规则（将来新增 /v1/* 路由会默认公开）——结构性提示，见报告。
+
+## server/usageReports.ts
+  grep writeFile|createWriteStream|mkdir → 空（纯读 + 内存聚合）
+
+## server/rtkService.ts 的 rel 校验器覆盖
+  assertRelShape/assertInsideDir/homeRelPath 调用点：811,812,989,1023,1027,1028,1056,1057,1448,1611,1661,1779,1784,1795,1812,1868
+  独立枚举剩余 path.join(root|dir|home, X)：X 全部来自 readdir（868,878,884,896,926,939,962）或内部 id（807）或注册表 spec.dir（1813）→ 未找到漏网的 rel 消费点
+
+## 回归：鉴权矩阵在新默认拒绝代码下复跑
+  59 条路由 → 57×401 + /api/session 200 + /api/logout 200（与改造前一致）
