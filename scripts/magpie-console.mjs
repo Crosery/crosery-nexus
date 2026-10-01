@@ -102,7 +102,11 @@ if (action === 'prepare') {
   if (!ready) { kernel.kill('SIGTERM'); throw new Error('Magpie kernel did not become ready') }
   const consoleServer = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
     cwd: root, env: {
-      ...env, HOST: '127.0.0.1', PORT: String(manifest.consolePort), COOKIE_SECURE: 'false',
+      // 这里**故意不设** COOKIE_SECURE：由 server/security.ts 按请求协议推导
+      // （HTTPS/`X-Forwarded-Proto: https` 一定带 Secure，本地纯 HTTP 不带）。
+      // 之前写死 'false' 会导致「经 HTTPS 访问却发不带 Secure 的 Cookie」，
+      // 而环境变量与事实矛盾还会误导排障（红队第十五轮安全审计发现）。
+      ...env, HOST: '127.0.0.1', PORT: String(manifest.consolePort),
       CONSOLE_USERNAME: 'admin', ...passwordEnvironment, SESSION_SECRET: randomBytes(32).toString('hex'),
       DATA_DIR: process.env.DATA_DIR || path.join(root, 'data'), GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local',
       MAGPIE_KERNEL_SOCKET: socket, MAGPIE_PORT: String(manifest.gatewayPort),
