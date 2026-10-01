@@ -28,6 +28,7 @@ rmdir /tmp/cac-build.lock 2>/dev/null
 
 - 日常增量检查优先用 `npm run lint`（快，可并发）。
 - 只有串行区内的命令才需要取锁：`npm run build`、`npm test`、`npm run test:magpie`、重启服务。
+- ⚠️ `cat scripts/qa-*.mjs | ego-browser nodejs` 时，**`$?` 取到的是管道末尾命令的退出码**（`tail`/`grep`），而且 `ego-browser` 包装层会把脚本的真实退出码 **2（没量成）折叠成 1（有发现）**（红队 R11-B）——判据请读**脚本自己打印的 JSON 摘要**或 ego 报告的 `exited with code N`，不要只看 shell 的 `$?`。
 - **门禁按退出码判定，不要 grep `fail` 计数**（红队 R5-A/R6 验证）：挂起类失败会计入 `cancelled`，汇总里 `fail` 仍是 0，只数 `fail` 的门禁会静默放行。测试脚本已带 `--test-timeout=30000`，挂起会在有界时间内以非 0 退出。
 - **只允许重启** `com.crosery.console-magpie`：`launchctl kickstart -k gui/$(id -u)/com.crosery.console-magpie`。禁止动其它 `com.crosery.*` 服务。
 - UI 改动要生效：先 `npm run build`，再刷新 `http://127.0.0.1:8791`（Express 静态托管 `dist/`，重建即生效）。
