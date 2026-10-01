@@ -195,3 +195,71 @@ status ──▶ check ──(版本相同)──▶ 幂等退出 0，不写产�
    `scripts/magpie-update.test.mjs` 10 条）。
 5. `node --test`/`npm test`/`npm run test:magpie`/`npx tsc -b`/`npm run build`/`npm run lint` 中：
    **除上面那条无关失败外全部 exit 0**（test:magpie 107 通过；tsc/build/lint 0）。
+
+
+---
+
+# 附：task-79 交付（把两块能力接进控制台端点）
+
+## 7.1 双源价格进「控制台自己的」端点（①）
+
+`GET /api/public/model-catalog` 需要**网关 API Key**（会话 cookie 是 401），控制台 UI 用不了 ⇒
+把双源价格接进 **`GET /api/model-index`**（`src/api.ts:91` 就是它在用）：
+
+- 每条模型新增（与 `ModelPricingSources.vue` 的 props 对齐）：
+  `pricingSources`（两个来源各自的输入/输出/缓存读/缓存写 + **各自 `fetchedAt`**）、
+  `unpriced`（任何来源都没价 ⇒ true，前端写「未收录」，**不是 0**）、
+  `availableOnGateway`（价格来源里有、目录里没有 ⇒ false，标"仅目录收录"）；
+- 响应新增 `sourceStatus`（每个来源的 `ok/fetchedAt/entries/error` + `degraded`），供降级横幅；
+- **并集只在这里做**（控制台视图不限可见范围）；`/api/public/model-catalog` 是按 Key 的视图，
+  **保持不做并集**（task-78 已确立的规则，避免越权展示）；
+- 预览：`server/modelIndex.ts` 的 `withPriceSourceFields()` 与 `mergePriceSourceEntries()`（导出以便直接测字段契约）。
+
+## 7.2 magpie 更新的服务端代跑（②）
+
+浏览器跑不了脚本 ⇒ 两个端点（`server/index.ts`）：
+
+| 端点 | 行为 |
+| --- | --- |
+| `GET /api/magpie/update-status` | 代跑 `magpie-update.mjs status --root <root>`，返回 `{capability, currentVersion, latestVersion, lastCheckedAt, lastResult, backupPath, error, script, root}`。**脚本/安装目录不存在 ⇒ `capability:false` + 原因**（UI 禁用按钮并说明），**不假装有** |
+| `POST /api/magpie/update` | body `{action: 'check'\|'rehearse'\|'apply', confirm?, from?}`。**`apply` 必须 `confirm:true`**，否则 **403 `confirm_required` 且一次脚本调用都不发生**（零副作用）；能力不可用 ⇒ **503**；脚本非 0 退出 ⇒ **500 `update_failed` + 脚本的回滚结论原样带回**；`check`/`rehearse` 无需确认（只读 / 只动临时目录） |
+
+- 两个端点都在**默认拒绝**守卫之下（未认证 401）；
+- **都进审计**（`magpie_update`，含 `refused:missing-confirm` / `exit=N, status=…`）；
+- 脚本与安装根可用 `MAGPIE_UPDATE_SCRIPT` / `MAGPIE_UPDATE_ROOT` 注入（测试用替身）；
+- **绝不触碰 launchd、不重启服务**（脚本本身也不碰）。
+
+## 7.3 测试与负向验证（③）
+
+`server/magpieUpdateRoutes.test.ts`（6 条，真子进程 + 生产参数 + 真实 HTTP，更新脚本用**记录型替身**）：
+
+```
+✔ 两个新端点走默认拒绝：未认证一律 401（模型索引也一样）＋被 401 拦下时零脚本调用
+✔ 能力探测如实：脚本不存在 → capability:false + 原因；POST 即使带 confirm 也 503
+✔ POST apply 缺 confirm → 403 且**一次脚本调用都没有**（零副作用）+ 拒绝事件进审计
+✔ 确认后 apply 才真正执行（调用参数含 --confirm-apply）；check 无需确认；两者都进审计
+✔ 更新失败 → 500 update_failed + 脚本的 rolled-back 结论原样返回
+✔ 模型索引字段契约：pricingSources（含时间戳）/ unpriced（无价 ⇒ true，不是 0）/ availableOnGateway
+  + 并集含"仅目录收录"的模型 + 来源降级可见（source-unavailable:models.dev）
+```
+
+**语义级负向验证**：临时去掉确认门（`if (false && …)`）→「缺 confirm 必须 403 且零副作用」**必红**，
+其余 5 条仍绿；还原后 `server/index.ts` shasum `fd984ef0…` 与基线**逐字节相同** → 6 条全绿。
+
+## 7.4 挂载点结论（④）
+
+| 组件 | 挂载点 | 数据来源（已就绪） |
+| --- | --- | --- |
+| `src/components/ModelPricingSources.vue` | **模型总览页**（ModelsPage.vue，归 blue-ui）：取 `/api/model-index` 的 `models[]` 条目直接做 props；页面顶部可用同一响应的 `sourceStatus` 渲染降级横幅 | ✅ 字段已就在 `/api/model-index`（会话 cookie 即可，不需要网关 Key） |
+| `src/components/MagpieUpdatePanel.vue` | **RTK 页的"系统维护/相关设置"**（排版由 Lead 收口）：`status` ← `GET /api/magpie/update-status`；三个动作 → `POST /api/magpie/update`（`apply` 必须带 `confirm:true`，组件里已有勾选确认） | ✅ 两个端点已就绪 |
+
+## 7.5 仍未验证 / 需要一步操作
+
+1. **价格要在 UI 上真的出现，共享产物必须先落一次 `pricing` 段**：Lead 已应用补丁并跑过
+   `--dump-pricing`（只读），但**产物 `catalog.json` 目前还没有 `pricing` 段**（复核：顶层仍是
+   `version/generatedAt/provider/baseUrl/source/models/dropped`）。需要跑一次
+   `cd ~/.agents/crosery && node sync.mjs --apply`（或等 launchd 定时任务跑一次，它会自动带上）。
+   在那之前，控制台端点会如实返回 `degraded: ["shared-pricing-missing"]`、每条 `unpriced: true`
+   —— 这正是"降级可见"的设计行为，不是 bug。
+   （共享缓存 `cache/public-catalog.json` 已是 `version: 2` 且带价格，所以这一步只差写产物。）
+2. 真实 magpie 构建/替换仍未执行（同 §6）。

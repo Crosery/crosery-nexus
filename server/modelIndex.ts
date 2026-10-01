@@ -1,5 +1,5 @@
 import type { ChannelView } from './channelView.js'
-import { getModelPricing, type ModelPricing } from './pricing.js'
+import { getModelPricing, type ModelPricing, getPricingSources, pricingSourceModelIds, type SourcePrice } from './pricing.js'
 
 export type ModelSource = {
   channel: string
@@ -20,6 +20,15 @@ export type ModelEntry = {
   enabledSources: number
   /** 同一模型名由多个渠道提供时为 true，是路由歧义的信号。 */
   contested: boolean
+  /**
+   * task-79：两个外部价格来源（models.dev / openrouter）各自的报价与抓取时间戳。
+   * 与 `server/pricing.ts` 的 `getPricingSources()` 同源；缺失的来源**缺席**（不是 0）。
+   */
+  pricingSources?: Partial<Record<'models.dev' | 'openrouter', SourcePrice>>
+  /** 任何来源都没有价格（本地/网关/两个外部来源都缺）⇒ true，前端显示「未收录」 */
+  unpriced?: boolean
+  /** 是否在网关上可用；只在价格来源里出现的模型 ⇒ false（并集里的"仅目录收录"） */
+  availableOnGateway?: boolean
 }
 
 export type OAuthProviderModels = {
@@ -44,6 +53,45 @@ export type OAuthProviderModels = {
  * 静态表没有的模型仍由网关补，`applyGatewayPricing` 也会把它们并进 HISTORY，
  * 所以这里保留 gatewayPricing 兜底只是为了覆盖「本轮刚拿到、还没合并」的窗口。
  */
+
+/** task-79：把双源价格/未收录/是否在网关上可用拼给前端（与 ModelsPage 组件 props 对齐）。 */
+function priceSourceFields(id: string, availableOnGateway: boolean): Pick<ModelEntry, 'pricingSources' | 'unpriced' | 'availableOnGateway'> {
+  const { sources } = getPricingSources(id)
+  const hasSourcePrice = Object.keys(sources).length > 0
+  return {
+    ...(hasSourcePrice ? { pricingSources: sources } : {}),
+    availableOnGateway,
+    unpriced: !getModelPricing(id) && !hasSourcePrice,
+  }
+}
+
+/** 网关/渠道目录里已有的模型补齐双源字段（导出以便直接测字段契约）。 */
+export function withPriceSourceFields(entry: ModelEntry): ModelEntry {
+  return { ...entry, ...priceSourceFields(entry.id, true) }
+}
+
+/**
+ * task-79 的「并集」：把两个价格来源里出现、但控制台目录里没有的模型补进来。
+ * 只给**控制台自己的**视图用（不限可见范围）——按 Key 的视图不得调用它。
+ */
+export function mergePriceSourceEntries(models: ModelEntry[]): ModelEntry[] {
+  const seen = new Set(models.map(entry => entry.id))
+  const extra: ModelEntry[] = []
+  for (const id of pricingSourceModelIds()) {
+    if (seen.has(id)) continue
+    extra.push({
+      id,
+      pricing: getModelPricing(id),
+      sources: [],
+      enabledSources: 0,
+      contested: false,
+      ...priceSourceFields(id, false),
+    })
+    seen.add(id)
+  }
+  return extra.length ? [...models, ...extra].sort((left, right) => left.id.localeCompare(right.id)) : models
+}
+
 export function buildModelIndex(channels: ChannelView[], oauth: OAuthProviderModels[], gatewayPricing?: Map<string, ModelPricing>): ModelEntry[] {
   const index = new Map<string, ModelSource[]>()
 
@@ -94,5 +142,6 @@ export function buildModelIndex(channels: ChannelView[], oauth: OAuthProviderMod
         contested: enabledSources > 1,
       }
     })
+    .map(withPriceSourceFields)
     .sort((a, b) => Number(b.contested) - Number(a.contested) || a.id.localeCompare(b.id))
 }

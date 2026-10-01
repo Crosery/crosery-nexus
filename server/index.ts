@@ -1,4 +1,7 @@
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -76,7 +79,9 @@ import { SnapshotStore } from './snapshotStore.js'
 import { loadCacheLiveHistory } from './cacheLiveHistory.js'
 import { ReportSnapshotCache } from './reportSnapshotCache.js'
 import { loadMonitorQuotaShare } from './monitorQuotaShare.js'
-import { loadModelCatalog, visibleModelIds, refreshGatewayPricing } from './modelCatalog.js'
+import { loadModelCatalog, visibleModelIds, refreshGatewayPricing, refreshSharedPricingIfStale } from './modelCatalog.js'
+import { mergePriceSourceEntries } from './modelIndex.js'
+import { pricingSourceStatus } from './pricing.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
 import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
@@ -1154,8 +1159,93 @@ app.get('/api/data-plane/status', (_req, res) => {
 app.get('/api/model-index', async (req, res) => {
   try {
     if (wantsFresh(req)) invalidateGatewaySnapshot()
-    res.json(await listModelIndex())
+    await refreshSharedPricingIfStale()
+    const index = await listModelIndex()
+    // task-79 ①：控制台自己的端点带上双源价格（每条模型）+ 来源整体状态；并集只在这里做
+    // （`/api/public/model-catalog` 是按 Key 的视图，那里**不做**并集，避免越权展示）。
+    res.json({ ...index, models: mergePriceSourceEntries(index.models), sourceStatus: pricingSourceStatus() })
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取模型失败' }) }
+})
+
+/* ────────── task-79 ②：magpie 内核更新的服务端代跑（浏览器跑不了脚本） ────────── */
+
+/**
+ * 更新脚本与安装根都可注入（测试用替身；生产用默认值）。**绝不碰 launchd、不重启服务**：
+ * 本端点只跑 `scripts/magpie-update.mjs`，它自己只做"校验 → 备份 → 原子替换 → 失败回滚"。
+ */
+const magpieUpdateScript = () => process.env.MAGPIE_UPDATE_SCRIPT || path.join(root, 'scripts/magpie-update.mjs')
+const magpieUpdateRoot = () => process.env.MAGPIE_UPDATE_ROOT || path.join(os.homedir(), '.agents/crosery/magpie-console/bin')
+
+/** 能力探测：脚本存在且能被 node 读；装不上就如实说"不可用"，不假装有。 */
+const magpieUpdateCapability = (): { capability: boolean; reason?: string; script: string; root: string } => {
+  const script = magpieUpdateScript()
+  const updateRoot = magpieUpdateRoot()
+  if (!fs.existsSync(script)) return { capability: false, reason: `找不到更新脚本：${script}`, script, root: updateRoot }
+  if (!fs.existsSync(updateRoot)) return { capability: false, reason: `找不到安装目录：${updateRoot}`, script, root: updateRoot }
+  return { capability: true, script, root: updateRoot }
+}
+
+/** 跑一次更新脚本（status 只读 / check 只读 / rehearse 临时目录 / apply 需显式确认）。 */
+const runMagpieUpdate = (args: string[], timeoutMs = 180_000) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+  execFile(process.execPath, [magpieUpdateScript(), ...args], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const code = error && typeof (error as { code?: unknown }).code === 'number' ? Number((error as { code: number }).code) : error ? 1 : 0
+    resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') })
+  })
+})
+
+const parseUpdateJson = (stdout: string): Record<string, unknown> | null => {
+  const line = stdout.trim().split('\n').filter(Boolean).pop()
+  if (!line) return null
+  try { return JSON.parse(line) as Record<string, unknown> } catch { return null }
+}
+
+app.get('/api/magpie/update-status', async (_req, res) => {
+  const capability = magpieUpdateCapability()
+  if (!capability.capability) {
+    return res.json({
+      capability: false, reason: capability.reason, script: capability.script, root: capability.root,
+      currentVersion: null, latestVersion: null, lastCheckedAt: null, lastResult: null, backupPath: null, error: null,
+    })
+  }
+  try {
+    const result = await runMagpieUpdate(['status', '--root', capability.root])
+    const parsed = parseUpdateJson(result.stdout) || {}
+    return res.json({ capability: true, script: capability.script, root: capability.root, ...parsed })
+  } catch (error) {
+    return res.status(502).json({ capability: true, error: error instanceof Error ? error.message : '读取更新状态失败' })
+  }
+})
+
+app.post('/api/magpie/update', async (req, res) => {
+  const action = String(req.body?.action || 'check')
+  const capability = magpieUpdateCapability()
+  if (!capability.capability) {
+    addAudit('magpie_update', action, `refused:no-capability（${capability.reason}）`)
+    return res.status(503).json({ error: capability.reason, reason: 'update_capability_unavailable' })
+  }
+  if (!['check', 'rehearse', 'apply'].includes(action)) {
+    return res.status(400).json({ error: 'action 只能是 check / rehearse / apply', reason: 'invalid_action' })
+  }
+  // **确认门**：真替换必须显式确认；缺确认一律拒绝，且**不执行任何命令**（零副作用）
+  if (action === 'apply' && req.body?.confirm !== true) {
+    addAudit('magpie_update', 'apply', 'refused:missing-confirm')
+    return res.status(403).json({ error: '替换内核需要显式确认（body 需要 {"confirm": true}）', reason: 'confirm_required' })
+  }
+  const args = action === 'apply'
+    ? ['apply', '--confirm-apply', '--root', capability.root]
+    : action === 'rehearse'
+      ? ['rehearse', '--root', capability.root, ...(req.body?.from ? ['--from', String(req.body.from)] : [])]
+      : ['check', '--root', capability.root, ...(req.body?.from ? ['--from', String(req.body.from)] : [])]
+  const result = await runMagpieUpdate(args)
+  const parsed = parseUpdateJson(result.stdout)
+  addAudit('magpie_update', action, `exit=${result.code}${parsed?.status ? `, status=${String(parsed.status)}` : ''}${result.code !== 0 ? `, stderr=${result.stderr.trim().slice(0, 200)}` : ''}`)
+  if (result.code !== 0) {
+    return res.status(500).json({
+      error: result.stderr.trim() || `更新脚本以退出码 ${result.code} 结束`, reason: 'update_failed',
+      ...(parsed ? { result: parsed } : {}),
+    })
+  }
+  return res.json({ ok: true, action, ...(parsed ? { result: parsed } : {}) })
 })
 
 app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
