@@ -240,7 +240,7 @@ rollup 路径耗时与窗口几乎无关（~64–96ms）：它的 WHERE 是 `hou
 
 补丁：`docs/qa/blue/task63-window-routing.patch`（含 `server/sqliteReadWorker.mjs`、`server/usageReports.ts`、契约测试）。
 
-## C.3 ⛔ 为什么**暂缓落地**：真实数据集里 rollup 被**翻倍**了
+## C.3 ⚠️ 当时暂缓落地的原因（**已由 Lead 用生产库证伪，补丁已落地**）：本地开发库的 rollup 漂移
 
 量真实数据时（`data/console.db` 快照：26,004 事件、rollup 34,216 行）发现：**同一条 cache-trend 查询，events 路径与 rollup 路径的请求数差 2–6 倍**。逐小时核对（最近 24h，8 个小时）：
 
@@ -259,10 +259,57 @@ rollup 路径耗时与窗口几乎无关（~64–96ms）：它的 WHERE 是 `hou
 
 机制（可复现的代码事实，非猜测）：rollup 由 `AFTER INSERT ON usage_events` 的**累加式**触发器维护（`server/usageRollup.ts:81-83`：`request_count = usage_hourly_rollup.request_count + 1`），而 schema 里**只有 INSERT / update_key / update_cost 三个触发器，没有 `AFTER DELETE`**（`sqlite_master` 实测；`server/usageRollup.ts` 全文只有这三处 `CREATE TRIGGER`）。任何把同一条逻辑事件写入两次的路径（`INSERT OR REPLACE` 会因为 REPLACE 先删后插而双计、回填/重建脚本跑两遍、重复的补偿同步）都会**永久**放大 rollup，而 `usage_events` 因为有 `request_id UNIQUE` + `INSERT OR IGNORE`（`server/sync.ts:25`）保持正确。注意：**生产同步路径本身是 `INSERT OR IGNORE`**，所以翻倍不是它造成的，而是某个一次性/回填路径；需要单独一轮定位（`scripts/backfill-cost.mjs`、`backfill-data-plane.mjs` 与运行时的补偿同步都是候选）。
 
-**影响面**：所有走 rollup 的 loader（dashboard / analytics / usage-overview / key-summaries / breakdown）以及**长窗口**的 cache-trend，用户看到的请求数/成本都会偏高约 2×。**这不是我这次改出来的**，是既有数据状态；`server/reportPerformance.test.ts` 里「金额 == 独立 `SUM(cost_usd)`」这类对拍用的是 events/独立 SQL，不受影响。
+**⚠️ 更正（Lead 2026-10-01 用生产库只读实测）**：上面这个 2× 是**仓库里被 gitignore 的本地开发库** `data/console.db` 的现象，**不是生产**：
 
-**因此暂缓落地（判据）**：如果现在就把 ≤168h 切到 events 路径，同一页面会出现「24h 正确、720h 翻倍」的**自相矛盾数字**（用户按天对比会发现两倍差）。**先修 rollup 的双计，再落这个粒度补丁**：`git apply docs/qa/blue/task63-window-routing.patch`（与 rollup 修复互不冲突，改的是读线程 + 调用方 SQL + 测试）。修 rollup 需要决定：一次性重建（按 events 重算，秒级）、或补 `AFTER DELETE` 触发器、或给回填脚本加幂等。
+```
+生产 /opt/crosery-api-console/data/console.db（Lead 只读实测）
+  events total 958,255 | rollup SUM(request_count) 958,255 | ratio 1.000
+  last 3h 1,675 vs 1,714（1.023，首个不完整小时的整点对齐）| last 24h 12,497 vs 12,535（1.003）| last 168h 147,177 vs 147,177（1.000）
+本地开发库 data/console.db（我量的那个，整表 26,004 vs 975,490 = 37.5×）
+运行时库 ~/.agents/crosery/magpie-console/data/console.db（4 条事件）
+```
+
+⇒ **生产两侧一致**，因此「24h 正确 / 720h 翻倍」的矛盾场景在生产上不成立，粒度补丁**已落地**（见 C.5 的生产实测）。**但这件事仍然有价值**：rollup 确实会**静默漂移**（这个本地开发库就是活证据：整表 37.5×、逐小时 2×），而**当前没有任何机制能发现它** —— 已立 **task-64**：只读一致性自检（阈值化告警）+ 文档化的一键重建路径（幂等、先备份、只在临时实例演练，**不动生产数据**）。机制上的隐患仍然成立：`server/usageRollup.ts:81-83` 是**累加式** upsert，schema 只有 insert/update_key/update_cost 三个触发器、**没有 `AFTER DELETE`**（`sqlite_master` 实测），任何把同一逻辑事件写两次的路径都会永久放大 rollup 而无人察觉。
 
 ## C.4 另一个必须记录的口径更正
 
-task-59 里我用来佐证「生产不存在 2.9s」的那次**运行实例**抽验（`cache-trend 168h` 冷 81ms / 热 13–16ms），跑的库是 `~/.agents/crosery/magpie-console/data/console.db`，它当前**只有 4 条事件、4 行 rollup**（本轮实测）——**那些数字代表的是近乎空库的路径，不代表生产规模**。真正带生产形状的数据快照是仓库里的 `data/console.db`（114MB / 26,004 事件 / rollup 34,216 行）。本附录 C.1/C.2 的性能结论都基于生产规模的合成库（957,736 行、rollup 34,848 = 生产粒度）+ 真实快照（26,004 行）双重验证；task-59 的**结论**（读线程静默路由到 rollup、events 路径分钟级分组 77× 浪费、根因是 18× 合成 rollup）不受影响，但**「生产 HTTP 冷 81ms」这句话的口径必须更正为空库实例**。
+task-59 里我用来佐证「生产不存在 2.9s」的那次**运行实例**抽验（`cache-trend 168h` 冷 81ms / 热 13–16ms），跑的库是 `~/.agents/crosery/magpie-console/data/console.db`，它当前**只有 4 条事件、4 行 rollup**（实测）——**那些数字代表的是近乎空库的路径，不代表生产规模**。我当时又把仓库里 gitignore 的开发库 `data/console.db` 当成「生产形状快照」（它的 rollup 整表比值 37.5×，混着更早的重建残留）——**这两次口径都是错的**。
+
+- **判据只能是生产库**：`/opt/crosery-api-console/data/console.db`（3.7GB / 958,255 事件），只读实测 **events 与 rollup 比值 1.000**（C.5）。
+- 本地合成库（957,736 行、rollup 34,848 = 生产粒度）用于**性能回归**（同一台机器、可控、可重复）——这部分结论仍然有效。
+- task-59 的**结论**（读线程静默路由到 rollup、events 路径分钟级分组 77× 浪费、红队 2.9s 来自 18× 合成 rollup）不受影响；受影响的只是「生产 HTTP 冷 81ms」这句话的口径。
+
+
+## C.5 落地与生产实测（Lead 复核后）
+
+**补丁已落地**（`git apply docs/qa/blue/task63-window-routing.patch` → 三个文件：读线程路由判据、调用方 SQL 标记、契约测试）。
+
+落地后在**生产规模合成库**（同机、窗口钉死）复测：
+
+| 窗口 | 桶数 | 耗时 p50 |
+| --- | --- | --- |
+| 1h | 54 | 3.1ms |
+| 6h | 72 | 5.7ms |
+| 24h | **97**（改前 24） | **13.6ms**（改前 70.5） |
+| 72h | 73 | 36.2ms |
+| 168h | 29 | 64.7ms |
+| 720h | 31 | 96.1ms |
+
+- **24h 桶数恢复 = 97** ✓；**720h 指纹与改前逐字节相同** ✓（`{"720h 指纹与新默认逐字节相同": true}`）。
+- 契约测试 9/9 通过；`tsc -b` / `lint` / `build` / `npm test` 全绿（657 tests / 656 pass / 0 fail / 1 skipped）。
+
+**生产库只读实测**（`ssh cpa-vps` 打开 `/opt/crosery-api-console/data/console.db` `readOnly: true`，按渠道串行跑两条 SQL 各 2 次取最小；**服务器上未写任何文件**）：
+
+| 窗口 | events（新路径）桶数 / 请求 / 耗时 | rollup（旧路径）桶数 / 请求 / 耗时 | 请求数一致性 |
+| --- | --- | --- | --- |
+| 24h | **91** / 12,272 / **35.4ms** | 24 / 11,491 / 453.7ms | +6.8%（首个不完整小时） |
+| 168h | 29 / 141,253 / 512.8ms | 29 / 140,781 / 463.9ms | +0.3% |
+| 720h | 31 / 417,805 / 7,028ms | 31 / 416,589 / **504.6ms** | +0.3% |
+
+结论：
+1. **生产两侧请求数一致**（±0.3%，24h 的 +6.8% 来自被接受的首个不完整小时对齐）⇒ 粒度补丁不改变数值口径 ✓。
+2. **24h 桶数 91**（15 分钟桶）、**24h 耗时 35.4ms vs 453.7ms（12.8×）** ⇒ 生产上「更细 + 更快」同时成立。
+3. **720h events 7,028ms vs rollup 504.6ms（14×）** ⇒ 阈值 `>168h` 路由到 rollup 是必需的，判据在生产数据上得到确认（168h 处两者约等：512.8 vs 463.9ms，阈值落在正确的边界）。
+4. 注：上面是**串行**按渠道测量（生产机器的磁盘/缓存比本机慢），实际实现按渠道**并行**跑在独立读线程上，墙钟时间更低；此处数字用于**新旧路径相对比较**，不作为绝对 SLA。
+
+**本机实例只读抽验**（`/api/cache-trend?hours=24` → 200 / 1 点 / 4.5ms；`?hours=168` → 200 / 10 点 / 4.0ms）：★ 该实例的运行时库只有 4 条事件，**耗时与桶数都不代表规模**，仅证明重启后路径可用。

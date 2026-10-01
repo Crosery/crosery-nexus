@@ -152,7 +152,7 @@ test('契约：不命中路由的查询，直连与经池**逐行相等**', asyn
   }
 })
 
-test('契约：命中路由时，经池结果必须等于「独立写的 rollup 查询」（逐行相等，且桶值按小时对齐）', async () => {
+test('契约：命中路由时，经池结果必须等于「独立写的 rollup 查询」（逐行相等，且桶值按小时对齐）；无窗口标记 → 维持路由（安全默认）', async () => {
   const now = Date.UTC(2026, 9, 1, 12, 0, 0)
   const hours = 24
   const fixture = makeFixture(now, { rollup: true, hours })
@@ -225,6 +225,54 @@ test('契约：去掉 hint 后同一 SQL 不再被路由（字符串契约的可
   }
 })
 
+test('契约（task-63）：路由判据 = 窗口宽度 + hint；短窗口即使带 hint 也不路由（拿回细粒度）', async () => {
+  const now = Date.UTC(2026, 9, 1, 12, 0, 0)
+  const hours = 24
+  const fixture = makeFixture(now, { rollup: true, hours })
+  const cutoff = now - hours * 3_600_000
+  const pool = new SQLiteReadPool(fixture.file, 2)
+  const build = (marker?: number) => `SELECT CAST(timestamp_ms / 900000 AS INTEGER) * 15 minuteBucket, COUNT(*) requests
+      FROM usage_events INDEXED BY idx_usage_cache_rollup${marker === undefined ? '' : ` /* cache-trend-window-hours:${marker} */`}
+      WHERE timestamp_ms >= ? AND CAST(timestamp_ms / 3600000 AS INTEGER) >= CAST(? / 3600000 AS INTEGER)
+        AND success = 1 AND lower(trim(provider)) = ? GROUP BY CAST(timestamp_ms / 900000 AS INTEGER) * 15`
+  const params = [cutoff, cutoff, 'openrouter']
+  const minuteAligned = (rows: Array<{ minuteBucket: number }>) => rows.some((row) => Number(row.minuteBucket) % 60 !== 0)
+  try {
+    const [short] = await pool.run([{ method: 'all', sql: build(24), params }])
+    assert.ok(minuteAligned(short as Array<{ minuteBucket: number }>), 'hours=24（15 分钟桶）必须走 events → 出现非整点的桶')
+    const [boundary] = await pool.run([{ method: 'all', sql: build(168), params }])
+    assert.ok(minuteAligned(boundary as Array<{ minuteBucket: number }>), 'hours=168 是阈值边界（>168 才路由）→ 仍走 events')
+    const [long] = await pool.run([{ method: 'all', sql: build(720), params }])
+    assert.ok(!minuteAligned(long as Array<{ minuteBucket: number }>), 'hours=720 超过阈值 → 走 rollup（小时对齐）')
+    const [noMarker] = await pool.run([{ method: 'all', sql: build(undefined), params }])
+    assert.ok(!minuteAligned(noMarker as Array<{ minuteBucket: number }>), '没有窗口标记时维持原行为（路由）——避免"忘记加注释就静默换路径"')
+  } finally {
+    await pool.close()
+    fs.rmSync(fixture.dir, { recursive: true, force: true })
+  }
+})
+
+test('契约（task-63）：短窗口下 loader 在「有 rollup」与「无 rollup」的库上产出完全相同的负载（细粒度已恢复）', async () => {
+  const now = Date.UTC(2026, 9, 1, 12, 0, 0)
+  const hours = 24
+  const withRollup = makeFixture(now, { rollup: true, hours })
+  const withoutRollup = makeFixture(now, { rollup: false, hours })
+  const poolA = new SQLiteReadPool(withRollup.file, 2)
+  const poolB = new SQLiteReadPool(withoutRollup.file, 2)
+  try {
+    const routed = await REPORTS.loadCacheTrendReport(poolA as never, GROUPS, hours, '', '', '', '', now)
+    const events = await REPORTS.loadCacheTrendReport(poolB as never, GROUPS, hours, '', '', '', '', now)
+    assert.equal(routed.bucketSeconds, 900, '24h 窗口应当是 15 分钟桶')
+    assert.ok(routed.points.length > 90, `细粒度必须恢复（15 分钟桶），实际 ${routed.points.length} 个点`)
+    assert.deepEqual(routed.points, events.points, '两个库的负载必须逐项相同')
+  } finally {
+    await poolA.close()
+    await poolB.close()
+    fs.rmSync(withRollup.dir, { recursive: true, force: true })
+    fs.rmSync(withoutRollup.dir, { recursive: true, force: true })
+  }
+})
+
 test('负向：参数少于占位符必须显式报错（而不能静默返回空结果）', async () => {
   const now = Date.UTC(2026, 9, 1, 12, 0, 0)
   const fixture = makeFixture(now, { rollup: false, hours: 2 })
@@ -270,12 +318,9 @@ test('负向：占位符计数会跳过字符串字面量与注释里的 `?`', a
   }
 })
 
-test('跨路径一致性：168h 窗口下 rollup 路径与 events 路径只在「首个不完整小时」与浮点求和顺序上不同', async () => {
-  // 两条已知差异（都是路由的**既有**语义，不是本次改动引入）：
-  // 1) 窗口起点落在小时中间时，rollup 路径按 `hour_ms >= cutoff` 过滤会整点丢弃那个不完整小时，
-  //    events 路径按 `timestamp_ms >= cutoff` 保留它 → 只有首个桶的结构化差异；
-  // 2) 金额：rollup 路径是「小时的合计再相加」，events 路径是「逐行相加」，浮点非结合性会带来
-  //    ~1e-17 级噪声（实测 0.362 vs 0.36200000000000004）→ 比较前量化到 6 位小数。
+test('跨路径一致性（task-63 更新）：168h 及以下两条路径完全一致；720h 仍路由，首个不完整小时的差异是已被接受的既有语义', async () => {
+  // 短/中窗口：判据是「窗口宽度 + hint」，168h 不超过阈值 ⇒ 有 rollup 的库也不路由 ⇒ 两条路径**完全相同**
+  //（顺带修掉了 task-62 记录的「首个不完整小时整点丢弃」——它在 ≤168h 窗口上不再出现）。
   const now = Date.UTC(2026, 9, 1, 7, 38, 36)
   const hours = 168
   const withRollup = makeFixture(now, { rollup: true, hours })
@@ -288,26 +333,37 @@ test('跨路径一致性：168h 窗口下 rollup 路径与 events 路径只在�
   try {
     const routed = await REPORTS.loadCacheTrendReport(poolA as never, GROUPS, hours, '', '', '', '', now)
     const events = await REPORTS.loadCacheTrendReport(poolB as never, GROUPS, hours, '', '', '', '', now)
-    assert.equal(routed.points.length, events.points.length, '桶数量必须一致（6h 桶对两条路径都够细）')
-    const differing = routed.points
-      .map((point, index) => (JSON.stringify(quantize(point)) === JSON.stringify(quantize(events.points[index])) ? null : index))
-      .filter((index): index is number => index !== null)
-    assert.deepEqual(differing, [0], `只允许首个桶（不完整小时）有差异，实际 ${JSON.stringify(differing)}`)
-    // 首个桶：rollup 路径丢了不完整小时 → 请求数更少，且差值等于该小时内的行数（>0）
-    const head = routed.points[0]
-    const headEvents = events.points[0]
-    assert.equal(head.bucket, headEvents.bucket, '首个桶的边界必须相同')
-    assert.ok(Number(head.requests) < Number(headEvents.requests), 'rollup 路径丢掉了不完整小时 → 首个桶更小')
-    assert.ok(Number(headEvents.requests) - Number(head.requests) > 0)
-    // 其余桶逐字段相等（量化后）
+    assert.equal(routed.points.length, events.points.length)
     for (const index of routed.points.keys()) {
-      if (index === 0) continue
-      assert.deepEqual(quantize(routed.points[index]), quantize(events.points[index]), `第 ${index} 个桶必须逐字段相等`)
+      assert.deepEqual(quantize(routed.points[index]), quantize(events.points[index]), `168h 第 ${index} 个桶必须逐字段相等（已不路由）`)
     }
   } finally {
     await poolA.close()
     await poolB.close()
     fs.rmSync(withRollup.dir, { recursive: true, force: true })
     fs.rmSync(withoutRollup.dir, { recursive: true, force: true })
+  }
+
+  // 长窗口（720h）仍走 rollup：只有「首个不完整小时」与浮点求和顺序不同 —— Lead 已判定可接受，
+  // 这里保留断言以防差异扩大。
+  const longHours = 720
+  const longWithRollup = makeFixture(now, { rollup: true, hours: longHours })
+  const longWithoutRollup = makeFixture(now, { rollup: false, hours: longHours })
+  const poolC = new SQLiteReadPool(longWithRollup.file, 2)
+  const poolD = new SQLiteReadPool(longWithoutRollup.file, 2)
+  try {
+    const routed = await REPORTS.loadCacheTrendReport(poolC as never, GROUPS, longHours, '', '', '', '', now)
+    const events = await REPORTS.loadCacheTrendReport(poolD as never, GROUPS, longHours, '', '', '', '', now)
+    assert.equal(routed.points.length, events.points.length)
+    const differing = routed.points
+      .map((point, index) => (JSON.stringify(quantize(point)) === JSON.stringify(quantize(events.points[index])) ? null : index))
+      .filter((index): index is number => index !== null)
+    assert.deepEqual(differing, [0], `720h 只允许首个桶（不完整小时）有差异，实际 ${JSON.stringify(differing)}`)
+    assert.ok(Number(routed.points[0].requests) < Number(events.points[0].requests), 'rollup 路径丢掉不完整小时 → 首个桶更小')
+  } finally {
+    await poolC.close()
+    await poolD.close()
+    fs.rmSync(longWithRollup.dir, { recursive: true, force: true })
+    fs.rmSync(longWithoutRollup.dir, { recursive: true, force: true })
   }
 })

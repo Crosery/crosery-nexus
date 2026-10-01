@@ -762,6 +762,11 @@ export async function loadCacheTrendReport(
    *
    * 参数表因此与原来**完全一致**（不新增占位符），读线程的 rollup 路由仍按位置读到
    * cutoff/provider/key。
+   *
+   * SQL 里的 `/* cache-trend-window-hours:<hours> *\/` 注释是给读线程的**路由判据**：
+   * rollup 行只有**小时**粒度，短窗口（请求 1/5/15 分钟桶）走 rollup 会把曲线变粗，而且实测
+   * 短窗口 events 路径更快（见 docs/qa/blue/report-performance.md 附录 C）；因此只有
+   * `hours > 168` 的长窗口才值得路由到 rollup。注释用我们自己生成的固定格式，解析面很小。
    */
   const bucketMs = bucketSecondsFor(hours) * 1_000
   /**
@@ -782,7 +787,7 @@ export async function loadCacheTrendReport(
       COALESCE(SUM(cache_write_tokens),0) cacheWriteTokens,
       COALESCE(SUM(output_tokens),0) outputTokens,
       CASE WHEN COUNT(cost_usd) = COUNT(*) THEN COALESCE(SUM(cost_usd),0) ELSE NULL END costUsd
-      FROM usage_events INDEXED BY idx_usage_cache_rollup
+      FROM usage_events INDEXED BY idx_usage_cache_rollup /* cache-trend-window-hours:${hours} */
       WHERE timestamp_ms >= ?
         AND CAST(timestamp_ms / 3600000 AS INTEGER) >= CAST(? / 3600000 AS INTEGER)
         AND success = 1 AND lower(trim(provider)) = ?${keyClause}

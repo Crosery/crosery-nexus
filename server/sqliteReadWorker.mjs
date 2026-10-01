@@ -7,8 +7,44 @@ database.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 5000; PRAGMA cache_
 const hasRollup = Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_hourly_rollup'").get())
 const hasCostUsd = Boolean(database.prepare("SELECT 1 FROM pragma_table_info('usage_events') WHERE name='cost_usd'").get())
 
+/**
+ * 只有**长窗口**才值得把 cache-trend 路由到 rollup（task-63）。
+ *
+ * 实测（生产规模临时库、窗口钉死，单位 ms，见 `docs/qa/blue/report-performance.md` 附录 C）：
+ *
+ * | 窗口 | events 路径（保留 hint、不路由） | rollup 路由 | 胜者 |
+ * | --- | --- | --- | --- |
+ * | 1h   | 3.2  | 64.0 | events |
+ * | 6h   | 5.9  | 68.6 | events |
+ * | 24h  | 13.1 | 70.5 | events |
+ * | 72h  | 35.9 | 75.6 | events |
+ * | 168h | 64.3 | 71.3 | events（略胜） |
+ * | 720h | 271.1 | **96.1** | **rollup** |
+ *
+ * rollup 路径的耗时几乎与窗口无关（~64–96ms：它的 WHERE 是 `hour_ms >= ?`，渠道过滤用不上
+ * 主键前缀，等于每渠道扫一遍 3.4 万行），所以短窗口不但更慢，**还只有小时粒度** ——
+ * 24h 窗口请求 15 分钟桶，路由后只剩 24 个点（不路由是 97 个点）。
+ * 因此路由判据从「是否带 hint」扩展为「**窗口宽度 + hint**」：默认阈值 168h，可用
+ * `CACHE_TREND_ROLLUP_MIN_HOURS` 覆盖（运维可调，不需要改代码）。
+ *
+ * 调用方通过 SQL 注释 `/* cache-trend-window-hours:<n> *\/` 告知窗口；没有这个注释时**维持
+ * 原行为（路由）**——避免"忘记加注释就静默换路径"这种危险失败模式。
+ */
+const ROLLUP_ROUTE_MIN_HOURS = (() => {
+  const raw = Number(process.env.CACHE_TREND_ROLLUP_MIN_HOURS)
+  // 0 表示「总是路由到 rollup」（旧行为）：用于 before/after 对照与排障，见文档附录 C。
+  return Number.isFinite(raw) && raw >= 0 ? raw : 168
+})()
+
+function shouldRouteToRollup(sql) {
+  if (!hasRollup || !sql.includes('INDEXED BY idx_usage_cache_rollup')) return false
+  const marker = /\/\* cache-trend-window-hours:(\d+) \*\//.exec(sql)
+  if (!marker) return true
+  return Number(marker[1]) > ROLLUP_ROUTE_MIN_HOURS
+}
+
 function routeToRollup(sql, params) {
-  if (hasRollup && sql.includes('INDEXED BY idx_usage_cache_rollup')) {
+  if (shouldRouteToRollup(sql)) {
     const hasKey = sql.includes('AND key_hash = ?')
     return {
       sql: `SELECT (hour_ms / 60000) AS minuteBucket,
@@ -131,7 +167,7 @@ if (parentPort) parentPort.on('message', ({ id, operations }) => {
       let finalParams = params
       if (!hasRollup && finalSql.includes('usage_hourly_rollup')) {
         finalSql = rewriteRollupToEvents(finalSql)
-      } else if (hasRollup && finalSql.includes('INDEXED BY idx_usage_cache_rollup')) {
+      } else if (shouldRouteToRollup(finalSql)) {
         const routed = routeToRollup(finalSql, finalParams)
         finalSql = routed.sql
         finalParams = routed.params
