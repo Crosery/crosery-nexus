@@ -8,7 +8,16 @@ import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
-import { isAuthenticated, login, logout, requireAuth } from './auth.js'
+import { isAuthenticated, logout, requireAuth, validateCredentials } from './auth.js'
+import {
+  errorResponseBody,
+  isSessionRevoked,
+  issueSession,
+  loginRateLimitKey,
+  loginRateLimiter,
+  readSessionToken,
+  revokeSession,
+} from './security.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
@@ -134,20 +143,60 @@ const antigravityQuotaCoordinator = new RequestCoordinator<Awaited<ReturnType<ty
   staleWhileRevalidateMs: 10 * 60_000,
 })
 app.disable('x-powered-by')
+// 限流按来源 IP 计数：控制台部署在 127.0.0.1 上的 nginx 之后，
+// 只有信任回环代理才能从 X-Forwarded-For 读到真实客户端地址（否则所有请求都是 127.0.0.1）。
+app.set('trust proxy', 'loopback')
 app.use(express.json({ limit: '1mb' }))
 app.use(cookieParser())
 
+/**
+ * 已登出（撤销）的会话在这里就被挡下（task-57 ③）。
+ *
+ * 必须放在**所有 `/api` 路由之前**：`/api/session` 是注册最早的路由之一，
+ * 如果把撤销检查放在后面，登出后的旧 cookie 仍会让 `/api/session` 报「已认证」。
+ * `/api/session` 保持 200 + `{authenticated:false}`（前端靠它判断登录态，不能改成 401），
+ * 其余受保护接口一律 401。
+ */
+app.use('/api', (req, res, next) => {
+  if (!isSessionRevoked(readSessionToken(req))) return next()
+  logout(res)
+  if (req.path === '/session') return res.json({ authenticated: false })
+  return res.status(401).json({ error: '请先登录' })
+})
+
 app.get('/api/session', (req, res) => res.json({ authenticated: isAuthenticated(req) }))
 app.post('/api/login', (req, res) => {
+  // 限流（task-57 ②）：按「来源 IP + 用户名」滑动窗口计数，超阈值 429 + Retry-After。
+  // 放在凭据校验**之前**，且对任何用户名一视同仁——不泄漏「该用户名是否存在」。
+  const username = String(req.body?.username || '')
+  const password = String(req.body?.password || '')
+  const limitKey = loginRateLimitKey(req, username)
+  const decision = loginRateLimiter.check(limitKey)
+  if (!decision.allowed) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds))
+    return res.status(429).json({ error: '登录尝试过于频繁，请稍后再试' })
+  }
   try {
-    if (!login(String(req.body?.username || ''), String(req.body?.password || ''), res)) return res.status(401).json({ error: '管理员账号或密码不正确' })
+    if (!validateCredentials(username, password, config.consoleUsername, config.consolePassword)) {
+      loginRateLimiter.recordFailure(limitKey)
+      // 文案与「用户名不存在 / 密码错误」完全一致，也不区分时序（保持红队认可的两条优点）。
+      return res.status(401).json({ error: '管理员账号或密码不正确' })
+    }
+    loginRateLimiter.clear(limitKey)
+    // Cookie 的 Secure 按请求协议推导（即使环境变量写着 false，HTTPS 下也一定带 Secure）。
+    issueSession(req, res)
     addAudit('login', 'console')
     res.json({ ok: true })
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : '登录失败' })
   }
 })
-app.post('/api/logout', (_req, res) => { logout(res); res.json({ ok: true }) })
+// 登出做**服务端吊销**（task-57 ③）：记下 token 摘要直到它自己到期，旧 cookie 重放立即失效。
+app.post('/api/logout', (req, res) => {
+  revokeSession(readSessionToken(req))
+  logout(res)
+  res.json({ ok: true })
+})
 
 const parseJson = <T>(value: string, fallback: T): T => {
   try { return JSON.parse(value) as T } catch { return fallback }
@@ -1277,6 +1326,30 @@ app.use(express.static(dist, { maxAge: '1h', immutable: true, index: false }))
 app.use((_req, res) => {
   res.setHeader('Cache-Control', 'no-cache')
   res.sendFile(path.join(dist, 'index.html'))
+})
+
+/**
+ * 兜底错误处理（task-57 ①）：客户端只拿通用信息，**堆栈只进服务端日志**。
+ *
+ * 覆盖三类（全部是未认证即可触发的）：
+ * - `express.json` 的 body 解析错误（`SyntaxError` 带 `status`/`statusCode` 400）；
+ * - 请求体超限（`entity.too.large` → 413）；
+ * - 其它未捕获异常 → 500。
+ *
+ * **不依赖 `NODE_ENV`**：生产当前没有设置它，Express 默认错误页正是因此把完整堆栈和
+ * 绝对路径回显给客户端（红队在生产实例上复现）。这里无条件只回通用文案。
+ */
+app.use((error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(error)
+  const status = (() => {
+    const raw = (error as { status?: unknown; statusCode?: unknown })?.status ?? (error as { statusCode?: unknown })?.statusCode
+    const value = Number(raw)
+    return Number.isInteger(value) && value >= 400 && value < 600 ? value : 500
+  })()
+  const stack = error instanceof Error ? error.stack || error.message : String(error)
+  // 日志保留完整堆栈与请求上下文，便于排障；响应体不包含其中任何内容。
+  console.error(`[error] ${req.method} ${req.originalUrl} → ${status}\n${stack}`)
+  res.status(status).json(errorResponseBody(status))
 })
 
 startSync()
