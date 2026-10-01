@@ -379,7 +379,7 @@ async function submitCreateChannel() {
                 :key="model.id"
                 size="sm"
                 :variant="model.enabled ? 'soft' : 'outline'"
-                :color="model.enabled ? 'var(--tx-color-primary)' : 'var(--tx-text-color-disabled)'"
+                :color="model.enabled ? 'var(--tx-color-primary)' : '#5b6b85'"
                 :label="model.id"
               />
               <TxTag v-if="row.models.length > 3" size="sm" variant="plain" :label="`+${row.models.length - 3}`" />

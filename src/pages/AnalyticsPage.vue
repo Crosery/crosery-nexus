@@ -412,7 +412,7 @@ function clearFilters() {
 }
 .rank-err {
   text-align: right;
-  color: #047857;
+  color: #065f46;
 }
 .rank-err.bad {
   color: #b91c1c;

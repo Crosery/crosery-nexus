@@ -159,7 +159,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 2. crapi 一键接入 -->
         <TxCard id="crapi" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="02" color="#047857" size="sm" />
+            <TxTag label="02" color="#065f46" size="sm" />
             <h2>crapi 一键接入 CLI (推荐)</h2>
           </div>
           <p class="section-desc"><strong>crapi</strong> 是专为 Crosery 渠道打造的一键配置命令行工具，自动识别并配置 Claude Code、Codex CLI、Cursor、Windsurf、Cline、Aider 等常见开发工具。</p>
@@ -206,7 +206,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 4. Anthropic 原生协议 -->
         <TxCard id="anthropic" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="04" color="#a4491f" size="sm" />
+            <TxTag label="04" color="#7c2d12" size="sm" />
             <h2>Anthropic 原生协议调用</h2>
           </div>
           <p class="section-desc">支持 Claude Code 与 Anthropic 官方 SDK 原生直通，包含提示词缓存与思考档位参数。</p>
@@ -224,7 +224,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 5. Responses / Codex -->
         <TxCard id="responses" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="05" color="#047857" size="sm" />
+            <TxTag label="05" color="#065f46" size="sm" />
             <h2>Responses / Codex 接口</h2>
           </div>
           <p class="section-desc">用于 Codex CLI 或 OpenAI 新版 Responses 协议调用的原生端点。</p>
@@ -242,7 +242,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 6. 图片生成 -->
         <TxCard id="images" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="06" color="#6d28d9" size="sm" />
+            <TxTag label="06" color="#5b21b6" size="sm" />
             <h2>图片生成接口</h2>
           </div>
           <p class="section-desc">通过 <code>/v1/images/generations</code> 调用 gpt-image 系列视觉绘图模型。</p>
@@ -260,7 +260,7 @@ rtk init -g --agent claude --uninstall`
         <!-- 7. 常见客户端 -->
         <TxCard id="clients" :padding="20" class="section-card">
           <div class="section-head">
-            <TxTag label="07" color="#b45309" size="sm" />
+            <TxTag label="07" color="#78350f" size="sm" />
             <h2>常见客户端环境变量配置</h2>
           </div>
           <div class="client-grid">

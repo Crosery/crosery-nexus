@@ -60,10 +60,10 @@ const percent = (value: number | null | undefined) => (value === null || value =
 const clock = (iso: string) => fmtClock(iso)
 
 const hitToneColor = (rate: number | null) => {
-  if (rate === null) return '#8a90b0'
-  if (rate >= 0.9) return '#10b981'
-  if (rate >= 0.7) return '#f59e0b'
-  return '#ef4444'
+  if (rate === null) return '#475569'
+  if (rate >= 0.9) return '#065f46'
+  if (rate >= 0.7) return '#78350f'
+  return '#991b1b'
 }
 
 function setupSSE() {

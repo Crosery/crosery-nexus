@@ -41,7 +41,7 @@ const STATE_LABEL: Record<RtkPlaneState, string> = {
 }
 
 const STATE_COLOR: Record<RtkPlaneState, string> = {
-  available: '#047857',
+  available: '#065f46',
   degraded: '#92400e',
   not_configured: '#5b6b85',
   unreachable: '#92400e',
@@ -134,9 +134,9 @@ const authorityHint = computed(() => {
           <div class="agent-main">
             <span class="agent-name">{{ agent.name }}</span>
             <code class="mono agent-id">{{ agent.id }}</code>
-            <TxTag v-if="!agent.supported" label="仅项目级" color="#5b6b85" size="sm" />
-            <TxTag v-else-if="agent.installed === false" label="未检测到安装目录" color="#5b6b85" size="sm" />
-            <TxTag v-if="agent.on" label="已挂载" color="#047857" size="sm" />
+            <TxTag v-if="!agent.supported" label="仅项目级" color="#475569" size="sm" />
+            <TxTag v-else-if="agent.installed === false" label="未检测到安装目录" color="#475569" size="sm" />
+            <TxTag v-if="agent.on" label="已挂载" color="#065f46" size="sm" />
           </div>
           <div class="agent-action">
             <span v-if="busy === `local:${agent.id}`" class="busy">处理中…</span>
@@ -183,8 +183,8 @@ const authorityHint = computed(() => {
           <div class="agent-main">
             <span class="agent-name">{{ agent.name }}</span>
             <code class="mono agent-id">{{ agent.id }}</code>
-            <TxTag v-if="agent.on" label="已挂载" color="#047857" size="sm" />
-            <TxTag v-else label="未挂载" color="#5b6b85" size="sm" />
+            <TxTag v-if="agent.on" label="已挂载" color="#065f46" size="sm" />
+            <TxTag v-else label="未挂载" color="#475569" size="sm" />
           </div>
         </div>
         <p v-if="!authorityAgents.length" class="hint">该平面没有上报 agent 列表。</p>
@@ -297,7 +297,7 @@ const authorityHint = computed(() => {
   line-height: 1.45;
 }
 .plane-detail {
-  color: #92400e;
+  color: #78350f;
 }
 .authority {
   display: grid;
@@ -318,7 +318,7 @@ const authorityHint = computed(() => {
 .warn-line {
   margin: 0;
   font-size: 12px;
-  color: #92400e;
+  color: #78350f;
   line-height: 1.5;
 }
 .agent-list {

@@ -348,7 +348,7 @@ async function resetQuota(account: any) {
   background: rgba(239, 68, 68, 0.05);
 }
 .window-item.sev-warning {
-  border-color: #b45309;
+  border-color: #78350f;
   background: rgba(245, 158, 11, 0.05);
 }
 .window-head {

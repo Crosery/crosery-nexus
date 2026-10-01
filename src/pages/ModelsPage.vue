@@ -552,7 +552,7 @@ async function handleSyncUpstream() {
             <div class="model-cell">
               <div class="model-title-line">
                 <strong class="model-id mono">{{ row.id }}</strong>
-                <TxTag v-if="row.contested" label="多渠道" size="sm" variant="soft" color="#8a5a00" />
+                <TxTag v-if="row.contested" label="多渠道" size="sm" variant="soft" color="#713f12" />
               </div>
               <div class="model-meta">
                 <span class="source-count">{{ row.enabledSources }}/{{ row.sources.length }} 渠道启用</span>
@@ -721,7 +721,7 @@ async function handleSyncUpstream() {
   color: var(--tx-color-primary, #3346c8);
 }
 .channel-chip-btn.active {
-  border-color: #047857;
+  border-color: #065f46;
   background: rgba(16, 185, 129, 0.08);
   color: #065f46;
   font-weight: 600;
