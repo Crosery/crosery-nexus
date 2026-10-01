@@ -48,7 +48,7 @@ try {
   }
   if (await page.evaluate(() => location.pathname === "/login")) throw new Error("登录失败，拒绝以未登录状态产出结论");
 
-  const routes = ["/dashboard", "/keys", "/channels", "/models", "/oauth", "/charts", "/analytics", "/usage", "/cache", "/monitor", "/rtk", "/help", "/ab"];
+  const routes = ["/dashboard", "/keys", "/channels", "/models", "/oauth", "/charts", "/analytics", "/usage", "/cache", "/monitor", "/rtk", "/help", "/ab", "/credentials"];
   const report = [];
   for (const route of routes) {
     const before = errors.length;

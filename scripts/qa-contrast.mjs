@@ -139,7 +139,7 @@ try {
 
   const routes = process.env.QA_CONTRAST_ROUTES
     ? process.env.QA_CONTRAST_ROUTES.split(",")
-    : ["/dashboard", "/keys", "/channels", "/models", "/oauth", "/charts", "/analytics", "/usage", "/cache", "/monitor", "/rtk", "/help", "/ab", "/docs"];
+    : ["/dashboard", "/keys", "/channels", "/models", "/oauth", "/charts", "/analytics", "/usage", "/cache", "/monitor", "/rtk", "/help", "/ab", "/docs", "/credentials"];
 
   let total = 0;
   let renderFailures = 0;

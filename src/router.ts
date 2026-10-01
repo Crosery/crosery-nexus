@@ -18,6 +18,9 @@ const routes: RouteRecordRaw[] = [
       { path: 'keys', name: 'keys', component: () => import('./pages/KeysPage.vue') },
       { path: 'channels', name: 'channels', component: () => import('./pages/ChannelsPage.vue') },
       { path: 'oauth', name: 'oauth', component: () => import('./pages/OAuthPage.vue') },
+      // 凭据导入（task-77 恢复）：旧 React 版为 src/pages/CredentialUploadPage.tsx，Vue 重写时整页丢失。
+      // 路由用 `/credentials`（比 /credentials-upload 短，且与 /api/credentials 同词），归入「接入管理」组（见 ConsoleNav）。
+      { path: 'credentials', name: 'credentials', component: () => import('./pages/CredentialUploadPage.vue') },
       { path: 'models', name: 'models', component: () => import('./pages/ModelsPage.vue') },
       // RTK 控制面：本机/内核/中转站三层平面，写入策略受服务端开关约束。
       { path: 'rtk', name: 'rtk', component: () => import('./pages/RtkPage.vue') },
