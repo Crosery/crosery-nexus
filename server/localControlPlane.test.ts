@@ -250,3 +250,134 @@ test('通用错误体带上已知 reason：invalid_json / payload_too_large', { 
     await stopHarness(harness)
   }
 })
+
+/* ────────────────── ④ 目标不存在时的写/读语义（task-68） ────────────────── */
+
+test('写不存在的凭据必须 404 credential_not_found 且不留孤儿 meta；读写语义一致', { timeout: 120_000 }, async () => {
+  const harness = await startHarness({
+    GATEWAY_ENGINE: 'magpie',
+    MAGPIE_CONTROL_PLANE: 'local',
+    MAGPIE_PORT: String(await freePort()),
+    CPA_BASE_URL: 'http://127.0.0.1:9',
+    CPA_MANAGEMENT_KEY: 'unused-in-local-mode',
+  })
+  try {
+    const cookie = await login(harness)
+    const metaFile = path.join(harness.dataDir, 'auth-files-meta.json')
+    const metaText = (): string => { try { return fs.readFileSync(metaFile, 'utf8') } catch { return '(不存在)' } }
+    const ghost = 'ghost-cred.json'
+
+    // ① 写：两个 PATCH 都必须 404 + reason，且**不写 meta**（meta 文件压根不该被创建）
+    const disable = await fetch(`${harness.base}/api/credentials/${ghost}`, {
+      method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+    const disableBody = await disable.json() as { error?: string; reason?: string }
+    assert.equal(disable.status, 404, `对不存在的凭据写状态必须 404：${disable.status} ${JSON.stringify(disableBody)}`)
+    assert.equal(disableBody.reason, 'credential_not_found')
+    assert.equal(metaText(), '(不存在)', '不得写入任何 meta')
+
+    const setProxy = await fetch(`${harness.base}/api/credentials/${ghost}/proxy`, {
+      method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ proxyUrl: 'http://127.0.0.1:1' }),
+    })
+    assert.equal(setProxy.status, 404, `对不存在的凭据写代理必须 404：${setProxy.status} ${await setProxy.text()}`)
+    assert.equal(metaText(), '(不存在)', '依然不得写入 meta')
+
+    // ② 读：与写同语义（不是 200 + 空值）
+    const readGhost = await fetch(`${harness.base}/api/credentials/${ghost}/proxy`, { headers: { cookie } })
+    assert.equal(readGhost.status, 404, `读不存在的凭据必须 404（否则"成功的写不可观测"）：${readGhost.status}`)
+    assert.equal((await readGhost.json() as { reason?: string }).reason, 'credential_not_found')
+
+    // ③ DELETE 幂等：不存在的目标仍然 200（有意保留的契约），且不产生 meta
+    const removeGhost = await fetch(`${harness.base}/api/credentials/${ghost}`, { method: 'DELETE', headers: { cookie } })
+    assert.equal(removeGhost.status, 200, `DELETE 幂等必须保留：${removeGhost.status}`)
+    assert.equal(metaText(), '(不存在)')
+
+    // ④ 合法凭据：写 200 + 回读一致 + 删除后 meta 不留残键
+    const start = await fetch(`${harness.base}/api/cpa/oauth/start`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'claude' }),
+    })
+    const started = await start.json() as { state?: string }
+    await fetch(`${harness.base}/api/cpa/oauth/callback`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'claude', redirectUrl: 'https://example.com/cb?code=abc', state: started.state }),
+    })
+    const authDir = path.join(harness.dataDir, 'auth-files')
+    const real = fs.readdirSync(authDir).find(entry => entry.endsWith('.json'))
+    assert.ok(real)
+    const okProxy = 'http://127.0.0.1:7890'
+    const written = await fetch(`${harness.base}/api/credentials/${encodeURIComponent(real)}/proxy`, {
+      method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ proxyUrl: okProxy }),
+    })
+    assert.equal(written.status, 200, `合法凭据写代理必须 200：${written.status} ${await written.text()}`)
+    const readBack = await fetch(`${harness.base}/api/credentials/${encodeURIComponent(real)}/proxy`, { headers: { cookie } })
+    assert.deepEqual(await readBack.json(), { proxyUrl: okProxy }, '读写一致')
+    await fetch(`${harness.base}/api/credentials/${encodeURIComponent(real)}`, { method: 'DELETE', headers: { cookie } })
+    assert.deepEqual(readMeta(harness.dataDir), {}, '合法凭据删除后 meta 不得残留孤儿键')
+  } finally {
+    await stopHarness(harness)
+  }
+})
+
+test('孤儿 meta 不会积累：连续写不存在的凭据 N 次，meta 始终不变', { timeout: 120_000 }, async () => {
+  const harness = await startHarness({
+    GATEWAY_ENGINE: 'magpie',
+    MAGPIE_CONTROL_PLANE: 'local',
+    MAGPIE_PORT: String(await freePort()),
+    CPA_BASE_URL: 'http://127.0.0.1:9',
+    CPA_MANAGEMENT_KEY: 'unused-in-local-mode',
+  })
+  try {
+    const cookie = await login(harness)
+    const metaFile = path.join(harness.dataDir, 'auth-files-meta.json')
+    const before = (() => { try { return fs.readFileSync(metaFile, 'utf8') } catch { return '(不存在)' } })()
+    for (let i = 0; i < 20; i += 1) {
+      const name = `ghost-${i}.json`
+      const status = await fetch(`${harness.base}/api/credentials/${name}`, {
+        method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: i % 2 === 0 }),
+      })
+      assert.equal(status.status, 404, `第 ${i + 1} 次幽灵写必须 404`)
+      const proxy = await fetch(`${harness.base}/api/credentials/${name}/proxy`, {
+        method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ proxyUrl: 'http://127.0.0.1:1' }),
+      })
+      assert.equal(proxy.status, 404)
+      await fetch(`${harness.base}/api/credentials/${name}`, { method: 'DELETE', headers: { cookie } })
+    }
+    const after = (() => { try { return fs.readFileSync(metaFile, 'utf8') } catch { return '(不存在)' } })()
+    assert.equal(after, before, `20 轮幽灵写 + 幂等删之后 meta 必须原样：${before} → ${after}`)
+  } finally {
+    await stopHarness(harness)
+  }
+})
+
+test('渠道类路由：目标不存在返回 404 channel_not_found（不再报"未启用/不存在或已停用"）', { timeout: 120_000 }, async () => {
+  const harness = await startHarness({
+    GATEWAY_ENGINE: 'magpie',
+    MAGPIE_CONTROL_PLANE: 'local',
+    MAGPIE_PORT: String(await freePort()),
+    CPA_BASE_URL: 'http://127.0.0.1:9',
+    CPA_MANAGEMENT_KEY: 'unused-in-local-mode',
+  })
+  try {
+    const cookie = await login(harness)
+    for (const [label, path_, method, body] of [
+      ['PATCH /api/channels/:name', '/api/channels/ghost-channel', 'PATCH', { enabled: false }],
+      ['PATCH /api/channels/:name/models/:model', '/api/channels/ghost-channel/models/ghost-model', 'PATCH', { enabled: false }],
+      ['PATCH /api/model-index/:model/sources/:channel', '/api/model-index/ghost-model/sources/ghost-channel', 'PATCH', { enabled: false }],
+    ] as const) {
+      const response = await fetch(`${harness.base}${path_}`, {
+        method, headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+      const payload = await response.json() as { reason?: string; error?: string }
+      assert.equal(response.status, 404, `${label} 目标不存在必须 404：${response.status} ${JSON.stringify(payload)}`)
+      assert.equal(payload.reason, 'channel_not_found', label)
+    }
+  } finally {
+    await stopHarness(harness)
+  }
+})

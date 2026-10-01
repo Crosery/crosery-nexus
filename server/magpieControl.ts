@@ -301,15 +301,32 @@ export function deleteLocalAuthFile(name: string) {
   }
 }
 
-export function setLocalAuthFileStatus(name: string, disabled: boolean) {
+/**
+ * 写操作的存在性守卫（task-68，**单点**）：目标凭据文件必须真实存在，否则 404。
+ *
+ * 修前：`setLocalAuthFileStatus` / `setLocalAuthFileProxy` 直接往 `auth-files-meta.json` 写键，
+ * 不检查文件在不在 —— 于是 `PATCH /api/credentials/ghost-cred` 会 **200 成功**并留下一个
+ * 永远不会被读到的孤儿键（拼写错误、过期 UI 行都会积累），而读路径（要求文件存在）返回空，
+ * 「成功的写不可观测」。读与写现在都以**文件存在**为准。
+ * DELETE 保持幂等（对不存在的目标也 200），这是有意保留的契约。
+ */
+function requireExistingAuthFile(name: unknown): string {
   const safe = assertAuthFileName(name)
+  if (!fs.existsSync(authFilePath(safe))) {
+    throw new MagpieManagementError(404, 'credential_not_found')
+  }
+  return safe
+}
+
+export function setLocalAuthFileStatus(name: string, disabled: boolean) {
+  const safe = requireExistingAuthFile(name)
   const meta = readAuthFilesMeta()
   meta[safe] = { ...meta[safe], disabled }
   writeAuthFilesMeta(meta)
 }
 
 export function setLocalAuthFileProxy(name: string, proxyUrl: string) {
-  const safe = assertAuthFileName(name)
+  const safe = requireExistingAuthFile(name)
   const meta = readAuthFilesMeta()
   meta[safe] = { ...meta[safe], proxy_url: proxyUrl }
   writeAuthFilesMeta(meta)

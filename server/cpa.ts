@@ -111,6 +111,15 @@ export function adaptLocalManagementRequest(path: string, init: RequestInit = {}
   return { path: query ? `${alias.path}?${query}` : alias.path, init: { ...init, method: alias.method } }
 }
 
+/**
+ * 「目标不存在」错误（task-68）：带 `status = 404`，路由层据此原样返回 404，
+ * `message` 就是机器可读的 reason（`credential_not_found`）。
+ */
+export class ManagementNotFoundError extends Error {
+  readonly status = 404
+  constructor(readonly code: string) { super(code) }
+}
+
 async function cpaRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
     const { magpieManagementRequest } = await import('./magpieControl.js')
@@ -188,7 +197,10 @@ export async function listAuthFiles() {
 /** Read credential metadata server-side only; never return or log the raw credential object. */
 export async function downloadAuthFile(name: string): Promise<Record<string, unknown>> {
   const raw = await cpaRequest<unknown>(`/auth-files/download?name=${encodeURIComponent(name)}`)
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('CPA 凭据文件格式无效')
+  // 本地 shim 对不存在的凭据返回 null；远端管理面返回 404（由 cpaRequest 抛出）。
+  // 这里把 null 翻译成同一个语义，读/写两侧才对得上（task-68）。
+  if (raw === null || raw === undefined) throw new ManagementNotFoundError('credential_not_found')
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('CPA 凭据文件格式无效')
   return raw as Record<string, unknown>
 }
 
@@ -310,8 +322,10 @@ export async function clearAuthFileCooldown(name: string) {
  * 原文含 access_token/refresh_token，因此只在后端解析并且只把 proxy_url 交出去。
  */
 export async function getAuthFileProxy(name: string): Promise<string> {
-  const raw = await cpaRequest<{ proxy_url?: unknown }>(`/auth-files/download?name=${encodeURIComponent(name)}`)
-  return typeof raw?.proxy_url === 'string' ? raw.proxy_url.trim() : ''
+  const raw = await cpaRequest<{ proxy_url?: unknown } | null>(`/auth-files/download?name=${encodeURIComponent(name)}`)
+  // 与写侧同语义：凭据不存在 → 404（本地 null / 远端 404），不再回一个"空代理"骗客户端
+  if (raw === null || raw === undefined) throw new ManagementNotFoundError('credential_not_found')
+  return typeof raw.proxy_url === 'string' ? raw.proxy_url.trim() : ''
 }
 
 export async function getGlobalProxy(options: { required?: boolean } = {}): Promise<string> {

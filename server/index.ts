@@ -28,6 +28,12 @@ const knownErrorReason = (error: unknown, status: number): string | undefined =>
   return undefined
 }
 
+/** 机器可读的 reason（形如 `credential_not_found` 的纯代码）才放进响应体，其它错误文案不进。 */
+const reasonField = (error: unknown): { reason?: string } => {
+  const message = error instanceof Error ? error.message : ''
+  return /^[a-z][a-z0-9_]{2,63}$/.test(message) ? { reason: message } : {}
+}
+
 /** 路由错误响应：错误自带 4xx/5xx 状态就用它（例如「本地控制面不支持」是 501，不该被压成 400）。 */
 const errorStatusOr = (error: unknown, fallback: number): number => {
   const status = Number((error as { status?: unknown })?.status)
@@ -900,6 +906,10 @@ app.post('/api/channels', async (req, res) => {
 
 app.patch('/api/channels/:name', async (req, res) => {
   try {
+    // task-68：目标不存在 → 404（原来一律 400「渠道不存在或已停用」，把两件事混成一条）
+    if (!(await listChannels()).some(channel => channel.name === req.params.name)) {
+      return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    }
     const enabled = Boolean(req.body?.enabled)
     await setChannelEnabled(req.params.name, enabled)
     invalidateControlPlaneCaches()
@@ -921,6 +931,10 @@ app.delete('/api/channels/:name', async (req, res) => {
 
 app.patch('/api/channels/:name/models/:model', async (req, res) => {
   try {
+    // task-68：渠道不存在 → 404；渠道存在但未启用，仍由业务层给原有 400 文案
+    if (!(await listChannels()).some(channel => channel.name === req.params.name)) {
+      return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    }
     const enabled = Boolean(req.body?.enabled)
     await setChannelModelEnabled(req.params.name, req.params.model, enabled)
     invalidateControlPlaneCaches()
@@ -1080,6 +1094,10 @@ app.get('/api/model-index', async (req, res) => {
 
 app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
   try {
+    // task-68：渠道不存在 → 404（原来报「渠道未启用，无法调整模型」）
+    if (!(await listChannels()).some(channel => channel.name === req.params.channel)) {
+      return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    }
     const kind = req.body?.kind === 'oauth' ? 'oauth' : 'compat'
     await setModelSourceEnabled(req.params.model, req.params.channel, kind, Boolean(req.body?.enabled))
     invalidateControlPlaneCaches()
@@ -1118,7 +1136,7 @@ app.patch('/api/credentials/:name', async (req, res) => {
     addAudit(enabled ? 'enable_credential' : 'disable_credential', name)
     res.json({ ok: true })
   } catch (error) {
-    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '操作失败' })
+    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '操作失败', ...reasonField(error) })
   }
 })
 
@@ -1132,7 +1150,7 @@ app.delete('/api/credentials/:name', async (req, res) => {
     addAudit('delete_credential', name)
     res.json({ ok: true })
   } catch (error) {
-    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '删除失败' })
+    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '删除失败', ...reasonField(error) })
   }
 })
 
@@ -1144,7 +1162,7 @@ app.get('/api/credentials/:name/proxy', async (req, res) => {
     res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=300')
     res.json({ proxyUrl })
   } catch (error) {
-    res.status(errorStatusOr(error, 502)).json({ error: error instanceof Error ? error.message : '读取代理失败' })
+    res.status(errorStatusOr(error, 502)).json({ error: error instanceof Error ? error.message : '读取代理失败', ...reasonField(error) })
   }
 })
 
@@ -1162,7 +1180,10 @@ app.patch('/api/credentials/:name/proxy', async (req, res) => {
     invalidateControlPlaneCaches()
     addAudit('update_credential_proxy', name, proxyUrl || 'inherit')
     res.json({ ok: true, proxyUrl })
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
+  } catch (error) {
+    // task-68：凭据不存在是 404（错误自带状态），不再一律 400
+    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '操作失败', ...reasonField(error) })
+  }
 })
 
 
