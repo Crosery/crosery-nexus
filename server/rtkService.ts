@@ -278,6 +278,17 @@ function warnLockBypass(lockPath: string): void {
     + `锁文件：${lockPath}`)
 }
 
+/**
+ * **测试专用**同步点（方案 A）：在「锁已创建、但 acquire 还没返回」之间插入一段等待，
+ * 让 harness 能把「篡改锁」确定性地排在「获取锁」与「提交点校验」之间 —— 不再靠睡一会儿赌窗口。
+ * 默认 0（读取即 0，不产生任何等待）；生产环境不得设置。与 RTK_LOCK_DISABLED 同类，
+ * 登记在 docs/qa/blue/rtk-flake-fix.md。
+ */
+export function rtkTestLockHoldMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.RTK_TEST_LOCK_HOLD_MS)
+  return Number.isFinite(raw) && raw > 0 && raw <= 10_000 ? Math.floor(raw) : 0
+}
+
 /** 陈旧锁判定阈值（默认 60s，可配 1s–3600s）：持锁进程还活着但超过这个时间也算陈旧。 */
 export function rtkLockStaleMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.RTK_LOCK_STALE_MS)
@@ -638,6 +649,9 @@ export async function acquireRtkFileLock(options: {
           console.warn(`[rtk] 写入锁已不再属于本进程（${reason}），后续不再续期、也不删除他人的锁（锁：${lockPath}）`)
         },
       })
+      // 测试专用同步点（默认 0，不生效）：见 rtkTestLockHoldMs()。生产路径无业务分支。
+      const testHoldMs = rtkTestLockHoldMs(env)
+      if (testHoldMs > 0) await sleep(testHoldMs)
       info.waitedMs = Date.now() - startedAt
       info.stolen = stolen
       if (stolenFromPid !== undefined) info.stolenFromPid = stolenFromPid
