@@ -1,6 +1,6 @@
 # crosery-api-console 红蓝对抗进度总表
 
-最后更新：2026-10-01（第 4 轮结束）｜维护：Lead ｜约定见 [COORDINATION.md](COORDINATION.md)
+最后更新：2026-10-01（第 8 轮结束）｜维护：Lead ｜约定见 [COORDINATION.md](COORDINATION.md)
 
 ## 一句话现状
 
@@ -18,7 +18,8 @@
 | `cursor ON` 静默改写 Claude 配置且不还原 | ✅ 已修（条目级最小差异还原 + `collateral` 真源） |
 | 轮转删掉「已返回 200 的 backupId」→ rollback 404 | ✅ 已修 |
 | 12 路跨 agent 并发最终只剩最后一个 agent 挂载 | ✅ 已修（进程内串行闸；Lead 独立复现 12/12 200、6/6 挂载） |
-| 跨**进程**并发（多实例共用 HOME） | ⚠️ 未修，仅靠 120s 备份窗口兜底 |
+| 跨**进程**并发（多实例共用 HOME） | ✅ 已修：`O_EXCL` 锁文件 + 三条陈旧判据 + token 守卫 + 心跳续期（红队重放 5 条攻击确认 R9 系列全部失效；心跳自身的抢锁缺陷 R10-A 修复中） |
+| 锁的适用边界（写进代码与文档） | ⚠️ 不支持跨主机或时钟偏移 >5s；NFS/SMB 的 `O_EXCL` 未验证；`RTK_LOCK_STALE_MS` 不建议 < 3000 |
 | 中转站那台机器上的 RTK（层 D） | ⚠️ 无通路：中转站没有 RTK 接口、没有 agent、`HOME=/tmp`；控制台如实显示「未接通」 |
 | 帮助页接入片段是否带 RTK | ✅ 已补（安装/挂载/`--auto-patch` 警告/「写完 ≠ 生效需重启客户端」/验证与卸载） |
 
@@ -30,6 +31,8 @@
 - 已迁移 9 个数据页：Dashboard、Keys、Channels、Models、Analytics、Usage、Cache、Charts、Monitor。
 - **尚未迁移：`OAuthPage`**（唯一仍是手写弹窗/无 URL 状态的数据页）。
 - 已修的代表性缺陷：观测页把真实 41.6% 错误率显示成「0.0% 健康稳定」（调错接口 + 类型断言说谎）、接口失败退化成 7 秒消失的 toast、`/charts` 永久加载、390px 表格列宽塌成 0、6 处破坏性操作零确认、`/models` 527 行裸渲染（→ 分页/搜索/排序/列显隐/批量）、确认框 Escape 不稳定、导航幻影高亮。
+- **排版角色单一真源**（第 7–8 轮）：`h1`/`h2`、`.muted`、行内 `code`、表格单元格（含**空表**）、代码块五组角色收口到 `layout.css`/`theme.css`，三个手写页头（/rtk、/help、/ab）迁到共享 `PageHeader`（22px/600/30px，与 TUF `styles/layout.css:27-33` 一致）。`.mono` 的 0.93em 经核实**与参考实现逐字节相同、不该改**（等宽字身补偿）。
+- **两个可复跑的 QA 脚本**（`scripts/qa-contrast.mjs`、`scripts/qa-viewports.mjs`）：带非 0 退出码、登录后断言、渲染完成判据（失败即算失败）、容器内部裁剪检测（区分有意省略与静默截断）。**写这三个脚本时被红队连续抓到 3 轮假绿**（`color(srgb …)` 解析盲区、失败也 exit 0、渲染判据从未真正执行、豁免了最容易被裁的容器）——现已修到能报出真缺陷（`/cache`@390 静默裁表 378px 就是它报出来的）。
 - 删掉整套 React 死树（27 → 2 个 `.tsx`，只留 `/docs` 入口），并把「读源码文本」的守卫测试改为**行为级测试**。
 
 审计与验证：[red-team/ui-interaction-audit.md](red-team/ui-interaction-audit.md)（32 条缺陷）、[ui-round2](red-team/ui-round2-verification.md)～[ui-round6](red-team/ui-round6-verification.md)；A/B 对照：[ab/comparison.md](ab/comparison.md)。
