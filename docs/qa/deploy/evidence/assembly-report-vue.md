@@ -1,17 +1,17 @@
 # 组装报告（由 assemble-release.mjs 生成）
 
 - releaseId: `20261001-tuffex-rtk` ｜ 模式: `vue` ｜ 基底: `20260928-reset-clears-cooldown`
-- 本地 commit: `0e27b9eddce90a62e2d3dbcd25b0eaee8ebadd8e`（工作区干净）
-- 组装树: 415 个文件 / 7.03 MB；MANIFEST 条目 412
+- 本地 commit: `26554bd4bf8e4230b52e651e63772cd8561446c9`（工作区干净）
+- 组装树: 415 个文件 / 7.09 MB；MANIFEST 条目 412
 - 本地文件动作统计: replace=21 keep-prod=221 add=94
-- dist: 74 个文件，树哈希 `e38301a455623b725a79ee94b8c30b95959bff03e8c211ab0d32ed704506d00a`
+- dist: 74 个文件，树哈希 `3419fe9f14af2d9333c586ca60b8f08ad40d7d1bf55bd30ab37d3d4ad24484a9`
 
 ## 校验结论
 
 | 校验 | 结果 | 说明 |
 | --- | --- | --- |
 | V1 不缺失生产文件 | PASS | 生产 MANIFEST 299 条；缺失 0；预期缺失（构建元数据/AppleDouble）5；内容变化 24；非 dist 新增 95；dist 替换 38+63 |
-| V2 dist 与源码一致 | PASS | dist/index.html 引用 4 个资源，缺失 0；vite manifest 条目 44（其中 .vue 18 / .tsx 0）；入口 src/main.ts 在产物中：false；仓库源码最新 mtime − dist 最新 mtime = 8s（负值=dist 更新） |
+| V2 dist 与源码一致 | PASS | dist/index.html 引用 4 个资源，缺失 0；vite manifest 条目 44（其中 .vue 18 / .tsx 0）；入口 src/main.ts 在产物中：false；仓库源码最新 mtime − dist 最新 mtime = 3s（负值=dist 更新） |
 | V3 Node 版本 | WARN | 本地构建用的 node：v26.7.0；生产 runtime（/opt/crosery-node-current）：v24.20.0；package.json engines.node：>=24 <25；本地 node major 26 是否落在 >=24 <25：false |
 | V4 MANIFEST 自洽 | PASS | 逐条重算比对 |
 | V5 禁运清单 | PASS | docs/qa、.env、data、node_modules、*.log、*.tar.gz 均未进入 |
@@ -250,8 +250,8 @@
 | keep-prod | `server/requestCoordinator.test.ts` | `4e5907ac058b3223…` | `4e5907ac058b3223…` |
 | keep-prod | `server/requestCoordinator.ts` | `a94e7f670f869db5…` | `a94e7f670f869db5…` |
 | add | `server/rtkPlane.ts` | `94b19d02d95e4493…` | — |
-| add | `server/rtkService.test.ts` | `6e483564af47b649…` | — |
-| add | `server/rtkService.ts` | `2d05ed259fd7a2ac…` | — |
+| add | `server/rtkService.test.ts` | `d52fad22169bc5ca…` | — |
+| add | `server/rtkService.ts` | `2d1d039ab9437e59…` | — |
 | keep-prod | `server/snapshotStore.test.ts` | `0515bc404b9f062f…` | `0515bc404b9f062f…` |
 | keep-prod | `server/snapshotStore.ts` | `8794e2ae485878cb…` | `8794e2ae485878cb…` |
 | keep-prod | `server/sqliteReadWorker.mjs` | `421cbd860570dc98…` | `421cbd860570dc98…` |
@@ -300,7 +300,7 @@
 | add | `src/components/ConsoleNav.vue` | `9314cab5829b13fd…` | — |
 | add | `src/components/ConsoleShell.vue` | `1604d9e86545b56c…` | — |
 | add | `src/components/EmptyState.vue` | `5a7dfe18159ff0f4…` | — |
-| add | `src/components/ErrorPanel.vue` | `983c25e2ab16fbd0…` | — |
+| add | `src/components/ErrorPanel.vue` | `c87697151c57124e…` | — |
 | add | `src/components/LoadingBlock.vue` | `b7ecb1cb93897603…` | — |
 | keep-prod | `src/components/Modal.tsx` | `96fea9b5a91baaa0…` | `96fea9b5a91baaa0…` |
 | keep-prod | `src/components/OAuthLoginDialog.tsx` | `ff9abe9dd5ec8cd1…` | `ff9abe9dd5ec8cd1…` |
@@ -309,7 +309,7 @@
 | keep-prod | `src/components/RequestDetail.tsx` | `84809c95d34523d8…` | `84809c95d34523d8…` |
 | add | `src/components/RequestDetail.vue` | `6f775f2cd51a2135…` | — |
 | keep-prod | `src/components/ResultDialog.tsx` | `d9ef20126e1f8ae4…` | `d9ef20126e1f8ae4…` |
-| add | `src/components/RtkBoard.vue` | `c16b4ab881c07bfe…` | — |
+| add | `src/components/RtkBoard.vue` | `3ac36bab330ef08e…` | — |
 | keep-prod | `src/components/Select.tsx` | `c403234d9930bbab…` | `c403234d9930bbab…` |
 | keep-prod | `src/components/UsageQueryDialog.tsx` | `50db0f10a65bf2a3…` | `50db0f10a65bf2a3…` |
 | replace | `src/components/VersionWidget.tsx` | `ae82637f324ff95a…` | `211d11d8d62ff0ed…` |
@@ -333,36 +333,36 @@
 | keep-prod | `src/main.tsx` | `74831db3ec773f7e…` | `74831db3ec773f7e…` |
 | add | `src/pages/AbLabPage.vue` | `7a4a7c40f52c795c…` | — |
 | keep-prod | `src/pages/AnalyticsPage.tsx` | `d23ab1b23863ea1e…` | `d23ab1b23863ea1e…` |
-| add | `src/pages/AnalyticsPage.vue` | `d5f4de969d129b04…` | — |
+| add | `src/pages/AnalyticsPage.vue` | `c1b286acd95efafa…` | — |
 | keep-prod | `src/pages/CachePage.tsx` | `51763ea282c1dd39…` | `51763ea282c1dd39…` |
-| add | `src/pages/CachePage.vue` | `6b02c180bef9b989…` | — |
+| add | `src/pages/CachePage.vue` | `b1ef27b19217f74f…` | — |
 | keep-prod | `src/pages/ChannelsPage.tsx` | `134d107a0ed32778…` | `134d107a0ed32778…` |
-| add | `src/pages/ChannelsPage.vue` | `c0facf966c98944b…` | — |
+| add | `src/pages/ChannelsPage.vue` | `49c23e73d2683fd1…` | — |
 | keep-prod | `src/pages/ChartsPage.tsx` | `7a37f4db0ec8e54c…` | `7a37f4db0ec8e54c…` |
-| add | `src/pages/ChartsPage.vue` | `d451e34704e712de…` | — |
+| add | `src/pages/ChartsPage.vue` | `75f72618696242c7…` | — |
 | keep-prod | `src/pages/CredentialUploadPage.tsx` | `ef953a23401ac3a6…` | `ef953a23401ac3a6…` |
 | replace | `src/pages/DashboardPage.tsx` | `b293a278be6f2185…` | `9822b49060d9831e…` |
-| add | `src/pages/DashboardPage.vue` | `bd759422058fa870…` | — |
+| add | `src/pages/DashboardPage.vue` | `ea3d4f37811a0c63…` | — |
 | keep-prod | `src/pages/HelpPage.tsx` | `a33a286da78b3a31…` | `a33a286da78b3a31…` |
 | add | `src/pages/HelpPage.vue` | `b28f1aa08ed55c29…` | — |
 | keep-prod | `src/pages/KeysPage.tsx` | `b714d94d55e89e38…` | `b714d94d55e89e38…` |
-| add | `src/pages/KeysPage.vue` | `c1f63e004d51f990…` | — |
+| add | `src/pages/KeysPage.vue` | `33644af6b3f697e2…` | — |
 | keep-prod | `src/pages/LoginPage.tsx` | `8286c8e036676eb3…` | `8286c8e036676eb3…` |
 | add | `src/pages/LoginPage.vue` | `8c25e66626fad378…` | — |
 | replace | `src/pages/ModelsPage.tsx` | `b6950bebe329bba2…` | `e29c6d44a1f5ffd2…` |
-| add | `src/pages/ModelsPage.vue` | `6b79ccd08d4a3d46…` | — |
+| add | `src/pages/ModelsPage.vue` | `8c332cae0a7c1681…` | — |
 | keep-prod | `src/pages/MonitorPage.tsx` | `024c3d55a3c23a10…` | `024c3d55a3c23a10…` |
-| add | `src/pages/MonitorPage.vue` | `5c5976d7bbf6a7a9…` | — |
+| add | `src/pages/MonitorPage.vue` | `9319809044fa1780…` | — |
 | keep-prod | `src/pages/OAuthPage.tsx` | `3a8ecd39fd4d2f09…` | `3a8ecd39fd4d2f09…` |
-| add | `src/pages/OAuthPage.vue` | `3e989763a3d8c603…` | — |
-| add | `src/pages/RtkPage.vue` | `8383fe251cbe0697…` | — |
+| add | `src/pages/OAuthPage.vue` | `c106c0be5395af24…` | — |
+| add | `src/pages/RtkPage.vue` | `3a214a0a504422aa…` | — |
 | keep-prod | `src/pages/UsagePage.tsx` | `2e327c46877f82db…` | `2e327c46877f82db…` |
-| add | `src/pages/UsagePage.vue` | `4df05baf5629f5a9…` | — |
+| add | `src/pages/UsagePage.vue` | `e3e8b7bb1a2442d2…` | — |
 | keep-prod | `src/request-details.css` | `bdc3e0f267d2a2f1…` | `bdc3e0f267d2a2f1…` |
 | add | `src/router.ts` | `cf6df21d1353b619…` | — |
 | add | `src/styles/layout.css` | `21604277e5f8db32…` | — |
 | add | `src/styles/theme.css` | `c0faf6b9ea7002b2…` | — |
-| replace | `src/types.ts` | `887b6781c04ee8a0…` | `94262fb670c47f66…` |
+| replace | `src/types.ts` | `2ee08a2ce25c436e…` | `94262fb670c47f66…` |
 | keep-prod | `tsconfig.app.json` | `3d972e46410867df…` | `3d972e46410867df…` |
 | keep-prod | `tsconfig.json` | `91434fd9d32940ba…` | `91434fd9d32940ba…` |
 | keep-prod | `tsconfig.node.json` | `afc4620f8c23f3cd…` | `afc4620f8c23f3cd…` |
@@ -372,7 +372,7 @@
 
 ## 被排除的本地文件（不进入 release）
 
-- 统计：工作区缺失 × 73；never-ship 规则 × 81
-- 明细（前 40）："docs/Crosery-API-Console-\347\256\241\347\220\206\345\221\230\344\275\277\347\224\250\350\257\264\346\230\216.docx", docs/qa/COORDINATION.md, docs/qa/ab/README.md, docs/qa/ab/comparison.md, "docs/qa/ab/shots/00-lab-\345\205\245\345\217\243.png", "docs/qa/ab/shots/01-lab-\346\212\225\347\245\250\346\210\220\345\212\237.png", "docs/qa/ab/shots/f1-keys-a-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-a-\345\210\240\351\231\244\347\241\256\350\256\244\345\217\240\345\261\202.png", "docs/qa/ab/shots/f1-keys-a-\345\210\267\346\226\260\345\220\216\344\270\242\345\244\261.png", "docs/qa/ab/shots/f1-keys-a-\346\220\234\347\264\242\345\220\216.png", "docs/qa/ab/shots/f1-keys-a-\351\242\235\345\272\246\345\274\271\347\252\227.png", "docs/qa/ab/shots/f1-keys-b-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-b-\345\210\240\351\231\244\347\241\256\350\256\244.png", "docs/qa/ab/shots/f1-keys-b-\345\210\267\346\226\260\345\220\216\344\277\235\346\214\201.png", "docs/qa/ab/shots/f1-keys-b-\351\207\215\347\275\256\346\234\211\347\241\256\350\256\244.png", "docs/qa/ab/shots/f2-rtk-a-\344\270\273\350\247\206\345\233\276.png", "docs/qa/ab/shots/f2-rtk-a-\346\226\207\346\241\243\351\235\242.png", "docs/qa/ab/shots/f2-rtk-b-\346\226\260\345\242\236RTK\351\235\242.png", "docs/qa/ab/shots/f3-dash-a-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-a-\351\246\226\345\261\217.png", "docs/qa/ab/shots/f3-dash-b-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-b-\351\246\226\345\261\217.png", "docs/qa/ab/shots/r1-dashboard-a-\346\227\240\345\206\231\350\267\257\345\276\204.png", "docs/qa/ab/shots/r1-help-a-\345\244\215\345\210\266\346\227\240\350\257\267\346\261\202.png", "docs/qa/ab/shots/r1-keys-a-\351\207\215\347\275\256\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-oauth-a-\345\274\200\345\247\213\347\231\273\345\275\225\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-vote-\351\200\232\351\201\223\346\201\242\345\244\215.png", docs/qa/blue/rtk-control-plane.md, docs/qa/blue/rtk-round2-fixes.md, docs/qa/blue/shots/after-analytics-deeplink-30d.png, docs/qa/blue/shots/after-analytics-mobile-390.png, docs/qa/blue/shots/after-channels-mobile-390.png, docs/qa/blue/shots/after-charts-desktop.png, docs/qa/blue/shots/after-dashboard-desktop.png, docs/qa/blue/shots/after-keys-deeplink-search.png, docs/qa/blue/shots/after-keys-delete-confirm-focus.png, docs/qa/blue/shots/after-keys-delete-confirm.png, docs/qa/blue/shots/after-keys-desktop.png, docs/qa/blue/shots/after-keys-error-retry.png, docs/qa/blue/shots/after-keys-mobile-390.png …
+- 统计：工作区缺失 × 73；never-ship 规则 × 110
+- 明细（前 40）："docs/Crosery-API-Console-\347\256\241\347\220\206\345\221\230\344\275\277\347\224\250\350\257\264\346\230\216.docx", docs/qa/COORDINATION.md, docs/qa/ab/README.md, docs/qa/ab/comparison.md, "docs/qa/ab/shots/00-lab-\345\205\245\345\217\243.png", "docs/qa/ab/shots/01-lab-\346\212\225\347\245\250\346\210\220\345\212\237.png", "docs/qa/ab/shots/f1-keys-a-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-a-\345\210\240\351\231\244\347\241\256\350\256\244\345\217\240\345\261\202.png", "docs/qa/ab/shots/f1-keys-a-\345\210\267\346\226\260\345\220\216\344\270\242\345\244\261.png", "docs/qa/ab/shots/f1-keys-a-\346\220\234\347\264\242\345\220\216.png", "docs/qa/ab/shots/f1-keys-a-\351\242\235\345\272\246\345\274\271\347\252\227.png", "docs/qa/ab/shots/f1-keys-b-\345\210\227\350\241\250.png", "docs/qa/ab/shots/f1-keys-b-\345\210\240\351\231\244\347\241\256\350\256\244.png", "docs/qa/ab/shots/f1-keys-b-\345\210\267\346\226\260\345\220\216\344\277\235\346\214\201.png", "docs/qa/ab/shots/f1-keys-b-\351\207\215\347\275\256\346\234\211\347\241\256\350\256\244.png", "docs/qa/ab/shots/f2-rtk-a-\344\270\273\350\247\206\345\233\276.png", "docs/qa/ab/shots/f2-rtk-a-\346\226\207\346\241\243\351\235\242.png", "docs/qa/ab/shots/f2-rtk-b-\346\226\260\345\242\236RTK\351\235\242.png", "docs/qa/ab/shots/f3-dash-a-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-a-\351\246\226\345\261\217.png", "docs/qa/ab/shots/f3-dash-b-\345\244\261\350\264\245\346\200\201.png", "docs/qa/ab/shots/f3-dash-b-\351\246\226\345\261\217.png", "docs/qa/ab/shots/r1-dashboard-a-\346\227\240\345\206\231\350\267\257\345\276\204.png", "docs/qa/ab/shots/r1-help-a-\345\244\215\345\210\266\346\227\240\350\257\267\346\261\202.png", "docs/qa/ab/shots/r1-keys-a-\351\207\215\347\275\256\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-oauth-a-\345\274\200\345\247\213\347\231\273\345\275\225\350\242\253\346\213\246.png", "docs/qa/ab/shots/r1-vote-\351\200\232\351\201\223\346\201\242\345\244\215.png", docs/qa/blue/rtk-control-plane.md, docs/qa/blue/rtk-round2-fixes.md, docs/qa/blue/rtk-round3-fixes.md, docs/qa/blue/shots/after-analytics-deeplink-30d.png, docs/qa/blue/shots/after-analytics-mobile-390.png, docs/qa/blue/shots/after-channels-mobile-390.png, docs/qa/blue/shots/after-charts-desktop.png, docs/qa/blue/shots/after-dashboard-desktop.png, docs/qa/blue/shots/after-keys-deeplink-search.png, docs/qa/blue/shots/after-keys-delete-confirm-focus.png, docs/qa/blue/shots/after-keys-delete-confirm.png, docs/qa/blue/shots/after-keys-desktop.png, docs/qa/blue/shots/after-keys-error-retry.png …
 
 > 本脚本只在临时目录组装；真实上机时基底用 `cp -a` 从生产 release 复制（含 node_modules），本演练快照不含 node_modules。

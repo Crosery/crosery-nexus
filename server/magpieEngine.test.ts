@@ -1,3 +1,5 @@
+import './testDataDir.js'
+
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'

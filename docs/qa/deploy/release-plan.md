@@ -2,8 +2,9 @@
 
 - **日期**：2026-10-01 ｜ **任务**：task-15 ｜ **执行**：deploy-reconciler ｜ **状态**：准备与本地演练完成，**未触碰生产**
 - **目标 release 基底**：`/opt/crosery-api-console-current` → `20260928-reset-clears-cooldown`（下面简称 **BASE**）
-- **本地发布源**：`7de8a75…0e27b9e`（本轮 13 个提交 `f4c5e69`…`7de8a75` + 之后 lead 又落的 `0e27b9e`；本地 HEAD 已推进，见 §6 演练说明）
+- **发布源（本轮刷新）**：**`26554bd`（本地 HEAD）** —— 定义：以「组装时 `git rev-parse HEAD` 的提交」为发布源，本次 = `26554bd docs(qa): record the RTK round-3 adversarial verification`；其代码内容 = `9e78045`（最后一个非 docs 提交），`docs/qa/**` 属 QA 产物、被组装脚本排除（不进入 release）。上机前请再用 `git rev-parse HEAD` 复核一次（见 §3.0）
 - **配套**：[assemble-release.mjs](<docs/qa/deploy/assemble-release.mjs>)（组装+校验）、[release-runbook.md](<docs/qa/deploy/release-runbook.md>)（上机步骤与回退）
+- **发布不做删除**（Lead 决定）：release 里 `src/**/*.tsx` 沿用 BASE 版本，本地对死树的删除不同步进 release，见 §4.4。
 - **本方案遵守** `deploy/edge/README.md:37-44`：**以 BASE 复制为基底再叠加**，不用本地树整体替换。
 
 ---
@@ -25,7 +26,7 @@
 | | **选项 A：全量发布（含 Vue）** | **选项 B：只发服务端（保留 React）** |
 | --- | --- | --- |
 | 组装命令 | `--frontend=vue` | `--frontend=keep-prod` |
-| 组装树 | **415 文件 / 7.03 MB**；MANIFEST 412 条 | **341 文件 / 5.84 MB**；MANIFEST 338 条 |
+| 组装树 | **415 文件 / 7.09 MB**；MANIFEST 412 条 | **341 文件 / 5.87 MB**；MANIFEST 338 条 |
 | 非 dist 变更 | **replace 21 / add 94（共 115）** | **replace 11 / add 45（共 56）** |
 | `dist/**` | 本地 Vue 构建 74 个文件**整体替换**生产的 49 个 | **保留生产原样 49 个文件**（不重建） |
 | 用户可见变化 | 全站 UI 换 Vue/Tuffex；新增 RTK 页与 A/B 实验室；**「凭据导入」入口消失**（`92a0835` 有意下线，服务端端点仍在且有安全收口）；路由改为 history 模式（深度链接可用，回退已存在，见 §1.2） | UI 与今天完全一致（React 老界面，含「凭据导入」入口） |
@@ -70,6 +71,7 @@
 | `dist/**` | 74（vue，整体替换）/ 49（keep-prod，原样） | 见 §4 |
 | 预期缺失（可接受） | 5 = `.cache/*.tsbuildinfo` ×3 + `._.DS_Store` ×2 类 | 构建元数据与 AppleDouble，不参与运行 |
 | 生产文件缺失 | **0** | 校验 V1 通过 |
+| **删除动作** | **0（发布不做删除）** | Lead 2026-10-01 决定：release 沿用 BASE 版本，见 §4.4 |
 
 ---
 
@@ -78,7 +80,39 @@
 > 生成方式：`/tmp/cac-deploy-recon/clean-repo`（本地 HEAD `0e27b9e` 的干净克隆）与 `prod-release-snapshot`（BASE 的只读快照）逐文件 sha256 对比；`来源 commit` = `git log -1 -- <path>`。
 > 完整 64 位哈希见 `docs/qa/deploy/evidence/assembly-report-vue.md` 的逐文件表；下表为 16 位前缀。
 
-## 表 A：发布内容逐文件清单（vue 模式，非 dist）
+### 3.0 相对上一版草稿的 delta（发布源 `0e27b9e` → `26554bd`）
+
+**文件集合没有任何增减**（两版都是 115 个非 dist 文件、same 22 replace / 94 add），delta 全部是**内容与来源 commit 的位移**，共 **16 个文件**（`e0ac1ec` = /models 分页排序筛选与陈旧数据横幅、`3118990`/`9e78045` = RTK 备份保护与串行闸）：
+
+| 文件 | 动作 | 上一版 sha256 | 新版 sha256 | 变更 | 新来源 commit |
+| --- | --- | --- | --- | --- | --- |
+| `server/rtkService.test.ts` | add | `6e483564af47b649…` | `d52fad22169bc5ca…` | 内容更新（commit f653bef → 9e78045） | `9e78045` |
+| `server/rtkService.ts` | add | `2d05ed259fd7a2ac…` | `2d1d039ab9437e59…` | 内容更新（commit f653bef → 9e78045） | `9e78045` |
+| `src/components/ErrorPanel.vue` | add | `983c25e2ab16fbd0…` | `c87697151c57124e…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/components/RtkBoard.vue` | add | `c16b4ab881c07bfe…` | `3ac36bab330ef08e…` | 内容更新（commit 0e27b9e → 9e78045） | `9e78045` |
+| `src/pages/AnalyticsPage.vue` | add | `d5f4de969d129b04…` | `c1b286acd95efafa…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/CachePage.vue` | add | `6b02c180bef9b989…` | `b1ef27b19217f74f…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/ChannelsPage.vue` | add | `c0facf966c98944b…` | `49c23e73d2683fd1…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/ChartsPage.vue` | add | `d451e34704e712de…` | `75f72618696242c7…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/DashboardPage.vue` | add | `bd759422058fa870…` | `ea3d4f37811a0c63…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/KeysPage.vue` | add | `c1f63e004d51f990…` | `33644af6b3f697e2…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/ModelsPage.vue` | add | `6b79ccd08d4a3d46…` | `8c332cae0a7c1681…` | 内容更新（commit 7b71f6d → e0ac1ec） | `e0ac1ec` |
+| `src/pages/MonitorPage.vue` | add | `5c5976d7bbf6a7a9…` | `9319809044fa1780…` | 内容更新（commit ccee64e → e0ac1ec） | `e0ac1ec` |
+| `src/pages/OAuthPage.vue` | add | `3e989763a3d8c603…` | `c106c0be5395af24…` | 内容更新（commit 12f7699 → e0ac1ec） | `e0ac1ec` |
+| `src/pages/RtkPage.vue` | add | `8383fe251cbe0697…` | `3a214a0a504422aa…` | 内容更新（commit f653bef → 3118990） | `3118990` |
+| `src/pages/UsagePage.vue` | add | `4df05baf5629f5a9…` | `e3e8b7bb1a2442d2…` | 内容更新（commit 7593622 → e0ac1ec） | `e0ac1ec` |
+| `src/types.ts` | replace | `887b6781c04ee8a0…` | `2ee08a2ce25c436e…` | 内容更新（commit f653bef → 9e78045） | `9e78045` |
+
+delta 文件数：16
+
+配套产物变化：`dist` 树哈希 `e38301a4…` → **`3419fe9f…`**（74 个文件）；`keep-prod` 模式的 dist 保持生产 49 个文件（树哈希 `655bec5e…` 不变，因为不重建）。
+校验结论两版一致：**V1 缺失生产文件 = 0**、V2/V3/V4/V5 无新增失败（V3 仍是同一对已知 WARN）。
+
+> 上机前复核发布源：`git rev-parse HEAD` 必须等于本文记录的 `26554bd`（或按 §3.2 重新生成 delta）；若 HEAD 已推进，请重跑一次组装而不是直接用旧草稿。
+
+### 3.1 逐文件清单（发布源 `26554bd`）
+
+## 表 A：发布内容逐文件清单（vue 模式，非 dist，发布源 HEAD=26554bd）
 
 ### A.server（22 个）
 
@@ -104,8 +138,8 @@
 | `server/modelSync.test.ts` | add | `add8593e141cd2a0…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
 | `server/modelSync.ts` | add | `8df6e0551a9132ed…` | — | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
 | `server/rtkPlane.ts` | add | `94b19d02d95e4493…` | — | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
-| `server/rtkService.test.ts` | add | `6e483564af47b649…` | — | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
-| `server/rtkService.ts` | add | `2d05ed259fd7a2ac…` | — | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
+| `server/rtkService.test.ts` | add | `d52fad22169bc5ca…` | — | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
+| `server/rtkService.ts` | add | `2d1d039ab9437e59…` | — | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
 
 ### A.packages（2 个）
 
@@ -136,11 +170,11 @@
 | `src/components/ConsoleNav.vue` | add | `9314cab5829b13fd…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
 | `src/components/ConsoleShell.vue` | add | `1604d9e86545b56c…` | — | `ccee64e` | fix(console): keep confirm dialogs closable and surface un-cleared cooldowns |
 | `src/components/EmptyState.vue` | add | `5a7dfe18159ff0f4…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
-| `src/components/ErrorPanel.vue` | add | `983c25e2ab16fbd0…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/components/ErrorPanel.vue` | add | `c87697151c57124e…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
 | `src/components/LoadingBlock.vue` | add | `b7ecb1cb93897603…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
 | `src/components/PageHeader.vue` | add | `f1d936c18335131f…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
 | `src/components/RequestDetail.vue` | add | `6f775f2cd51a2135…` | — | `7b71f6d` | feat(ui): migrate data and monitor pages to vue 3 and tuffex |
-| `src/components/RtkBoard.vue` | add | `c16b4ab881c07bfe…` | — | `0e27b9e` | docs(rtk): say that a hook change needs a client restart before it takes effect |
+| `src/components/RtkBoard.vue` | add | `3ac36bab330ef08e…` | — | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
 | `src/components/VersionWidget.tsx` | replace | `ae82637f324ff95a…` | `211d11d8d62ff0ed…` | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
 | `src/components/VersionWidget.vue` | add | `fe7eb9a9c4ebaab1…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
 | `src/env.d.ts` | add | `53e97f03f7ace951…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
@@ -156,25 +190,25 @@
 | `src/lib/viewport.ts` | add | `ad01626b02c892bc…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
 | `src/main.ts` | add | `4852c7a26490ffcd…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
 | `src/pages/AbLabPage.vue` | add | `7a4a7c40f52c795c…` | — | `9df1c04` | fix(qa): gate the lab read-only across api, fetch and XHR without blocking votes |
-| `src/pages/AnalyticsPage.vue` | add | `d5f4de969d129b04…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
-| `src/pages/CachePage.vue` | add | `6b02c180bef9b989…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
-| `src/pages/ChannelsPage.vue` | add | `c0facf966c98944b…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
-| `src/pages/ChartsPage.vue` | add | `d451e34704e712de…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/pages/AnalyticsPage.vue` | add | `c1b286acd95efafa…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/CachePage.vue` | add | `b1ef27b19217f74f…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/ChannelsPage.vue` | add | `49c23e73d2683fd1…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/ChartsPage.vue` | add | `75f72618696242c7…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
 | `src/pages/DashboardPage.tsx` | replace | `b293a278be6f2185…` | `9822b49060d9831e…` | `f60a828` | feat(console): integrate headless Magpie inference kernel |
-| `src/pages/DashboardPage.vue` | add | `bd759422058fa870…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/pages/DashboardPage.vue` | add | `ea3d4f37811a0c63…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
 | `src/pages/HelpPage.vue` | add | `b28f1aa08ed55c29…` | — | `0e27b9e` | docs(rtk): say that a hook change needs a client restart before it takes effect |
-| `src/pages/KeysPage.vue` | add | `c1f63e004d51f990…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/pages/KeysPage.vue` | add | `33644af6b3f697e2…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
 | `src/pages/LoginPage.vue` | add | `8c25e66626fad378…` | — | `281c30e` | fix(auth): fix login navigation guard and purge emojis across auth views |
 | `src/pages/ModelsPage.tsx` | replace | `b6950bebe329bba2…` | `e29c6d44a1f5ffd2…` | `7e1c8ce` | feat(magpie): adapt magpie kernel, dynamic model sync, oauth and rtk |
-| `src/pages/ModelsPage.vue` | add | `6b79ccd08d4a3d46…` | — | `7b71f6d` | feat(ui): migrate data and monitor pages to vue 3 and tuffex |
-| `src/pages/MonitorPage.vue` | add | `5c5976d7bbf6a7a9…` | — | `ccee64e` | fix(console): keep confirm dialogs closable and surface un-cleared cooldowns |
-| `src/pages/OAuthPage.vue` | add | `3e989763a3d8c603…` | — | `12f7699` | feat(pages): migrate dashboard, keys, channels and oauth pages to vue3 and tuffex |
-| `src/pages/RtkPage.vue` | add | `8383fe251cbe0697…` | — | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
-| `src/pages/UsagePage.vue` | add | `4df05baf5629f5a9…` | — | `7593622` | feat(console): 按 TUF 交互原语重构 UI（URL 状态/统一确认/三态/响应式） |
+| `src/pages/ModelsPage.vue` | add | `8c332cae0a7c1681…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/MonitorPage.vue` | add | `9319809044fa1780…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/OAuthPage.vue` | add | `c106c0be5395af24…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
+| `src/pages/RtkPage.vue` | add | `3a214a0a504422aa…` | — | `3118990` | fix(rtk): protect in-flight backups and make OFF verification symmetric |
+| `src/pages/UsagePage.vue` | add | `e3e8b7bb1a2442d2…` | — | `e0ac1ec` | feat(console): /models 分页排序筛选、同步确认、陈旧数据横幅、OAuth 轮询上限 |
 | `src/router.ts` | add | `cf6df21d1353b619…` | — | `50a8639` | feat(qa): add the /ab comparison lab with real-user preference capture |
 | `src/styles/layout.css` | add | `21604277e5f8db32…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
 | `src/styles/theme.css` | add | `c0faf6b9ea7002b2…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
-| `src/types.ts` | replace | `887b6781c04ee8a0…` | `94262fb670c47f66…` | `f653bef` | fix(rtk): reconcile cross-agent hook writes and make failure paths recoverable |
+| `src/types.ts` | replace | `2ee08a2ce25c436e…` | `94262fb670c47f66…` | `9e78045` | fix(rtk): serialize local hook writes and stop cross-request clobbering |
 | `uno.config.ts` | add | `eb0a11117187bfcb…` | — | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
 | `vite.config.ts` | replace | `0d082af13221f81b…` | `cfb852aedcaeaf7f…` | `600a5ca` | feat(core): setup Tuffex design system, ConsoleShell, ConsoleNav and router |
 
@@ -222,8 +256,6 @@
 
 合计：115 个非 dist 文件；其中 replace 21 / add 94
 
----
-
 ## 4. `dist/**`、`MANIFEST.sha256`、`RELEASE.json` 的重新生成规则
 
 ### 4.1 `dist/**`
@@ -245,6 +277,18 @@
   ```
 - **顺序坑（本次演练踩到）**：必须**先写 `RELEASE.json` 再生成 `MANIFEST.sha256`**，否则 MANIFEST 里记的是上一版 RELEASE.json 的哈希（组装脚本已修，见 §6.3）。
 - `.gitignore` 注意：`dist`、`build/`、`*.log`、`*.tar.gz`、`.cache/`、`data/`、`.env*` 都被忽略。`dist` 与 `build/` 虽然不入 git，但**必须出现在 release 里**（用 `cp`/`rsync` 显式带上，不要用 `git archive` 直接当 release）。
+
+### 4.4 显式删除语义（**刷新期新发现**：React 死树正在被删除）
+
+- **组装脚本只叠加、不删除**：它先复制 BASE 全量，再把本地跟踪文件覆盖上去。因此「本地删掉某文件」**不会**让该文件从 release 消失——它会以 **BASE 的版本**留在 release 里。
+- 现场情况（2026-10-01 刷新期间发现，**不是本任务所为**）：工作区里 **25 个 React 死树文件已被删除并暂存**（`src/App.tsx`、`src/main.tsx`、`src/components/*.tsx` ×11、`src/pages/*.tsx` ×13）。逐字节比对 BASE：**21 个与生产完全相同**，**4 个本地曾改过**（`src/App.tsx`、`src/components/VersionWidget.tsx`、`src/pages/DashboardPage.tsx`、`src/pages/ModelsPage.tsx`——正好是本文表 A 里的 `replace` 项）。
+- **影响（若该删除被提交后再刷新）**：这 4 个文件不再被本地覆盖 → release 保留 **BASE（生产）版本**，表 A 的 `replace` 由 21 降到 17、非 dist 变更由 115 降到 **111**；这 4 个文件的本地 React 侧改动**静默消失**（它们是死代码，功能无影响，但属"计划外内容变化"，必须记录）。
+- **决定（Lead，2026-10-01）：选项 1 —— 发布不做删除**（原两个选项中的「接受保留」）：
+  1. **release 中 `src/**/*.tsx` 一律沿用 BASE 版本**（除 `src/docs.tsx`、`src/docs-entry.tsx` 这两项 docs 入口——它们仍在构建图里）。即：21 个与生产逐字节相同的 React 源原样保留，4 个本地曾改过的（`src/App.tsx`、`src/components/VersionWidget.tsx`、`src/pages/DashboardPage.tsx`、`src/pages/ModelsPage.tsx`）在 release 里用 **BASE 版本**，本地版本不发布。
+  2. 理由：这些文件在 release 里是**死的**（`index.html` 只引 `/src/main.ts`，`docs.html` 只引 `docs-entry.tsx`），保留 BASE 版零风险；而为发布引入"删除步"要额外维护删除清单与回退，复杂度更高。
+  3. **本地删除只影响本地仓库与后续构建**（`npm run build` 不再产出 → 也不需要产出这些文件），不影响已组装的 release 内容。
+  4. **若将来要把删除同步进 release**：需**单独设计**删除清单（25 条路径逐一列出）、在 MANIFEST 重新生成**之前**执行、并给出回退（从 BASE 再 `cp -a` 覆盖回来即可）；本轮不做，也不在 runbook 里预留。
+- **`dist` 不受影响**（React `.tsx` 不参与 Vue 构建），`--frontend=keep-prod` 也不受影响（该模式本来就保留 BASE 的 React 源与 dist）。
 
 ### 4.3 `RELEASE.json`
 
@@ -304,8 +348,8 @@ node docs/qa/deploy/assemble-release.mjs \
 
 ```
 组装目录: /tmp/cac-deploy-recon/release-20261001-tuffex-rtk
-releaseId: 20261001-tuffex-rtk | mode: vue | HEAD: 0e27b9e
-文件 415 个 / 7.03 MB | MANIFEST 412 条 | dist 74 个 (tree e38301a455623b72…)
+releaseId: 20261001-tuffex-rtk | mode: vue | HEAD: 26554bd
+文件 415 个 / 7.09 MB | MANIFEST 412 条 | dist 74 个 (tree 3419fe9f14af2d93…)
 本地动作: replace=21 keep-prod=221 add=94
 V1 缺失生产文件: 0 | 预期缺失: 5 | 替换: 24 | 新增: 95
 V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN
@@ -319,8 +363,8 @@ V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN
 
 ```
 组装目录: /tmp/cac-deploy-recon/release-keep-react
-releaseId: 20261001-server-only | mode: keep-prod | HEAD: 0e27b9e
-文件 341 个 / 5.84 MB | MANIFEST 338 条 | dist 49 个 (tree 655bec5e91a5acc6…)
+releaseId: 20261001-server-only | mode: keep-prod | HEAD: 26554bd
+文件 341 个 / 5.87 MB | MANIFEST 338 条 | dist 49 个 (tree 655bec5e91a5acc6…)
 本地动作: replace=11 keep-prod=180 add=45
 V1 缺失生产文件: 0 | 预期缺失: 5 | 替换: 11 | 新增: 46
 V3 node: local=v26.7.0 prod=v24.20.0 engines=>=24 <25 -> WARN

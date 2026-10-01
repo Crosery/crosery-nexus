@@ -1,9 +1,9 @@
 {
  "releaseId": "20261001-tuffex-rtk",
- "createdAt": "2026-10-01T01:26:58.785Z",
+ "createdAt": "2026-10-01T01:42:23.866Z",
  "baseRelease": "/opt/crosery-api-console-releases/20260928-reset-clears-cooldown",
  "sourceRepository": "/tmp/cac-deploy-recon/clean-repo",
- "source": "20261001-tuffex-rtk: 由生产 release 20260928-reset-clears-cooldown 复制后叠加本地 commit 0e27b9e 的改动，前端切换为 Vue/Tuffex 并重建 dist",
+ "source": "20261001-tuffex-rtk: 由生产 release 20260928-reset-clears-cooldown 复制后叠加本地 commit 26554bd 的改动，前端切换为 Vue/Tuffex 并重建 dist",
  "changes": [
   ".env.example",
   ".gitignore",
@@ -125,11 +125,11 @@
   "RELEASE.json"
  ],
  "provenance": {
-  "localHead": "0e27b9eddce90a62e2d3dbcd25b0eaee8ebadd8e",
+  "localHead": "26554bd4bf8e4230b52e651e63772cd8561446c9",
   "frontend": "vue",
   "builtWithNode": "v26.7.0",
   "prodRuntimeNode": "v24.20.0",
   "dirtyFiles": [],
-  "distTreeHash": "e38301a455623b725a79ee94b8c30b95959bff03e8c211ab0d32ed704506d00a"
+  "distTreeHash": "3419fe9f14af2d9333c586ca60b8f08ad40d7d1bf55bd30ab37d3d4ad24484a9"
  }
 }

@@ -1,3 +1,5 @@
+import './testDataDir.js'
+
 import assert from 'node:assert/strict'
 import test, { beforeEach } from 'node:test'
 import { extractUsageDiagnostics } from './usageDetails.js'

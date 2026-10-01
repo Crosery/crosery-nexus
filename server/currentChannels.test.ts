@@ -1,3 +1,5 @@
+import './testDataDir.js'
+
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { activeProviderPredicate, activeProviderValues, isActiveProvider } from './currentChannels.js'
