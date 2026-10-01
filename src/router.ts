@@ -19,12 +19,16 @@ const routes: RouteRecordRaw[] = [
       { path: 'channels', name: 'channels', component: () => import('./pages/ChannelsPage.vue') },
       { path: 'oauth', name: 'oauth', component: () => import('./pages/OAuthPage.vue') },
       { path: 'models', name: 'models', component: () => import('./pages/ModelsPage.vue') },
+      // RTK 控制面：本机/内核/中转站三层平面，写入策略受服务端开关约束。
+      { path: 'rtk', name: 'rtk', component: () => import('./pages/RtkPage.vue') },
       { path: 'charts', name: 'charts', component: () => import('./pages/ChartsPage.vue') },
       { path: 'analytics', name: 'analytics', component: () => import('./pages/AnalyticsPage.vue') },
       { path: 'usage', name: 'usage', component: () => import('./pages/UsagePage.vue') },
       { path: 'cache', name: 'cache', component: () => import('./pages/CachePage.vue') },
       { path: 'monitor', name: 'monitor', component: () => import('./pages/MonitorPage.vue') },
       { path: 'help', name: 'help', component: () => import('./pages/HelpPage.vue') },
+      // A/B 实验台（本地 QA 用）：新旧交互对照与真实用户偏好留痕，深链 /ab?flow=&v=
+      { path: 'ab', name: 'ab', component: () => import('./pages/AbLabPage.vue') },
     ],
   },
   {

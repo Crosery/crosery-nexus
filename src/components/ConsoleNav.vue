@@ -30,12 +30,14 @@ const navEntries = [
   { value: 'channels', label: '渠道账号', group: 'access', icon: 'i-carbon-connection-signal', to: '/channels' },
   { value: 'oauth', label: 'OAuth 登录', group: 'access', icon: 'i-carbon-globe', to: '/oauth' },
   { value: 'models', label: '模型总览', group: 'access', icon: 'i-carbon-chip', to: '/models' },
+  { value: 'rtk', label: 'RTK 优化', group: 'access', icon: 'i-carbon-terminal', to: '/rtk' },
   { value: 'usage', label: '统计和使用情况', group: 'analytics', icon: 'i-carbon-gauge', to: '/usage' },
   { value: 'charts', label: '图表分析', group: 'analytics', icon: 'i-carbon-chart-line', to: '/charts' },
   { value: 'analytics', label: '请求明细', group: 'analytics', icon: 'i-carbon-data-table', to: '/analytics' },
   { value: 'cache', label: '缓存命中率', group: 'analytics', icon: 'i-carbon-flash', to: '/cache' },
   { value: 'monitor', label: '账号监控', group: 'monitor', icon: 'i-carbon-activity', to: '/monitor' },
   { value: 'help', label: '接入帮助', group: 'help', icon: 'i-carbon-help', to: '/help' },
+  { value: 'ab', label: 'A/B 实验台', group: 'help', icon: 'i-carbon-chemistry', to: '/ab' },
 ]
 
 const items = computed<SidebarNavItem[]>(() => {
