@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxStatCard } from '@talex-touch/tuffex/stat-card'
@@ -7,66 +7,66 @@ import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxSelect } from '@talex-touch/tuffex/select'
 import { TxAlert } from '@talex-touch/tuffex/alert'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
 import { gatewayStatusCopy, type DashboardState, type GatewayState } from '../gatewayStatus'
+import { useQueryState } from '../lib/listState'
+import { useResource } from '../lib/resource'
+import { fmtCompact, fmtDate, fmtLatency, fmtPercent } from '../lib/format'
 import type { ApiKeyItem, DashboardData } from '../types'
-
-const props = withDefaults(
-  defineProps<{
-    analytics?: DashboardData | null
-    keys?: ApiKeyItem[]
-    keyId?: string
-    gatewayState?: GatewayState
-    gatewayEngine?: 'cpa' | 'magpie'
-    dashboardState?: DashboardState
-  }>(),
-  {
-    analytics: null,
-    keys: () => [],
-    keyId: '',
-    gatewayState: 'online',
-    gatewayEngine: 'magpie',
-    dashboardState: 'ready',
-  },
-)
-
-const emit = defineEmits<{
-  (e: 'update:keyId', id: string): void
-  (e: 'open-keys'): void
-}>()
 
 const router = useRouter()
 
-// Local data fallback if not provided by parent
-const internalAnalytics = ref<DashboardData | null>(null)
-const internalKeys = ref<ApiKeyItem[]>([])
-const loading = ref(false)
+/**
+ * 筛选进 URL（对照参考实现 pages/github/Repos.vue 的深链列表）：
+ * 刷新、收藏、分享链接都回到同一视图；改筛选立即重取，不再「选了 Key 没反应」。
+ */
+const scope = useQueryState({ days: '7', keyId: '' })
+const days = computed(() => {
+  const value = Number(scope.state.days)
+  return [1, 7, 30, 90].includes(value) ? value : 7
+})
 
-const effectiveAnalytics = computed(() => props.analytics ?? internalAnalytics.value)
-const effectiveKeys = computed(() => (props.keys && props.keys.length > 0 ? props.keys : internalKeys.value))
+const dayOptions = [
+  { value: '1', label: '最近 24 小时' },
+  { value: '7', label: '最近 7 天' },
+  { value: '30', label: '最近 30 天' },
+  { value: '90', label: '最近 90 天' },
+]
 
-const compact = (value: number) =>
-  new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value || 0)
+/** 概览与密钥各自一个读取状态：都带重试，刷新时保留旧数据（useResource 成功前不碰 data）。 */
+const dashRes = useResource(
+  () => api.dashboard<DashboardData>(days.value, scope.state.keyId),
+  [() => scope.state.days, () => scope.state.keyId],
+)
+const keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])
 
-const summary = computed(() => effectiveAnalytics.value?.summary)
-const activeKeysCount = computed(() => effectiveKeys.value.filter((k) => k.enabled).length)
+const analytics = computed(() => dashRes.data.value)
+const keys = computed(() => keysRes.data.value?.keys ?? [])
+const error = computed(() => dashRes.error.value ?? keysRes.error.value)
+const showSkeleton = computed(() => !analytics.value && !error.value)
+const reloadAll = () => Promise.all([dashRes.reload(), keysRes.reload()])
 
-const selectedKey = computed(() => effectiveKeys.value.find((k) => k.id === props.keyId))
+const summary = computed(() => analytics.value?.summary)
+const activeKeysCount = computed(() => keys.value.filter((k) => k.enabled).length)
+
+const selectedKey = computed(() => keys.value.find((k) => k.id === scope.state.keyId))
 const scopeText = computed(() => (selectedKey.value ? `仅 ${selectedKey.value.name}` : '全部 API Key'))
 
-const gatewayCopy = computed(() => gatewayStatusCopy(props.gatewayState, props.gatewayEngine))
+/** 网关状态由这次读取本身决定，不再写死成「在线」。 */
+const gatewayState = computed<GatewayState>(() => (dashRes.error.value ? 'unavailable' : dashRes.loading.value ? 'checking' : 'online'))
+const dashboardState = computed<DashboardState>(() => (showSkeleton.value ? 'loading' : analytics.value?.stale ? 'unavailable' : 'ready'))
+const gatewayCopy = computed(() => gatewayStatusCopy(gatewayState.value, 'magpie'))
 
 const keyOptions = computed(() => [
   { value: '', label: '全部 API Key' },
-  ...effectiveKeys.value.map((k) => ({ value: k.id, label: k.name })),
+  ...keys.value.map((k) => ({ value: k.id, label: k.name })),
 ])
 
-function onKeySelect(val: string | number) {
-  emit('update:keyId', String(val))
-}
-
 function handleOpenKeys() {
-  emit('open-keys')
   router.push('/keys')
 }
 
@@ -74,7 +74,7 @@ function handleOpenKeys() {
 const hoveredPoint = ref<{ x: number; y: number; bucket: string; requests: number } | null>(null)
 
 // Compute SVG path for trend data
-const trendData = computed(() => effectiveAnalytics.value?.trend || [])
+const trendData = computed(() => analytics.value?.trend || [])
 const chartDimensions = { width: 680, height: 220, padding: 36 }
 
 const chartPath = computed(() => {
@@ -97,46 +97,32 @@ const chartPath = computed(() => {
   return { area: areaD, line: lineD, points }
 })
 
-onMounted(async () => {
-  if (!props.analytics && !props.keys?.length) {
-    loading.value = true
-    try {
-      const [boot, dash] = await Promise.allSettled([
-        api.bootstrap<{ keys: ApiKeyItem[] }>(),
-        api.dashboard<DashboardData>(7, props.keyId),
-      ])
-      if (boot.status === 'fulfilled' && boot.value?.keys) {
-        internalKeys.value = boot.value.keys
-      }
-      if (dash.status === 'fulfilled' && dash.value) {
-        internalAnalytics.value = dash.value
-      }
-    } finally {
-      loading.value = false
-    }
-  }
-})
 </script>
 
 <template>
   <div class="page">
-    <!-- 头部横幅与状态 -->
-    <header class="page-head">
-      <div class="page-head__text">
-        <div class="eyebrow-tag">CONTROL CENTER</div>
-        <h1>运行概览</h1>
-        <p>全景掌握网关请求吞吐、Token 消耗、活跃密钥及底层推理内核状态。</p>
-      </div>
-      <div class="page-head__actions">
-        <div class="key-selector-wrap">
-          <TxSelect
-            :model-value="keyId"
-            :options="keyOptions"
-            placeholder="按 API Key 筛选"
-            class="key-select"
-            @update:model-value="onKeySelect"
-          />
-        </div>
+    <PageHeader
+      title="运行概览"
+      description="全景掌握网关请求吞吐、Token 消耗、活跃密钥及底层推理内核状态。筛选条件写在地址栏里，刷新和分享链接都会保持同一视图。"
+    >
+      <template #actions>
+        <TxSelect
+          :model-value="scope.state.keyId"
+          :options="keyOptions"
+          placeholder="按 API Key 筛选"
+          class="key-select"
+          @update:model-value="scope.state.keyId = String($event)"
+        />
+        <TxSelect
+          :model-value="scope.state.days"
+          :options="dayOptions"
+          placeholder="统计周期"
+          class="days-select"
+          @update:model-value="scope.state.days = String($event)"
+        />
+        <TxButton variant="secondary" :loading="dashRes.loading.value" @click="reloadAll">
+          刷新
+        </TxButton>
         <div class="gateway-status-pill" :class="`gateway-${gatewayState}`">
           <span class="status-dot" />
           <div class="status-texts">
@@ -144,9 +130,14 @@ onMounted(async () => {
             <small>{{ gatewayCopy.detail }}</small>
           </div>
         </div>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
+    <!-- 失败给可读原因 + 重试；首次加载给骨架；其余情况保留旧数据继续渲染（不闪空） -->
+    <ErrorPanel v-if="error" :error="error" :retry="reloadAll" />
+    <LoadingBlock v-else-if="showSkeleton" :lines="6" label="正在读取运行概览" />
+
+    <template v-else>
     <!-- 告警提示 -->
     <TxAlert
       v-if="dashboardState === 'unavailable'"
@@ -158,26 +149,26 @@ onMounted(async () => {
       v-else-if="(summary?.errorRate || 0) > 0.1"
       variant="danger"
       title="高错误率预警"
-      :description="`当前错误率为 ${((summary?.errorRate || 0) * 100).toFixed(1)}%，建议前往账号监控或请求明细页排查。`"
+      :description="`当前错误率为 ${fmtPercent(summary?.errorRate)}，建议前往账号监控或请求明细页排查。`"
     />
 
     <!-- 四项核心指标卡片 -->
     <section class="grid-stats">
       <TxStatCard
         label="请求总量"
-        :value="summary ? compact(summary.requests) : '—'"
+        :value="summary ? fmtCompact(summary.requests) : '—'"
         :meta="summary ? scopeText : '正在同步...'"
         icon-class="i-carbon-activity text-teal-600"
       />
       <TxStatCard
         label="Token 消耗"
-        :value="summary ? compact(summary.tokens) : '—'"
+        :value="summary ? fmtCompact(summary.tokens) : '—'"
         :meta="summary ? '输入与输出全部汇总' : '正在计算...'"
         icon-class="i-carbon-meter-alt text-blue-600"
       />
       <TxStatCard
         label="活跃 API Key"
-        :value="effectiveKeys.length ? `${activeKeysCount} / ${effectiveKeys.length}` : '—'"
+        :value="keys.length ? `${activeKeysCount} / ${keys.length}` : '—'"
         meta="已启用有效密钥占比"
         icon-class="i-carbon-password text-indigo-600"
         clickable
@@ -185,7 +176,7 @@ onMounted(async () => {
       />
       <TxStatCard
         label="平均响应延迟"
-        :value="summary?.avgLatency ? `${Math.round(summary.avgLatency)} ms` : '—'"
+        :value="summary?.avgLatency ? fmtLatency(summary.avgLatency) : '—'"
         meta="端到端网络与推理时延"
         icon-class="i-carbon-time text-amber-600"
       />
@@ -206,7 +197,7 @@ onMounted(async () => {
                 size="sm"
                 variant="soft"
                 :color="dashboardState === 'ready' ? 'var(--tx-color-success)' : 'var(--tx-color-warning)'"
-                :label="dashboardState === 'ready' ? (effectiveAnalytics?.source === 'data-plane' ? '高速快照' : '实时同步') : '加载中'"
+                :label="dashboardState === 'ready' ? (analytics?.source === 'data-plane' ? '高速快照' : '实时同步') : '加载中'"
               />
             </div>
           </div>
@@ -281,7 +272,7 @@ onMounted(async () => {
 
         <div class="key-list-box">
           <div
-            v-for="key in effectiveKeys.slice(0, 5)"
+            v-for="key in keys.slice(0, 5)"
             :key="key.id"
             class="key-row-item"
             @click="handleOpenKeys"
@@ -293,7 +284,7 @@ onMounted(async () => {
                 <span class="mono muted">{{ key.maskedKey }}</span>
               </div>
               <small class="key-time">
-                {{ key.lastUsedAt ? `最近调用: ${new Date(key.lastUsedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}` : '从未使用' }}
+                {{ key.lastUsedAt ? `最近调用: ${fmtDate(key.lastUsedAt)}` : '从未使用' }}
               </small>
             </div>
             <TxTag
@@ -304,9 +295,15 @@ onMounted(async () => {
             />
           </div>
 
-          <div v-if="!effectiveKeys.length" class="empty-list">
-            <span class="muted">暂无 API Key，请先创建</span>
-          </div>
+          <!-- 空态给下一步动作，而不是只留一句「暂无数据」 -->
+          <EmptyState
+            v-if="!keys.length"
+            title="还没有 API Key"
+            description="创建一把密钥后，这里会显示最近调用情况和用量。"
+            action-label="去创建 API Key"
+            to="/keys"
+            size="small"
+          />
         </div>
 
         <div class="quick-actions-bar">
@@ -316,6 +313,7 @@ onMounted(async () => {
         </div>
       </TxCard>
     </section>
+    </template>
   </div>
 </template>
 
@@ -330,6 +328,16 @@ onMounted(async () => {
 
 .key-selector-wrap {
   width: 180px;
+}
+
+/* 窄屏下两个下拉与状态胶囊换行排列，不撑破视口 */
+.key-select,
+.days-select {
+  width: min(180px, 46vw);
+}
+.gateway-status-pill {
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .gateway-status-pill {

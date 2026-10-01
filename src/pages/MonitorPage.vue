@@ -1,32 +1,30 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxButton } from '@talex-touch/tuffex/button'
-import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxStatusBadge } from '@talex-touch/tuffex/status-badge'
 import { TxEmptyState } from '@talex-touch/tuffex/empty-state'
-import { TxModal } from '@talex-touch/tuffex/modal'
 import { TxAlert } from '@talex-touch/tuffex/alert'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
 import { api } from '../api'
-import type { AccountQuota, MonitorData, QuotaShareWindow, QuotaWindow } from '../types'
+import { confirm } from '../lib/confirm'
+import { useResource } from '../lib/resource'
+import { fmtClock, fmtCompact, fmtCountdown, fmtPercent } from '../lib/format'
+import type { MonitorData } from '../types'
 
-const props = withDefaults(defineProps<{
-  data?: MonitorData | null
-  loading?: boolean
-}>(), {
-  data: null,
-  loading: false,
-})
+/**
+ * 上游账号与额度监控。
+ * 读取走 useResource：失败给持久错误态 + 重试（原来 `catch {}` 把失败吞成「没有账号」）。
+ * 额度重置改走全局 `await confirm()`（红队 D26/D31：同一类不可逆操作不再各写一套弹窗）。
+ */
+const res = useResource(() => api.monitor<MonitorData>(), [])
+const loadMonitor = () => res.reload()
+const currentData = computed(() => res.data.value)
+const accounts = computed(() => currentData.value?.accounts || [])
+const quotaShare = computed(() => currentData.value?.quotaShare || null)
 
-const emit = defineEmits<{
-  (e: 'refresh'): void
-}>()
-
-const internalData = ref<MonitorData | null>(props.data)
-const internalLoading = ref(props.loading)
-
-const confirmingAccount = ref<any>(null)
-const confirmModalOpen = ref(false)
 const resetting = ref(false)
 const resultNotice = ref<{ type: 'success' | 'warning' | 'danger'; message: string } | null>(null)
 
@@ -38,26 +36,6 @@ const PROVIDERS: Record<string, { label: string; logo: string; color: string }> 
 
 const PROVIDER_ORDER = ['antigravity', 'claude', 'codex']
 
-async function loadMonitor() {
-  internalLoading.value = true
-  try {
-    const res = await api.monitor<MonitorData>()
-    internalData.value = res
-  } catch {
-    // ignore
-  } finally {
-    internalLoading.value = false
-  }
-}
-
-onMounted(() => {
-  if (!props.data) loadMonitor()
-})
-
-const currentData = computed(() => props.data || internalData.value)
-const accounts = computed(() => currentData.value?.accounts || [])
-const quotaShare = computed(() => currentData.value?.quotaShare || null)
-
 const providerGroups = computed(() => {
   return PROVIDER_ORDER
     .map(type => ({
@@ -67,62 +45,44 @@ const providerGroups = computed(() => {
     .filter(g => g.accounts.length > 0)
 })
 
+/** 倒计时与重置时刻都按固定时区渲染（src/lib/format.ts），不再跟浏览器时区走。 */
 function untilReset(resetsAt: string | null): string {
   if (!resetsAt) return ''
   const target = new Date(resetsAt).getTime()
   if (Number.isNaN(target)) return ''
-  const minutes = Math.round((target - Date.now()) / 60000)
-  if (minutes <= 0) return '即将重置'
-  if (minutes < 60) return `还有 ${minutes} 分钟`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `还有 ${hours} 小时${minutes % 60 ? ` ${minutes % 60} 分钟` : ''}`
-  const days = Math.floor(hours / 24)
-  return `还有 ${days} 天${hours % 24 ? ` ${hours % 24} 小时` : ''}`
+  const text = fmtCountdown(target - Date.now())
+  return text === '即将重置' ? text : `还有 ${text}`
 }
 
 function resetClock(resetsAt: string | null) {
-  if (!resetsAt) return ''
-  const date = new Date(resetsAt)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return resetsAt ? fmtClock(resetsAt) : ''
 }
 
 function compactTokens(value: number) {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return value.toLocaleString('zh-CN')
+  return fmtCompact(value)
 }
 
-function openResetConfirm(account: any) {
-  confirmingAccount.value = account
-  confirmModalOpen.value = true
-}
-
-async function executeQuotaReset() {
-  if (!confirmingAccount.value) return
-  const account = confirmingAccount.value
+async function resetQuota(account: any) {
+  const name = account.email || account.name
+  const ok = await confirm({
+    title: '重置账号窗口配额',
+    body: `将消耗 1 次主动重置额度，重置账号「${name}」的窗口配额。此操作不可逆。`,
+    confirmText: '重置额度',
+    danger: true,
+  })
+  if (!ok) return
   resetting.value = true
   resultNotice.value = null
-
   try {
     if (account.type === 'claude') {
       await api.resetClaudeQuota(String(account.auth_index))
     } else {
       await api.resetCodexQuota(String(account.auth_index))
     }
-    confirmModalOpen.value = false
-    resultNotice.value = {
-      type: 'success',
-      message: `已成功重置「${account.email || account.name}」的额度。`,
-    }
-    emit('refresh')
+    resultNotice.value = { type: 'success', message: `已成功重置「${name}」的额度。` }
     await loadMonitor()
   } catch (e) {
-    resultNotice.value = {
-      type: 'danger',
-      message: `额度重置失败：${e instanceof Error ? e.message : '未知错误'}`,
-    }
+    resultNotice.value = { type: 'danger', message: `额度重置失败：${e instanceof Error ? e.message : '未知错误'}` }
   } finally {
     resetting.value = false
   }
@@ -131,25 +91,27 @@ async function executeQuotaReset() {
 
 <template>
   <div class="page-stack monitor-page">
-    <section class="page-head">
-      <div class="page-head__text">
-        <p class="eyebrow">UPSTREAM ACCOUNTS</p>
-        <h1>上游账号与额度监控</h1>
-        <p>按渠道查看 AntiGravity、Claude 与 Codex 官方 OAuth 账号健康度、额度重置倒计时与窗口占用。</p>
-      </div>
-      <div class="page-head__actions">
-        <TxButton variant="secondary" :loading="props.loading || internalLoading" @click="() => { emit('refresh'); loadMonitor() }">
+    <PageHeader
+      title="上游账号与额度监控"
+      description="按渠道查看 AntiGravity、Claude 与 Codex 官方 OAuth 账号健康度、额度重置倒计时与窗口占用。"
+    >
+      <template #actions>
+        <TxButton variant="secondary" :loading="res.loading.value" @click="loadMonitor">
           刷新状态
         </TxButton>
-      </div>
-    </section>
+      </template>
+    </PageHeader>
 
     <TxAlert v-if="resultNotice" :type="resultNotice.type" :closable="true" @close="resultNotice = null">
       {{ resultNotice.message }}
     </TxAlert>
 
+    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染 -->
+    <ErrorPanel v-if="res.error.value" :error="res.error.value" :retry="loadMonitor" />
+    <LoadingBlock v-else-if="!currentData" :lines="6" label="正在读取上游账号状态" />
+
     <!-- 账号分组 -->
-    <div v-if="providerGroups.length" class="provider-groups-stack">
+    <div v-else-if="providerGroups.length" class="provider-groups-stack">
       <div v-for="g in providerGroups" :key="g.type" class="group-section">
         <div class="group-header">
           <div class="group-title-line">
@@ -184,7 +146,8 @@ async function executeQuotaReset() {
                   size="sm"
                   variant="outline"
                   :disabled="acc.normalizedQuota.resetCredits.available <= 0 || resetting"
-                  @click="openResetConfirm(acc)"
+                  :aria-label="`重置账号 ${acc.email || acc.name} 的窗口配额`"
+                  @click="resetQuota(acc)"
                 >
                   重置额度
                 </TxButton>
@@ -231,7 +194,7 @@ async function executeQuotaReset() {
               <div class="share-bar-wrap">
                 <span class="share-bar-fill" :style="{ width: `${Math.max(2, Math.round(k.share * 100))}%` }" />
               </div>
-              <span class="share-pct mono">{{ (k.share * 100).toFixed(1) }}%</span>
+              <span class="share-pct mono">{{ fmtPercent(k.share) }}</span>
             </div>
           </div>
         </TxCard>
@@ -239,23 +202,14 @@ async function executeQuotaReset() {
     </div>
 
     <!-- 空状态 -->
-    <TxCard v-else :padding="40">
+    <TxCard v-else :padding="32">
       <TxEmptyState
         title="暂未接入上游监控账号"
-        description="系统检测到当前尚未配置或读取到 AntiGravity、Claude 或 Codex 账号凭据。"
+        description="系统检测到当前尚未配置或读取到 AntiGravity、Claude 或 Codex 账号凭据。先在 OAuth 登录池接入一个账号，这里就会出现额度与健康度。"
+        primary-action="前往 OAuth 登录池"
+        @primary="$router.push('/oauth')"
       />
     </TxCard>
-
-    <!-- 重置确认 Modal -->
-    <TxModal v-model="confirmModalOpen" title="确认重置额度" width="min(90vw, 440px)">
-      <div v-if="confirmingAccount" class="reset-confirm-body">
-        <p>将消耗 <strong>1 次</strong> 主动重置额度，重置账号「<strong>{{ confirmingAccount.email || confirmingAccount.name }}</strong>」的窗口配额。此操作不可逆，是否继续？</p>
-      </div>
-      <template #footer>
-        <TxButton variant="ghost" :disabled="resetting" @click="confirmModalOpen = false">取消</TxButton>
-        <TxButton variant="primary" :loading="resetting" @click="executeQuotaReset">确认重置</TxButton>
-      </template>
-    </TxModal>
   </div>
 </template>
 
@@ -265,31 +219,7 @@ async function executeQuotaReset() {
   flex-direction: column;
   gap: 16px;
   width: 100%;
-}
-.page-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-.page-head__text h1 {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--tx-text-color-primary, #151b45);
-}
-.page-head__text p {
-  margin: 4px 0 0;
-  color: var(--tx-text-color-secondary, #535b85);
-  font-size: 13.5px;
-}
-.eyebrow {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: var(--tx-color-primary, #3346c8);
-  margin-bottom: 2px;
+  min-width: 0;
 }
 .provider-groups-stack {
   display: flex;

@@ -7,67 +7,57 @@ import { TxButton } from '@talex-touch/tuffex/button'
 import { TxStatusBadge } from '@talex-touch/tuffex/status-badge'
 import { TxEmptyState } from '@talex-touch/tuffex/empty-state'
 import { TxSelect, TxSelectItem } from '@talex-touch/tuffex/select'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
 import { CLIENT_LABELS } from '../clientLabels'
 import { channelLabel } from '../channelLabels'
 import { api } from '../api'
+import { useQueryState } from '../lib/listState'
+import { useResource } from '../lib/resource'
+import { fmtClock, fmtCompact, fmtLatency, fmtPercent, fmtUsd } from '../lib/format'
 import type { ApiKeyItem, CacheTrendData, CacheTrendProvider, LiveUsageEvent } from '../types'
 
-const props = withDefaults(defineProps<{
-  trend?: CacheTrendData | null
-  hours?: number
-  model?: string
-  models?: string[]
-  client?: string
-  clients?: Array<{ type: string; label: string; requests: number }>
-  keys?: ApiKeyItem[]
-  keyId?: string
-  providers?: CacheTrendProvider[]
-  provider?: string
-}>(), {
-  trend: null,
-  hours: 24,
-  model: '',
-  models: () => [],
-  client: '',
-  clients: () => [],
-  keys: () => [],
-  keyId: '',
-  providers: () => [],
-  provider: '',
+/** 模型/客户端/渠道/时间范围全部进 URL：刷新与分享链接保持同一视图（红队 D13）。 */
+const scope = useQueryState({ hours: '24', model: '', client: '', keyId: '', provider: '' })
+const hours = computed(() => {
+  const value = Number(scope.state.hours)
+  return [1, 6, 24, 72, 168].includes(value) ? value : 24
 })
 
-const internalTrend = ref<CacheTrendData | null>(props.trend)
-const internalHours = ref(props.hours)
-const internalModel = ref(props.model)
-const internalModels = ref<string[]>(props.models)
-const internalClient = ref(props.client)
-const internalClients = ref(props.clients)
-const internalKeyId = ref(props.keyId)
-const internalKeys = ref(props.keys)
-const internalProvider = ref(props.provider)
-const internalProviders = ref(props.providers)
-const loading = ref(false)
+type BootstrapPayload = { keys?: ApiKeyItem[] }
+const keysRes = useResource(() => api.bootstrap<BootstrapPayload>(), [])
+
+const trendRes = useResource(
+  () =>
+    api.cacheTrend<CacheTrendData>(
+      hours.value,
+      scope.state.model,
+      scope.state.client,
+      scope.state.keyId,
+      scope.state.provider,
+    ),
+  [() => scope.state.hours, () => scope.state.model, () => scope.state.client, () => scope.state.keyId, () => scope.state.provider],
+)
+
+const error = computed(() => trendRes.error.value ?? keysRes.error.value)
+const reloadAll = () => Promise.all([trendRes.reload(), keysRes.reload()])
+
+const internalTrend = computed(() => trendRes.data.value)
+const internalModels = computed(() => internalTrend.value?.models ?? [])
+const internalClients = computed(() => internalTrend.value?.clients ?? [])
+const internalProviders = computed(() => internalTrend.value?.providers ?? [])
 
 const liveEvents = ref<LiveUsageEvent[]>([])
 const sseConnected = ref(false)
 let eventSource: EventSource | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
-const tokens = (value: number) => {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return value.toLocaleString('zh-CN')
-}
-
-const money = (value: number | null) => {
-  if (value === null) return 'n/a'
-  if (value === 0) return '$0'
-  if (value < 0.01) return `$${value.toFixed(5)}`
-  if (value < 1) return `$${value.toFixed(4)}`
-  return `$${value.toFixed(2)}`
-}
-
-const percent = (value: number | null) => (value === null ? 'n/a' : `${(value * 100).toFixed(1)}%`)
+/** 统一格式化：实现都在 src/lib/format.ts（红队 D16：同一数字不再有两个单位）。 */
+const tokens = fmtCompact
+const money = (value: number | null | undefined) => (value === null || value === undefined ? 'n/a' : fmtUsd(value))
+const percent = (value: number | null | undefined) => (value === null || value === undefined ? 'n/a' : fmtPercent(value))
+const clock = (iso: string) => fmtClock(iso)
 
 const hitToneColor = (rate: number | null) => {
   if (rate === null) return '#8a90b0'
@@ -76,66 +66,52 @@ const hitToneColor = (rate: number | null) => {
   return '#ef4444'
 }
 
-const clock = (iso: string) => {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime())
-    ? iso
-    : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-}
-
-async function loadTrend() {
-  loading.value = true
-  try {
-    const res = await api.cacheTrend<CacheTrendData>(
-      internalHours.value,
-      internalModel.value,
-      internalClient.value,
-      internalKeyId.value,
-      internalProvider.value,
-    )
-    internalTrend.value = res
-    if (res.models?.length) internalModels.value = res.models
-    if (res.clients?.length) internalClients.value = res.clients
-    if (res.providers?.length) internalProviders.value = res.providers
-  } catch {
-    // ignore
-  } finally {
-    loading.value = false
-  }
-}
-
 function setupSSE() {
   if (eventSource) {
     eventSource.close()
     eventSource = null
   }
   liveEvents.value = []
-  const url = api.cacheLiveUrl(60, internalModel.value, internalClient.value, internalKeyId.value, internalProvider.value)
+  const url = api.cacheLiveUrl(60, scope.state.model, scope.state.client, scope.state.keyId, scope.state.provider)
   eventSource = new EventSource(url)
-  eventSource.addEventListener('open', () => { sseConnected.value = true })
+  eventSource.addEventListener('open', () => {
+    sseConnected.value = true
+  })
   eventSource.addEventListener('history', (e) => {
     try {
       const rows = JSON.parse((e as MessageEvent).data) as LiveUsageEvent[]
       sseConnected.value = true
       liveEvents.value = rows.slice(-200).reverse()
-    } catch {}
+    } catch {
+      /* 单条事件解析失败不影响整体流 */
+    }
   })
   eventSource.addEventListener('usage', (e) => {
     try {
       const rows = JSON.parse((e as MessageEvent).data) as LiveUsageEvent[]
       liveEvents.value = [...rows.reverse(), ...liveEvents.value].slice(0, 200)
-    } catch {}
+    } catch {
+      /* 同上 */
+    }
   })
-  eventSource.addEventListener('error', () => { sseConnected.value = false })
+  // 断线不再无限静默：状态可见（「重连中」徽章）并自动重连一次（红队未验证项 8）。
+  eventSource.addEventListener('error', () => {
+    sseConnected.value = false
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = setTimeout(() => setupSSE(), 5000)
+  })
 }
 
-watch([internalModel, internalClient, internalKeyId, internalProvider], () => {
-  loadTrend()
-  setupSSE()
-})
+watch(
+  [() => scope.state.hours, () => scope.state.model, () => scope.state.client, () => scope.state.keyId, () => scope.state.provider],
+  () => setupSSE(),
+)
 
 onMounted(() => {
-  loadTrend()
   setupSSE()
 })
 
@@ -144,9 +120,14 @@ onUnmounted(() => {
     eventSource.close()
     eventSource = null
   }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
 })
 
 const points = computed(() => internalTrend.value?.points ?? [])
+
 const totalHitRate = computed(() => {
   if (!points.value.length) return null
   const cacheRead = points.value.reduce((s, p) => s + p.cacheReadTokens, 0)
@@ -189,49 +170,52 @@ const liveColumns = [
 
 <template>
   <div class="page-stack cache-page">
-    <section class="page-head">
-      <div class="page-head__text">
-        <p class="eyebrow">CACHE PERFORMANCE</p>
-        <h1>缓存命中率分析</h1>
-        <p>监控各时间段的提示词缓存命中率趋势，以及每一条在线请求的实际命中与花费明细。</p>
-      </div>
-      <div class="page-head__actions">
-        <TxSelect v-model="internalModel" placeholder="选择模型" class="w-160px">
+    <PageHeader
+      title="缓存命中率分析"
+      description="监控各时间段的提示词缓存命中率趋势，以及每一条在线请求的实际命中与花费明细；筛选条件写在地址栏里。"
+    >
+      <template #actions>
+        <TxSelect :model-value="scope.state.model" placeholder="选择模型" class="w-160px" @update:model-value="v => (scope.state.model = String(v))">
           <TxSelectItem value="" label="全部模型" />
           <TxSelectItem v-for="m in internalModels" :key="m" :value="m" :label="m" />
         </TxSelect>
-        <TxSelect v-model="internalClient" placeholder="选择客户端" class="w-140px">
+        <TxSelect :model-value="scope.state.client" placeholder="选择客户端" class="w-140px" @update:model-value="v => (scope.state.client = String(v))">
           <TxSelectItem value="" label="全部客户端" />
           <TxSelectItem v-for="c in internalClients" :key="c.type" :value="c.type" :label="`${c.label} (${tokens(c.requests)})`" />
         </TxSelect>
-        <TxSelect v-model="internalProvider" placeholder="选择渠道" class="w-130px">
+        <TxSelect :model-value="scope.state.provider" placeholder="选择渠道" class="w-130px" @update:model-value="v => (scope.state.provider = String(v))">
           <TxSelectItem value="" label="全部渠道" />
           <TxSelectItem v-for="p in internalProviders" :key="p.id" :value="p.id" :label="`${channelLabel(p.id)} (${tokens(p.requests)})`" />
         </TxSelect>
-        <TxSelect :model-value="String(internalHours)" placeholder="时间范围" class="w-130px" @update:model-value="v => { internalHours = Number(v); loadTrend() }">
+        <TxSelect :model-value="scope.state.hours" placeholder="时间范围" class="w-130px" @update:model-value="v => (scope.state.hours = String(v))">
           <TxSelectItem value="1" label="最近 1 小时" />
           <TxSelectItem value="6" label="最近 6 小时" />
           <TxSelectItem value="24" label="最近 24 小时" />
           <TxSelectItem value="72" label="最近 3 天" />
           <TxSelectItem value="168" label="最近 7 天" />
         </TxSelect>
-        <TxButton variant="secondary" :loading="loading" @click="loadTrend">
+        <TxButton variant="secondary" :loading="trendRes.loading.value" @click="reloadAll">
           刷新
         </TxButton>
-      </div>
-    </section>
+      </template>
+    </PageHeader>
 
+    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染 -->
+    <ErrorPanel v-if="error" :error="error" :retry="reloadAll" />
+    <LoadingBlock v-else-if="!internalTrend" :lines="7" label="正在读取缓存命中率" />
+
+    <template v-else>
     <!-- 顶部汇总指标卡 -->
     <div class="metric-row">
       <TxCard class="stat-box">
         <span class="stat-label">区间总命中率</span>
         <strong class="stat-value mono" :style="{ color: hitToneColor(totalHitRate) }">{{ percent(totalHitRate) }}</strong>
-        <small class="stat-sub">{{ totalRequests.toLocaleString('zh-CN') }} 次请求</small>
+        <small class="stat-sub">{{ fmtCompact(totalRequests) }} 次请求</small>
       </TxCard>
       <TxCard class="stat-box">
         <span class="stat-label">区间总成本</span>
         <strong class="stat-value mono">{{ money(totalCost) }}</strong>
-        <small class="stat-sub">最近 {{ internalHours }} 小时</small>
+        <small class="stat-sub">最近 {{ hours }} 小时</small>
       </TxCard>
       <TxCard class="stat-box">
         <span class="stat-label">实时流花费</span>
@@ -249,8 +233,8 @@ const liveColumns = [
         </div>
       </template>
 
-      <div class="chart-container">
-        <svg v-if="points.length > 1" viewBox="0 0 800 200" class="trend-svg" preserveAspectRatio="none">
+        <div class="chart-container">
+        <svg v-if="points.length > 1" viewBox="0 0 800 200" class="trend-svg" preserveAspectRatio="none" role="img" aria-label="缓存命中率趋势">
           <defs>
             <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#10b981" stop-opacity="0.35" />
@@ -263,7 +247,7 @@ const liveColumns = [
           <polyline :points="svgPoints" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <div v-else class="text-muted text-center py-8">
-          {{ loading ? '正在加载命中率数据...' : '当前区间暂无足够请求绘制折线' }}
+          当前区间请求不够，画不出折线；把时间范围调长一些。
         </div>
       </div>
     </TxCard>
@@ -325,17 +309,18 @@ const liveColumns = [
           <span class="mono text-xs font-semibold">{{ money(row.costUsd) }}</span>
         </template>
         <template #cell-latency="{ row }">
-          <span class="mono text-xs">{{ (row.latencyMs / 1000).toFixed(1) }}s</span>
+          <span class="mono text-xs">{{ fmtLatency(row.latencyMs) }}</span>
         </template>
         <template #empty>
           <TxEmptyState
-            title="等待请求接入..."
-            description="当客户端发送 API 调用时，事件将自动实时显示在上方表格中。"
+            title="等待请求接入…"
+            description="当客户端发送 API 调用时，事件会自动出现在这里；若长时间没有数据，请检查上游渠道是否在接流量。"
             size="small"
           />
         </template>
       </TxDataTable>
     </TxCard>
+    </template>
   </div>
 </template>
 

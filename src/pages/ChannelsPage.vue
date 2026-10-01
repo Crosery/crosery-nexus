@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, reactive, onMounted } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxDataTable } from '@talex-touch/tuffex/data-table'
 import type { DataTableColumn } from '@talex-touch/tuffex/data-table'
@@ -11,34 +12,42 @@ import { TxForm, TxFormItem } from '@talex-touch/tuffex/form'
 import { TxInput } from '@talex-touch/tuffex/input'
 import { TxSwitch } from '@talex-touch/tuffex/switch'
 import { TxAlert } from '@talex-touch/tuffex/alert'
+import { TxPagination } from '@talex-touch/tuffex/pagination'
 import { toast } from '@talex-touch/tuffex/utils'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
+import { confirm } from '../lib/confirm'
+import { focusInModal } from '../lib/focus'
+import { debounce, paginate, useQueryState } from '../lib/listState'
+import { useResource } from '../lib/resource'
 import type { ChannelItem, ChannelsData, DiscoveredModel } from '../types'
 
-const props = withDefaults(
-  defineProps<{
-    data?: ChannelsData | null
-    loading?: boolean
-  }>(),
-  {
-    data: null,
-    loading: false,
+const router = useRouter()
+const PAGE_SIZE = 20
+
+/** 搜索、状态筛选、页码进 URL（红队 D13）。 */
+const scope = useQueryState({ q: '', status: 'all', page: '1' })
+const filterTab = computed(() => scope.state.status)
+const searchInput = ref(scope.state.q)
+const applySearch = debounce(() => scope.patch({ q: searchInput.value.trim(), page: '1' }), 300)
+watch(searchInput, () => applySearch())
+watch(
+  () => scope.state.q,
+  (value) => {
+    if (value !== searchInput.value.trim()) searchInput.value = value
   },
 )
 
-const emit = defineEmits<{
-  (e: 'refresh'): void
-  (e: 'notify', msg: string): void
-  (e: 'open-oauth'): void
-}>()
-
-// State
-const internalData = ref<ChannelsData | null>(null)
-const internalLoading = ref(false)
-const filterTab = ref<'all' | 'enabled' | 'disabled'>('all')
-
-const effectiveData = computed(() => props.data ?? internalData.value)
-const channels = computed(() => effectiveData.value?.channels || [])
+/**
+ * 渠道列表读取：失败保留持久 error → ErrorPanel + 重试（红队 D2：原来只有会消失的 toast，
+ * 页面随后看起来像「一个渠道都没有」）。
+ */
+const res = useResource(() => api.channels<ChannelsData>(true), [])
+const channels = computed(() => res.data.value?.channels ?? [])
+const reloadChannels = () => res.reload()
 
 // Modal States
 const showCreateModal = ref(false)
@@ -47,6 +56,7 @@ const createError = ref('')
 const discovering = ref(false)
 const discoveredModels = ref<DiscoveredModel[]>([])
 const selectedModelIds = ref<Set<string>>(new Set())
+const baseUrlFieldRef = ref<{ focus?: () => void } | null>(null)
 
 // Channel Form
 const createForm = reactive({
@@ -60,28 +70,39 @@ const createForm = reactive({
 const showModelsModal = ref(false)
 const inspectingChannel = ref<ChannelItem | null>(null)
 
-// Delete Confirm
-const showDeleteConfirm = ref(false)
-const deletingChannel = ref<ChannelItem | null>(null)
-const deleting = ref(false)
-
-// Columns
+// Columns：只给 width，整表靠 --table-min 撑宽（红队 D4：minWidth + 固定 width 混用会在窄屏压成 0）
 const columns: DataTableColumn<ChannelItem>[] = [
-  { key: 'name', title: '渠道名称', minWidth: 160 },
-  { key: 'baseUrl', title: '服务端点 (Base URL)', minWidth: 260 },
-  { key: 'models', title: '模型列表', minWidth: 240 },
-  { key: 'enabled', title: '渠道开关', width: 120 },
+  { key: 'name', title: '渠道名称', width: 180 },
+  { key: 'baseUrl', title: '服务端点 (Base URL)', width: 320 },
+  { key: 'models', title: '模型列表', width: 320 },
+  { key: 'enabled', title: '渠道开关', width: 130 },
   { key: 'actions', title: '操作', width: 140, align: 'right' },
 ]
 
 // Filtered channels
 const filteredChannels = computed(() => {
+  const q = scope.state.q.trim().toLowerCase()
   return channels.value.filter((channel) => {
     if (filterTab.value === 'enabled' && !channel.enabled) return false
     if (filterTab.value === 'disabled' && channel.enabled) return false
+    if (q && !channel.name.toLowerCase().includes(q) && !channel.baseUrl.toLowerCase().includes(q)) return false
     return true
   })
 })
+
+const paged = computed(() => paginate(filteredChannels.value, Number(scope.state.page), PAGE_SIZE))
+watch(
+  () => paged.value.page,
+  (page) => {
+    if (String(page) !== scope.state.page) scope.state.page = String(page)
+  },
+)
+const hasFilter = computed(() => Boolean(scope.state.q.trim()) || scope.state.status !== 'all')
+
+function clearFilters() {
+  scope.patch({ q: '', status: 'all', page: '1' })
+  searchInput.value = ''
+}
 
 const filterOptions = computed(() => [
   { value: 'all', label: `全部渠道 (${channels.value.length})` },
@@ -89,20 +110,17 @@ const filterOptions = computed(() => [
   { value: 'disabled', label: `已停用 (${channels.value.filter((c) => !c.enabled).length})` },
 ])
 
-async function reloadChannels() {
-  internalLoading.value = true
-  try {
-    const res = await api.channels<ChannelsData>(true)
-    internalData.value = res
-    emit('refresh')
-  } catch (err) {
-    toast({ title: '加载渠道失败', description: err instanceof Error ? err.message : String(err), variant: 'danger' })
-  } finally {
-    internalLoading.value = false
-  }
-}
-
+/** 停用渠道会立刻影响线上流量，先确认；启用不需要（红队 D27）。 */
 async function handleToggleChannel(channel: ChannelItem) {
+  if (channel.enabled) {
+    const ok = await confirm({
+      title: `停用渠道 ${channel.name}`,
+      body: '停用后该渠道不再接流量，正在使用它的调用会立即失败，直到你重新启用。',
+      confirmText: '停用渠道',
+      danger: true,
+    })
+    if (!ok) return
+  }
   try {
     await api.setChannelEnabled(channel.name, !channel.enabled)
     toast({
@@ -139,31 +157,40 @@ function openInspectModels(channel: ChannelItem) {
   showModelsModal.value = true
 }
 
-function promptDeleteChannel(channel: ChannelItem) {
-  deletingChannel.value = channel
-  showDeleteConfirm.value = true
-}
-
-async function confirmDeleteChannel() {
-  if (!deletingChannel.value) return
-  deleting.value = true
+/** 删除渠道走全局 confirm()：单一确认框、不再各页手写一份。 */
+async function deleteChannel(channel: ChannelItem) {
+  const ok = await confirm({
+    title: `删除渠道 ${channel.name}`,
+    body: `该渠道下的 ${channel.models.length} 个模型映射会从目录中移除，使用这些模型的调用会失败，且无法恢复。`,
+    confirmText: '删除渠道',
+    danger: true,
+  })
+  if (!ok) return
   try {
-    await api.deleteChannel(deletingChannel.value.name)
-    toast({ title: '删除成功', description: `渠道“${deletingChannel.value.name}”已删除`, variant: 'success' })
-    showDeleteConfirm.value = false
+    await api.deleteChannel(channel.name)
+    toast({ title: '删除成功', description: `渠道“${channel.name}”已删除`, variant: 'success' })
     await reloadChannels()
   } catch (err) {
     toast({ title: '删除失败', description: err instanceof Error ? err.message : String(err), variant: 'danger' })
-  } finally {
-    deleting.value = false
   }
 }
 
+/** 批量剪枝 = 批量删除，必须先说清删除范围再执行（红队 D6）。 */
 async function handlePruneStale() {
+  const stale = channels.value.filter((channel) => channel.stale)
+  const ok = await confirm({
+    title: '清理失效残留渠道',
+    body: stale.length
+      ? `将删除 ${stale.length} 个已失效渠道：${stale.map((c) => c.name).join('、')}。删除后无法恢复。`
+      : '将请求删除所有已失效的残留渠道（来源已不存在）。删除后无法恢复。',
+    confirmText: '开始清理',
+    danger: true,
+  })
+  if (!ok) return
   try {
-    const res = await api.pruneStaleChannels()
-    if (res.removed?.length) {
-      toast({ title: '清理完成', description: `已清理 ${res.removed.length} 个失效残留渠道`, variant: 'success' })
+    const res2 = await api.pruneStaleChannels()
+    if (res2.removed?.length) {
+      toast({ title: '清理完成', description: `已清理 ${res2.removed.length} 个失效残留渠道`, variant: 'success' })
       await reloadChannels()
     } else {
       toast({ title: '无需清理', description: '当前无失效残留渠道', variant: 'info' })
@@ -182,6 +209,7 @@ function openCreateDialog() {
   selectedModelIds.value = new Set()
   createError.value = ''
   showCreateModal.value = true
+  void focusInModal(baseUrlFieldRef.value, '.tx-modal__overlay input')
 }
 
 async function discoverModels() {
@@ -254,56 +282,71 @@ async function submitCreateChannel() {
   }
 }
 
-onMounted(() => {
-  if (!props.data) {
-    void reloadChannels()
-  }
-})
 </script>
 
 <template>
   <div class="page">
     <!-- 头部横幅 -->
-    <header class="page-head">
-      <div class="page-head__text">
-        <div class="eyebrow-tag">CHANNEL MANAGEMENT</div>
-        <h1>渠道与服务网关</h1>
-        <p>配置上游兼容渠道、直连供应商与模型路由，支持协议自动转换与故障剔除。</p>
-      </div>
-      <div class="page-head__actions">
+    <PageHeader
+      title="渠道与服务网关"
+      description="配置上游兼容渠道、直连供应商与模型路由；搜索、筛选与页码写在地址栏里。"
+    >
+      <template #actions>
         <TxButton variant="secondary" icon="i-carbon-clean" @click="handlePruneStale">
           清理失效残留
         </TxButton>
-        <TxButton variant="secondary" icon="i-carbon-user-identification" @click="emit('open-oauth')">
+        <TxButton variant="secondary" icon="i-carbon-user-identification" @click="router.push('/oauth')">
           OAuth 登录池
         </TxButton>
         <TxButton variant="primary" icon="i-carbon-add" @click="openCreateDialog">
           添加渠道
         </TxButton>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
+    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->
+    <ErrorPanel v-if="res.error.value" :error="res.error.value" :retry="reloadChannels" />
+    <LoadingBlock v-else-if="!res.data.value" :lines="6" label="正在读取渠道列表" />
+
+    <template v-else>
     <!-- 过滤器与概览 -->
     <div class="channels-toolbar">
-      <TxFilterChips v-model="filterTab" :items="filterOptions" />
-      <span class="muted text-12">共配置 {{ channels.length }} 个渠道，提供 {{ channels.reduce((acc, c) => acc + c.models.length, 0) }} 个模型映射</span>
+      <TxFilterChips
+        :model-value="filterTab"
+        :items="filterOptions"
+        aria-label="按渠道状态过滤"
+        @update:model-value="scope.patch({ status: String($event), page: '1' })"
+      />
+      <div class="channels-search">
+        <TxInput
+          v-model="searchInput"
+          placeholder="搜索渠道名或 Base URL"
+          clearable
+          prefix-icon="i-carbon-search"
+          aria-label="搜索渠道"
+        />
+      </div>
+      <TxButton v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">清除筛选</TxButton>
+      <span class="muted text-12">
+        共 {{ channels.length }} 个渠道，提供 {{ channels.reduce((acc, c) => acc + c.models.length, 0) }} 个模型映射
+      </span>
     </div>
 
     <!-- 渠道表格 -->
-    <TxCard :padding="0">
+    <TxCard :padding="0" class="channels-table-card">
       <TxDataTable
         :columns="columns"
-        :data="filteredChannels"
+        :data="paged.rows"
         row-key="name"
-        table-layout="fixed"
         scroll-x
-        :loading="loading || internalLoading"
-        empty-text="暂无匹配渠道"
+        :style="{ '--table-min': '1080px' }"
+        :loading="res.loading.value"
+        aria-label="渠道列表"
       >
         <!-- 渠道名 -->
         <template #cell-name="{ row }: { row: ChannelItem }">
           <div class="channel-name-cell">
-            <span class="channel-indicator" :class="{ active: row.enabled }" />
+            <span class="channel-indicator" :class="{ active: row.enabled }" aria-hidden="true" />
             <div class="channel-name-text">
               <strong>{{ row.name }}</strong>
               <small v-if="row.stale" class="text-amber-600">已失效残留</small>
@@ -313,14 +356,19 @@ onMounted(() => {
 
         <!-- Base URL -->
         <template #cell-baseUrl="{ row }: { row: ChannelItem }">
-          <div class="base-url-cell">
+          <div class="base-url-cell" :title="row.baseUrl">
             <code class="mono text-12">{{ row.baseUrl }}</code>
           </div>
         </template>
 
-        <!-- 模型列表 -->
+        <!-- 模型列表：真按钮，键盘可达（原来是不可聚焦的 div 点击） -->
         <template #cell-models="{ row }: { row: ChannelItem }">
-          <div class="channel-models-preview" @click="openInspectModels(row)">
+          <button
+            type="button"
+            class="channel-models-preview"
+            :aria-label="`查看并开关 ${row.name} 的 ${row.models.length} 个模型`"
+            @click="openInspectModels(row)"
+          >
             <template v-if="row.models.length">
               <TxTag
                 v-for="model in row.models.slice(0, 3)"
@@ -333,38 +381,68 @@ onMounted(() => {
               <TxTag v-if="row.models.length > 3" size="sm" variant="plain" :label="`+${row.models.length - 3}`" />
             </template>
             <span v-else class="muted text-12">未映射模型</span>
-          </div>
+          </button>
         </template>
 
         <!-- 渠道开关 -->
         <template #cell-enabled="{ row }: { row: ChannelItem }">
           <TxSwitch
             :model-value="row.enabled"
+            :aria-label="`${row.enabled ? '停用' : '启用'}渠道 ${row.name}`"
             @update:model-value="() => handleToggleChannel(row)"
           />
         </template>
 
-        <!-- 操作栏 -->
+        <!-- 操作栏：图标按钮带 aria-label（红队 D11） -->
         <template #cell-actions="{ row }: { row: ChannelItem }">
           <div class="table-actions-row">
             <TxButton
               size="sm"
               variant="secondary"
               icon="i-carbon-list"
-              title="查看与开关模型"
+              :title="`查看与开关 ${row.name} 的模型`"
+              :aria-label="`查看与开关 ${row.name} 的模型`"
               @click="openInspectModels(row)"
             />
             <TxButton
               size="sm"
               variant="danger"
               icon="i-carbon-trash-can"
-              title="删除渠道"
-              @click="promptDeleteChannel(row)"
+              :title="`删除渠道 ${row.name}`"
+              :aria-label="`删除渠道 ${row.name}`"
+              @click="deleteChannel(row)"
             />
           </div>
         </template>
+
+        <template #empty>
+          <EmptyState
+            :variant="hasFilter ? 'search-empty' : 'empty'"
+            :title="hasFilter ? '没有匹配的渠道' : '还没有配置渠道'"
+            :description="
+              hasFilter
+                ? '换个关键词，或把状态筛选调回「全部渠道」。'
+                : '添加一个上游渠道后，模型才能被调用。'
+            "
+            :action-label="hasFilter ? '清除筛选' : '添加渠道'"
+            size="small"
+            @action="hasFilter ? clearFilters() : openCreateDialog()"
+          />
+        </template>
       </TxDataTable>
+
+      <div v-if="paged.totalPages > 1" class="channels-pager">
+        <TxPagination
+          :current-page="paged.page"
+          :page-size="paged.pageSize"
+          :total="paged.total"
+          show-info
+          aria-label="渠道列表分页"
+          @update:current-page="scope.state.page = String($event)"
+        />
+      </div>
     </TxCard>
+    </template>
 
     <!-- 添加渠道弹窗 -->
     <TxModal v-model="showCreateModal" title="添加新渠道" width="min(94vw, 680px)">
@@ -386,7 +464,12 @@ onMounted(() => {
 
         <TxFormItem label="Base URL" required>
           <div class="input-with-button">
-            <TxInput v-model="createForm.baseUrl" placeholder="https://api.example.com/v1" />
+            <TxInput
+              ref="baseUrlFieldRef"
+              v-model="createForm.baseUrl"
+              placeholder="https://api.example.com/v1"
+              aria-label="Base URL"
+            />
             <TxButton
               variant="secondary"
               icon="i-carbon-radar"
@@ -468,20 +551,6 @@ onMounted(() => {
         <TxButton variant="primary" block @click="showModelsModal = false">完成</TxButton>
       </template>
     </TxModal>
-
-    <!-- 删除渠道确认 -->
-    <TxModal v-model="showDeleteConfirm" title="删除渠道确认" width="440px">
-      <p>
-        确定要删除渠道 <strong>{{ deletingChannel?.name }}</strong> 吗？
-        该渠道下的所有模型将从中转站目录中移除。
-      </p>
-      <template #footer>
-        <div class="modal-footer-actions">
-          <TxButton variant="secondary" @click="showDeleteConfirm = false">取消</TxButton>
-          <TxButton variant="danger" :loading="deleting" @click="confirmDeleteChannel">确认删除</TxButton>
-        </div>
-      </template>
-    </TxModal>
   </div>
 </template>
 
@@ -490,9 +559,23 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   margin-bottom: 4px;
+}
+
+.channels-search {
+  width: min(260px, 60vw);
+}
+
+.channels-table-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.channels-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px;
 }
 
 .channel-name-cell {
@@ -520,11 +603,22 @@ onMounted(() => {
   font-size: 13.5px;
 }
 
+/* 模型列表入口是真正的按钮：键盘可达、有可见焦点环 */
 .channel-models-preview {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
+}
+.channel-models-preview:hover {
+  text-decoration: underline;
 }
 
 .table-actions-row {

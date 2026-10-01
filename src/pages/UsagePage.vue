@@ -1,81 +1,59 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxDataTable } from '@talex-touch/tuffex/data-table'
 import { TxButton } from '@talex-touch/tuffex/button'
-import { TxEmptyState } from '@talex-touch/tuffex/empty-state'
 import { TxSelect, TxSelectItem } from '@talex-touch/tuffex/select'
 import { TxAlert } from '@talex-touch/tuffex/alert'
+import { TxPagination } from '@talex-touch/tuffex/pagination'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
+import { paginate, useQueryState } from '../lib/listState'
+import { useResource } from '../lib/resource'
+import { fmtCompact, fmtPercent, fmtUsd } from '../lib/format'
 import type { ApiKeyItem, UsageDailyPoint, UsagePageData } from '../types'
 
-const props = withDefaults(defineProps<{
-  data?: UsagePageData | null
-  keys?: ApiKeyItem[]
-  days?: number
-  keyId?: string
-}>(), {
-  data: null,
-  keys: () => [],
-  days: 7,
-  keyId: '',
+const PAGE_SIZE = 15
+
+/** 统计周期与 Key 筛选进 URL：刷新/分享链接保持同一口径，改筛选立即重取。 */
+const scope = useQueryState({ days: '7', keyId: '', page: '1' })
+const days = computed(() => {
+  const value = Number(scope.state.days)
+  return [1, 7, 30, 90].includes(value) ? value : 7
 })
 
-const emit = defineEmits<{
-  (e: 'update:days', days: number): void
-  (e: 'update:keyId', keyId: string): void
-}>()
+const res = useResource(
+  () => api.usageOverview<UsagePageData>(days.value, scope.state.keyId),
+  [() => scope.state.days, () => scope.state.keyId],
+)
+const keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])
 
-const internalData = ref<UsagePageData | null>(props.data)
-const internalKeys = ref<ApiKeyItem[]>(props.keys)
-const internalDays = ref(props.days)
-const internalKeyId = ref(props.keyId)
-const loading = ref(false)
+const data = computed(() => res.data.value)
+const keys = computed(() => keysRes.data.value?.keys ?? [])
+const error = computed(() => res.error.value ?? keysRes.error.value)
+const showSkeleton = computed(() => !data.value && !error.value)
+const reloadAll = () => Promise.all([res.reload(), keysRes.reload()])
 
 const hoveredDay = ref<UsageDailyPoint | null>(null)
 
-const tokens = (value: number) => {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return value.toLocaleString('zh-CN')
-}
-
-const cost = (value: number | null) => (value === null ? 'n/a' : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`)
-const percent = (value: number | null) => (value === null ? 'n/a' : `${Math.round(value * 100)}%`)
+/** 统一格式化：实现都在 src/lib/format.ts，页面里只保留短名字，避免再散落一套 toFixed。 */
+const tokens = fmtCompact
+const cost = (value: number | null | undefined) => (value === null || value === undefined ? 'n/a' : fmtUsd(value))
+const percent = (value: number | null | undefined) => (value === null || value === undefined ? 'n/a' : fmtPercent(value, 0))
 
 const dayLabel = (day: string) => {
   const parsed = new Date(`${day}T12:00:00`)
   return Number.isNaN(parsed.getTime()) ? day : `${parsed.getMonth() + 1}月${parsed.getDate()}日`
 }
 
-async function loadUsage() {
-  loading.value = true
-  try {
-    const [usageRes, bootstrapRes] = await Promise.all([
-      api.usageOverview<UsagePageData>(internalDays.value, internalKeyId.value),
-      api.bootstrap().catch(() => null),
-    ])
-    internalData.value = usageRes
-    if (bootstrapRes?.keys) internalKeys.value = bootstrapRes.keys
-  } catch {
-    // ignore
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => {
-  if (!props.data) loadUsage()
-})
-
-const currentData = computed(() => props.data || internalData.value)
-
 const cards = computed(() => [
-  { label: 'Token 总数', value: tokens(currentData.value?.totalTokens || 0), meta: `${(currentData.value?.requests || 0).toLocaleString('zh-CN')} 次请求` },
-  { label: '预计成本', value: cost(currentData.value?.estimatedCostUsd ?? null), meta: currentData.value?.hasPartialCost ? '部分模型未定价' : '按模型单价估算' },
-  { label: '活跃天数', value: `${currentData.value?.activeDays || 0} 天`, meta: `共 ${currentData.value?.days || internalDays.value} 天区间` },
-  { label: '缓存占比', value: percent(currentData.value?.cacheShare ?? null), meta: `${tokens(currentData.value?.cacheTokens || 0)} 缓存 token` },
+  { label: 'Token 总数', value: tokens(data.value?.totalTokens || 0), meta: `${fmtCompact(data.value?.requests || 0)} 次请求` },
+  { label: '预计成本', value: cost(data.value?.estimatedCostUsd ?? null), meta: data.value?.hasPartialCost ? '部分模型未定价' : '按模型单价估算' },
+  { label: '活跃天数', value: `${data.value?.activeDays || 0} 天`, meta: `共 ${data.value?.days || days.value} 天区间` },
+  { label: '缓存占比', value: percent(data.value?.cacheShare ?? null), meta: `${tokens(data.value?.cacheTokens || 0)} 缓存 token` },
 ])
 
 const keyColumns = [
@@ -96,46 +74,56 @@ const modelColumns = [
   { key: 'cost', title: '估算成本', width: 130, align: 'right' as const },
 ]
 
-function handleDaysChange(val: string | number) {
-  const d = Number(val)
-  internalDays.value = d
-  emit('update:days', d)
-  loadUsage()
+const keySummaries = computed(() => data.value?.keySummaries ?? [])
+const models = computed(() => data.value?.models ?? [])
+const pagedKeys = computed(() => paginate(keySummaries.value, Number(scope.state.page), PAGE_SIZE))
+const pagedModels = computed(() => paginate(models.value, Number(scope.state.page), PAGE_SIZE))
+// 两张表共用 `page`：任意时刻只显示一张，翻页状态对得上当前视图。
+const activePaged = computed(() => (scope.state.keyId ? pagedModels.value : pagedKeys.value))
+watch(
+  () => activePaged.value.page,
+  (page) => {
+    if (String(page) !== scope.state.page) scope.state.page = String(page)
+  },
+)
+
+function setDays(val: string | number) {
+  scope.patch({ days: String(val), page: '1' })
 }
 
 function handleKeyChange(val: string | number) {
-  const k = String(val)
-  internalKeyId.value = k
-  emit('update:keyId', k)
-  loadUsage()
+  scope.patch({ keyId: String(val), page: '1' })
 }
 </script>
 
 <template>
   <div class="page-stack usage-page">
-    <section class="page-head">
-      <div class="page-head__text">
-        <p class="eyebrow">STATS &amp; USAGE</p>
-        <h1>统计和使用情况</h1>
-        <p>网关全渠道的 Token 消耗、成本估算与各上游用量分布，全维度量化成本与活跃度。</p>
-      </div>
-      <div class="page-head__actions">
-        <TxSelect :model-value="internalKeyId" placeholder="选择 API Key" class="w-180px" @update:model-value="handleKeyChange">
+    <PageHeader
+      title="统计和使用情况"
+      description="网关全渠道的 Token 消耗、成本估算与各上游用量分布；统计周期与 Key 筛选写在地址栏里，刷新和分享链接保持同一口径。"
+    >
+      <template #actions>
+        <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="handleKeyChange">
           <TxSelectItem value="" label="全部 API Key" />
-          <TxSelectItem v-for="k in (props.keys.length ? props.keys : internalKeys)" :key="k.id" :value="k.id" :label="k.name" />
+          <TxSelectItem v-for="k in keys" :key="k.id" :value="k.id" :label="k.name" />
         </TxSelect>
-        <TxSelect :model-value="String(internalDays)" placeholder="选择统计周期" class="w-130px" @update:model-value="handleDaysChange">
+        <TxSelect :model-value="scope.state.days" placeholder="选择统计周期" class="w-130px" @update:model-value="setDays">
           <TxSelectItem value="1" label="最近 24 小时" />
           <TxSelectItem value="7" label="最近 7 天" />
           <TxSelectItem value="30" label="最近 30 天" />
           <TxSelectItem value="90" label="最近 90 天" />
         </TxSelect>
-        <TxButton variant="secondary" :loading="loading" @click="loadUsage">
+        <TxButton variant="secondary" :loading="res.loading.value" @click="reloadAll">
           刷新
         </TxButton>
-      </div>
-    </section>
+      </template>
+    </PageHeader>
 
+    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->
+    <ErrorPanel v-if="error" :error="error" :retry="reloadAll" />
+    <LoadingBlock v-else-if="showSkeleton" :lines="8" label="正在读取用量统计" />
+
+    <template v-else>
     <!-- 汇总指标卡 -->
     <div class="metric-row">
       <TxCard v-for="c in cards" :key="c.label" class="stat-box">
@@ -145,7 +133,7 @@ function handleKeyChange(val: string | number) {
       </TxCard>
     </div>
 
-    <TxAlert v-if="currentData?.hasPartialCost" type="info" :closable="false">
+    <TxAlert v-if="data?.hasPartialCost" type="info" :closable="false">
       当前周期内部分模型暂无官方定价，未计入预计成本估算。
     </TxAlert>
 
@@ -155,13 +143,13 @@ function handleKeyChange(val: string | number) {
         <template #header>
           <div class="card-head">
             <strong>每日调用强度</strong>
-            <span v-if="currentData?.bestDay" class="count">最高调用: {{ dayLabel(currentData.bestDay.day) }} ({{ tokens(currentData.bestDay.totalTokens) }})</span>
+            <span v-if="data?.bestDay" class="count">最高调用: {{ dayLabel(data.bestDay.day) }} ({{ tokens(data.bestDay.totalTokens) }})</span>
           </div>
         </template>
         <div class="heatmap-container">
           <div class="heatmap-grid" @mouseleave="hoveredDay = null">
             <div
-              v-for="p in (currentData?.daily || [])"
+              v-for="p in (data?.daily || [])"
               :key="p.day"
               class="heat-dot"
               :class="[`level-${p.intensity}`, { active: hoveredDay?.day === p.day }]"
@@ -180,41 +168,42 @@ function handleKeyChange(val: string | number) {
         <template #header>
           <div class="card-head">
             <strong>Token 构成分布</strong>
-            <span v-if="currentData?.reasoningTokens" class="count">{{ tokens(currentData.reasoningTokens) }} 推理 Token</span>
+            <span v-if="data?.reasoningTokens" class="count">{{ tokens(data.reasoningTokens) }} 推理 Token</span>
           </div>
         </template>
         <div class="token-mix-box">
           <div class="mix-progress">
-            <span class="mix-bar input-bar" :style="{ width: `${currentData?.totalTokens ? (currentData.newInputTokens / currentData.totalTokens) * 100 : 0}%` }" title="新输入" />
-            <span class="mix-bar output-bar" :style="{ width: `${currentData?.totalTokens ? (currentData.outputTokens / currentData.totalTokens) * 100 : 0}%` }" title="输出" />
-            <span class="mix-bar cache-bar" :style="{ width: `${currentData?.totalTokens ? (currentData.cacheTokens / currentData.totalTokens) * 100 : 0}%` }" title="缓存读" />
+            <span class="mix-bar input-bar" :style="{ width: `${data?.totalTokens ? (data.newInputTokens / data.totalTokens) * 100 : 0}%` }" title="新输入" />
+            <span class="mix-bar output-bar" :style="{ width: `${data?.totalTokens ? (data.outputTokens / data.totalTokens) * 100 : 0}%` }" title="输出" />
+            <span class="mix-bar cache-bar" :style="{ width: `${data?.totalTokens ? (data.cacheTokens / data.totalTokens) * 100 : 0}%` }" title="缓存读" />
           </div>
           <div class="mix-legend-grid">
-            <div class="legend-item"><span class="legend-dot input-dot" />新输入: {{ tokens(currentData?.newInputTokens || 0) }}</div>
-            <div class="legend-item"><span class="legend-dot output-dot" />输出: {{ tokens(currentData?.outputTokens || 0) }}</div>
-            <div class="legend-item"><span class="legend-dot cache-dot" />缓存读: {{ tokens(currentData?.cacheTokens || 0) }}</div>
-            <div class="legend-item"><span class="legend-dot cache-write-dot" />缓存写: {{ tokens(currentData?.cacheWriteTokens || 0) }}</div>
+            <div class="legend-item"><span class="legend-dot input-dot" />新输入: {{ tokens(data?.newInputTokens || 0) }}</div>
+            <div class="legend-item"><span class="legend-dot output-dot" />输出: {{ tokens(data?.outputTokens || 0) }}</div>
+            <div class="legend-item"><span class="legend-dot cache-dot" />缓存读: {{ tokens(data?.cacheTokens || 0) }}</div>
+            <div class="legend-item"><span class="legend-dot cache-write-dot" />缓存写: {{ tokens(data?.cacheWriteTokens || 0) }}</div>
           </div>
         </div>
       </TxCard>
     </div>
 
     <!-- 按 API Key 汇总表格 -->
-    <TxCard v-if="!internalKeyId" :padding="16">
+    <TxCard v-if="!scope.state.keyId" :padding="16">
       <template #header>
         <div class="card-head">
           <strong>按 API Key 统计</strong>
-          <span class="count">{{ currentData?.keySummaries?.length || 0 }} 把 Key</span>
+          <span class="count">{{ keySummaries.length }} 把 Key</span>
         </div>
       </template>
 
       <TxDataTable
         :columns="keyColumns"
-        :data="currentData?.keySummaries || []"
+        :data="pagedKeys.rows"
         row-key="id"
         striped
         bordered
-        :loading="loading"
+        scroll-x
+        :loading="res.loading.value"
       >
         <template #cell-name="{ row }">
           <button type="button" class="key-link-btn" @click="handleKeyChange(row.id)">
@@ -222,7 +211,7 @@ function handleKeyChange(val: string | number) {
           </button>
         </template>
         <template #cell-requests="{ row }">
-          <span class="mono">{{ row.totals.requests.toLocaleString('zh-CN') }}</span>
+          <span class="mono">{{ fmtCompact(row.totals.requests) }}</span>
         </template>
         <template #cell-input="{ row }">
           <span class="mono">{{ tokens(row.totals.newInputTokens) }}</span>
@@ -237,9 +226,26 @@ function handleKeyChange(val: string | number) {
           <span class="mono font-semibold">{{ cost(row.totals.totalCostUsd) }}</span>
         </template>
         <template #empty>
-          <TxEmptyState title="当前周期没有 API Key 用量" description="请选择更长的统计周期或切换筛选条件" size="small" />
+          <EmptyState
+            title="当前周期没有 API Key 用量"
+            description="换个更长的统计周期，或选择具体 Key 查看模型明细。"
+            action-label="看最近 30 天"
+            size="small"
+            @action="setDays(30)"
+          />
         </template>
       </TxDataTable>
+
+      <div v-if="pagedKeys.totalPages > 1" class="usage-pager">
+        <TxPagination
+          :current-page="pagedKeys.page"
+          :page-size="pagedKeys.pageSize"
+          :total="pagedKeys.total"
+          show-info
+          aria-label="按 API Key 统计分页"
+          @update:current-page="scope.state.page = String($event)"
+        />
+      </div>
     </TxCard>
 
     <!-- 选中单 Key 时的模型明细表格 -->
@@ -253,11 +259,12 @@ function handleKeyChange(val: string | number) {
 
       <TxDataTable
         :columns="modelColumns"
-        :data="currentData?.models || []"
+        :data="pagedModels.rows"
         row-key="model"
         striped
         bordered
-        :loading="loading"
+        scroll-x
+        :loading="res.loading.value"
       >
         <template #cell-model="{ row }">
           <strong class="mono">{{ row.model }}</strong>
@@ -266,7 +273,7 @@ function handleKeyChange(val: string | number) {
           <span>{{ row.provider }}</span>
         </template>
         <template #cell-requests="{ row }">
-          <span class="mono">{{ row.requests.toLocaleString('zh-CN') }}</span>
+          <span class="mono">{{ fmtCompact(row.requests) }}</span>
         </template>
         <template #cell-input="{ row }">
           <span class="mono">{{ tokens(row.newInputTokens) }}</span>
@@ -278,10 +285,28 @@ function handleKeyChange(val: string | number) {
           <span class="mono font-semibold">{{ cost(row.costUsd ?? null) }}</span>
         </template>
         <template #empty>
-          <TxEmptyState title="该 Key 在当前周期内暂无调用记录" size="small" />
+          <EmptyState
+            title="该 Key 在当前周期内暂无调用记录"
+            description="换一个统计周期，或回到全部 Key 的汇总。"
+            action-label="查看全部 Key"
+            size="small"
+            @action="handleKeyChange('')"
+          />
         </template>
       </TxDataTable>
+
+      <div v-if="pagedModels.totalPages > 1" class="usage-pager">
+        <TxPagination
+          :current-page="pagedModels.page"
+          :page-size="pagedModels.pageSize"
+          :total="pagedModels.total"
+          show-info
+          aria-label="模型明细分页"
+          @update:current-page="scope.state.page = String($event)"
+        />
+      </div>
     </TxCard>
+    </template>
   </div>
 </template>
 

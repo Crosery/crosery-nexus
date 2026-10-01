@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { api } from '../api'
-import type { VersionsData } from '../types'
+import type { RtkPlaneId, RtkPlaneState, RTKStatusResponse, VersionsData } from '../types'
 
 const props = defineProps<{
   initialVersions?: VersionsData
@@ -22,6 +23,46 @@ const checkError = ref('')
 const versions = ref<VersionsData | undefined>(props.initialVersions)
 const popoverRef = ref<HTMLElement | null>(null)
 const triggerRef = ref<HTMLElement | null>(null)
+const router = useRouter()
+
+/** RTK 三个平面的真实状态；失败时如实显示「状态未知 + 重试」，不降级成听起来像成功的话术。 */
+const rtk = ref<RTKStatusResponse | null>(null)
+const rtkLoading = ref(false)
+const rtkError = ref('')
+const PLANE_LABEL: Record<RtkPlaneId, string> = { kernel: '内核', relay: '中转站', local: '本机' }
+const PLANE_STATE_TEXT: Record<RtkPlaneState, string> = {
+  available: '可用',
+  not_configured: '未配置',
+  unreachable: '连不上',
+  unauthorized: '未授权',
+  not_supported: '未接通',
+}
+
+const rtkPlanes = computed(() => rtk.value?.planes ?? [])
+const planeText = (state: RtkPlaneState) => PLANE_STATE_TEXT[state] ?? state
+
+async function loadRtk() {
+  rtkLoading.value = true
+  rtkError.value = ''
+  try {
+    rtk.value = await api.getRTKStatus()
+  } catch (err) {
+    rtk.value = null
+    rtkError.value = err instanceof Error ? err.message : '读取失败'
+  } finally {
+    rtkLoading.value = false
+  }
+}
+
+/** RTK 状态只在浮层打开时读一次，避免每页冷启动都多打一个请求。 */
+watch(open, (visible) => {
+  if (visible && !rtk.value && !rtkLoading.value) void loadRtk()
+})
+
+function openRtkPage() {
+  open.value = false
+  void router.push('/rtk')
+}
 
 const cpa = computed(() => versions.value?.cpa)
 const consoleVer = computed(() => versions.value?.console)
@@ -85,8 +126,10 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 function handleEscape(event: KeyboardEvent) {
-  if (event.key === 'Escape') {
+  if (event.key === 'Escape' && open.value) {
     open.value = false
+    // 键盘关闭后焦点回到触发按钮，不留在已卸载的浮层里。
+    triggerRef.value?.focus()
   }
 }
 
@@ -112,6 +155,8 @@ onUnmounted(() => {
       class="version-widget-trigger"
       :class="{ 'has-update': hasUpdate }"
       :aria-expanded="open"
+      aria-haspopup="dialog"
+      aria-label="查看系统与网关版本"
       @click="open = !open"
     >
       <span class="version-trigger-tag">
@@ -174,15 +219,35 @@ onUnmounted(() => {
               <span>OAuth 适配</span>
               <TxTag type="success" size="sm">已适配接入</TxTag>
             </div>
+            <!--
+              RTK 状态以 /api/rtk/status 的 planes 为真源（Lead/blue-rtk T12）：
+              原来读 `cpa.rtk.connected`，而那个值来自「本机装了 rtk 二进制」，
+              于是把「本机装了」显示成「已接通」——中转站侧其实没有 RTK 路由（404）。
+            -->
             <div class="prop-row">
-              <span>RTK 适配</span>
-              <TxTag type="success" size="sm">
-                {{ cpa?.rtk?.connected ? `已接通 (v${cpa.rtk.version})` : '已适配接入' }}
-              </TxTag>
+              <span>RTK 状态</span>
+              <span v-if="rtkLoading" class="rtk-note">读取中…</span>
+              <span v-else-if="rtkError" class="rtk-note" role="status">
+                状态未知（{{ rtkError }}） ·
+                <button type="button" class="link-btn" @click="loadRtk">重试</button>
+              </span>
+              <span v-else class="rtk-planes">
+                <TxTag
+                  v-for="plane in rtkPlanes"
+                  :key="plane.id"
+                  :type="plane.state === 'available' ? 'success' : 'info'"
+                  size="sm"
+                  :title="plane.reason"
+                >
+                  {{ PLANE_LABEL[plane.id] ?? plane.id }}：
+                  {{ plane.state === 'available' ? `可用${plane.version ? ` (v${plane.version})` : ''}` : planeText(plane.state) }}
+                </TxTag>
+                <button type="button" class="link-btn" @click="openRtkPage">RTK 优化面板</button>
+              </span>
             </div>
-            <div v-if="cpa?.rtk?.gain && cpa.rtk.gain.commands > 0" class="prop-row">
-              <span>RTK Token 节省</span>
-              <strong>节省 {{ cpa.rtk.gain.pct.toFixed(1) }}% ({{ cpa.rtk.gain.saved.toLocaleString() }} tokens)</strong>
+            <div v-if="rtk?.gain && rtk.gain.commands > 0" class="prop-row">
+              <span>本机 RTK Token 节省</span>
+              <strong>节省 {{ rtk.gain.pct.toFixed(1) }}% ({{ rtk.gain.saved.toLocaleString() }} tokens)</strong>
             </div>
           </div>
 
@@ -260,6 +325,31 @@ onUnmounted(() => {
 
 .version-widget-trigger.has-update {
   border-color: var(--tx-color-warning);
+}
+
+.rtk-planes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.rtk-note {
+  color: var(--tx-text-color-secondary);
+  font-size: 12px;
+  text-align: right;
+}
+
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tx-color-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .version-trigger-tag {

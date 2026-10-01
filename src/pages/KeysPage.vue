@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, reactive, onMounted } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
 import { TxDataTable } from '@talex-touch/tuffex/data-table'
 import type { DataTableColumn } from '@talex-touch/tuffex/data-table'
@@ -12,46 +12,69 @@ import { TxInput } from '@talex-touch/tuffex/input'
 import { TxTextarea } from '@talex-touch/tuffex/textarea'
 import { TxSwitch } from '@talex-touch/tuffex/switch'
 import { TxAlert } from '@talex-touch/tuffex/alert'
+import { TxPagination } from '@talex-touch/tuffex/pagination'
 import { toast } from '@talex-touch/tuffex/utils'
+import PageHeader from '../components/PageHeader.vue'
+import ErrorPanel from '../components/ErrorPanel.vue'
+import LoadingBlock from '../components/LoadingBlock.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { api } from '../api'
-import type { ApiKeyItem, GatewayModelAccess, Group, QuotaWindowState } from '../types'
+import { confirm } from '../lib/confirm'
+import { focusInModal } from '../lib/focus'
+import { debounce, paginate, useQueryState } from '../lib/listState'
+import { useResource } from '../lib/resource'
+import { fmtClock, fmtUsd } from '../lib/format'
+import type { ApiKeyItem, GatewayModelAccess, Group } from '../types'
 
-const props = withDefaults(
-  defineProps<{
-    keys?: ApiKeyItem[]
-    groups?: Group[]
-    quotaTimeZone?: string
-    gatewayModelAccess?: GatewayModelAccess
-  }>(),
-  {
-    keys: () => [],
-    groups: () => [],
-    quotaTimeZone: 'UTC',
-    gatewayModelAccess: 'available',
+const PAGE_SIZE = 20
+
+/**
+ * 搜索词、状态筛选、页码写进 URL（TUF `pages/Applications.vue:31-33,44-48` 的形状）：
+ * 刷新不丢筛选、链接可分享、后退回到上一视图。输入框用本地 draft，300ms 后才写 URL。
+ */
+const scope = useQueryState({ q: '', status: 'all', page: '1' })
+const statusFilter = computed(() => scope.state.status)
+const searchInput = ref(scope.state.q)
+const applySearch = debounce(() => scope.patch({ q: searchInput.value.trim(), page: '1' }), 300)
+watch(searchInput, () => applySearch())
+watch(
+  () => scope.state.q,
+  (value) => {
+    if (value !== searchInput.value.trim()) searchInput.value = value
   },
 )
 
-const emit = defineEmits<{
-  (e: 'refresh'): void
-  (e: 'select-key', key: ApiKeyItem): void
-  (e: 'notify', msg: string): void
-}>()
+type BootstrapPayload = {
+  keys?: ApiKeyItem[]
+  groups?: Group[]
+  quotaTimeZone?: string
+  degraded?: boolean
+  degradedReason?: string
+  gatewayModelAccess?: GatewayModelAccess
+}
 
-// State
-const internalKeys = ref<ApiKeyItem[]>([])
-const internalGroups = ref<Group[]>([])
-const searchQuery = ref('')
-const statusFilter = ref<'all' | 'enabled' | 'disabled' | 'blocked'>('all')
-const loading = ref(false)
-
-const effectiveKeys = computed(() => (props.keys?.length ? props.keys : internalKeys.value))
-const effectiveGroups = computed(() => (props.groups?.length ? props.groups : internalGroups.value))
+/**
+ * 一次读取密钥、分组与运行环境标记。失败时保留持久 `error`（红队 D2：原来只有一条 7 秒后消失的 toast，
+ * 页面随后和「本来就没有 Key」无法区分），由 ErrorPanel 给出原因与重试。
+ */
+const res = useResource(() => api.bootstrap<BootstrapPayload>(), [])
+const keys = computed(() => res.data.value?.keys ?? [])
+const groups = computed(() => res.data.value?.groups ?? [])
+/** 服务端时区来自接口本身，不再用写死的 `'UTC'` 冒充事实（红队 D14）。 */
+const quotaTimeZone = computed(() => res.data.value?.quotaTimeZone || 'Asia/Shanghai')
+const gatewayModelAccess = computed<GatewayModelAccess>(() => res.data.value?.gatewayModelAccess ?? 'available')
+const degradedReason = computed(() =>
+  res.data.value?.degraded ? res.data.value?.degradedReason || '控制面部分数据读取失败，页面沿用上次成功结果。' : '',
+)
+const reloadData = () => res.reload()
 
 // Modal States
 const showEditorModal = ref(false)
 const editingItem = ref<ApiKeyItem | null>(null)
 const editorSaving = ref(false)
 const editorError = ref('')
+/** 弹窗打开后把焦点放进第一个输入框（红队 D9：原来焦点停在遮罩上）。 */
+const nameFieldRef = ref<{ focus?: () => void } | null>(null)
 
 // Quota Modal
 const showQuotaModal = ref(false)
@@ -60,14 +83,12 @@ const quotaSaving = ref(false)
 const quotaError = ref('')
 const quotaUnlimited = ref(false)
 const quotaValues = reactive({ total: '', daily: '', weekly: '' })
+const quotaFieldRef = ref<{ focus?: () => void } | null>(null)
 
 // Reveal Modal
 const showRevealModal = ref(false)
 const newlyCreatedKey = ref('')
-
-// Delete confirm
-const showDeleteConfirm = ref(false)
-const deleting = ref(false)
+const revealCopying = ref(false)
 
 // Editor Form
 const editorForm = reactive({
@@ -80,25 +101,30 @@ const editorForm = reactive({
   groupConcurrency: {} as Record<string, number>,
 })
 
+async function focusField(target: typeof nameFieldRef) {
+  // 遮罩的自动 focus 排在挂载后的 nextTick，必须排在它之后（见 src/lib/focus.ts）。
+  await focusInModal(target.value, '.tx-modal__overlay input')
+}
+
 // Filter Chips
 const filterOptions = computed(() => [
-  { value: 'all', label: `全部密钥 (${effectiveKeys.value.length})` },
-  { value: 'enabled', label: `已启用 (${effectiveKeys.value.filter((k) => k.enabled && !k.blockedReason).length})` },
-  { value: 'disabled', label: `已停用 (${effectiveKeys.value.filter((k) => !k.enabled).length})` },
-  { value: 'blocked', label: `超额停用 (${effectiveKeys.value.filter((k) => Boolean(k.blockedReason)).length})` },
+  { value: 'all', label: `全部密钥 (${keys.value.length})` },
+  { value: 'enabled', label: `已启用 (${keys.value.filter((k) => k.enabled && !k.blockedReason).length})` },
+  { value: 'disabled', label: `已停用 (${keys.value.filter((k) => !k.enabled).length})` },
+  { value: 'blocked', label: `超额停用 (${keys.value.filter((k) => Boolean(k.blockedReason)).length})` },
 ])
 
 // Filtered data
 const filteredKeys = computed(() => {
-  return effectiveKeys.value.filter((key) => {
+  return keys.value.filter((key) => {
     // Status filter
     if (statusFilter.value === 'enabled' && (!key.enabled || key.blockedReason)) return false
     if (statusFilter.value === 'disabled' && key.enabled) return false
     if (statusFilter.value === 'blocked' && !key.blockedReason) return false
 
     // Search query
-    if (searchQuery.value.trim()) {
-      const q = searchQuery.value.trim().toLowerCase()
+    const q = scope.state.q.trim().toLowerCase()
+    if (q) {
       const match =
         key.name.toLowerCase().includes(q) ||
         key.maskedKey.toLowerCase().includes(q) ||
@@ -109,43 +135,34 @@ const filteredKeys = computed(() => {
   })
 })
 
-// Columns
+const paged = computed(() => paginate(filteredKeys.value, Number(scope.state.page), PAGE_SIZE))
+// 数据变少时页码夹回范围内，避免停在空白页。
+watch(
+  () => paged.value.page,
+  (page) => {
+    if (String(page) !== scope.state.page) scope.state.page = String(page)
+  },
+)
+const hasFilter = computed(() => Boolean(scope.state.q.trim()) || scope.state.status !== 'all')
+
+function clearFilters() {
+  scope.patch({ q: '', status: 'all', page: '1' })
+  searchInput.value = ''
+}
+
+// Columns：单列只给 width，主列靠整表 --table-min 撑宽（红队 D4：多列 minWidth + 固定 width 混用，
+// 在 table-layout:fixed 下会把 minWidth 列压成 0，窄屏文字重叠）。
 const columns: DataTableColumn<ApiKeyItem>[] = [
-  { key: 'name', title: '名称与标识', minWidth: 200 },
-  { key: 'groups', title: '授权渠道分组', minWidth: 220 },
+  { key: 'name', title: '名称与标识', width: 260 },
+  { key: 'groups', title: '授权渠道分组', width: 220 },
   { key: 'concurrency', title: '并发控制', width: 120 },
-  { key: 'quota', title: '额度消费进度', minWidth: 220 },
-  { key: 'lastUsedAt', title: '最近调用', width: 140 },
-  { key: 'status', title: '状态', width: 100 },
-  { key: 'actions', title: '操作', width: 160, align: 'right' },
+  { key: 'quota', title: '额度消费进度', width: 220 },
+  { key: 'lastUsedAt', title: '最近调用', width: 150 },
+  { key: 'status', title: '状态', width: 110 },
+  { key: 'actions', title: '操作', width: 200, align: 'right' },
 ]
 
-// Quota Helper
-function formatResets(resetsAt: string | null) {
-  if (!resetsAt) return '手动重置'
-  return new Date(resetsAt).toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 // Actions
-async function reloadData() {
-  loading.value = true
-  try {
-    const data = await api.bootstrap<{ keys: ApiKeyItem[]; groups: Group[] }>()
-    if (data?.keys) internalKeys.value = data.keys
-    if (data?.groups) internalGroups.value = data.groups
-    emit('refresh')
-  } catch (err) {
-    toast({ title: '加载密钥失败', description: err instanceof Error ? err.message : String(err), variant: 'danger' })
-  } finally {
-    loading.value = false
-  }
-}
-
 async function copyKey(key: ApiKeyItem) {
   try {
     const { token } = await api.createRevealToken(key.id)
@@ -176,12 +193,13 @@ function openCreateModal() {
   editorForm.name = ''
   editorForm.note = ''
   editorForm.enabled = true
-  editorForm.groups = effectiveGroups.value.map((g) => g.id)
+  editorForm.groups = groups.value.map((g) => g.id)
   editorForm.unlimited = false
   editorForm.totalConcurrency = 4
-  editorForm.groupConcurrency = Object.fromEntries(effectiveGroups.value.map((g) => [g.id, 2]))
+  editorForm.groupConcurrency = Object.fromEntries(groups.value.map((g) => [g.id, 2]))
   editorError.value = ''
   showEditorModal.value = true
+  void focusField(nameFieldRef)
 }
 
 function openEditModal(key: ApiKeyItem) {
@@ -195,6 +213,7 @@ function openEditModal(key: ApiKeyItem) {
   editorForm.groupConcurrency = { ...(key.groupConcurrency || {}) }
   editorError.value = ''
   showEditorModal.value = true
+  void focusField(nameFieldRef)
 }
 
 function toggleGroupSelection(groupId: string) {
@@ -246,19 +265,22 @@ async function saveKeyEditor() {
   }
 }
 
-async function confirmDeleteKey() {
-  if (!editingItem.value) return
-  deleting.value = true
+/** 删除走全局 confirm()（红队 D5/D8）：不再把确认框叠在编辑弹窗之上，也不再从编辑弹窗里发起。 */
+async function deleteKey(key: ApiKeyItem) {
+  const ok = await confirm({
+    title: '删除密钥',
+    body: `“${key.name}”将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。`,
+    confirmText: '删除密钥',
+    danger: true,
+  })
+  if (!ok) return
   try {
-    await api.deleteKey(editingItem.value.id)
-    toast({ title: '删除成功', description: `密钥“${editingItem.value.name}”已彻底移除`, variant: 'success' })
-    showDeleteConfirm.value = false
-    showEditorModal.value = false
+    await api.deleteKey(key.id)
+    toast({ title: '删除成功', description: `密钥“${key.name}”已彻底移除`, variant: 'success' })
+    if (editingItem.value?.id === key.id) showEditorModal.value = false
     await reloadData()
   } catch (err) {
     toast({ title: '删除失败', description: err instanceof Error ? err.message : String(err), variant: 'danger' })
-  } finally {
-    deleting.value = false
   }
 }
 
@@ -271,6 +293,7 @@ function openQuotaModal(key: ApiKeyItem) {
   quotaValues.weekly = key.quota.weeklyUsd ? String(key.quota.weeklyUsd) : ''
   quotaError.value = ''
   showQuotaModal.value = true
+  void focusField(quotaFieldRef)
 }
 
 async function saveQuota() {
@@ -293,99 +316,138 @@ async function saveQuota() {
   }
 }
 
+const RESET_LABEL = { daily: '今日', weekly: '本周', total: '总计' } as const
+
+/** 三种重置都是不可逆写操作，统一先 await confirm()（红队 D5：原来三键单击即执行，含累计总额）。 */
 async function handleResetQuota(window: 'total' | 'daily' | 'weekly') {
-  if (!quotaTarget.value) return
+  const target = quotaTarget.value
+  if (!target) return
+  const spent = target.quotaState[window].spentUsd
+  const ok = await confirm({
+    title: `重置${RESET_LABEL[window]}用量`,
+    body:
+      window === 'total'
+        ? `“${target.name}”的累计已用额度（${fmtUsd(spent)}）将归零。这是密钥因超额停用后唯一的恢复手段，且不可撤销。`
+        : `“${target.name}”的${RESET_LABEL[window]}已用额度（${fmtUsd(spent)}）将归零，操作不可撤销。`,
+    confirmText: `重置${RESET_LABEL[window]}`,
+    danger: true,
+  })
+  if (!ok) return
   try {
-    await api.resetQuota(quotaTarget.value.id, window)
+    await api.resetQuota(target.id, window)
     toast({ title: '重置完成', description: `已重置 ${window} 额度消耗记录`, variant: 'success' })
     await reloadData()
-    // Update local preview
-    if (quotaTarget.value) {
-      quotaTarget.value.quotaState[window].spentUsd = 0
-    }
+    target.quotaState[window].spentUsd = 0
   } catch (err) {
     toast({ title: '重置失败', description: err instanceof Error ? err.message : String(err), variant: 'danger' })
   }
 }
 
-onMounted(() => {
-  if (!props.keys?.length) {
-    void reloadData()
+/** 一次性密钥的复制：失败时留在弹窗里给出原因，不让「唯一出口」把用户困住（红队 D23）。 */
+async function copyNewKey() {
+  revealCopying.value = true
+  try {
+    await navigator.clipboard.writeText(newlyCreatedKey.value)
+    toast({ title: '已复制', variant: 'success' })
+    showRevealModal.value = false
+  } catch (err) {
+    toast({
+      title: '复制失败',
+      description: `请手动选中上面的密钥复制后关闭。${err instanceof Error ? err.message : ''}`.trim(),
+      variant: 'danger',
+    })
+  } finally {
+    revealCopying.value = false
   }
-})
+}
 </script>
 
 <template>
   <div class="page">
     <!-- 头部横幅 -->
-    <header class="page-head">
-      <div class="page-head__text">
-        <div class="eyebrow-tag">ACCESS CONTROL</div>
-        <h1>API Key 管理</h1>
-        <p>
-          创建与管理用户访问密钥，支持细粒度的渠道分组白名单、并发保护与周期消费额度。
-          <span v-if="quotaTimeZone" class="muted">（服务器时区：{{ quotaTimeZone }}）</span>
-        </p>
-      </div>
-      <div class="page-head__actions">
+    <PageHeader
+      title="API Key 管理"
+      description="创建与管理用户访问密钥，支持细粒度的渠道分组白名单、并发保护与周期消费额度。"
+    >
+      <template #meta>
+        <p class="muted text-12">额度按服务器时区（{{ quotaTimeZone }}）的 00:00 滚动刷新。</p>
+      </template>
+      <template #actions>
         <TxButton variant="primary" icon="i-carbon-add" @click="openCreateModal">
           创建 API Key
         </TxButton>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <!-- 网关限制提示 -->
     <TxAlert
       v-if="gatewayModelAccess === 'unavailable'"
       variant="warning"
       title="网关白名单提示"
-      description="当前网关暂不支持 Key 级模型直通白名单。下方配置的分组将用于并发与计费隔离，模型调用通过中转站准入层统一受控。"
+      description="当前网关暂不支持 Key 级模型直通白名单。下方配置的分组将用于并发与计费隔离。"
     />
+    <TxAlert v-if="degradedReason" variant="warning" title="控制面降级" :description="degradedReason" />
 
+    <!-- 失败：可读原因 + 重试；首次加载：骨架；其余：保留旧数据继续渲染，刷新不闪空 -->
+    <ErrorPanel v-if="res.error.value" :error="res.error.value" :retry="reloadData" />
+    <LoadingBlock v-else-if="!res.data.value" :lines="7" label="正在读取 API Key 列表" />
+
+    <template v-else>
     <!-- 工具条与筛选 -->
     <div class="keys-toolbar">
       <div class="search-input-wrap">
         <TxInput
-          v-model="searchQuery"
+          v-model="searchInput"
           placeholder="搜索名称、备注或密钥前缀..."
           clearable
           prefix-icon="i-carbon-search"
+          aria-label="搜索 API Key"
         />
       </div>
       <TxFilterChips
-        v-model="statusFilter"
+        :model-value="statusFilter"
         :items="filterOptions"
         aria-label="按密钥状态过滤"
+        @update:model-value="scope.patch({ status: String($event), page: '1' })"
       />
+      <TxButton v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">清除筛选</TxButton>
+      <span class="keys-count muted text-12">
+        共 {{ paged.total }} 把密钥<template v-if="hasFilter">（已筛选，原 {{ keys.length }} 把）</template>
+      </span>
     </div>
 
     <!-- 数据表格卡片 -->
-    <TxCard :padding="0">
+    <TxCard :padding="0" class="keys-table-card">
       <TxDataTable
         :columns="columns"
-        :data="filteredKeys"
+        :data="paged.rows"
         row-key="id"
-        table-layout="fixed"
         scroll-x
-        :loading="loading"
-        empty-text="暂无匹配的 API Key"
+        :style="{ '--table-min': '1120px' }"
+        :loading="res.loading.value"
+        aria-label="API Key 列表"
       >
-        <!-- 名称列 -->
+        <!-- 名称列：真按钮（可聚焦、可键盘触发），点击进入编辑，不再是无人监听的死点击 -->
         <template #cell-name="{ row }: { row: ApiKeyItem }">
-          <div class="cell-key-name" @click="emit('select-key', row)">
-            <span class="key-avatar-icon i-carbon-password" />
-            <div class="name-desc-stack">
+          <button
+            type="button"
+            class="cell-key-name"
+            :aria-label="`编辑密钥 ${row.name}`"
+            @click="openEditModal(row)"
+          >
+            <span class="key-avatar-icon i-carbon-password" aria-hidden="true" />
+            <span class="name-desc-stack">
               <strong>{{ row.name }}</strong>
               <span class="mono muted">{{ row.maskedKey }}</span>
-              <small v-if="row.note" class="key-note-text">{{ row.note }}</small>
-            </div>
-          </div>
+              <small v-if="row.note" class="key-note-text" :title="row.note">{{ row.note }}</small>
+            </span>
+          </button>
         </template>
 
         <!-- 渠道分组列 -->
         <template #cell-groups="{ row }: { row: ApiKeyItem }">
           <div class="groups-tag-list">
-            <span v-if="row.groups.length === effectiveGroups.length && effectiveGroups.length > 0">
+            <span v-if="row.groups.length === groups.length && groups.length > 0">
               <TxTag size="sm" variant="soft" color="var(--tx-color-primary)" label="全部渠道" />
             </span>
             <template v-else-if="row.groups.length">
@@ -394,8 +456,8 @@ onMounted(() => {
                 :key="gId"
                 size="sm"
                 variant="outline"
-                :label="effectiveGroups.find((g) => g.id === gId)?.name || gId"
-                :color="effectiveGroups.find((g) => g.id === gId)?.color || 'var(--tx-text-color-secondary)'"
+                :label="groups.find((g) => g.id === gId)?.name || gId"
+                :color="groups.find((g) => g.id === gId)?.color || 'var(--tx-text-color-secondary)'"
               />
               <TxTag v-if="row.groups.length > 3" size="sm" variant="plain" :label="`+${row.groups.length - 3}`" />
             </template>
@@ -438,8 +500,7 @@ onMounted(() => {
               </div>
               <span class="mono text-11">
                 ${{ row.quotaState.daily.spentUsd.toFixed(1) }}/${{ row.quotaState.daily.limitUsd }}
-              </span>
-            </div>
+              </span>            </div>
             <!-- 总额度 -->
             <div v-if="row.quotaState.total.limitUsd > 0" class="quota-bar-row">
               <span class="quota-lbl">总:</span>
@@ -457,19 +518,10 @@ onMounted(() => {
           </div>
         </template>
 
-        <!-- 最近调用 -->
+        <!-- 最近调用：固定 Asia/Shanghai，不再跟着浏览器时区跑（红队 D14） -->
         <template #cell-lastUsedAt="{ row }: { row: ApiKeyItem }">
           <span class="muted text-12">
-            {{
-              row.lastUsedAt
-                ? new Date(row.lastUsedAt).toLocaleString('zh-CN', {
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })
-                : '从未使用'
-            }}
+            {{ row.lastUsedAt ? fmtClock(row.lastUsedAt) : '从未使用' }}
           </span>
         </template>
 
@@ -489,41 +541,80 @@ onMounted(() => {
           />
         </template>
 
-        <!-- 操作按钮列 -->
+        <!-- 操作按钮列：图标按钮一律带 aria-label（红队 D11），删除走全局 confirm()（红队 D5/D8） -->
         <template #cell-actions="{ row }: { row: ApiKeyItem }">
           <div class="table-actions-row">
             <TxButton
               size="sm"
               variant="secondary"
-              title="复制完整 API Key"
+              :title="`复制 ${row.name} 的完整 API Key`"
+              :aria-label="`复制 ${row.name} 的完整 API Key`"
               icon="i-carbon-copy"
               @click="copyKey(row)"
             />
             <TxButton
               size="sm"
               variant="secondary"
-              title="配置额度上限"
+              :title="`配置 ${row.name} 的额度上限`"
+              :aria-label="`配置 ${row.name} 的额度上限`"
               icon="i-carbon-meter-alt"
               @click="openQuotaModal(row)"
             />
             <TxButton
               size="sm"
               variant="secondary"
-              title="编辑 Key 与渠道授权"
+              :title="`编辑 ${row.name}`"
+              :aria-label="`编辑 ${row.name}`"
               icon="i-carbon-settings"
               @click="openEditModal(row)"
             />
             <TxButton
               size="sm"
               :variant="row.enabled ? 'secondary' : 'primary'"
-              :title="row.enabled ? '临时停用密钥' : '恢复启用密钥'"
+              :title="row.enabled ? `临时停用 ${row.name}` : `恢复启用 ${row.name}`"
+              :aria-label="row.enabled ? `临时停用 ${row.name}` : `恢复启用 ${row.name}`"
               :icon="row.enabled ? 'i-carbon-pause-outline' : 'i-carbon-play-outline'"
               @click="toggleKeyStatus(row)"
             />
+            <TxButton
+              size="sm"
+              variant="danger"
+              :title="`删除 ${row.name}`"
+              :aria-label="`删除 ${row.name}`"
+              icon="i-carbon-trash-can"
+              @click="deleteKey(row)"
+            />
           </div>
         </template>
+
+        <template #empty>
+          <EmptyState
+            :variant="hasFilter ? 'search-empty' : 'empty'"
+            :title="hasFilter ? '没有匹配的密钥' : '还没有 API Key'"
+            :description="
+              hasFilter
+                ? '换个关键词或把状态筛选调回「全部密钥」。'
+                : '创建一把密钥后，客户端就可以用它访问网关。'
+            "
+            :action-label="hasFilter ? '清除筛选' : '创建 API Key'"
+            size="small"
+            @action="hasFilter ? clearFilters() : openCreateModal()"
+          />
+        </template>
       </TxDataTable>
+
+      <div v-if="paged.totalPages > 1" class="keys-pager">
+        <TxPagination
+          :current-page="paged.page"
+          :page-size="paged.pageSize"
+          :total="paged.total"
+          show-info
+          aria-label="API Key 列表分页"
+          @update:current-page="scope.state.page = String($event)"
+        />
+      </div>
     </TxCard>
+    </template>
 
     <!-- Key 编辑/新建弹窗 (TxModal) -->
     <TxModal
@@ -533,7 +624,7 @@ onMounted(() => {
     >
       <TxForm label-position="top" class="editor-form-body">
         <TxFormItem label="显示名称" required>
-          <TxInput v-model="editorForm.name" placeholder="例如：开发测试环境、自动化助理" />
+          <TxInput ref="nameFieldRef" v-model="editorForm.name" placeholder="例如：开发测试环境、自动化助理" aria-label="显示名称" />
         </TxFormItem>
 
         <TxFormItem label="备注用途">
@@ -547,7 +638,7 @@ onMounted(() => {
         <TxFormItem label="授权渠道分组" required>
           <div class="groups-picker">
             <button
-              v-for="group in effectiveGroups"
+              v-for="group in groups"
               :key="group.id"
               type="button"
               class="group-select-btn"
@@ -587,22 +678,11 @@ onMounted(() => {
       </TxForm>
 
       <template #footer>
-        <div class="modal-footer-between">
-          <TxButton
-            v-if="editingItem"
-            variant="danger"
-            icon="i-carbon-trash-can"
-            @click="showDeleteConfirm = true"
-          >
-            删除密钥
+        <div class="modal-footer-actions">
+          <TxButton variant="secondary" @click="showEditorModal = false">取消</TxButton>
+          <TxButton variant="primary" :loading="editorSaving" @click="saveKeyEditor">
+            {{ editingItem ? '保存修改' : '立即创建' }}
           </TxButton>
-          <span v-else />
-          <div class="modal-footer-actions">
-            <TxButton variant="secondary" @click="showEditorModal = false">取消</TxButton>
-            <TxButton variant="primary" :loading="editorSaving" @click="saveKeyEditor">
-              {{ editingItem ? '保存修改' : '立即创建' }}
-            </TxButton>
-          </div>
         </div>
       </template>
     </TxModal>
@@ -631,9 +711,11 @@ onMounted(() => {
                 <small class="muted">每日服务器本地 00:00 自动刷新</small>
               </div>
               <TxInput
+                ref="quotaFieldRef"
                 v-model="quotaValues.daily"
                 type="number"
                 placeholder="留空不限"
+                aria-label="单日额度（美元）"
                 style="max-width: 130px"
               />
             </div>
@@ -729,33 +811,16 @@ onMounted(() => {
         </div>
       </div>
       <template #footer>
-        <TxButton
-          variant="primary"
-          block
-          icon="i-carbon-copy"
-          @click="
-            async () => {
-              await navigator.clipboard.writeText(newlyCreatedKey)
-              toast({ title: '已复制', variant: 'success' })
-              showRevealModal = false
-            }
-          "
-        >
-          复制密钥并关闭
-        </TxButton>
-      </template>
-    </TxModal>
-
-    <!-- 删除确认弹窗 -->
-    <TxModal v-model="showDeleteConfirm" title="删除密钥确认" width="440px">
-      <p>
-        确定要彻底删除密钥 <strong>{{ editingItem?.name }}</strong> 吗？
-        此操作不可撤销，使用该密钥的客户端将立即收到 401 认证失败。
-      </p>
-      <template #footer>
         <div class="modal-footer-actions">
-          <TxButton variant="secondary" @click="showDeleteConfirm = false">取消</TxButton>
-          <TxButton variant="danger" :loading="deleting" @click="confirmDeleteKey">确认删除</TxButton>
+          <TxButton variant="secondary" @click="showRevealModal = false">我已手动保存</TxButton>
+          <TxButton
+            variant="primary"
+            icon="i-carbon-copy"
+            :loading="revealCopying"
+            @click="copyNewKey"
+          >
+            复制密钥并关闭
+          </TxButton>
         </div>
       </template>
     </TxModal>
@@ -767,20 +832,47 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   margin-bottom: 4px;
 }
 
-.search-input-wrap {
-  width: 280px;
+.keys-count {
+  margin-left: auto;
 }
 
+.keys-table-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.keys-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px;
+}
+
+.search-input-wrap {
+  width: min(280px, 60vw);
+}
+
+/* 主标识是真正的按钮：可见焦点环、键盘可触发、触屏有足够点击面 */
 .cell-key-name {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+.cell-key-name:hover strong {
+  color: var(--tx-color-primary);
+  text-decoration: underline;
 }
 
 .key-avatar-icon {
