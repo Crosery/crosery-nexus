@@ -59,12 +59,19 @@ async function toggleLocal(agent: string, on: boolean) {
     const result = await api.toggleRTK(agent, on, { plane: 'local', confirm: true })
     const bits: string[] = [`${agent} 已${on ? '挂载' : '卸载'}`]
     if (result.mechanism) bits.push(`机制=${result.mechanism}${result.fallbackReason ? '（CLI 失败后走已核实 schema 兜底）' : ''}`)
-    if (result.collateralReverted?.length) {
-      bits.push(`已撤回 rtk 连带打开的其他客户端：${result.collateralReverted.join('、')}${result.collateralFiles?.length ? `（${result.collateralFiles.join('、')}）` : ''}`)
+    // 连带改动只认 collateral 这一份数据（与 audit 同源），每个 agent 只有一个最终态
+    const reverted = (result.collateral || []).filter(entry => entry.action === 'reverted')
+    const restored = (result.collateral || []).filter(entry => entry.action === 'restored')
+    if (reverted.length) {
+      bits.push(`已撤回 rtk 连带打开的其他客户端：${reverted.map(entry => `${entry.agent}（${entry.files.join('、')}）`).join('；')}`)
     }
-    if (result.collateralRestored?.length) {
-      bits.push(`已修复被 rtk 连带关掉的其他客户端：${result.collateralRestored.join('、')}${result.collateralFiles?.length ? `（${result.collateralFiles.join('、')}）` : ''}`)
+    if (restored.length) {
+      bits.push(`已修复被 rtk 连带关掉的其他客户端：${restored.map(entry => `${entry.agent}（${entry.files.join('、')}）`).join('；')}`)
     }
+    if (result.collateralSkipped?.length) {
+      bits.push(`检测到并发修改/结构不认识，未自动还原（请人工确认）：${result.collateralSkipped.map(item => `${item.agent} ${item.file}（${item.reason}）`).join('；')}`)
+    }
+    if (result.preservedBak?.length) bits.push(`已还原你原有的备份文件：${result.preservedBak.join('、')}`)
     if (result.backupId) bits.push(`本次备份 ${result.backupId}（${result.backupFileCount ?? 0} 个文件）`)
     notice.value = bits.join('；')
     emit('notify', notice.value)

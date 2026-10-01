@@ -195,7 +195,11 @@ const authorityHint = computed(() => {
       <div class="board-head">
         <div>
           <h2>备份与回退</h2>
-          <p class="hint">每次写入前把目标文件原样备份，失败自动回填；只保留最近 {{ status?.backupKeep ?? 10 }} 份（RTK_BACKUP_KEEP 可调），超出自动轮转。</p>
+          <p class="hint">
+            每次写入前把目标文件原样备份，失败自动回填；只保留最近 {{ status?.backupKeep ?? 10 }} 份（RTK_BACKUP_KEEP 可调），
+            超出自动轮转，但 {{ Math.round((status?.backupGraceMs ?? 120000) / 1000) }} 秒内新建的备份受保护、不会被轮转删掉（并发写入时刚返回的 backupId 仍可回退）。
+            <template v-if="status?.backupOrphans">另有 {{ status.backupOrphans }} 个无 manifest 的孤儿目录，过保护窗口后自动清理。</template>
+          </p>
         </div>
       </div>
       <div class="backup-list">

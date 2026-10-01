@@ -216,6 +216,10 @@ export type RTKStatusResponse = {
   backups: RtkBackupSummary[]
   /** 备份保留份数（RTK_BACKUP_KEEP），超出自动轮转。 */
   backupKeep: number
+  /** 保护窗口（RTK_BACKUP_GRACE_MS）：窗口内的备份不轮转，避免删掉在飞请求刚返回的 backupId。 */
+  backupGraceMs: number
+  /** 没有 manifest 的孤儿备份目录数量。 */
+  backupOrphans: number
   writeMode: 'local' | 'confirm' | 'off'
   remoteWriteEnabled: boolean
   kernelWriteEnabled: boolean
@@ -226,6 +230,10 @@ export type RTKStatusResponse = {
   error?: string
 }
 
+export type RtkCollateralAction = 'reverted' | 'restored' | 'skipped'
+/** 连带改动的确定性最终态：每个 agent 一条，UI 与 audit 用同一份数据。 */
+export type RtkCollateralEntry = { agent: string; action: RtkCollateralAction; files: string[]; reason?: string }
+
 /** toggle 响应不带备份历史，只给本次备份摘要。 */
 export type RTKToggleResponse = Omit<RTKStatusResponse, 'backups'> & {
   ok: true
@@ -234,12 +242,18 @@ export type RTKToggleResponse = Omit<RTKStatusResponse, 'backups'> & {
   backupId?: string
   backupFileCount?: number
   fallbackReason?: string
-  /** 被 rtk CLI 连带关掉、已修回的其他 agent。 */
+  /** 被 rtk CLI 连带关掉、已修回的其他 agent（与 collateralReverted 互斥）。 */
   collateralRestored?: string[]
-  /** 被 rtk CLI 连带打开、已撤回的其他 agent。 */
+  /** 被 rtk CLI 连带打开、已撤回的其他 agent（与 collateralRestored 互斥）。 */
   collateralReverted?: string[]
   /** 本次连带动到的文件。 */
   collateralFiles?: string[]
+  /** 连带改动明细（唯一真源）。 */
+  collateral?: RtkCollateralEntry[]
+  /** 检测到并发修改/结构不认识，未自动还原、需人工确认。 */
+  collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
+  /** 被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
+  preservedBak?: string[]
 }
 
 export type RTKRollbackResponse = RTKStatusResponse & { ok: true; backupId: string; restored: string[] }

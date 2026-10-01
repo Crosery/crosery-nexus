@@ -592,6 +592,8 @@ test('缺陷 4：备份按 RTK_BACKUP_KEEP 轮转，toggle 响应不回传备份
   const home = tempHome('defect4')
   const keepRoot = path.join(workspace, 'backups-keep3')
   process.env.RTK_BACKUP_KEEP = '3'
+  // 轮转受保护窗口约束；这里显式设 0 才是在验证「窗口之外按 N 保留」的语义
+  process.env.RTK_BACKUP_GRACE_MS = '0'
   process.env.RTK_BACKUP_DIR = keepRoot
   try {
     let last: Awaited<ReturnType<typeof service.setRTKAgentHook>> | null = null
@@ -613,6 +615,7 @@ test('缺陷 4：备份按 RTK_BACKUP_KEEP 轮转，toggle 响应不回传备份
     }
   } finally {
     delete process.env.RTK_BACKUP_KEEP
+    delete process.env.RTK_BACKUP_GRACE_MS
     process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
   }
 })
@@ -798,4 +801,196 @@ after(async () => {
     assert.equal(digest(path.join(realHome, rel)), before, `真实 agent 配置被测试改动了: ~/${rel}`)
   }
   fs.rmSync(workspace, { recursive: true, force: true })
+})
+
+
+/* ------------------------------------------------------------------ */
+/* 红队第三轮：P0/P1/P2                                                */
+/* ------------------------------------------------------------------ */
+
+const writeFakeCli = (name: string, body: string): string => {
+  const file = path.join(workspace, name)
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+  return file
+}
+
+test('P0-1 轮转不得删掉在飞/刚创建的备份：并发 toggle 后每个 backupId 都还能 rollback', async () => {
+  const home = tempHome('p01-concurrent')
+  const keepRoot = path.join(workspace, 'backups-p01')
+  process.env.RTK_BACKUP_KEEP = '2'
+  process.env.RTK_BACKUP_DIR = keepRoot
+  try {
+    // 只用有已核实 JSON 兜底 schema 的 agent，保证并发用例聚焦「轮转不误删」
+    const agents = ['codex', 'claude', 'cursor', 'trae', 'droid', 'copilot']
+    const results = await Promise.all(agents.map(agent =>
+      service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+    ))
+    const ids = results.map(result => result.backupId as string)
+    assert.equal(new Set(ids).size, ids.length, '每次操作都应拿到独立的 backupId')
+    for (const id of ids) {
+      const dir = path.join(keepRoot, id)
+      assert.ok(fs.existsSync(path.join(dir, 'manifest.json')), `响应里返回过的备份 ${id} 不该被轮转删掉`)
+    }
+    // 拿响应里的 id 真去 rollback，必须成功（不能 404）
+    const restored = await service.rollbackRTK({ home, confirm: true, backup: ids[0], ...offlineTargets })
+    assert.equal(restored.backupId, ids[0])
+    assert.ok(service.listRtkBackups(home, 20).length >= ids.length)
+  } finally {
+    delete process.env.RTK_BACKUP_KEEP
+    process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
+  }
+})
+
+test('P0-1（次要）孤儿备份目录：过保护窗口后清理，status 期间如实计数', async () => {
+  const home = tempHome('p01-orphan')
+  const root = path.join(workspace, 'backups-orphan')
+  fs.mkdirSync(path.join(root, '2020-01-01T00-00-00-000Z'), { recursive: true })
+  const recentId = new Date().toISOString().replace(/[:.]/g, '-')
+  fs.mkdirSync(path.join(root, recentId), { recursive: true })
+  process.env.RTK_BACKUP_DIR = root
+  try {
+    assert.equal(service.countRtkBackupOrphans(home), 2)
+    const removed = service.pruneRtkBackups(home, 10)
+    assert.deepEqual(removed, ['2020-01-01T00-00-00-000Z'], '只有过了保护窗口的孤儿才清')
+    assert.equal(service.countRtkBackupOrphans(home), 1)
+    const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+    assert.equal(status.backupOrphans, 1)
+    assert.ok(status.backupGraceMs > 0)
+  } finally {
+    process.env.RTK_BACKUP_DIR = path.join(workspace, 'backups')
+  }
+})
+
+test('P0-2 OFF 与 ON 共用同一套写后校验：假 CLI 写坏文件时两边都 409 并回填', async () => {
+  const corrupt = writeFakeCli('fake-rtk-off-corrupt.sh', 'printf \'THIS IS NOT JSON\' > "$HOME/.codex/hooks.json"\nexit 0')
+  for (const on of [true, false]) {
+    const home = tempHome(`p02-${on ? 'on' : 'off'}`)
+    const filePath = path.join(home, '.codex/hooks.json')
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    const pristine = `${JSON.stringify({
+      hooks: { PreToolUse: [
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] },
+        ...(on ? [] : [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook codex' }] }]),
+      ] },
+    }, null, 2)}\n`
+    fs.writeFileSync(filePath, pristine)
+    const error = await expectPlaneError(
+      () => service.setRTKAgentHook('codex', on, { plane: 'local', home, bin: corrupt, ...offlineTargets }),
+      409, 'hook_file_unparsable',
+    )
+    assert.equal(error.plane, 'local')
+    assert.ok(error.backup && fs.existsSync(path.join(error.backup, 'manifest.json')))
+    assert.equal(fs.readFileSync(filePath, 'utf8'), pristine, `ON=${on} 时必须回填操作前原文`)
+  }
+})
+
+test('P1-a CLI 窗口内的第三方改动必须保留（条目级最小差异还原）', async () => {
+  // 假 CLI 模拟 rtk 的连带行为：给 .claude 加 rtk 条目，同时「用户」在窗口内也加了别的条目，
+  // 并让 cursor 自己的钩子生效（保证目标校验通过）。
+  const cli = writeFakeCli('fake-rtk-concurrent.sh', [
+    'mkdir -p "$HOME/.claude" "$HOME/.cursor"',
+    'printf %s \'{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]},{"matcher":"Bash","hooks":[{"type":"command","command":"user-added-during-cli"}]}]}}\' > "$HOME/.claude/settings.json"',
+    'printf %s \'{"version":1,"hooks":{"preToolUse":[{"command":"rtk hook cursor","matcher":"Shell"}]}}\' > "$HOME/.cursor/hooks.json"',
+    'exit 0',
+  ].join('\n'))
+  const home = tempHome('p1a-concurrent')
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  const before = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] }] } }, null, 2)}\n`
+  fs.writeFileSync(path.join(home, '.claude/settings.json'), before)
+
+  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  assert.equal(result.ok, true)
+  const settings = JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8')) as {
+    hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> }
+  }
+  const commands = settings.hooks.PreToolUse.flatMap(entry => entry.hooks.map(hook => hook.command)).sort()
+  assert.deepEqual(commands, ['orca-hook', 'user-added-during-cli'], '只摘掉 rtk 自己那条，用户窗口内的改动必须保留')
+  assert.deepEqual(result.collateralReverted, ['claude'])
+  assert.ok(!result.collateralSkipped?.length)
+})
+
+test('P1-a 结构无法安全还原时不覆盖，如实上报 collateralSkipped', async () => {
+  const cli = writeFakeCli('fake-rtk-unparsable-collateral.sh', [
+    'mkdir -p "$HOME/.claude" "$HOME/.cursor"',
+    'printf %s \'not json at all\' > "$HOME/.claude/settings.json"',
+    'printf %s \'{"version":1,"hooks":{"preToolUse":[{"command":"rtk hook cursor","matcher":"Shell"}]}}\' > "$HOME/.cursor/hooks.json"',
+    'exit 0',
+  ].join('\n'))
+  const home = tempHome('p1a-skip')
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.claude/settings.json'), `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  assert.equal(result.ok, true)
+  assert.equal(fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8'), 'not json at all', '无法安全还原时不许覆盖')
+  assert.deepEqual(result.collateralSkipped?.map(item => item.agent), ['claude'])
+  assert.equal(result.collateral?.find(entry => entry.agent === 'claude')?.action, 'skipped')
+})
+
+test('P1-b 目标文件自己的 .bak 纳管：成功后还原用户原件，失败后也回到操作前', async () => {
+  const home = tempHome('p1b-bak')
+  const codexDir = path.join(home, '.codex')
+  const bakPath = path.join(codexDir, 'hooks.json.bak')
+  fs.mkdirSync(codexDir, { recursive: true })
+  fs.writeFileSync(path.join(codexDir, 'hooks.json'), `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+  fs.writeFileSync(bakPath, 'USER-OWN-BAK\n')
+
+  const cli = writeFakeCli('fake-rtk-bak.sh', [
+    'mkdir -p "$HOME/.codex"',
+    'printf %s \'CLI-WROTE-BAK\' > "$HOME/.codex/hooks.json.bak"',
+    'printf %s \'{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook codex"}]}]}}\' > "$HOME/.codex/hooks.json"',
+    'exit 0',
+  ].join('\n'))
+  const ok = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  assert.equal(ok.ok, true)
+  assert.equal(fs.readFileSync(bakPath, 'utf8'), 'USER-OWN-BAK\n', '成功路径也要把用户原有的 .bak 还回去')
+  assert.deepEqual(ok.preservedBak, ['.codex/hooks.json.bak'])
+
+  // 失败路径：.bak 也回到操作前
+  const corrupt = writeFakeCli('fake-rtk-bak-corrupt.sh', [
+    'printf %s \'garbage\' > "$HOME/.codex/hooks.json"',
+    'printf %s \'garbage-bak\' > "$HOME/.codex/hooks.json.bak"',
+    'exit 0',
+  ].join('\n'))
+  const home2 = tempHome('p1b-bak-fail')
+  fs.mkdirSync(path.join(home2, '.codex'), { recursive: true })
+  fs.writeFileSync(path.join(home2, '.codex/hooks.json'), `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+  fs.writeFileSync(path.join(home2, '.codex/hooks.json.bak'), 'USER-OWN-BAK-2\n')
+  await expectPlaneError(
+    () => service.setRTKAgentHook('codex', true, { plane: 'local', home: home2, bin: corrupt, ...offlineTargets }),
+    409, 'hook_file_unparsable',
+  )
+  assert.equal(fs.readFileSync(path.join(home2, '.codex/hooks.json.bak'), 'utf8'), 'USER-OWN-BAK-2\n')
+})
+
+test('P2 同一 agent 不会同时出现在 reverted 与 restored，collateral 每个 agent 只有一条', async () => {
+  // 假 CLI：既删掉 claude 已有的 rtk 条目（restored 方向），又新建 .claude/RTK.md（reverted 方向）
+  const cli = writeFakeCli('fake-rtk-both-directions.sh', [
+    'mkdir -p "$HOME/.claude" "$HOME/.cursor"',
+    'printf %s \'{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"orca-hook"}]}]}}\' > "$HOME/.claude/settings.json"',
+    'printf %s \'# rtk instructions\' > "$HOME/.claude/RTK.md"',
+    'printf %s \'{"version":1,"hooks":{"preToolUse":[{"command":"rtk hook cursor","matcher":"Shell"}]}}\' > "$HOME/.cursor/hooks.json"',
+    'exit 0',
+  ].join('\n'))
+  const home = tempHome('p2-both')
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  fs.writeFileSync(path.join(home, '.claude/settings.json'), `${JSON.stringify({
+    hooks: { PreToolUse: [
+      { matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] },
+      { matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook claude' }] },
+    ] },
+  }, null, 2)}\n`)
+
+  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  const reverted = result.collateralReverted || []
+  const restored = result.collateralRestored || []
+  assert.deepEqual(reverted.filter(agent => restored.includes(agent)), [], '两个集合必须互斥')
+  const claudeEntries = (result.collateral || []).filter(entry => entry.agent === 'claude')
+  assert.equal(claudeEntries.length, 1, '每个 agent 在 collateral 里只有一条')
+  assert.equal(claudeEntries[0].action, 'restored', '确定性最终态取 restored')
+  assert.ok(restored.includes('claude'))
+  assert.ok(!reverted.includes('claude'))
+  // claude 的 rtk 条目被修回、RTK.md 被撤回
+  const settings = fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8')
+  assert.match(settings, /rtk hook claude/)
+  assert.equal(fs.existsSync(path.join(home, '.claude/RTK.md')), false)
 })

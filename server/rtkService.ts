@@ -66,6 +66,10 @@ export type RTKStatusView = {
   backups: RtkBackupSummary[]
   /** 备份保留份数（RTK_BACKUP_KEEP，默认 10），超出自动轮转。 */
   backupKeep: number
+  /** 保护窗口（RTK_BACKUP_GRACE_MS，默认 120s）：窗口内的备份不轮转，避免删掉在飞请求的 backupId。 */
+  backupGraceMs: number
+  /** 没有 manifest 的孤儿备份目录数量（如实计数，过保护窗口后自动清）。 */
+  backupOrphans: number
   install?: string
   url: string
   writeMode: RtkWriteMode
@@ -96,6 +100,12 @@ export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   collateralReverted?: string[]
   /** 本次连带动到的文件（相对 home）。 */
   collateralFiles?: string[]
+  /** 连带改动的确定性最终态（每个 agent 只有一条，UI 与 audit 同一份数据）。 */
+  collateral?: RtkCollateralEntry[]
+  /** 检测到并发修改、未自动还原的文件（需人工确认）。 */
+  collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
+  /** 被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
+  preservedBak?: string[]
 }
 export type RTKInstallResult = RTKStatusView & { ok: true; plane: RtkPlaneId; readPlane: RtkPlaneId }
 export type RTKRollbackResult = RTKStatusView & { ok: true; plane: RtkPlaneId; backupId: string; restored: string[] }
@@ -193,7 +203,8 @@ export type RtkBackupCreated = { id: string; at: string; dir: string; files: str
 /** 写之前先把原文件原样存一份；失败也必须留下可回退的原件。 */
 export function createRtkBackup(home: string, rels: string[]): RtkBackupCreated {
   const at = new Date().toISOString()
-  const id = at.replace(/[:.]/g, '-')
+  // 并发请求可能落在同一毫秒：加随机后缀，避免两次备份撞到同一个目录（互相覆盖）。
+  const id = `${at.replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`
   const dir = path.join(rtkBackupRoot(home), id)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const files = [...new Set(rels)].filter(Boolean).map(rel => {
@@ -216,26 +227,102 @@ export function rtkBackupKeep(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(raw) && raw >= 1 && raw <= 200 ? Math.floor(raw) : 10
 }
 
-/** 备份目录按 id（ISO 时间戳）倒序，最新在前。 */
-function backupIds(home: string): string[] {
+/**
+ * 保护窗口：比这个时间新的备份一律不轮转（RTK_BACKUP_GRACE_MS，默认 120s）。
+ * 轮转在每个写请求里都会跑；并发下若立刻删旧目录，会把「已经返回给客户端的 backupId」
+ * 一起删掉，用户拿这个 id 去 rollback 就 404（红队第三轮 P0-1）。
+ */
+export function rtkBackupGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.RTK_BACKUP_GRACE_MS)
+  return Number.isFinite(raw) && raw >= 0 && raw <= 3_600_000 ? Math.floor(raw) : 120_000
+}
+
+/** 进程内「正在处理中」的备份 id：轮转必须跳过它们（第二个保护条件）。 */
+const inflightBackups = new Set<string>()
+
+export function beginRtkBackupUse(id: string): void {
+  inflightBackups.add(id)
+}
+
+export function endRtkBackupUse(id: string): void {
+  inflightBackups.delete(id)
+}
+
+const BACKUP_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(-[0-9a-f]{6})?$/
+
+type BackupEntry = { id: string; hasManifest: boolean }
+
+/** 备份根目录下的条目（**含没有 manifest 的孤儿目录**），按 id 倒序。 */
+function backupEntries(home: string): BackupEntry[] {
   const root = rtkBackupRoot(home)
-  let entries: string[]
+  let names: string[]
   try {
-    entries = fs.readdirSync(root)
+    names = fs.readdirSync(root)
   } catch {
     return []
   }
-  return entries.filter(name => fs.existsSync(path.join(root, name, 'manifest.json'))).sort().reverse()
+  return names
+    .filter(name => BACKUP_ID_PATTERN.test(name))
+    .filter(name => {
+      try {
+        return fs.statSync(path.join(root, name)).isDirectory()
+      } catch {
+        return false
+      }
+    })
+    .sort()
+    .reverse()
+    .map(id => ({ id, hasManifest: fs.existsSync(path.join(root, id, 'manifest.json')) }))
 }
 
-/** 轮转：超出保留份数的旧备份直接删除（rollback 只恢复不清理，所以必须有这里）。 */
-export function pruneRtkBackups(home: string = resolveHome(), keep: number = rtkBackupKeep()): string[] {
+function backupAgeMs(root: string, id: string, now: number): number | null {
+  const stamp = id.replace(/(-[0-9a-f]{6})?$/, '').replace(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, '$1T$2:$3:$4.$5Z')
+  const parsed = Date.parse(stamp)
+  if (Number.isFinite(parsed)) return Math.max(0, now - parsed)
+  try {
+    return Math.max(0, now - fs.statSync(path.join(root, id)).mtimeMs)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 轮转。双条件保护：①在飞 / 刚创建（< RTK_BACKUP_GRACE_MS）的一律不删；②其余按 id 倒序保留最新 keep 份。
+ * 没有 manifest 的孤儿目录不受 keep 计数影响，但同样要过保护窗口才清。
+ */
+export function pruneRtkBackups(
+  home: string = resolveHome(),
+  keep: number = rtkBackupKeep(),
+  options: { protect?: Iterable<string>; now?: number } = {},
+): string[] {
   const root = rtkBackupRoot(home)
+  const now = options.now ?? Date.now()
+  const grace = rtkBackupGraceMs()
+  const protectedIds = new Set<string>(inflightBackups)
+  for (const id of options.protect || []) protectedIds.add(path.basename(id))
   const removed: string[] = []
-  for (const id of backupIds(home).slice(Math.max(1, keep))) {
+  let kept = 0
+  for (const entry of backupEntries(home)) {
+    const age = backupAgeMs(root, entry.id, now)
+    const isProtected = protectedIds.has(entry.id) || (age !== null && age < grace)
+    if (!entry.hasManifest) {
+      if (!isProtected) {
+        try {
+          fs.rmSync(path.join(root, entry.id), { recursive: true, force: true })
+          removed.push(entry.id)
+        } catch {
+          // 清理失败不影响主流程
+        }
+      }
+      continue
+    }
+    if (isProtected || kept < Math.max(1, keep)) {
+      kept += 1
+      continue
+    }
     try {
-      fs.rmSync(path.join(root, id), { recursive: true, force: true })
-      removed.push(id)
+      fs.rmSync(path.join(root, entry.id), { recursive: true, force: true })
+      removed.push(entry.id)
     } catch {
       // 清理失败不影响主流程
     }
@@ -243,13 +330,18 @@ export function pruneRtkBackups(home: string = resolveHome(), keep: number = rtk
   return removed
 }
 
+/** 无 manifest 的孤儿备份目录数量（status 如实计数）。 */
+export function countRtkBackupOrphans(home: string = resolveHome()): number {
+  return backupEntries(home).filter(entry => !entry.hasManifest).length
+}
+
 export function listRtkBackups(home: string = resolveHome(), limit = rtkBackupKeep()): RtkBackupSummary[] {
-  return backupIds(home).slice(0, Math.max(1, limit)).map(id => {
+  return backupEntries(home).filter(entry => entry.hasManifest).slice(0, Math.max(1, limit)).map(entry => {
     try {
-      const manifest = JSON.parse(fs.readFileSync(path.join(rtkBackupRoot(home), id, 'manifest.json'), 'utf8')) as { at?: string; files?: unknown[] }
-      return { id, at: manifest.at || id, fileCount: (manifest.files || []).length }
+      const manifest = JSON.parse(fs.readFileSync(path.join(rtkBackupRoot(home), entry.id, 'manifest.json'), 'utf8')) as { at?: string; files?: unknown[] }
+      return { id: entry.id, at: manifest.at || entry.id, fileCount: (manifest.files || []).length }
     } catch {
-      return { id, at: id, fileCount: 0 }
+      return { id: entry.id, at: entry.id, fileCount: 0 }
     }
   })
 }
@@ -480,6 +572,8 @@ export function toStatusView(read: AuthoritativeRead, policy: RtkWritePolicy = r
     local: { connected: read.local.connected, path: read.local.path, version: read.local.version },
     backups: listRtkBackups(home, Math.min(rtkBackupKeep(), 10)),
     backupKeep: rtkBackupKeep(),
+    backupGraceMs: rtkBackupGraceMs(),
+    backupOrphans: countRtkBackupOrphans(home),
     ...(read.payload.install ? { install: read.payload.install } : {}),
     url: read.payload.url,
     ...policyFields(policy),
@@ -620,6 +714,10 @@ function applyHookJson(spec: RtkAgentSpec, jsonSpec: HookJsonSpec, filePath: str
   writeFileAtomic(filePath, `${JSON.stringify(document, null, 2)}\n`)
 }
 
+export type RtkCollateralAction = 'reverted' | 'restored' | 'skipped'
+/** 连带改动的确定性最终态：agent 唯一、action 唯一（UI 与 audit 用同一份数据）。 */
+export type RtkCollateralEntry = { agent: string; action: RtkCollateralAction; files: string[]; reason?: string }
+
 export type LocalHookResult = {
   mechanism: 'rtk-cli' | 'hooks-json'
   detail: string
@@ -628,12 +726,17 @@ export type LocalHookResult = {
   backup: string
   backupId: string
   backupFileCount: number
-  /** 被 rtk CLI 连带关掉、已按快照修回的其他 agent。 */
-  collateralRestored?: string[]
-  /** 被 rtk CLI 连带打开、已按快照撤回的其他 agent。 */
+  /** 连带改动明细（唯一真源）。 */
+  collateral?: RtkCollateralEntry[]
+  /** 兼容字段：被连带打开后已按最小差异撤回的 agent（与 collateralRestored 互斥）。 */
   collateralReverted?: string[]
-  /** 本次连带动到的文件（相对 home），UI 用来如实交代。 */
+  /** 兼容字段：被连带关掉后已修回的 agent（与 collateralReverted 互斥）。 */
+  collateralRestored?: string[]
+  /** 检测到并发修改、为不覆盖用户改动而未自动还原的文件。 */
+  collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
   collateralFiles?: string[]
+  /** 操作前就存在、被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
+  preservedBak?: string[]
 }
 
 type GuardEntry = { rel: string; kind: 'hook' | 'extra' | 'bak'; owner: string }
@@ -654,6 +757,46 @@ function guardEntries(targetId: string): GuardEntry[] {
 const isAgentOn = (spec: RtkAgentSpec, content: string | null): boolean =>
   content !== null && (spec.marker ? content.includes(spec.marker) : true)
 
+/** 必须保持合法 JSON 的钩子文件：写后校验与 ON/OFF 共用同一套判据。 */
+const JSON_HOOK_FILES = new Set([
+  '.codex/hooks.json', '.claude/settings.json', '.trae/hooks.json', '.factory/hooks.json',
+  '.cursor/hooks.json', '.copilot/hooks/rtk-rewrite.json', '.gemini/settings.json',
+])
+
+/**
+ * 写后完整性校验：文件不存在/空是合法终态，存在则必须是合法 JSON 对象。
+ * 旧实现的 OFF 路径只看「标记不存在」就算成功，于是被 CLI 写坏的文件也能过（红队第三轮 P0-2）。
+ */
+export function hookFileIntegrity(spec: RtkAgentSpec, home: string): string | null {
+  if (!spec.hookFile || !JSON_HOOK_FILES.has(spec.hookFile)) return null
+  const content = readFileIfExists(path.join(home, spec.hookFile))
+  if (content === null || !content.trim()) return null
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'not_json_object'
+  } catch {
+    return 'invalid_json'
+  }
+  return null
+}
+
+function isValidJsonObject(content: string | null): boolean {
+  if (content === null || !content.trim()) return true
+  try {
+    const parsed: unknown = JSON.parse(content)
+    return Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed)
+  } catch {
+    return false
+  }
+}
+
+function brokenHookFileError(spec: RtkAgentSpec, detail: string, backupDir: string): RtkPlaneError {
+  const failure = new RtkPlaneError(409, 'local', 'hook_file_unparsable',
+    `${spec.id} 的 ${spec.hookFile} 在操作后不是合法 JSON（${detail}），已拒绝并回填操作前原文；可用 /api/rtk/rollback 恢复`)
+  failure.backup = backupDir
+  return failure
+}
+
 function restoreToSnapshot(target: string, before: string | null, after: string | null): void {
   if (before !== null) {
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -663,54 +806,166 @@ function restoreToSnapshot(target: string, before: string | null, after: string 
   }
 }
 
+/* ---------------- 条目级最小差异还原（P1-a） ---------------- */
+
+/** 只读地取出钩子数组所在容器；不创建任何中间节点。 */
+function readContainer(document: Record<string, unknown>, root: string[]): Record<string, unknown> | null {
+  let cursor: unknown = document
+  for (const key of root) {
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return null
+    cursor = (cursor as Record<string, unknown>)[key]
+  }
+  return cursor && typeof cursor === 'object' && !Array.isArray(cursor) ? cursor as Record<string, unknown> : null
+}
+
+function hookListOf(source: string | null, jsonSpec: HookJsonSpec): unknown[] | null {
+  if (source === null || !source.trim()) return []
+  try {
+    const parsed: unknown = JSON.parse(source)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const container = readContainer(parsed as Record<string, unknown>, jsonSpec.root)
+    const list = container?.[jsonSpec.list]
+    return list === undefined ? [] : Array.isArray(list) ? list : null
+  } catch {
+    return null
+  }
+}
+
+const jsonEqual = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+
 /**
- * rtk CLI 的连带效应是**双向**的（实测）：
+ * 条目级还原：只摘掉本次由 rtk 连带新增的条目、只补回被连带删掉的条目，
+ * 用户在 CLI 执行窗口里对同一文件做的其它改动原样保留。
+ * 返回 'unchanged'（无需动）、'applied'（已按最小差异改回）或 'skipped'（结构不认识，交给上层如实上报）。
+ */
+function minimalCollateralEdit(
+  target: string,
+  jsonSpec: HookJsonSpec,
+  before: string | null,
+  after: string | null,
+): { applied: 'unchanged' | 'applied' | 'skipped'; removed: number; readded: number } {
+  const current = readFileIfExists(target)
+  if (current === null) return { applied: 'skipped', removed: 0, readded: 0 }
+  let document: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(current)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { applied: 'skipped', removed: 0, readded: 0 }
+    document = parsed as Record<string, unknown>
+  } catch {
+    return { applied: 'skipped', removed: 0, readded: 0 }
+  }
+  const container = readContainer(document, jsonSpec.root)
+  if (!container) return { applied: 'skipped', removed: 0, readded: 0 }
+  const currentList = container[jsonSpec.list]
+  const list = currentList === undefined ? [] : Array.isArray(currentList) ? [...currentList] : null
+  if (!list) return { applied: 'skipped', removed: 0, readded: 0 }
+  const beforeList = hookListOf(before, jsonSpec)
+  const afterList = hookListOf(after, jsonSpec)
+  if (beforeList === null || afterList === null) return { applied: 'skipped', removed: 0, readded: 0 }
+
+  // ① 撤销 rtk 本次新增的条目：只认 rtk 自己的 command，且只摘「操作前没有的」那几条。
+  //    用户在 CLI 窗口里新增的条目（不含 rtk command）原样保留。
+  const kept = list.filter(item => !(containsCommand(item, jsonSpec.command) && !beforeList.some(other => jsonEqual(other, item))))
+  const removed = list.length - kept.length
+  // ② 补回被 CLI 删掉的原条目（用户自己已经补过的不重复加）。
+  const missing = beforeList.filter(item => !afterList.some(other => jsonEqual(other, item)) && !kept.some(other => jsonEqual(other, item)))
+  const next = [...missing, ...kept]
+  if (!removed && !missing.length) return { applied: 'unchanged', removed: 0, readded: 0 }
+  container[jsonSpec.list] = next
+  writeFileAtomic(target, `${JSON.stringify(document, null, 2)}\n`)
+  return { applied: 'applied', removed, readded: missing.length }
+}
+
+type ReconcileOutcome = {
+  entries: RtkCollateralEntry[]
+  files: string[]
+  skipped: Array<{ agent: string; file: string; reason: string }>
+}
+
+/**
+ * rtk CLI 的连带效应是**双向**的：
  * - `--agent claude --uninstall` 会顺带删掉 `.cursor/hooks.json`（把别人关掉）；
- * - `--agent cursor --auto-patch` 会顺带在 `.claude/settings.json` 注册钩子，并新建
- *   `.claude/RTK.md`、`.claude/CLAUDE.md`（把别人打开）。
- * 用户只点了 A：两个方向都按快照还原，否则会静默改/关别的 agent 的配置。
+ * - `--agent cursor --auto-patch` 会顺带在 `.claude/settings.json` 注册钩子并新建说明文件（把别人打开）。
+ * 用户只点了 A：两个方向都要还原。还原策略：
+ * - 文件自 CLI 之后没被别人改过 → 整文件按快照还原；
+ * - 文件在窗口内被第三方改过（JSON 钩子文件）→ **条目级**最小差异还原，保留用户改动；
+ * - 结构不认识 → **不还原**并如实上报 `collateralSkipped`，绝不覆盖用户改动。
  */
 function reconcileCollateral(
   home: string,
   snapshot: Map<string, string | null>,
   entries: GuardEntry[],
-): { restored: string[]; reverted: string[]; files: string[] } {
+): ReconcileOutcome {
   const byRel = new Map(entries.map(entry => [entry.rel, entry]))
-  const restored = new Set<string>()
-  const reverted = new Set<string>()
+  const perAgent = new Map<string, { action: RtkCollateralAction; files: string[]; reason?: string }>()
   const files: string[] = []
+  const skipped: Array<{ agent: string; file: string; reason: string }> = []
+  const rank: Record<RtkCollateralAction, number> = { skipped: 0, reverted: 1, restored: 2 }
+
+  const mark = (agent: string, action: RtkCollateralAction, rel: string, reason?: string) => {
+    const current = perAgent.get(agent)
+    if (!current) {
+      perAgent.set(agent, { action, files: [rel], ...(reason ? { reason } : {}) })
+      return
+    }
+    if (!current.files.includes(rel)) current.files.push(rel)
+    // 同一 agent 出现在两个方向时取确定性最终态（restored > reverted > skipped），保证集合互斥
+    if (rank[action] > rank[current.action]) {
+      current.action = action
+      current.reason = reason
+    }
+  }
+
   for (const [rel, before] of snapshot) {
     const entry = byRel.get(rel)
     if (!entry || entry.kind === 'bak') continue
     const target = path.join(home, rel)
     const after = readFileIfExists(target)
     if (after === before) continue
+    const spec = rtkAgentSpec(entry.owner)
+    let action: RtkCollateralAction
     if (entry.kind === 'extra') {
-      // 说明文件（RTK.md / CLAUDE.md / GEMINI.md …）：任何改动都还原
+      action = before === null ? 'reverted' : 'restored'
+    } else {
+      if (!spec) continue
+      const wasOn = isAgentOn(spec, before)
+      const isOn = isAgentOn(spec, after)
+      // 钩子文件从「合法 JSON」变成「坏 JSON」：不管 on 状态有没有变，都必须处理（rtk 把用户配置写坏了）。
+      const brokeJson = Boolean(spec.hookFile && JSON_HOOK_FILES.has(spec.hookFile))
+        && isValidJsonObject(before) && !isValidJsonObject(after)
+      if (wasOn === isOn && !brokeJson) continue // on 状态没变（只是内容重排）→ 不动用户的文件
+      action = brokeJson ? 'restored' : isOn ? 'reverted' : 'restored'
+    }
+
+    const current = readFileIfExists(target)
+    const concurrent = current !== after
+    const jsonSpec = spec ? HOOK_JSON[spec.id] : undefined
+    let applied: 'unchanged' | 'applied' | 'skipped'
+    if (entry.kind === 'hook' && jsonSpec) {
+      // 钩子文件一律走条目级还原：只撤销 rtk 自己的增删，窗口内的第三方改动保留（P1-a）。
+      applied = minimalCollateralEdit(target, jsonSpec, before, after).applied
+    } else if (!concurrent) {
       restoreToSnapshot(target, before, after)
-      if (before === null) reverted.add(entry.owner)
-      else restored.add(entry.owner)
-      files.push(rel)
+      applied = 'applied'
+    } else {
+      // 说明文件等：CLI 之后又被改过 → 不覆盖，如实上报
+      applied = 'skipped'
+    }
+    if (applied === 'skipped') {
+      const reason = concurrent ? 'concurrent_modification' : 'unparsable_or_unknown_shape'
+      skipped.push({ agent: entry.owner, file: rel, reason })
+      mark(entry.owner, 'skipped', rel, reason)
       continue
     }
-    const spec = rtkAgentSpec(entry.owner)
-    if (!spec) continue
-    const wasOn = isAgentOn(spec, before)
-    const isOn = isAgentOn(spec, after)
-    if (wasOn && !isOn) {
-      restoreToSnapshot(target, before, after)
-      restored.add(entry.owner)
-      files.push(rel)
-    } else if (!wasOn && isOn) {
-      restoreToSnapshot(target, before, after)
-      reverted.add(entry.owner)
-      files.push(rel)
-    }
-    // on 状态没变（只是内容重排）→ 不动用户的文件
+    if (applied === 'unchanged') continue
+    files.push(rel)
+    mark(entry.owner, action, rel)
   }
-  // 撤回/修复过的文件若被 CLI 留了新 .bak，一并清掉（原本就有的 .bak 不动）
-  for (const owner of new Set([...restored, ...reverted])) {
-    const spec = rtkAgentSpec(owner)
+
+  // 被撤回/修回的文件若被 CLI 留了新 .bak，一并清掉（原本就有的 .bak 不动）
+  for (const [agent, value] of perAgent) {
+    if (value.action === 'skipped') continue
+    const spec = rtkAgentSpec(agent)
     if (!spec?.hookFile) continue
     const bakRel = `${spec.hookFile}.bak`
     if (snapshot.get(bakRel)) continue
@@ -720,14 +975,28 @@ function reconcileCollateral(
       files.push(bakRel)
     }
   }
-  return { restored: [...restored], reverted: [...reverted], files }
+
+  return {
+    entries: [...perAgent].map(([agent, value]) => ({
+      agent, action: value.action, files: value.files, ...(value.reason ? { reason: value.reason } : {}),
+    })),
+    files,
+    skipped,
+  }
 }
 
-const collateralFields = (collateral: { restored: string[]; reverted: string[]; files: string[] }) => ({
-  ...(collateral.restored.length ? { collateralRestored: collateral.restored } : {}),
-  ...(collateral.reverted.length ? { collateralReverted: collateral.reverted } : {}),
-  ...(collateral.files.length ? { collateralFiles: collateral.files } : {}),
-})
+/** 互斥的兼容字段：同一 agent 只会出现在一个集合里。 */
+const collateralFields = (outcome: ReconcileOutcome) => {
+  const reverted = outcome.entries.filter(entry => entry.action === 'reverted').map(entry => entry.agent)
+  const restored = outcome.entries.filter(entry => entry.action === 'restored').map(entry => entry.agent)
+  return {
+    ...(outcome.entries.length ? { collateral: outcome.entries } : {}),
+    ...(reverted.length ? { collateralReverted: reverted } : {}),
+    ...(restored.length ? { collateralRestored: restored } : {}),
+    ...(outcome.skipped.length ? { collateralSkipped: outcome.skipped } : {}),
+    ...(outcome.files.length ? { collateralFiles: outcome.files } : {}),
+  }
+}
 
 /** 权限/磁盘等原生异常包成结构化错误：不泄漏服务端临时路径，带 plane/reason/backup。 */
 function structuredWriteError(error: unknown, spec: RtkAgentSpec, backupDir: string): RtkPlaneError {
@@ -790,16 +1059,19 @@ export async function applyLocalAgentHook(
   }
 
   return withFileLock(path.join(home, spec.dir), async () => {
-    const targets = [spec.hookFile, ...(spec.extraFiles || [])].filter((rel): rel is string => Boolean(rel))
+    // 目标文件自己的 .bak 也纳管：rtk CLI 会覆写 <file>.bak，用户原件不能被静默吞掉（P1）。
+    const hookBak = spec.hookFile ? `${spec.hookFile}.bak` : null
+    const targets = [spec.hookFile, hookBak, ...(spec.extraFiles || [])].filter((rel): rel is string => Boolean(rel))
     const guards = guardEntries(spec.id)
+    const allFiles = [...new Set([...targets, ...guards.map(entry => entry.rel)])]
     // 备份与快照都必须发生在 CLI **之前**：CLI 可能把目标文件写坏，
-    // 之后再读就等于把坏内容当原件（红队缺陷 3）。
-    const backup = createRtkBackup(home, [...new Set([...targets, ...guards.map(entry => entry.rel)])])
-    pruneRtkBackups(home)
+    // 之后再读就等于把坏内容当原件（红队第二轮缺陷 3）。
+    const backup = createRtkBackup(home, allFiles)
+    beginRtkBackupUse(backup.id)
     const snapshot = new Map<string, string | null>()
-    for (const rel of [...new Set([...targets, ...guards.map(entry => entry.rel)])]) {
-      snapshot.set(rel, readFileIfExists(path.join(home, rel)))
-    }
+    for (const rel of allFiles) snapshot.set(rel, readFileIfExists(path.join(home, rel)))
+    pruneRtkBackups(home, rtkBackupKeep(), { protect: [backup.id] })
+
     const restoreTargets = () => {
       for (const rel of targets) {
         const target = path.join(home, rel)
@@ -808,22 +1080,47 @@ export async function applyLocalAgentHook(
         if (after !== before) restoreToSnapshot(target, before, after)
       }
     }
+    /** 成功路径也把「用户原本就有的 .bak」还回去（rtk 会覆写它，属于静默数据丢失）。 */
+    const preserveUserBaks = (): string[] => {
+      if (!hookBak) return []
+      const before = snapshot.get(hookBak) ?? null
+      if (before === null) return []
+      const target = path.join(home, hookBak)
+      if (readFileIfExists(target) === before) return []
+      restoreToSnapshot(target, before, readFileIfExists(target))
+      return [hookBak]
+    }
+
     // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
     for (const rel of targets) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
     fs.mkdirSync(path.join(home, spec.dir), { recursive: true })
+
+    const success = (mechanism: 'rtk-cli' | 'hooks-json', detail: string, cli: RtkCliAttempt, fallbackReason?: string): LocalHookResult => {
+      const collateral = reconcileCollateral(home, snapshot, guards)
+      const preservedBak = preserveUserBaks()
+      return {
+        mechanism, detail, cli,
+        ...(fallbackReason ? { fallbackReason } : {}),
+        backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
+        ...collateralFields(collateral),
+        ...(preservedBak.length ? { preservedBak } : {}),
+      }
+    }
 
     try {
       const args = on ? spec.initFlags! : [...spec.initFlags!, '--uninstall']
       let cli: RtkCliAttempt
       if (fs.existsSync(bin)) {
         cli = await runRtkCli(bin, args, home, options.timeoutMs ?? 20_000)
-        const collateral = reconcileCollateral(home, snapshot, guards)
+        // ON / OFF 共用同一套写后校验：目标状态 + 文件仍是合法 JSON（P0-2）
+        const integrity = hookFileIntegrity(spec, home)
+        if (integrity) {
+          restoreTargets()
+          reconcileCollateral(home, snapshot, guards)
+          throw brokenHookFileError(spec, integrity, backup.dir)
+        }
         if (cli.ok && verifyLocalHook(spec, on, home)) {
-          return {
-            mechanism: 'rtk-cli', detail: `rtk init -g ${args.join(' ')}`, cli,
-            backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
-            ...collateralFields(collateral),
-          }
+          return success('rtk-cli', `rtk init -g ${args.join(' ')}`, cli)
         }
         cli = cli.ok ? { ...cli, ok: false, stderr: 'rtk 执行成功但目标状态未生效' } : cli
       } else {
@@ -845,32 +1142,35 @@ export async function applyLocalAgentHook(
           }
           throw error
         }
+        const integrity = hookFileIntegrity(spec, home)
+        if (integrity) {
+          restoreTargets()
+          throw brokenHookFileError(spec, integrity, backup.dir)
+        }
         if (verifyLocalHook(spec, on, home)) {
-          const collateral = reconcileCollateral(home, snapshot, guards)
-          return {
-            mechanism: 'hooks-json',
-            detail: `${spec.hookFile}（已核实 schema）`,
-            cli,
-            fallbackReason: cli.stderr,
-            backup: backup.dir, backupId: backup.id, backupFileCount: backup.files.length,
-            ...collateralFields(collateral),
-          }
+          return success('hooks-json', `${spec.hookFile}（已核实 schema）`, cli, cli.stderr)
         }
         restoreTargets()
         throw new RtkPlaneError(502, 'local', 'hook_write_unverified',
           `写入 ${spec.hookFile} 后仍检测不到目标状态（rtk CLI: ${cli.stderr}）；原文件已按备份回填，可用 /api/rtk/rollback 恢复`)
       }
 
-      throw new RtkPlaneError(502, 'local', 'hook_cli_failed',
-        `${spec.name} 的钩子文件形状未经验证，且 rtk CLI 失败：${cli.stderr}`)
+      restoreTargets()
+      const cliFailure = new RtkPlaneError(502, 'local', 'hook_cli_failed',
+        `${spec.name} 的钩子文件形状未经验证，且 rtk CLI 失败：${cli.stderr}；原文件已按备份回填`)
+      cliFailure.backup = backup.dir
+      throw cliFailure
     } catch (error) {
       // 失败路径同样要把被连带改动的其他 agent 文件还原（CLI 可能已经动过它们）。
       reconcileCollateral(home, snapshot, guards)
       if (error instanceof RtkPlaneError) throw error
       throw structuredWriteError(error, spec, backup.dir)
+    } finally {
+      endRtkBackupUse(backup.id)
     }
   })
 }
+
 
 
 /* ------------------------------------------------------------------ */
@@ -922,6 +1222,9 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
   let collateralRestored: string[] | undefined
   let collateralReverted: string[] | undefined
   let collateralFiles: string[] | undefined
+  let collateral: RtkCollateralEntry[] | undefined
+  let collateralSkipped: Array<{ agent: string; file: string; reason: string }> | undefined
+  let preservedBak: string[] | undefined
 
   if (plane === 'local') {
     const spec = rtkAgentSpec(agent)
@@ -937,6 +1240,9 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     collateralRestored = result.collateralRestored
     collateralReverted = result.collateralReverted
     collateralFiles = result.collateralFiles
+    collateral = result.collateral
+    collateralSkipped = result.collateralSkipped
+    preservedBak = result.preservedBak
   } else if (plane === 'kernel') {
     // 内核由 scripts/magpie-console.mjs:91-93 以 HOME=<runtime>/home 启动，它的 agent
     // 配置在沙箱 HOME 里，写内核不会影响用户真实的 ~/.codex / ~/.claude。
@@ -980,6 +1286,9 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     ...(collateralRestored?.length ? { collateralRestored } : {}),
     ...(collateralReverted?.length ? { collateralReverted } : {}),
     ...(collateralFiles?.length ? { collateralFiles } : {}),
+    ...(collateral?.length ? { collateral } : {}),
+    ...(collateralSkipped?.length ? { collateralSkipped } : {}),
+    ...(preservedBak?.length ? { preservedBak } : {}),
   }
 }
 
