@@ -8,7 +8,10 @@ import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
 /**
- * R6-B 的服务端一半（task-26 A）：`totalConcurrency` 的空串/缺字段**不得被静默改写**。
+ * 请求输入的收口（task-26 A / task-28 R7-C、R7-D）：**服务端不得静默改写用户输入**。
+ * - 并发：`totalConcurrency` 空串/缺字段 → 400（R6-B）
+ * - 额度：`totalUsd/dailyUsd/weeklyUsd` 空串/非数字 → 400，负数 → 400，缺字段保持原值，显式 0 合法（R7-C）
+ * - 报表天数：`days=abc` 与默认值等价（R7-D）
  *
  * 端到端：真起一个 `server/index.ts` 子进程（临时 `DATA_DIR` + 本地 CPA stub），只打 HTTP 接口。
  * - 不用真实数据：`DATA_DIR` 用 mkdtemp；不用真实中转站：`CPA_BASE_URL` 指向本地 stub；
@@ -183,6 +186,40 @@ test('totalConcurrency 空串/缺字段不再被静默改写（POST 400；PATCH 
     assert.equal(keep.status, 200, `PATCH 缺字段应当保持原值：${await keep.clone().text()}`)
     assert.equal(((await keep.json()) as { item?: { totalConcurrency?: number } }).item?.totalConcurrency, 7)
     assert.equal(storedConcurrency(h, id), 7)
+    // ⑦ R7-C 额度接口：空串 / 非数字 / 负数 / 缺字段 / 显式 0
+    const quota = (id: string, body: unknown, method: 'PATCH' = 'PATCH') =>
+      fetch(`${h.base}/api/keys/${id}/quota`, { method, headers: h.auth, body: JSON.stringify(body) })
+
+    seedKey(h, id, 7)
+    const quotaEmpty = await quota(id, { totalUsd: '' })
+    assert.equal(quotaEmpty.status, 400, '额度空串必须被拒（旧实现 `Number(...) || 0` 会静默变成 0 = 不限额）')
+    assert.match(((await quotaEmpty.json()) as { error?: string }).error ?? '', /额度不能为空/)
+
+    const quotaText = await quota(id, { totalUsd: 'abc' })
+    assert.equal(quotaText.status, 400, '非数字必须被拒（旧实现 `Number("abc") || 0` 会静默变成 0 = 不限额）')
+    assert.match(((await quotaText.json()) as { error?: string }).error ?? '', /额度必须是数字/)
+
+    const quotaNegative = await quota(id, { totalUsd: -3 })
+    assert.equal(quotaNegative.status, 400, '负数必须被拒（旧实现会原样落库 -3）')
+    assert.match(((await quotaNegative.json()) as { error?: string }).error ?? '', /必须是 0 或正数/)
+
+    const quotaMissing = await quota(id, {})
+    assert.equal(quotaMissing.status, 200, `缺字段应当保持原值：${await quotaMissing.clone().text()}`)
+
+    // 显式 0 = 「不限额」（UI 的「无额度限制」开关发的就是 0），不能被误伤
+    const quotaZero = await quota(id, { totalUsd: 0 })
+    assert.equal(quotaZero.status, 200, `显式 0 必须仍然合法：${await quotaZero.clone().text()}`)
+
+    // ⑧ R7-D 报表天数：非数字必须与默认值等价（旧实现把它变成 NaN，报表返回完全不同的空结果）
+    const daysDefault = await fetch(`${h.base}/api/usage-page?days=7`, { headers: h.auth })
+    const daysText = await fetch(`${h.base}/api/usage-page?days=abc`, { headers: h.auth })
+    const daysEmpty = await fetch(`${h.base}/api/usage-page?days=`, { headers: h.auth })
+    assert.equal(daysDefault.status, 200)
+    assert.equal(daysText.status, 200, 'days=abc 必须正常返回，而不是 500 或 NaN 报表')
+    const [defaultBody, textBody, emptyBody] = await Promise.all([daysDefault.text(), daysText.text(), daysEmpty.text()])
+    assert.equal(textBody, defaultBody, 'days=abc 必须与默认口径完全一致（NaN 会给出另一份空报表）')
+    assert.equal(emptyBody, defaultBody, 'days= 也必须与默认口径一致')
+    assert.doesNotMatch(textBody, /"days":null/)
   } finally {
     if (harness) await stopHarness(harness)
     await new Promise<void>((resolve) => stub.server.close(() => resolve()))

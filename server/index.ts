@@ -11,7 +11,7 @@ import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listCh
 import { isAuthenticated, login, logout, requireAuth } from './auth.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
-import { validatePolicy } from './policy.js'
+import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
 import { buildNamedAPIKey, deriveKeySlug } from './keyNaming.js'
 import { activeProviderPredicate, activeProviderValues } from './currentChannels.js'
 import { canonicalModelSql } from './modelIdentity.js'
@@ -339,14 +339,34 @@ function publicKeyRow(row: Record<string, unknown>, quotaState = quotaStateFor(r
   }
 }
 
+/**
+ * 额度金额的显式解析（R7-C，形状与 `parseTotalConcurrency` 一致）。
+ *
+ * 旧写法 `Number(body ?? row) || 0` 有两个方向相反的静默改写：
+ * - `''` / `'abc'` → `Number(...)` 是 0 或 NaN，`|| 0` 一律变成 **0 = 不限额**（用户什么都没填，却解除了限制）；
+ * - 缺字段与显式 0 无法区分。
+ *
+ * 现在：空串/非数字 → 400；数值原样交给 `validateQuota` 做范围与跨字段校验；
+ * 缺字段（PATCH）→ 保持原值。**显式 0 仍然是合法的「不限额」**（UI 的「无额度限制」开关发的就是 0）。
+ */
+function parseQuotaAmount(raw: unknown, fallback: number): number {
+  if (raw === undefined || raw === null) return fallback
+  if (typeof raw === 'string' && raw.trim() === '') {
+    throw new Error('额度不能为空：填 0 表示不限额')
+  }
+  const value = Number(raw)
+  if (!Number.isFinite(value)) throw new Error('额度必须是数字：0 表示不限额，上限 1000000')
+  return value
+}
+
 app.patch('/api/keys/:id/quota', async (req, res) => {
   const row = db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(req.params.id) as Record<string, unknown> | undefined
   if (!row) return res.status(404).json({ error: 'Key 不存在' })
   try {
     const quota = validateQuota({
-      totalUsd: Number(req.body?.totalUsd ?? row.quota_total_usd) || 0,
-      dailyUsd: Number(req.body?.dailyUsd ?? row.quota_daily_usd) || 0,
-      weeklyUsd: Number(req.body?.weeklyUsd ?? row.quota_weekly_usd) || 0,
+      totalUsd: parseQuotaAmount(req.body?.totalUsd, Number(row.quota_total_usd) || 0),
+      dailyUsd: parseQuotaAmount(req.body?.dailyUsd, Number(row.quota_daily_usd) || 0),
+      weeklyUsd: parseQuotaAmount(req.body?.weeklyUsd, Number(row.quota_weekly_usd) || 0),
     })
     db.prepare('UPDATE api_keys SET quota_total_usd=?,quota_daily_usd=?,quota_weekly_usd=?,updated_at=? WHERE key_hash=?')
       .run(quota.totalUsd, quota.dailyUsd, quota.weeklyUsd, new Date().toISOString(), req.params.id)
@@ -463,7 +483,6 @@ app.get('/api/keys/:id/reveal', (req, res) => {
  * 现在：空串一律 400；POST 缺字段也 400（不再有隐式默认值）；PATCH 缺字段才表示「保持原值」。
  * 文案与 `server/policy.ts:10` 的规则同源。
  */
-const TOTAL_CONCURRENCY_RULE = '总并发必须是 0 到 500 的整数，0 表示不限速'
 
 function parseTotalConcurrency(raw: unknown, fallback?: number): number {
   if (raw === undefined || raw === null) {
@@ -541,7 +560,7 @@ app.delete('/api/keys/:id', async (req, res) => {
 })
 
 app.get('/api/usage-overview', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 30)))
+  const days = boundedInteger(req.query.days, 30, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const payload = await analyticsCoordinator.run(`usage-overview:${days}:${keyId}:${reporting.policyHash}`, async () =>
@@ -551,7 +570,7 @@ app.get('/api/usage-overview', async (req, res) => {
 })
 
 app.get('/api/usage-page', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
+  const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const payload = await reportSnapshots.run(reportCacheKey.usagePage(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
@@ -561,7 +580,7 @@ app.get('/api/usage-page', async (req, res) => {
 })
 
 app.get('/api/usage-key-summaries', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
+  const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const reporting = await reportingContext()
   const payload = await reportSnapshots.run(reportCacheKey.usageKeys(days, reporting.policyHash), REPORT_FRESH_MS, async () =>
     loadUsageKeySummariesReport(usageReader, reporting.groups, days))
@@ -571,7 +590,7 @@ app.get('/api/usage-key-summaries', async (req, res) => {
 
 /** 首页只需要摘要与趋势；不要为了首屏把请求明细和 p95 全部聚合一遍。 */
 app.get('/api/dashboard', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
+  const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const relayIntegrity = config.dataPlaneDashboardReadMode === 'snapshot'
@@ -610,7 +629,7 @@ app.get('/api/dashboard', async (req, res) => {
 })
 
 app.get('/api/analytics', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
+  const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const payload = await analyticsCoordinator.run(`analytics:${days}:${keyId}:${reporting.policyHash}`, async () =>
@@ -620,7 +639,7 @@ app.get('/api/analytics', async (req, res) => {
 })
 
 app.get('/api/charts', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
+  const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const payload = await reportSnapshots.run(reportCacheKey.charts(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
@@ -630,7 +649,7 @@ app.get('/api/charts', async (req, res) => {
 })
 
 app.get('/api/charts-latency', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 7)))
+  const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const payload = await reportSnapshots.run(reportCacheKey.chartLatency(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
@@ -860,7 +879,7 @@ app.post('/api/channels/prune-stale', async (_req, res) => {
 
 /** 按模型或按 Key 的花费明细。keyId 为空时统计全部 Key。 */
 app.get('/api/usage-breakdown', async (req, res) => {
-  const days = Math.max(1, Math.min(config.usageRetentionDays, Number(req.query.days || 30)))
+  const days = boundedInteger(req.query.days, 30, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
   const reporting = await reportingContext()
   const payload = await reportSnapshots.run(reportCacheKey.usageBreakdown(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
