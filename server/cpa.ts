@@ -52,10 +52,70 @@ export class CPARequestError extends Error {
 export const isUnsupportedManagementEndpoint = (error: unknown) =>
   error instanceof CPARequestError && error.status === 404
 
+/**
+ * 远端管理面 → 本地 Magpie shim 的**方言适配**（单点，task-66）。
+ *
+ * 背景（红队第十八轮副作用发现）：本文件按**远端 CPA** 的管理面写调用，而本地 shim 是另一套方法/路径：
+ *   - `PATCH /auth-files/status`（远端）↔ `PUT /auth-files/status`（本地 shim）
+ *   - `PATCH /auth-files/fields`（远端）↔ `PUT /auth-files/proxy`（本地 shim）
+ * 以前 local 分支**原样透传**，于是本机（local 控制面）的「凭据启用/禁用」「凭据级代理」100% 失败，
+ * 报 `This CPA management operation is not supported by the Magpie kernel`（路由层再把它变成 400）。
+ *
+ * 修法：在**唯一的分支点**做翻译，而不是去改两个调用点（那会漏掉第三个调用点）。
+ * 远端 cpa 模式完全不经过这里 → 行为不变。
+ */
+const LOCAL_MANAGEMENT_ALIASES: Record<string, { method: string; path: string }> = {
+  'PATCH /auth-files/status': { method: 'PUT', path: '/auth-files/status' },
+  'PATCH /auth-files/fields': { method: 'PUT', path: '/auth-files/proxy' },
+}
+
+/**
+ * 本地 shim **确实没有**对应能力的远端字段：明确报错，而不是让它落到含糊的
+ * 「not supported by the Magpie kernel」再被路由层变成 400。
+ * 目前只有「冷却开关」——Magpie 的凭据文件没有这个概念（远端 CPA 有）。
+ */
+const LOCAL_UNSUPPORTED_REQUEST_FIELDS: Record<string, string[]> = {
+  '/auth-files/fields': ['disable_cooling'],
+}
+
+/**
+ * 本地 shim **确实没有**的远端操作（实测能力矩阵见 `docs/qa/blue/local-control-plane-methods.md`）。
+ * 明确报出「哪个操作、为什么、替代路径」，而不是让它落到含糊的
+ * `This CPA management operation is not supported by the Magpie kernel` 再被路由层压成 400。
+ */
+const LOCAL_UNSUPPORTED_OPERATIONS: Record<string, string> = {
+  'POST /api-call': '本机 Magpie 内核不代理任意上游 API 调用（远端 CPA 的 /api-call 才有）——'
+    + '受影响的用量/额度/资料类功能需要远端控制面，或走网关自身端口',
+  'GET /latest-version': '本机没有独立的 CPA 版本接口（远端 CPA 才有）；控制台版本请看 /api/version',
+}
+
+/** 适配一次本地管理面调用；未命中翻译表就原样放行（保持既有行为）。 */
+export function adaptLocalManagementRequest(path: string, init: RequestInit = {}): { path: string; init: RequestInit } {
+  const method = String(init.method || 'GET').toUpperCase()
+  const [pathname, query] = path.split('?')
+  let body: Record<string, unknown> = {}
+  if (typeof init.body === 'string' && init.body.trim()) {
+    try { body = JSON.parse(init.body) as Record<string, unknown> } catch { body = {} }
+  }
+  const unsupportedOperation = LOCAL_UNSUPPORTED_OPERATIONS[`${method} ${pathname}`]
+  if (unsupportedOperation) {
+    throw new Error(`本地控制面不支持该操作：${method} ${pathname} —— ${unsupportedOperation}`)
+  }
+  const unsupported = (LOCAL_UNSUPPORTED_REQUEST_FIELDS[pathname] || []).filter(field => field in body)
+  if (unsupported.length) {
+    throw new Error(`本地控制面不支持该操作：${method} ${pathname} 的 ${unsupported.join(' / ')} 字段`
+      + '（Magpie 内核没有对应能力，远端 cpa 控制面才有）。请在 Magpie 渠道配置里表达同样的语义。')
+  }
+  const alias = LOCAL_MANAGEMENT_ALIASES[`${method} ${pathname}`]
+  if (!alias) return { path, init }
+  return { path: query ? `${alias.path}?${query}` : alias.path, init: { ...init, method: alias.method } }
+}
+
 async function cpaRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
     const { magpieManagementRequest } = await import('./magpieControl.js')
-    return magpieManagementRequest<T>(path, init)
+    const local = adaptLocalManagementRequest(path, init)
+    return magpieManagementRequest<T>(local.path, local.init)
   }
   if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
   const response = await fetch(`${config.cpaBaseUrl}/v0/management${path}`, {

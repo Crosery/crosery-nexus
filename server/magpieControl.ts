@@ -253,16 +253,35 @@ export function listLocalAuthFiles(): Array<Record<string, unknown>> {
           provider: data.provider || data.type || 'oauth',
           email: data.email || data.account || '',
           account: data.account || data.email || '',
-          disabled: Boolean(fileMeta.disabled ?? data.disabled),
           status: 'active',
-          proxy_url: fileMeta.proxy_url ?? data.proxy_url ?? '',
           ...data,
+          // 本地覆盖优先（与 localAuthFileView 同一语义）：列表页显示的必须是用户实际设置的值
+          disabled: Boolean(fileMeta.disabled ?? data.disabled),
+          proxy_url: fileMeta.proxy_url ?? data.proxy_url ?? '',
         })
       } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
 
   return files
+}
+
+/**
+ * 凭据的**有效视图**：文件内容 + 本地覆盖（`auth-files-meta.json` 的 `disabled` / `proxy_url` **优先**）。
+ *
+ * 为什么需要（task-66）：本地面把「启用/禁用」「代理」存在 meta 里，而 `/auth-files/download`
+ * 以前只回**原始文件** → `getAuthFileProxy()` 读回来永远是空字符串（写进去了却读不出来）。
+ * 远端 CPA 把这两个字段存在凭据文件本身，所以下载分支必须给出**同一个语义**。
+ */
+export function localAuthFileView(name: string): Record<string, unknown> | null {
+  const data = getLocalAuthFile(name) // 已过单点路径校验（形状/归属/realpath/nlink）
+  if (!data) return null
+  const fileMeta = readAuthFilesMeta()[name] || {}
+  return {
+    ...data,
+    disabled: Boolean(fileMeta.disabled ?? data.disabled),
+    proxy_url: fileMeta.proxy_url ?? data.proxy_url ?? '',
+  }
 }
 
 export function saveLocalAuthFile(name: string, content: Buffer | string) {
@@ -374,7 +393,7 @@ export async function magpieManagementRequest<T>(route: string, init: RequestIni
     result = { models: models.map(id => ({ id })) }
   } else if (url.pathname === '/auth-files/download' && method === 'GET') {
     const name = url.searchParams.get('name') || ''
-    result = getLocalAuthFile(name)
+    result = localAuthFileView(name)
   } else if (url.pathname === '/oauth-excluded-models') {
     if (method === 'GET') result = { 'oauth-excluded-models': readExcludedModels() }
     else if (method === 'PUT') {

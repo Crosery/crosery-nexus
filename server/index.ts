@@ -18,6 +18,21 @@ import {
   validateCredentials,
 } from './auth.js'
 import { errorResponseBody, loginRateLimitKey, loginRateLimiter } from './security.js'
+
+/** 已知错误 reason（task-66）：`请求格式不正确` 以前无法区分「JSON 坏」与「业务拒绝」。 */
+const knownErrorReason = (error: unknown, status: number): string | undefined => {
+  const type = String((error as { type?: unknown })?.type || '')
+  if (type === 'entity.parse.failed') return 'invalid_json'
+  if (type === 'entity.too.large') return 'payload_too_large'
+  if (status === 413) return 'payload_too_large'
+  return undefined
+}
+
+/** 路由错误响应：错误自带 4xx/5xx 状态就用它（例如「本地控制面不支持」是 501，不该被压成 400）。 */
+const errorStatusOr = (error: unknown, fallback: number): number => {
+  const status = Number((error as { status?: unknown })?.status)
+  return Number.isInteger(status) && status >= 400 && status < 600 ? status : fallback
+}
 import { assertAuthFileName, authFilePath } from './magpieControl.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
@@ -1102,7 +1117,9 @@ app.patch('/api/credentials/:name', async (req, res) => {
     await reconcileKeyModelAccess()
     addAudit(enabled ? 'enable_credential' : 'disable_credential', name)
     res.json({ ok: true })
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
+  } catch (error) {
+    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '操作失败' })
+  }
 })
 
 app.delete('/api/credentials/:name', async (req, res) => {
@@ -1114,7 +1131,9 @@ app.delete('/api/credentials/:name', async (req, res) => {
     await reconcileKeyModelAccess()
     addAudit('delete_credential', name)
     res.json({ ok: true })
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '删除失败' }) }
+  } catch (error) {
+    res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '删除失败' })
+  }
 })
 
 app.get('/api/credentials/:name/proxy', async (req, res) => {
@@ -1124,7 +1143,9 @@ app.get('/api/credentials/:name/proxy', async (req, res) => {
     const proxyUrl = await credentialProxyCoordinator.run(name, () => getAuthFileProxy(name))
     res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=300')
     res.json({ proxyUrl })
-  } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取代理失败' }) }
+  } catch (error) {
+    res.status(errorStatusOr(error, 502)).json({ error: error instanceof Error ? error.message : '读取代理失败' })
+  }
 })
 
 app.patch('/api/credentials/:name/proxy', async (req, res) => {
@@ -1402,7 +1423,9 @@ app.use((error: unknown, req: express.Request, res: express.Response, next: expr
   const stack = error instanceof Error ? error.stack || error.message : String(error)
   // 日志保留完整堆栈与请求上下文，便于排障；响应体不包含其中任何内容。
   console.error(`[error] ${req.method} ${req.originalUrl} → ${status}\n${stack}`)
-  res.status(status).json(errorResponseBody(status))
+  // 已知 reason（task-66，红队第十八轮）：让客户端能区分「JSON 解析失败」「请求体过大」与业务拒绝。
+  const reason = knownErrorReason(error, status)
+  res.status(status).json(reason ? { ...errorResponseBody(status), reason } : errorResponseBody(status))
 })
 
 startSync()
