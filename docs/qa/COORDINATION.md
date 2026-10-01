@@ -35,6 +35,15 @@ rmdir /tmp/cac-build.lock 2>/dev/null
 - 服务端改动要生效：`npm run build` 不是必须，但必须重启 `com.crosery.console-magpie`。
   **提交服务端改动的人负责重启并抽验**：先用 `launchctl kickstart -k ...` 重启，再对**运行中的实例**发一条真实请求验证新行为（红队 R7-A：`server/index.ts` 的修复已提交但服务没重启，线上仍在静默改写用户输入，而所有进程内测试都是绿的——测试 spawn 自己的子进程，验不到「进程没重启」）。
 
+## 服务与沙箱（第 19 轮真实事故）
+
+- **沙箱只允许写工作区**：`~/.agents/crosery/magpie-console/`（运行时目录：内核 socket、备份、日志）**在工作区之外，从受限会话里不可写**。表现是：
+  - 手动/子进程启动内核会报 `Magpie kernel did not become ready`（内核无法在运行时目录创建 socket）；
+  - `launchctl bootstrap|load` 报 **I/O error 5**，`kickstart` 报 service not found。
+- ⇒ **不要 `launchctl bootout`（或任何方式停掉）这套服务**。第 19 轮我为修数据把服务停掉，结果是：内核起不来、launchd 也拉不回，控制台（8791 + 网关 8790）**对用户中断了十几分钟**，最后只能用一个一次性提权命令 `launchctl bootstrap` 恢复。
+- **要重启就用** `launchctl kickstart -k gui/$(id -u)/com.crosery.console-magpie`（对已注册服务有效；不需要写运行时目录）。若真的需要停服务，**先确认自己能把它拉回来**。
+- 需要写运行时目录或动 launchd 的操作，**一次性的提权请求是正确做法**，不要用"换个路径/换个端口"绕过（那会让用户的实例与真实运行时目录脱节）。
+
 ## Git（共享工作区，血泪教训）
 
 多个成员共用**同一个索引与同一个分支**，所以：
