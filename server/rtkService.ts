@@ -145,7 +145,19 @@ export type RtkToggleOptions = {
   relay?: RelayTarget
 }
 
-export type RTKFailure = { status: number; error: string; plane?: RtkPlaneId; reason?: string; backup?: string }
+export type RTKFailure = {
+  status: number
+  error: string
+  plane?: RtkPlaneId
+  reason?: string
+  backup?: string
+  /** 锁在操作期间被接管（只读该字段的客户端不能漏判；与 reason='lock_lost_during_write' 同时出现）。 */
+  lockLost?: boolean
+  lockLostReason?: string
+}
+
+/** 承载 fencing 信息的 RtkPlaneError（不改 rtkPlane.ts 的类型也能挂上诊断字段）。 */
+type RtkFencingPlaneError = RtkPlaneError & { lockLost?: boolean; lockLostReason?: string }
 
 /* ------------------------------------------------------------------ */
 /* 本机平面基础                                                        */
@@ -261,7 +273,9 @@ let lockBypassWarned = false
 function warnLockBypass(lockPath: string): void {
   if (lockBypassWarned) return
   lockBypassWarned = true
-  console.warn(`[rtk] RTK_LOCK_DISABLED 已启用：跨进程写入锁被旁路（${lockPath}）。仅供对照实验，生产环境不得设置。`)
+  console.warn('[rtk] RTK_LOCK_DISABLED 已启用：跨进程写入锁被旁路，**同时关闭提交点 fencing**（isOwned() 恒为 true，'
+    + '锁被接管也不会阻断写入）。仅供「修前语义」对照实验，生产环境不得设置。'
+    + `锁文件：${lockPath}`)
 }
 
 /** 陈旧锁判定阈值（默认 60s，可配 1s–3600s）：持锁进程还活着但超过这个时间也算陈旧。 */
@@ -504,7 +518,8 @@ export async function acquireRtkFileLock(options: {
   const staleMs = options.staleMs ?? rtkLockStaleMs(env)
   const token = randomBytes(8).toString('hex')
   const purpose = String(options.purpose || 'rtk local write').slice(0, 80)
-  // RTK_LOCK_DISABLED 只用于「去掉锁」的对照实验，正常部署不要设
+  // RTK_LOCK_DISABLED 只用于「去掉锁」的对照实验，正常部署不要设。
+  // ⚠️ 它同时关闭 fencing：isOwned() 恒为 true、assertOwned() 不抛（R12-C）。
   const disabled = ['1', 'true', 'yes', 'on'].includes(String(env.RTK_LOCK_DISABLED || '').toLowerCase())
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 })
   const startedAt = Date.now()
@@ -542,15 +557,23 @@ export async function acquireRtkFileLock(options: {
    * 提交点 fence（R11-C）：主动读盘确认锁仍属于自己。不匹配就抛结构化错误，
    * 让调用方**放弃这次写入**并如实上报「这次没生效，请重试」。
    */
+  // 措辞（R12-A）：这是「每个写入前校验一次」，不是「写入与校验原子」。
+  // 校验与写入之间存在 ≤1 个系统调用的窗口（无原生 CAS 无法消除）；要打进去必须在 H 校验通过后的
+  // 一个系统调用内完成 T 的「判陈旧 → unlink → 新建 → 写入」，而此刻 H 的锁是新鲜的（心跳还在续期），
+  // 因此该窗口在现实的调度/IO 时延下不可达；即便撞上，下一次校验（或心跳）也会立刻把 lost 标出来。
   const assertOwned = () => {
     const state = disabled ? 'yes' : ownsLock()
     if (state === 'yes') return
     markLost(state === 'unreadable' ? 'lock_file_unreadable' : 'token_mismatch')
     const failure = new RtkPlaneError(409, 'local', 'lock_lost_during_write',
       `写入锁在操作期间被接管（${info.lostReason}）：已放弃本次提交，改动可能未生效，请重试`
-      + `（可用 /api/rtk/rollback 恢复；锁：${lockPath}）`)
+      + `（可用 /api/rtk/rollback 恢复；锁：${lockPath}）`) as RtkFencingPlaneError
+    // 供只读 lockLost 的客户端判断（R12-B）；HTTP 层需在响应里一并透出
+    failure.lockLost = true
+    failure.lockLostReason = info.lostReason
     throw failure
   }
+  // 旁路（RTK_LOCK_DISABLED=1）时恒为 true：**该开关同时关闭 fencing**（R12-C）
   const isOwned = () => (disabled ? true : ownsLock() === 'yes')
   const release = () => {
     try {
@@ -579,7 +602,7 @@ export async function acquireRtkFileLock(options: {
 
   if (disabled) {
     // RTK_LOCK_DISABLED 只用于「去掉锁」的对照实验：这里明确标记旁路 + 打一条一次性告警，
-    // 生产环境不得设置（launchd 当前未设）。
+    // 生产环境不得设置（launchd 当前未设）。注意：**该开关同时关闭 fencing**（isOwned() 恒为 true）。
     warnLockBypass(lockPath)
     info.waitedMs = 0
     return { info, release: () => {}, get lost() { return lost }, isOwned, assertOwned }
@@ -1637,6 +1660,9 @@ export async function applyLocalAgentHook(
         lock.assertOwned()
         const collateral = reconcileCollateral(home, snapshot, guards, { fence: () => lock.assertOwned() })
         const preservedBak = preserveUserBaks()
+        // 提交块结束时再校验一次：如果丢锁是在连带还原阶段被发现的（reconcile 返回 skipped 而不抛），
+        // 这里必须把「本次没生效」如实报出去，绝不能返回 ok（R12-A 同族的诚实性要求）。
+        lock.assertOwned()
         return {
           mechanism, detail, cli,
           ...(fallbackReason ? { fallbackReason } : {}),
@@ -1948,6 +1974,8 @@ export function rtkFailure(error: unknown): RTKFailure {
       plane: error.plane,
       reason: error.reason,
       ...(error.backup ? { backup: error.backup } : {}),
+      ...((error as RtkFencingPlaneError).lockLost ? { lockLost: true } : {}),
+      ...((error as RtkFencingPlaneError).lockLostReason ? { lockLostReason: (error as RtkFencingPlaneError).lockLostReason } : {}),
     }
   }
   const message = error instanceof Error ? error.message : 'RTK 操作失败'

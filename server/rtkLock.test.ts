@@ -404,3 +404,198 @@ test('R11-C 跨进程时序 SIGSTOP → 接管 → 恢复：不会「双方都�
   assert.equal(finalContent, thiefContent, 'H 不得在接管者之后写入（否则就是「双方都写完」）')
   assert.equal(finalContent.includes('rtk hook codex'), false, 'H 的写入不能落盘')
 })
+
+/* ---------------- R12-C：旁路同时关闭 fencing ---------------- */
+
+test('R12-C RTK_LOCK_DISABLED=1 时 isOwned() 恒为 true（该开关同时关闭 fencing）', async () => {
+  const bypassEnv = { ...env, RTK_LOCK_DISABLED: '1' } as NodeJS.ProcessEnv
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'bypass-fence', env: bypassEnv })
+  assert.equal(lock.info.disabled, true)
+  assert.equal(lock.isOwned(), true)
+  // 即使锁文件被换成别人的，旁路下仍被视为「持有」（= 不阻断写入）；这是被文档化的语义
+  fs.writeFileSync(lockPath(), JSON.stringify({ token: 'THIEF', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home }))
+  assert.equal(lock.isOwned(), true, '旁路下 isOwned() 恒为 true —— 该开关同时关闭 fencing')
+  assert.doesNotThrow(() => lock.assertOwned())
+  fs.rmSync(lockPath())
+})
+
+/* ---------------- R12-B：409 载荷必须带 lockLost（服务层 seam） ---------------- */
+
+test('R12-B fence 失败载荷带 lockLost:true + reason（rtkFailure 透出）', async () => {
+  const lock = await service.acquireRtkFileLock({ home, purpose: 'payload', env: { ...env } })
+  fs.rmSync(lockPath())
+  fs.writeFileSync(lockPath(), JSON.stringify({ token: 'THIEF', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home }))
+  let captured: unknown
+  try {
+    lock.assertOwned()
+  } catch (error) {
+    captured = error
+  }
+  assert.ok(captured, 'assertOwned 必须抛错')
+  const failure = service.rtkFailure(captured)
+  assert.equal(failure.status, 409)
+  assert.equal(failure.reason, 'lock_lost_during_write')
+  assert.equal(failure.lockLost, true, '只读 lockLost 的客户端不能漏判')
+  assert.equal(failure.lockLostReason, 'token_mismatch')
+  assert.equal((captured as { lockLost?: boolean }).lockLost, true, '错误对象本身也要带 lockLost')
+  fs.rmSync(lockPath())
+})
+
+/* ---------------- 落盘点 e2e：被夺锁后 H 对 hook 与 .bak 零写入 ---------------- */
+
+test('落盘点 e2e（判别条件：T 真的改写了 hook 与 .bak）：H 被夺锁后一个字节都不写', { timeout: 90_000 }, async () => {
+  const dir = path.join(workspace, 'commitpoints-e2e')
+  const fenceHome = path.join(dir, 'home')
+  const fenceBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const hookFile = path.join(fenceHome, '.codex/hooks.json')
+  const bakFile = `${hookFile}.bak`
+  fs.mkdirSync(path.dirname(hookFile), { recursive: true })
+  fs.writeFileSync(hookFile, `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
+  fs.writeFileSync(bakFile, 'USER-BAK\n') // 用户自己的备份：preserveUserBaks 会想把它还原回去
+
+  // 慢 CLI：像真实 rtk 一样覆写 .bak，但**不写 hook**（这样 H 会走到 JSON 兜底提交点）
+  const startedFlag = path.join(dir, 'cli-started')
+  const slowCli = path.join(dir, 'slow-rtk-bak.sh')
+  // 只写一次 .bak（真实 rtk 也是幂等的）；第二次调用直接返回，
+  // 否则「服务在验证失败后会重试一次 CLI」这条路径会把 .bak 再写一遍，掩盖 .bak 落盘点的判别。
+  fs.writeFileSync(slowCli, `#!/bin/sh\n[ "$1" = "init" ] || exit 0\nif [ ! -f "${startedFlag}" ]; then printf 'CLI-BAK\\n' > "${bakFile}"; touch "${startedFlag}"; sleep 2.5; fi\nexit 0\n`, { mode: 0o755 })
+
+  const childScript = `
+    const service = await import(${JSON.stringify(new URL('./rtkService.ts', import.meta.url).pathname)})
+    const targets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
+    try {
+      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(fenceHome)}, bin: ${JSON.stringify(slowCli)}, ...targets })
+      console.log('RESULT ' + JSON.stringify({ ok: true, lockLost: result.lockLost ?? false }))
+      process.exit(0)
+    } catch (error) {
+      console.log('RESULT ' + JSON.stringify({ ok: false, reason: error?.reason, lockLost: error?.lockLost ?? null }))
+      process.exit(4)
+    }
+  `
+  const child = spawn(process.execPath, ['--import', 'tsx', '-e', childScript], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: { ...process.env, RTK_HOME: fenceHome, RTK_BACKUP_DIR: fenceBackups, RTK_LOCK_STALE_MS: '1000' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let childOut = ''
+  child.stdout.on('data', chunk => { childOut += chunk })
+  child.stderr.on('data', chunk => { childOut += chunk })
+
+  for (let i = 0; i < 200 && !fs.existsSync(startedFlag); i += 1) await new Promise(r => setTimeout(r, 25))
+  assert.equal(fs.existsSync(startedFlag), true, '子进程没能进入 CLI 阶段')
+  assert.equal(fs.readFileSync(bakFile, 'utf8'), 'CLI-BAK\n', '前置条件：CLI 已经覆写过用户的 .bak')
+  child.kill('SIGSTOP')
+  await new Promise(r => setTimeout(r, 1_300))
+
+  const taker = await service.acquireRtkFileLock({ home: fenceHome, purpose: 'taker', env: { ...process.env, RTK_BACKUP_DIR: fenceBackups }, staleMs: 1_000, timeoutMs: 5_000 })
+  assert.equal(taker.info.stolen, true, '接管者应当以陈旧锁接管的方式拿到锁')
+  // 判别条件：T 真的改写了两个文件（否则无法区分「fence 生效」与「本来就无内容可写」）
+  const thiefHook = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'THIEF', hooks: [{ type: 'command', command: 'taker wrote the hook' }] }] } })}\n`
+  const thiefBak = 'THIEF-BAK\n'
+  fs.writeFileSync(hookFile, thiefHook)
+  fs.writeFileSync(bakFile, thiefBak)
+  taker.release()
+  child.kill('SIGCONT')
+  const code = await new Promise<number | null>(resolve => child.once('close', resolve))
+
+  const parsed = JSON.parse((childOut.split('\n').find(line => line.startsWith('RESULT ')) || 'RESULT {}').replace('RESULT ', ''))
+  assert.equal(code, 4, `H 必须以 409 失败退出，实际 ${code}：${childOut.slice(-300)}`)
+  assert.equal(parsed.reason, 'lock_lost_during_write')
+  assert.equal(parsed.lockLost, true, '409 的错误对象要带 lockLost（R12-B）')
+  // 判别断言：两个文件都必须**逐字节**等于接管者写入的内容
+  assert.equal(fs.readFileSync(hookFile, 'utf8'), thiefHook,
+    'H 的 JSON 兜底提交点必须被 fence 拦住（否则这里会是 rtk hook codex）')
+  assert.equal(fs.readFileSync(bakFile, 'utf8'), thiefBak,
+    'H 不得还原 .bak（否则这里会是 USER-BAK=preserveUserBaks 或 CLI-BAK=restoreTargets）')
+})
+
+test('落盘点 e2e：rollbackRTK 的被夺锁路径（定向篡改，实测命中率 ~85%）', { timeout: 90_000 }, async () => {
+  const dir = path.join(workspace, 'rollback-fence-e2e')
+  const fenceHome = path.join(dir, 'home')
+  const fenceBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  const hookFile = path.join(fenceHome, '.codex/hooks.json')
+  fs.mkdirSync(path.dirname(hookFile), { recursive: true })
+  const preOp = `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`
+  fs.writeFileSync(hookFile, preOp)
+
+  const previousHome = process.env.RTK_HOME
+  const previousBackups = process.env.RTK_BACKUP_DIR
+  process.env.RTK_HOME = fenceHome
+  process.env.RTK_BACKUP_DIR = fenceBackups
+  let backupId = ''
+  try {
+    const seeded = await service.setRTKAgentHook('codex', true, {
+      plane: 'local', home: fenceHome, bin: path.join(dir, 'no-rtk'), ...offlineTargets,
+    })
+    backupId = seeded.backupId ?? ''
+    assert.ok(backupId, '需要一份真实备份作为回滚目标')
+  } finally {
+    if (previousHome === undefined) delete process.env.RTK_HOME; else process.env.RTK_HOME = previousHome
+    if (previousBackups === undefined) delete process.env.RTK_BACKUP_DIR; else process.env.RTK_BACKUP_DIR = previousBackups
+  }
+  const fenceEnv = { ...process.env, RTK_HOME: fenceHome, RTK_BACKUP_DIR: fenceBackups }
+  const rollbackLockPath = service.rtkLockPath(fenceHome, fenceEnv)
+  const takerContent = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'TAKER', hooks: [{ type: 'command', command: 'taker owns it' }] }] } })}\n`
+
+  const ITERATIONS = 24
+  const childScript = `
+    import fs from 'node:fs'
+    const service = await import(${JSON.stringify(new URL('./rtkService.ts', import.meta.url).pathname)})
+    const outcome = { ok: 0, lockLost: 0, other: {}, clobberedByRollback: 0 }
+    for (let i = 0; i < ${ITERATIONS}; i += 1) {
+      try {
+        await service.rollbackRTK({ home: ${JSON.stringify(fenceHome)}, confirm: true, backup: ${JSON.stringify(backupId)} })
+        outcome.ok += 1
+      } catch (error) {
+        if (error?.reason === 'lock_lost_during_write') {
+          outcome.lockLost += 1
+          // 判别：报 409 之后目标文件里不能出现「操作前」内容（= 回滚真的写了）
+          try {
+            if (fs.readFileSync(${JSON.stringify(hookFile)}, 'utf8') === ${JSON.stringify(preOp)}) outcome.clobberedByRollback += 1
+          } catch { /* ignore */ }
+        } else {
+          const reason = error?.reason || 'unknown'
+          outcome.other[reason] = (outcome.other[reason] || 0) + 1
+        }
+      }
+    }
+    console.log('OUTCOME ' + JSON.stringify(outcome))
+    process.exit(0)
+  `
+  const child = spawn(process.execPath, ['--import', 'tsx', '-e', childScript], {
+    cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
+    env: fenceEnv, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let childOut = ''
+  child.stdout.on('data', chunk => { childOut += chunk })
+  child.stderr.on('data', chunk => { childOut += chunk })
+
+  // 定向篡改：只在「锁刚出现」的瞬间原地改写 token（同 inode），并把目标文件写成接管者内容；
+  // 篡改后的锁 50ms 内没人动就删掉，避免子进程一直等在「别人的锁」上。
+  const thief = JSON.stringify({ token: 'THIEF-TOKEN', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home: fenceHome })
+  const deadline = Date.now() + 60_000
+  let tampered = 0
+  while (child.exitCode === null && !childOut.includes('OUTCOME ') && Date.now() < deadline) {
+    try {
+      const content = fs.readFileSync(rollbackLockPath, 'utf8')
+      if (content && !content.includes('THIEF-TOKEN')) {
+        fs.writeFileSync(rollbackLockPath, thief)
+        fs.writeFileSync(hookFile, takerContent)
+        tampered += 1
+      } else if (content.includes('THIEF-TOKEN') && Date.now() - fs.statSync(rollbackLockPath).mtimeMs > 50) {
+        fs.rmSync(rollbackLockPath, { force: true })
+      }
+    } catch {
+      // 锁文件不存在：正常
+    }
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  if (child.exitCode === null) child.kill('SIGKILL')
+  const parsed = JSON.parse((childOut.split('\n').find(line => line.startsWith('OUTCOME ')) || 'OUTCOME {}').replace('OUTCOME ', ''))
+  assert.ok(tampered > 0, '篡改器必须真的动手（否则判据不成立）')
+  assert.ok(parsed.lockLost >= 1, `必须端到端命中 rollbackRTK 的 fence：${JSON.stringify(parsed)}`)
+  assert.equal(parsed.clobberedByRollback, 0, '被夺锁的回滚不得写入目标文件（不得出现操作前内容）')
+  assert.equal(fs.readFileSync(hookFile, 'utf8') === preOp, false, '最终目标文件不应是回滚写回去的内容')
+})
