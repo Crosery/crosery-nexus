@@ -31,6 +31,20 @@ try {
   const looksLikeLogin = await page.evaluate(() =>
     Boolean(document.querySelector('input[placeholder="请输入控制台密码"]')),
   );
+
+  // 登录页有入场动画：偶发拿到 zero-sized 输入框（ElementResolutionError）。
+  // 重试而不是让整套扫描失败——但失败仍要显式抛出，绝不静默继续（假绿-2）。
+  const fillWithRetry = async (selector, value, label) => {
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      try {
+        await page.fill(selector, value);
+        return;
+      } catch (error) {
+        if (attempt === 4) throw new Error(`无法填写${label}（已重试 4 次）：${String(error)}`);
+        await page.waitForTimeout(600);
+      }
+    }
+  };
   if (looksLikeLogin) {
     await page.fill('loc=css:input[placeholder="请输入管理员账号"]', "admin");
     await page.fill('loc=css:input[placeholder="请输入控制台密码"]', pw);
