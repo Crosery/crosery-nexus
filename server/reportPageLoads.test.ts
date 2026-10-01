@@ -387,7 +387,10 @@ test('cache trend aggregates in SQLite and preserves aggregate request counts', 
   const result = await loadCacheTrendReport(reader, groups, 24, '', '', '', '', Date.parse('2026-08-31T12:00:00Z'))
 
   assert.match(reader.operations[0].sql, /COUNT\(\*\) requests/)
-  assert.match(reader.operations[0].sql, /CAST\(timestamp_ms \/ 60000 AS INTEGER\)/)
+  // task-59：预聚合粒度改成**展示桶**（24h 窗口 → 900s 桶；900000ms / 60000 = 15）。
+  // 这里断言 SQL 文本层的新契约：按桶对齐的分钟值 + 不再按「小时 × 分钟」两级分组。
+  assert.match(reader.operations[0].sql, /CAST\(timestamp_ms \/ 900000 AS INTEGER\) \* 15 minuteBucket/)
+  assert.doesNotMatch(reader.operations[0].sql, /CAST\(timestamp_ms \/ 60000 AS INTEGER\)/)
   assert.doesNotMatch(reader.operations.map((operation) => operation.sql).join('\n'), /SELECT DISTINCT/)
   assert.equal(result.points[0]?.requests, 9)
   assert.equal(result.points[0]?.freshInputTokens, 900)

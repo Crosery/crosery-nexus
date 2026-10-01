@@ -53,6 +53,26 @@ const latencySummarySql = (modelSql: string, currentWhere: string) => `
   LIMIT 8
 `
 
+/**
+ * 延迟明细（含 p95）：沿用「索引有序 + OFFSET 定位第 ⌊(n-1)×0.95⌋ 个值」的写法。
+ *
+ * **task-59 ② 的结论：不改**。红队怀疑 `LIMIT 1 OFFSET (COUNT(*)×0.95)`（30 天 186ms）
+ * 是 analytics p95 的主因，但按生产规模复测（`scripts/perf-seed.mjs` 造数、窗口钉死）：
+ * `idx_usage_latency_rollup` 的前缀就是「规范化模型 + success + latency_ms」，
+ * 因此这是**索引内顺序跳过**，代价远低于排序；同一查询换成
+ * `ROW_NUMBER() OVER (ORDER BY latency_ms)` 的窗口函数版本反而更慢：
+ *
+ * | 窗口 | 单模型行数 | 本实现 | 窗口函数版 |
+ * | --- | --- | --- | --- |
+ * | 1 天 | 2,482 | 12.5ms | 4.8ms |
+ * | 7 天 | 15,533 | 16.3ms | 11.4ms |
+ * | 30 天 | 47,282 | **18.8ms** | 25.6ms |
+ * | 66 天 | 101,082 | **22.9ms** | 51.1ms |
+ *
+ * 交叉点在 ~2–3 万行：生产 30 天窗口单模型约 4.7 万行，本实现更快且随行数增长几乎平坦
+ * （12.5→22.9ms / 40×）。语义上两者也逐值相同（边界用例见
+ * `server/latencyPercentile.test.ts`）。因此这里保持原算法，并在文档里给出复测证据。
+ */
 const latencyDetailSql = (modelSql: string, currentWhere: string) => {
   const selected = `${modelSql} = ? AND ${currentWhere} AND success=1`
   return `
@@ -271,6 +291,7 @@ export async function loadChartsLatencyReport(
     ? await runIndependent(reader, summaries.map((row) => ({
         method: 'get' as const,
         sql: latencyDetailSql(modelSql, currentWhere),
+        // SQL 里 `${selected}` 出现三次（OFFSET 子查询 + 内层 + 外层 WHERE），因此参数给三份
         params: [
           row.name, ...currentParams,
           row.name, ...currentParams,
@@ -725,9 +746,33 @@ export async function loadCacheTrendReport(
   const active = activeProviderPredicate(groups, 'provider')
   const cutoff = cutoffEpochMs(hours, 'hours', now)
   const keyClause = keyId ? ' AND key_hash = ?' : ''
+  /**
+   * 预聚合粒度 = **最终展示粒度**（task-59 ①）。
+   *
+   * 原来这里按 `CAST(timestamp_ms / 3600000)` + `CAST(timestamp_ms / 60000)`（小时 × 分钟）分组，
+   * 再由 JS 把分钟行合并成展示桶（168h → 6 小时桶、720h → 24 小时桶）。实测（生产规模临时库，
+   * 168h 窗口）：分钟级分组产生 **91,549 行**，最终桶只需 **1,190 行**——77× 的无效行要跨线程搬到 JS 里再合并，
+   * 这是 cache-trend 在 events 路径上最慢的原因（720h 窗口 325,795 行 → 684ms；优化后见文档）。
+   *
+   * 语法上仍返回 `minuteBucket` 这个名字，但值是**已经对齐到展示桶的分钟数**
+   * （`floor(ts / bucketMs) * bucketMs / 60000`），因此下面 JS 的
+   * `floor(minuteBucket * 60000 / bucketMs) * bucketMs` 得到的桶边界与原来**完全一致**，
+   * 聚合和（COUNT/SUM）也完全一致（求和与分组粒度无关）。逐项一致性对照见
+   * `docs/qa/blue/report-performance.md`。
+   *
+   * 参数表因此与原来**完全一致**（不新增占位符），读线程的 rollup 路由仍按位置读到
+   * cutoff/provider/key。
+   */
+  const bucketMs = bucketSecondsFor(hours) * 1_000
+  /**
+   * 桶宽**内联**进 SQL（不占位）：`hours` 是路由里校验过的整数，`bucketSecondsFor` 只返回固定档位，
+   * 因此没有注入面。关键是**不能**多一个占位符——读线程的 rollup 路由按位置读 params[0]/[2]/[3]，
+   * 参数表必须保持 `[cutoff, cutoff, provider(, keyId)]`。
+   */
+  const bucketExpr = `CAST(timestamp_ms / ${bucketMs} AS INTEGER) * ${Math.round(bucketMs / 60_000)}`
   const operations = active.params.map((activeProvider) => ({
     method: 'all' as const,
-    sql: `SELECT CAST(timestamp_ms / 60000 AS INTEGER) minuteBucket,
+    sql: `SELECT ${bucketExpr} minuteBucket,
       ${canonicalModelSql()} model, provider,
       ${clientTypeSql()} clientType,
       MIN(timestamp_ms) firstTimestampMs, COUNT(*) requests,
@@ -741,8 +786,7 @@ export async function loadCacheTrendReport(
       WHERE timestamp_ms >= ?
         AND CAST(timestamp_ms / 3600000 AS INTEGER) >= CAST(? / 3600000 AS INTEGER)
         AND success = 1 AND lower(trim(provider)) = ?${keyClause}
-      GROUP BY CAST(timestamp_ms / 3600000 AS INTEGER),
-        CAST(timestamp_ms / 60000 AS INTEGER), ${canonicalModelSql()},
+      GROUP BY ${bucketExpr}, ${canonicalModelSql()},
         provider, clientType`,
     params: keyId ? [cutoff, cutoff, activeProvider, keyId] : [cutoff, cutoff, activeProvider],
   }))
@@ -762,8 +806,7 @@ export async function loadCacheTrendReport(
   const clientsByType = new Map<string, number>()
   const requestsByProvider = new Map<string, number>()
   const providerFilter = provider ? activeProviderId(provider, groups) : ''
-  type CacheRollup = TrendRow & { firstTimestampMs: number }
-  const bucketMs = bucketSecondsFor(hours) * 1_000
+  type CacheRollup = TrendRow & { firstTimestampMs: number; costSum: number; costComplete: boolean }
   const rowsByBucket = new Map<string, CacheRollup>()
   for (const row of aggregateRows) {
     const type = row.clientType || 'legacy-unknown'
@@ -792,7 +835,11 @@ export async function loadCacheTrendReport(
       outputTokens: 0,
       inputTokens: 0,
       cachedTokens: 0,
-      costUsd: typeof row.costUsd === 'number' && Number.isFinite(row.costUsd) ? Number(row.costUsd) : null,
+      // costUsd 由 costSum + costComplete 推导（见下方累加处与输出处）：SQL 的
+      // `CASE WHEN COUNT(cost_usd)=COUNT(*) THEN SUM(cost_usd) ELSE NULL END` 语义是
+      // 「桶内每一行都有金额才给合计，否则整体为 null」，与分组粒度无关。
+      costSum: 0,
+      costComplete: true,
       firstTimestampMs: Number.POSITIVE_INFINITY,
     }
     aggregate.requests = (aggregate.requests || 0) + (Number(row.requests) || 0)
@@ -800,14 +847,25 @@ export async function loadCacheTrendReport(
     aggregate.cacheReadTokens = (aggregate.cacheReadTokens || 0) + (Number(row.cacheReadTokens) || 0)
     aggregate.cacheWriteTokens = (aggregate.cacheWriteTokens || 0) + (Number(row.cacheWriteTokens) || 0)
     aggregate.outputTokens += Number(row.outputTokens) || 0
-    if (typeof aggregate.costUsd === 'number' && typeof row.costUsd === 'number' && Number.isFinite(row.costUsd)) aggregate.costUsd += Number(row.costUsd)
-    else aggregate.costUsd = null
+    /**
+     * 金额累加（task-59 ①）。原实现是「初始化就用第一行的值，然后对同一行再 += 一次」——
+     * 第一行的金额被**计了两次**。分钟级分组时每组行数多、误差被稀释（实测只偏高几个百分点到
+     * 1.96×，取决于每组行数），看不出问题；改成按展示桶分组后每组只有 1–2 行，误差直接变成 ~2×，
+     * 被 before/after 指纹比对抓出来（见 `docs/qa/blue/report-performance.md` 的一致性对照）。
+     * 这里改成「先标记完整性、再逐行累加一次」，结果与分组粒度无关，且等于桶内金额的真实合计
+     * （独立 SQL `SUM(cost_usd)` 已对拍）。
+     */
+    if (typeof row.costUsd === 'number' && Number.isFinite(row.costUsd)) aggregate.costSum += Number(row.costUsd)
+    else aggregate.costComplete = false
     aggregate.firstTimestampMs = Math.min(aggregate.firstTimestampMs, Number(row.firstTimestampMs))
     rowsByBucket.set(key, aggregate)
   }
   const rows = [...rowsByBucket.values()]
     .sort((left, right) => left.firstTimestampMs - right.firstTimestampMs)
-    .map(({ firstTimestampMs: _, ...row }) => row)
+    .map(({ firstTimestampMs: _, costSum, costComplete, ...row }) => ({
+      ...row,
+      costUsd: costComplete ? costSum : null,
+    }))
   const clients = [...clientsByType].map(([type, requests]) => ({ type, requests }))
     .sort((left, right) => right.requests - left.requests)
   const providers = [...requestsByProvider].map(([id, requests]) => ({ id, label: channelLabel(id), requests }))
