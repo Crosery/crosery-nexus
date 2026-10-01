@@ -49,8 +49,6 @@ const windowHours = Number(flag('hours', '24'))
 /** 对齐到整点：不对齐时首个不完整小时会造成 1–3% 假漂移（生产 3h 窗口实测 1.023）。 */
 const alignedCutoffMs = (hours, now = Date.now()) => Math.floor((now - hours * 3_600_000) / 3_600_000) * 3_600_000
 
-const severityOf = (driftPct) => (driftPct < 1 ? 'ok' : driftPct <= 5 ? 'warn' : 'alert')
-
 /**
  * 自检（task-67 起为多维度 + 行级差异版）：一次分组扫描同时给出两边总量与逐行差异。
  * `all = true` 时不做窗口过滤（整表，含历史漂移）——这是窗口自检看不见的那部分。

@@ -152,19 +152,47 @@ const matchesClient = (client: Client, event: LiveUsageEvent) =>
 const clients = new Set<Client>()
 let nextClientId = 1
 
+/**
+ * SSE 并发上限（task-76）。红队的句柄泄漏审计里，9 个长期结构有 8 个已有上界，
+ * **只有这个 `clients` 集合是无界的**（只受 OS 句柄限制）：一个卡住的客户端、或一个反复连而
+ * 不断开的脚本就能把句柄吃光。soak 实测没有泄漏（FD 平直），但**没有上限保护**。
+ *
+ * 默认 16 的理由：这是**单管理员**控制台，正常情况只有 1–2 个页面在订阅
+ * （每个标签页一条 `/api/cache-live`）；16 给了 ~8–16 倍余量覆盖多标签/多设备/重连窗口，
+ * 同时把"卡住的客户端把句柄吃光"封在 16 条以内。可用 `SSE_MAX_CLIENTS` 覆盖。
+ */
+const DEFAULT_MAX_CLIENTS = 16
+
+export function sseClientLimit(): number {
+  const raw = Number(process.env.SSE_MAX_CLIENTS)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAX_CLIENTS
+}
+
+/** 还有余量吗（路由在写 SSE 头之前必须先问这个，满了就回 503 而不是静默丢弃）。 */
+export function hasClientCapacity(limit = sseClientLimit()): boolean {
+  return clients.size < limit
+}
+
 /** 已连接的 SSE 客户端数，供健康检查与测试断言使用。 */
 export function clientCount(): number {
   return clients.size
 }
 
-function registerClient(res: Response, model: string, clientType: string, keyHash: string, provider: string, buffered: boolean) {
+/**
+ * 注册客户端。**已达上限返回 null**（调用方必须回 503 + Retry-After；
+ * 不要在这里静默丢弃，否则客户端以为连上了却收不到任何事件）。
+ */
+function registerClient(res: Response, model: string, clientType: string, keyHash: string, provider: string, buffered: boolean): Client | null {
+  if (!hasClientCapacity()) return null
   const client: Client = { id: nextClientId++, res, model, clientType, keyHash, provider, buffered: buffered ? [] : null }
   clients.add(client)
   return client
 }
 
-export function addClient(res: Response, model = '', clientType = '', keyHash = '', provider = ''): () => void {
+export function addClient(res: Response, model = '', clientType = '', keyHash = '', provider = ''): (() => void) | null {
   const client = registerClient(res, model, clientType, keyHash, provider, false)
+  if (!client) return null
+  // 释放计数：**必须**在断开（含异常断开）时调用；只加不减会变成另一个泄漏
   return () => { clients.delete(client) }
 }
 
@@ -175,6 +203,7 @@ export function addClient(res: Response, model = '', clientType = '', keyHash = 
  */
 export function addBufferedClient(res: Response, model = '', clientType = '', keyHash = '', provider = '') {
   const client = registerClient(res, model, clientType, keyHash, provider, true)
+  if (!client) return null
   return {
     activate(history: LiveUsageEvent[]): LiveUsageEvent[] {
       const pending = client.buffered ?? []

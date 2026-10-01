@@ -20,7 +20,6 @@
  *   （目录不存在时脚本自己创建；已存在时先删同名表数据再重灌，保证可重复）
  */
 import { mkdirSync } from 'node:fs'
-import path from 'node:path'
 
 const dataDir = process.env.DATA_DIR
 if (!dataDir) throw new Error('必须显式设置 DATA_DIR（脚本只往临时目录灌数，永不碰生产库）')

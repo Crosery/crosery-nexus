@@ -13,12 +13,13 @@ import { createServer } from 'node:http'
 
 const port = Number(process.argv[2] || process.env.CPA_STUB_PORT || 8399)
 
+const send500 = (res) => {
+  res.statusCode = 500
+  res.setHeader('content-type', 'application/json')
+  res.end(JSON.stringify({ error: 'stub: 控制面不可用（有意）' }))
+}
+
 const server = createServer((req, res) => {
-  const res500 = () => {
-    res.statusCode = 500
-    res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ error: 'stub: 控制面不可用（有意）' }))
-  }
   const url = req.url ?? ''
   res.setHeader('content-type', 'application/json')
   const send = (payload) => res.end(JSON.stringify(payload))
@@ -26,13 +27,13 @@ const server = createServer((req, res) => {
   // 读取请求体（PUT 要消费掉，否则连接会挂住）
   if (req.method === 'PUT' || req.method === 'PATCH' || req.method === 'POST') {
     req.on('data', () => undefined)
-    req.on('end', () => dispatch(url, req.method, send))
+    req.on('end', () => dispatch(url, req.method, send, res))
     return
   }
-  dispatch(url, req.method, send)
+  dispatch(url, req.method, send, res)
 })
 
-function dispatch(url, method, send) {
+function dispatch(url, method, send, res) {
   /**
    * 报表压测要的是「网关不可用、但控制台仍按**上一次成功的渠道策略**出报表」这条路径：
    * `listGroupsForReporting()` 只有在 `gatewaySnapshot()` 失败时才回落到持久化的分组策略
@@ -42,14 +43,14 @@ function dispatch(url, method, send) {
    */
   if (url.startsWith('/api-keys')) {
     if (method === 'PUT') return send({ ok: true })
-    res500()
+    send500(res)
     return
   }
-  if (url.startsWith('/api-key-model-access')) { res500(); return }
-  if (url.startsWith('/api/channels') || url.startsWith('/channels')) { res500(); return }
-  if (url.startsWith('/api/channel')) { res500(); return }
-  if (url.startsWith('/api/credentials')) { res500(); return }
-  if (url.startsWith('/api/groups')) { res500(); return }
+  if (url.startsWith('/api-key-model-access')) { send500(res); return }
+  if (url.startsWith('/api/channels') || url.startsWith('/channels')) { send500(res); return }
+  if (url.startsWith('/api/channel')) { send500(res); return }
+  if (url.startsWith('/api/credentials')) { send500(res); return }
+  if (url.startsWith('/api/groups')) { send500(res); return }
   if (url.includes('version') || url.includes('health')) return send({ version: 'stub', status: 'ok' })
   // 其它一律空对象：调用方都按「缺字段 = 不可用」处理，不会让报表 500
   return send({})

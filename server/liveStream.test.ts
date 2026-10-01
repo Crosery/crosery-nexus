@@ -141,15 +141,15 @@ test('写失败的客户端被摘除，不影响其余客户端', () => {
 
 test('取消订阅后不再收到广播', () => {
   const a = fakeRes()
-  const unsubscribe = addClient(a.res)
-  unsubscribe()
+  const unsubscribe = addClient(a.res)!
+  unsubscribe!()
   assert.equal(clientCount(), 0)
   assert.equal(broadcast([toLiveEvent(raw({ model: 'claude-opus-5', inputTokens: 1 }))]), 0)
 })
 
 test('异步历史查询期间先缓冲广播并按 requestId 去重衔接', () => {
   const target = fakeRes()
-  const client = addBufferedClient(target.res, 'gpt-5.6-sol')
+  const client = addBufferedClient(target.res, 'gpt-5.6-sol')!
   const duplicate = toLiveEvent(raw({ requestId: 'duplicate', model: 'gpt-5.6-sol', inputTokens: 1 }))
   const gapEvent = toLiveEvent(raw({ requestId: 'during-history', model: 'gpt-5.6-sol', inputTokens: 2 }))
 
@@ -257,7 +257,7 @@ test('实时事件携带 keyHash，按 Key 与渠道筛选的客户端只收到�
 
 test('缓冲客户端同样按 Key 筛选', () => {
   const target = fakeRes()
-  const client = addBufferedClient(target.res, '', '', 'key-a')
+  const client = addBufferedClient(target.res, '', '', 'key-a')!
   broadcast([
     toLiveEvent(raw({ requestId: 'mine', model: 'claude-opus-5', keyHash: 'key-a', inputTokens: 1 })),
     toLiveEvent(raw({ requestId: 'theirs', model: 'claude-opus-5', keyHash: 'key-b', inputTokens: 1 })),

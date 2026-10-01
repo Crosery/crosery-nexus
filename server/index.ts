@@ -50,7 +50,7 @@ import { canonicalModelSql } from './modelIdentity.js'
 import { NEW_INPUT_SQL } from './tokenSql.js'
 import { buildUsageBreakdown, type BreakdownRow } from './usageBreakdown.js'
 import { buildCacheAnalytics, type CacheEventRow } from './cacheAnalytics.js'
-import { addBufferedClient, clientCount, heartbeat } from './liveStream.js'
+import { addBufferedClient, clientCount, hasClientCapacity, heartbeat, sseClientLimit } from './liveStream.js'
 import { clientTypeSql } from './clientAgent.js'
 import { isMonitoredAccountType, normalizeAccountQuota } from './accountQuota.js'
 import { fetchAntigravityAccountQuota } from './antigravityQuota.js'
@@ -1074,6 +1074,21 @@ app.get('/api/cache-live', async (req, res) => {
   const clientType = String(req.query.client || '')
   const keyId = String(req.query.keyId || '')
   const provider = String(req.query.provider || '').trim().toLowerCase()
+  /**
+   * 并发上限（task-76）：满了就**显式拒绝**（503 + Retry-After + 可读原因），
+   * 绝不能静默丢弃——那会让客户端以为连上了却永远收不到事件。
+   * 检查与注册在同一个 tick 内完成（中间没有 await），不存在竞态。
+   */
+  const maxClients = sseClientLimit()
+  if (!hasClientCapacity(maxClients)) {
+    res.setHeader('Retry-After', '5')
+    res.status(503).json({
+      error: `实时连接数已达上限（${clientCount()}/${maxClients}），请关闭其它页面后重试`,
+      clients: clientCount(),
+      limit: maxClients,
+    })
+    return
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
@@ -1084,6 +1099,21 @@ app.get('/api/cache-live', async (req, res) => {
   res.write('retry: 2000\n\n')
   let closed = false
   const client = addBufferedClient(res, model, clientType, keyId, provider)
+  if (!client) {
+    // 兜底：容量检查之后到注册之间不可能再插入其它客户端（同一 tick），这里只是防御
+    if (!res.headersSent) {
+      res.setHeader('Retry-After', '5')
+      res.status(503).json({ error: `实时连接数已达上限（${clientCount()}/${maxClients}），请稍后重试`, clients: clientCount(), limit: maxClients })
+    } else {
+      res.end()
+    }
+    return
+  }
+  /**
+   * 断开释放计数。`req.on('close')` 在**正常关闭**与**异常断开**（客户端进程被杀、网络 RST、
+   * 页面崩溃）两种情况下都会触发；这条路径是"只加不减"最容易出错的地方，测试里有
+   * 「连满 → 拒绝 → 粗暴断开一条 → 再连成功」的用例来钉住它。
+   */
   req.on('close', () => {
     closed = true
     client.remove()
@@ -1108,7 +1138,9 @@ app.get('/api/cache-live', async (req, res) => {
 
 app.get('/api/cache-live/status', (_req, res) => {
   res.json({
+    // 当前 SSE 连接数 + 上限（task-76）：运维不必猜"是不是连满了"
     clients: clientCount(),
+    limit: sseClientLimit(),
     usageCollectIntervalMs: config.usageCollectIntervalMs,
     syncIntervalMs: config.syncIntervalMs,
   })
