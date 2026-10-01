@@ -66,14 +66,17 @@ try {
       if (el.scrollWidth - el.clientWidth < 4) continue;
       const text = (el.textContent || "").trim();
       if (!text) continue;
-      // 有意省略 vs 静默截断：单行 ellipsis 且是叶子文本节点容器 → 有意
+      // 有意省略 vs 静默截断。
+      // ⚠️ 曾经写成 `!ellipsis && !hasElementChild`，结果**所有包裹内容物的容器都被豁免**——
+      // 而「包裹内容的容器」恰恰最容易被 overflow:hidden 裁掉（红队 R10-E 实测：
+      // /cache@390 的表格容器被裁 378px，唯一没被报出来的原因就是这一句豁免）。
+      // 装饰性元素（无文本子树）在上面 `if (!text) continue` 已经排除，所以这里不再需要 hasElementChild。
       const ellipsis = cs.textOverflow === "ellipsis" && cs.whiteSpace === "nowrap";
-      const hasElementChild = [...el.children].some((c) => (c.textContent || "").trim().length);
       clipped.push({
         cls: (el.className || "").toString().split(" ").slice(0, 2).join("."),
         overflowBy: el.scrollWidth - el.clientWidth,
         intentional: ellipsis,
-        silent: !ellipsis && !hasElementChild,
+        silent: !ellipsis,
         text: text.slice(0, 20),
       });
     }
@@ -82,12 +85,26 @@ try {
 
   let failing = 0;
   let silentTotal = 0;
+  let renderFailures = 0;
   for (const vp of viewports) {
     await page.cdp("Emulation.setDeviceMetricsOverride", { width: vp.w, height: vp.h, deviceScaleFactor: 1, mobile: vp.mobile });
     for (const route of routes) {
       // /docs 的入口 HTML 有 max-age=300，cache-bust 以免量到旧产物
       await page.goto(`http://127.0.0.1:8791${route}?v=${Date.now()}`);
-      await page.waitForFunction(() => (document.querySelector("main")?.textContent || "").trim().length > 20, { timeout: 15000 }).catch(() => {});
+      // 渲染完成判据**必须失败可见**：曾经写成 .catch(() => {}) 吞掉超时，
+      // 红队 R10-D 拦掉 bundle 后 98 个组合全是空白页，脚本仍报 failing:0、退出码 0 —— 完整假绿。
+      let rendered = true;
+      try {
+        await page.waitForFunction(() => (document.querySelector("main")?.textContent || "").trim().length > 20, undefined, { timeout: 15000 });
+      } catch {
+        rendered = false;
+      }
+      if (!rendered) {
+        renderFailures += 1;
+        failing += 1;
+        console.log(JSON.stringify({ viewport: `${vp.w}${vp.mobile ? "(mobile)" : ""}`, route, renderFailed: true }));
+        continue;
+      }
       const { pageOverflow, clipped } = await page.evaluate(PROBE);
       const silent = clipped.filter((c) => c.silent);
       silentTotal += silent.length;
@@ -105,7 +122,7 @@ try {
     }
   }
   await page.cdp("Emulation.clearDeviceMetricsOverride");
-  console.log(JSON.stringify({ checked: viewports.length * routes.length, failing, silentlyTruncatedTotal: silentTotal }));
+  console.log(JSON.stringify({ checked: viewports.length * routes.length, failing, renderFailures, silentlyTruncatedTotal: silentTotal }));
   if (failing > 0) exitCode = 1;
 } catch (error) {
   console.error(JSON.stringify({ error: String(error) }));

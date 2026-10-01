@@ -128,11 +128,23 @@ try {
     : ["/dashboard", "/keys", "/channels", "/models", "/oauth", "/charts", "/analytics", "/usage", "/cache", "/monitor", "/rtk", "/help", "/ab", "/docs"];
 
   let total = 0;
+  let renderFailures = 0;
   for (const route of routes) {
     // /docs 的入口 HTML 有 max-age=300，必须 cache-bust，否则会量到旧产物
     await page.goto(`http://127.0.0.1:8791${route}${route.includes("?") ? "&" : "?"}v=${Date.now()}`);
     // 渲染完成判据：等到 main 里出现文本，避免量到空白页（假绿-5）
-    await page.waitForFunction(() => (document.querySelector("main")?.textContent || "").trim().length > 20, { timeout: 15000 }).catch(() => {});
+    let rendered = true;
+    try {
+      await page.waitForFunction(() => (document.querySelector("main")?.textContent || "").trim().length > 20, undefined, { timeout: 15000 });
+    } catch {
+      rendered = false;
+    }
+    if (!rendered) {
+      renderFailures += 1;
+      total += 1;
+      console.log(JSON.stringify({ route, renderFailed: true }));
+      continue;
+    }
     const { failing, skipped, translucent } = await page.evaluate(AUDIT);
     total += failing.length;
     const byClass = {};
@@ -146,7 +158,7 @@ try {
       byClass,
     }));
   }
-  console.log(JSON.stringify({ route: "TOTAL", failing: total }));
+  console.log(JSON.stringify({ route: "TOTAL", failing: total, renderFailures }));
   if (total > 0) exitCode = 1;
 } catch (error) {
   console.error(JSON.stringify({ error: String(error) }));
