@@ -26,6 +26,30 @@ Content-Length: 640500          ← 客户端要了 gzip，服务端原样返回
 
 本机 127.0.0.1 无所谓，但**发布到中转站后用户走网络**——7× 的差距是真实首屏成本。已派 `task-50`（Node 内置 `zlib`，零新增依赖）。
 
+## 结论一之修后（`task-50`，commit `5b80676`）
+
+| 编码 | `console-*.css` | `card-*.js` | 响应头 |
+| --- | --- | --- | --- |
+| identity | 640,500 B | 121,311 B | 无 `Content-Encoding`，有 `Vary: Accept-Encoding` |
+| `gzip` | **94,463 B（6.8×）** | 38,812 B（3.1×） | `Content-Encoding: gzip` + 压缩后 `Content-Length` |
+| `br` | **78,047 B（8.2×）** | 36,460 B（3.3×） | `Content-Encoding: br` + 压缩后 `Content-Length` |
+
+Lead 在**现网实例**上独立复核（不是只读蓝队的表）：三态字节数与上表一致；`Range: bytes=0-99` 仍返回 **206**（100 B）；`/docs` 仍 `max-age=300`、SPA 深链接仍 `no-cache`，且这两者**都不带** `Content-Encoding`（小于 1KB 不进压缩层）；解压后 sha256 与磁盘逐字节相同。
+
+**浏览器侧（修后，真实 `transferSize` 合计）**：
+
+| 路由 | 整页上线字节 |
+| --- | --- |
+| /dashboard | **54 KB** |
+| /models | **48 KB** |
+| /ab | **94 KB** |
+
+对照修前同一批路由**单项 JS** 就有 317–453 KB（未压缩）。
+
+**miss/hit 首字节**（蓝队 5 次采样）：br `13.1ms → 0.68~1.13ms`、gzip `9.7ms → 0.78~1.18ms`，与 identity 基线（0.7~0.9ms）同级 ⇒ 每个文件每进程只压一次，之后走内存缓存。**参数有实测依据**：br-11 只多省 6 KB 却慢 48×（532.7ms），故取 br-9 + gzip-9。
+
+**仍未做**：不做 406（`identity;q=0` 仍返回 identity）；不预压缩落盘，每个实例首次请求各付一次 miss（全量约 0.5–0.9s CPU，分摊在请求上）。
+
 ## 结论二：路由级加载时间正常
 
 | 路由 | DOMContentLoaded | load | JS（本地，未压缩） | heap |
