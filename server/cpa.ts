@@ -228,6 +228,22 @@ export async function setAuthFileProxy(name: string, proxyUrl: string) {
   return cpaRequest('/auth-files/fields', { method: 'PATCH', body: JSON.stringify({ name, proxy_url: proxyUrl }) })
 }
 
+export async function setAuthFileCoolingDisabled(name: string, disabled: boolean) {
+  return cpaRequest('/auth-files/fields', { method: 'PATCH', body: JSON.stringify({ name, disable_cooling: disabled }) })
+}
+
+/**
+ * 立刻清除某个凭据的失败冷却窗口。
+ * CPA 没有专门的清冷却端点，但 disable_cooling 置 true 会当场清空该凭据的全部既有冷却
+ * （2026-09-28 实测 codex 11→0、antigravity 1→0、claude 2→0），随后置回 false 恢复正常
+ * 失败保护，已清掉的冷却不会回灌。用于上游额度重置成功后让凭据毫秒级重新参与池选，
+ * 而不是继续等 429 里旧 resets_at 排的冷却（2026-09-27「重置了但用不了」事故）。
+ */
+export async function clearAuthFileCooldown(name: string) {
+  await setAuthFileCoolingDisabled(name, true)
+  await setAuthFileCoolingDisabled(name, false)
+}
+
 /**
  * 读取某个凭据当前的 proxy_url。
  * GET /auth-files 的条目不含该字段（buildAuthFileEntry 不返回），只能下载凭据原文再取。
@@ -382,6 +398,25 @@ export type VersionsPayload = {
 
 let cachedCpaVersion: { info: CpaVersionInfo; time: number } | null = null
 
+/**
+ * 本机是否真的持有 OAuth 凭据（供 upstream 状态里的 `oauthConnected` 用）。
+ *
+ * 2026-10-01（task-8）：这个字段以前是硬编码 `true`，会把「一个凭据都没有」也报成「已接通」。
+ * 取证口径：只在本机控制面（`MAGPIE_CONTROL_PLANE=local`）下读本机凭据库——
+ * 存在未禁用的凭据才算接通；目录不存在或读取失败一律 false。
+ * 远程控制面（`cpa`）下无法在不额外发请求的前提下取证，如实回落 false，绝不假装；
+ * 真实连通性看 `/api/cpa/oauth/status`。本函数只做本机目录读，无网络成本。
+ */
+async function localOAuthConnected(): Promise<boolean> {
+  if (config.magpieControlPlane !== 'local') return false
+  try {
+    const { listLocalAuthFiles } = await import('./magpieControl.js')
+    return listLocalAuthFiles().some((file) => !file.disabled)
+  } catch {
+    return false
+  }
+}
+
 export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
   const { readRTKStatus } = await import('./rtkService.js')
   const rtk = await readRTKStatus().catch(() => undefined)
@@ -391,9 +426,17 @@ export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
       const health = await kernelJSON(config.magpieKernelSocket, '/internal/health') as { revision?: unknown }
       if (typeof health.revision !== 'string' || !/^[a-f0-9]{40}$/.test(health.revision)) throw new Error('Invalid kernel revision')
       const { readMagpieUpstreamStatus } = await import('./magpieUpstream.js')
+      /**
+       * 「已接通」只能来自真正的平面探测（2026-10-01 task-8 修正，blue-rtk 上报）：
+       * - `rtkConnected` 只表达「中转站（relay）平面真的可用」。本机装了 rtk 二进制、
+       *   或内核有缝，都不等于接上中转站；探测结果直接复用 `readRTKStatus()` 已经拿到的
+       *   `planes[]`（其内部 `resolveRtkPlane()` 有 30s 缓存，不额外增加每请求成本）。
+       * - `oauthConnected` 见 `localOAuthConnected()`。
+       */
+      const relayPlane = rtk?.planes?.find((probe) => probe.id === 'relay')
       const upstream = readMagpieUpstreamStatus(health.revision, undefined, {
-        oauthConnected: true,
-        rtkConnected: Boolean(rtk?.connected),
+        oauthConnected: await localOAuthConnected(),
+        rtkConnected: Boolean(relayPlane?.available),
       })
       return { engine: 'magpie', version: health.revision.slice(0, 7), commit: health.revision, buildDate: '',
         upstream, rtk, latestVersion: upstream.latestRelease || upstream.candidateRevision?.slice(0, 7),

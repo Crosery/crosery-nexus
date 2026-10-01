@@ -1,4 +1,4 @@
-import type { ModelSyncResult, OAuthStartResult, OAuthStatusResult, RTKStatusResponse, VersionsData } from './types'
+import type { ModelSyncResult, OAuthStartResult, OAuthStatusResult, RtkPlaneId, RtkPlaneProbe, RTKRollbackResponse, RTKStatusResponse, RTKToggleResponse, VersionsData } from './types'
 
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
@@ -7,6 +7,35 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.error || `请求失败 ${response.status}`)
+  return data as T
+}
+
+/** RTK 接口的错误带平面与原因码，UI 才能如实说明「哪个平面不支持、为什么」。 */
+export class RtkApiError extends Error {
+  readonly status: number
+  readonly plane?: RtkPlaneId
+  readonly reason?: string
+  readonly backup?: string
+
+  constructor(status: number, message: string, plane?: RtkPlaneId, reason?: string, backup?: string) {
+    super(message)
+    this.name = 'RtkApiError'
+    this.status = status
+    this.plane = plane
+    this.reason = reason
+    this.backup = backup
+  }
+}
+
+async function rtkRequest<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new RtkApiError(response.status, data.error || `请求失败 ${response.status}`, data.plane, data.reason, data.backup)
+  }
   return data as T
 }
 
@@ -23,8 +52,8 @@ export const api = {
   usageKeySummaries: <T>(days: number) => request<T>(`/api/usage-key-summaries?days=${days}`),
   usageOverview: <T>(days: number, keyId = '') => request<T>(`/api/usage-overview?days=${days}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}`),
   monitor: <T>() => request<T>('/api/monitor'),
-  resetCodexQuota: (authIndex: string) => request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(authIndex)}/reset-codex-quota`, { method: 'POST' }),
-  resetClaudeQuota: (authIndex: string) => request<{ ok: boolean }>(`/api/accounts/${encodeURIComponent(authIndex)}/reset-claude-quota`, { method: 'POST' }),
+  resetCodexQuota: (authIndex: string) => request<{ ok: boolean; cooldownCleared: boolean }>(`/api/accounts/${encodeURIComponent(authIndex)}/reset-codex-quota`, { method: 'POST' }),
+  resetClaudeQuota: (authIndex: string) => request<{ ok: boolean; cooldownCleared: boolean }>(`/api/accounts/${encodeURIComponent(authIndex)}/reset-claude-quota`, { method: 'POST' }),
   audit: <T>() => request<T>('/api/audit'),
   createKey: <T>(body: unknown) => request<T>('/api/keys', { method: 'POST', body: JSON.stringify(body) }),
   createRevealToken: (id: string) => request<{ token: string }>(`/api/keys/${id}/reveal-token`, { method: 'POST' }),
@@ -69,11 +98,20 @@ export const api = {
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
   version: () => request<VersionsData>('/api/version'),
   syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
-  getRTKStatus: () => request<RTKStatusResponse>('/api/rtk/status'),
-  toggleRTK: (agent: string, on: boolean) => request<RTKStatusResponse>('/api/rtk/toggle', {
-    method: 'POST',
-    body: JSON.stringify({ agent, on }),
-  }),
+  getRTKStatus: () => rtkRequest<RTKStatusResponse>('/api/rtk/status'),
+  getRTKPlanes: () => rtkRequest<{ plane: RtkPlaneId; planes: RtkPlaneProbe[]; fellBack: boolean }>('/api/rtk/planes'),
+  /** plane 默认 local：只有本机才有用户的 agent 配置；远端下发需显式指定并确认。 */
+  toggleRTK: (agent: string, on: boolean, options: { plane?: RtkPlaneId; confirm?: boolean } = {}) =>
+    rtkRequest<RTKToggleResponse>('/api/rtk/toggle', {
+      method: 'POST',
+      body: JSON.stringify({ agent, on, plane: options.plane || 'local', confirm: options.confirm === true }),
+    }),
+  installRTK: (options: { plane?: RtkPlaneId; confirm?: boolean } = {}) =>
+    rtkRequest<RTKStatusResponse>('/api/rtk/install', { method: 'POST', body: JSON.stringify(options) }),
+  upgradeRTK: (options: { plane?: RtkPlaneId; confirm?: boolean } = {}) =>
+    rtkRequest<RTKStatusResponse>('/api/rtk/upgrade', { method: 'POST', body: JSON.stringify(options) }),
+  rollbackRTK: (backup?: string) =>
+    rtkRequest<RTKRollbackResponse>('/api/rtk/rollback', { method: 'POST', body: JSON.stringify({ backup, confirm: true }) }),
   startOAuth: (provider: string) => request<OAuthStartResult>('/api/cpa/oauth/start', {
     method: 'POST',
     body: JSON.stringify({ provider }),

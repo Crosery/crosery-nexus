@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser'
 import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/index.js'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
+import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
 import { isAuthenticated, login, logout, requireAuth } from './auth.js'
 import { getKeyModelAccessState } from './managementCapability.js'
@@ -391,14 +391,16 @@ app.get('/api/bootstrap', async (_req, res) => {
   const keys = keyRows.map((row) => publicKeyRow(row, quotaStates.get(String(row.key_hash)) ?? quotaStateFor(row as unknown as KeyQuotaRow)))
   let degraded = false
   let degradedReason = ''
+  // 网关版本与控制面并发读：串在后面时，网关故障会让 bootstrap 再多等两轮请求超时。
   const controlPlane = await Promise.allSettled([
     catalogCoordinator.run('models', () => listModelIndex().catch((error) => {
       if (isUnsupportedManagementEndpoint(error)) return null
       throw error
     })),
     listGroups(),
+    getCpaVersion(),
   ])
-  const [catalogResult, groupsResult] = controlPlane
+  const [catalogResult, groupsResult, cpaVersionResult] = controlPlane
   let groups = groupsResult.status === 'fulfilled' ? groupsResult.value : null
   if (!groups) {
     const message = groupsResult.status === 'rejected' && groupsResult.reason instanceof Error ? groupsResult.reason.message : '控制面暂不可用'
@@ -417,10 +419,8 @@ app.get('/api/bootstrap', async (_req, res) => {
   // 旧版 CPA 没有 /model-index；控制台仍可从已登记的渠道/账号组安全构造模型清单。
   const models = catalog ?? [...new Set(groups.flatMap((group) => group.models))].sort()
   res.setHeader('Cache-Control', 'no-store')
-  const [cpaVer, consoleVer] = await Promise.all([
-    getCpaVersion().catch(() => ({ version: 'unknown', commit: '', buildDate: '' })),
-    Promise.resolve(getConsoleVersion()),
-  ])
+  const cpaVer = cpaVersionResult.status === 'fulfilled' ? cpaVersionResult.value : { version: 'unknown', commit: '', buildDate: '' }
+  const consoleVer = getConsoleVersion()
   res.json({
     keys, groups, models, retentionDays: config.usageRetentionDays, quotaTimeZone: config.quotaTimeZone,
     degraded, degradedReason: degraded ? degradedReason : '',
@@ -692,10 +692,14 @@ app.post('/api/accounts/:authIndex/reset-codex-quota', async (req, res) => {
       const detail = typeof result.body_text === 'string' ? result.body_text : JSON.stringify(result.body ?? '')
       return res.status(502).json({ error: `上游返回 HTTP ${statusCode}`, detail: detail.slice(0, 300) })
     }
-    addAudit('reset-codex-quota', `${file.name || authIndex}`)
+    // 上游重置成功后，CPA 仍按重置前那次 429 的旧 resets_at 排着本地冷却（内存态、无查询/清除端点），
+    // 不清掉的话「重置了但用不了」会持续到原重置点（2026-09-27 事故）。清冷却失败不推翻已成功的重置。
+    let cooldownCleared = true
+    try { await clearAuthFileCooldown(String(file.name)) } catch { cooldownCleared = false }
+    addAudit('reset-codex-quota', `${file.name || authIndex}`, cooldownCleared ? 'cooldown-cleared' : 'cooldown-clear-failed')
     monitorCoordinator.clear('monitor')
     const credits = await getCodexResetCredits(authIndex, accountId)
-    res.json({ ok: true, resetCredits: normalizeResetCredits(credits.body ?? credits.body_text) })
+    res.json({ ok: true, cooldownCleared, resetCredits: normalizeResetCredits(credits.body ?? credits.body_text) })
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : '重置失败' })
   }
@@ -740,10 +744,12 @@ app.post('/api/accounts/:authIndex/reset-claude-quota', async (req, res) => {
     if (outcome !== 'reset' && outcome !== 'already_used') {
       return res.status(409).json({ error: `上游未执行重置（${outcome || 'unknown'}）`, detail: String(claimBody.reason || claimBody.cooldown_until || '') })
     }
-    addAudit('reset-claude-quota', `${file.name || authIndex}`)
+    let cooldownCleared = true
+    try { await clearAuthFileCooldown(String(file.name)) } catch { cooldownCleared = false }
+    addAudit('reset-claude-quota', `${file.name || authIndex}`, cooldownCleared ? 'cooldown-cleared' : 'cooldown-clear-failed')
     claudeQuotaCache.clear(authIndex)
     monitorCoordinator.clear('monitor')
-    res.json({ ok: true, result: outcome, cleared: claimBody.cleared ?? [] })
+    res.json({ ok: true, cooldownCleared, result: outcome, cleared: claimBody.cleared ?? [] })
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : '重置失败' })
   }
@@ -1117,24 +1123,90 @@ app.get('/api/rtk/status', async (_req, res) => {
   try {
     const { readRTKStatus } = await import('./rtkService.js')
     const status = await readRTKStatus()
+    // T2：日志里能看到 plane 与每个平面的状态/状态码，便于判断是「控制面不可用」还是「RTK 未安装」。
+    console.log(JSON.stringify({ category: '[AUDIT]', event: 'rtk.plane', plane: status.plane,
+      planes: status.planes.map(item => `${item.id}:${item.state}:${item.reason}`) }))
     res.json(status)
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : '获取 RTK 状态失败' })
+    const failure = (await import('./rtkService.js')).rtkFailure(error)
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}) })
+  }
+})
+
+app.get('/api/rtk/planes', async (_req, res) => {
+  try {
+    const { resolveRtkPlane } = await import('./rtkPlane.js')
+    res.json(await resolveRtkPlane({ fresh: true }))
+  } catch (error) {
+    const failure = (await import('./rtkService.js')).rtkFailure(error)
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}) })
   }
 })
 
 app.post('/api/rtk/toggle', async (req, res) => {
+  const agent = String(req.body?.agent || '').trim()
+  const on = Boolean(req.body?.on)
+  const plane = String(req.body?.plane || 'local').trim()
+  const confirm = req.body?.confirm === true
+  if (!agent) return res.status(400).json({ error: '缺少 agent 参数' })
   try {
-    const agent = String(req.body?.agent || '').trim()
-    const on = Boolean(req.body?.on)
-    if (!agent) return res.status(400).json({ error: '缺少 agent 参数' })
     const { setRTKAgentHook } = await import('./rtkService.js')
-    const result = await setRTKAgentHook(agent, on)
-    addAudit('toggle_rtk_hook', agent, `on=${on}`)
+    const result = await setRTKAgentHook(agent, on, { plane: plane as 'kernel' | 'relay' | 'local', confirm })
+    addAudit('toggle_rtk_hook', agent, `on=${on}, plane=${result.plane}, outcome=ok${result.mechanism ? `, mechanism=${result.mechanism}` : ''}`)
     res.json(result)
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : '切换 RTK 挂载失败' })
+    const failure = (await import('./rtkService.js')).rtkFailure(error)
+    addAudit('toggle_rtk_hook', agent, `on=${on}, plane=${failure.plane || plane}, outcome=error, status=${failure.status}, reason=${failure.reason || 'unknown'}`)
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}) })
   }
+})
+
+app.post('/api/rtk/rollback', async (req, res) => {
+  const confirm = req.body?.confirm === true
+  const backup = req.body?.backup ? String(req.body.backup).trim() : undefined
+  try {
+    const { rollbackRTK } = await import('./rtkService.js')
+    const result = await rollbackRTK({ backup, confirm })
+    addAudit('rollback_rtk_hook', backup || 'latest', `outcome=ok, restored=${result.restored.join(',')}`)
+    res.json(result)
+  } catch (error) {
+    const failure = (await import('./rtkService.js')).rtkFailure(error)
+    addAudit('rollback_rtk_hook', backup || 'latest', `outcome=error, status=${failure.status}, reason=${failure.reason || 'unknown'}`)
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}) })
+  }
+})
+
+// install/upgrade：平面不支持时必须 501，不能静默假装成功。
+const rtkBinaryRoute = (
+  action: 'install' | 'upgrade',
+  run: (options: { plane?: 'kernel' | 'relay' | 'local'; confirm: boolean }) => Promise<unknown>,
+) => async (req: express.Request, res: express.Response) => {
+  const plane = req.body?.plane ? String(req.body.plane).trim() as 'kernel' | 'relay' | 'local' : undefined
+  const confirm = req.body?.confirm === true
+  try {
+    const result = await run({ plane, confirm })
+    addAudit(`${action}_rtk`, plane || 'authoritative', 'outcome=ok')
+    res.json(result)
+  } catch (error) {
+    const failure = (await import('./rtkService.js')).rtkFailure(error)
+    addAudit(`${action}_rtk`, failure.plane || plane || 'authoritative', `outcome=error, status=${failure.status}, reason=${failure.reason || 'unknown'}`)
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}) })
+  }
+}
+
+app.post('/api/rtk/install', async (req, res) => {
+  const { installRTK } = await import('./rtkService.js')
+  await rtkBinaryRoute('install', installRTK)(req, res)
+})
+
+app.post('/api/rtk/upgrade', async (req, res) => {
+  const { upgradeRTK } = await import('./rtkService.js')
+  await rtkBinaryRoute('upgrade', upgradeRTK)(req, res)
+})
+// A/B 实验台的偏好留痕（Lead 挂载；处理器自带 401/400/500 映射与密钥脱敏）。
+app.post('/api/ab/preference', async (req, res) => {
+  const { handleAbPreference } = await import('./abLab.js')
+  await handleAbPreference(req, res)
 })
 app.get('/api/audit', (_req, res) => res.json({ items: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100').all() }))
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }))

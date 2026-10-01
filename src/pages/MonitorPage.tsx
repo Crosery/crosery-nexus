@@ -111,10 +111,13 @@ function AccountCard({ account, onRefresh }: { account: Record<string, any>; onR
   const runReset = async () => {
     setResetting(true)
     try {
-      if (resetProvider === 'claude') await api.resetClaudeQuota(String(account.auth_index))
-      else await api.resetCodexQuota(String(account.auth_index))
+      const outcome = resetProvider === 'claude'
+        ? await api.resetClaudeQuota(String(account.auth_index))
+        : await api.resetCodexQuota(String(account.auth_index))
       setConfirming(false)
-      setResult({ tone: 'success', title: '重置成功', description: `已重置「${accountName}」的 ${resetLabel} 额度，消耗 1 次主动重置次数。` })
+      setResult(outcome.cooldownCleared
+        ? { tone: 'success', title: '重置成功', description: `已重置「${accountName}」的 ${resetLabel} 额度并清除网关侧冷却，消耗 1 次主动重置次数。` }
+        : { tone: 'error', title: '额度已重置，但网关冷却未清除', description: `「${accountName}」的额度已在上游重置，但网关本地冷却清除失败，请求可能仍被挡到原重置时间点；请稍后重试或重启 cli-proxy-api。` })
       onRefresh()
     } catch (error) {
       setConfirming(false)
