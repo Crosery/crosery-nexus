@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,6 +17,17 @@ import test from 'node:test'
  */
 
 const { checkRollupHealthV2, compareMetric, summarizeRowDrift } = await import('./usageRollup.js')
+
+/** 跑 `scripts/rollup-rebuild.mjs`（端到端：脚本路径也要有回归）。 */
+const SCRIPT = path.join(process.cwd(), 'scripts', 'rollup-rebuild.mjs')
+const runScript = (command: string, file: string, extra: string[] = []) => {
+  try {
+    return { code: 0, stdout: execFileSync(process.execPath, [SCRIPT, command, '--db', file, '--hours', '24', ...extra], { encoding: 'utf8' }) }
+  } catch (error) {
+    const failure = error as { status?: number; stdout?: string; stderr?: string }
+    return { code: failure.status ?? 1, stdout: `${failure.stdout ?? ''}${failure.stderr ?? ''}` }
+  }
+}
 
 const HOUR = 3_600_000
 
@@ -170,4 +182,122 @@ test('负向：单维度比较的判据本身可红（compareMetric / summarizeR
   assert.equal(summarizeRowDrift({ driftingRows: 1, sumAbsRequests: 1, eventRequests: 1_000 }).severity, 'warn')
   assert.equal(summarizeRowDrift({ driftingRows: 10, sumAbsRequests: 500, eventRequests: 1_000 }).severity, 'alert')
   assert.equal(summarizeRowDrift({ driftingRows: 3, sumAbsRequests: 3, eventRequests: 0 }).severity, 'alert', '没有 events 却有漂移行 → alert')
+})
+
+/* ─────────── task-74：空窗口语义与「三种 0」 ─────────── */
+
+/**
+ * 红队 N1：空窗口下 `scripts/rollup-rebuild.mjs check` 报 `alert`，而 HTTP 接口报 `ok`
+ * （夜间无流量必然误报 ⇒ 巡检员会学会忽略告警）。根因：SQL 的 `SUM(...)` 在没有任何分组行时
+ * 返回 **NULL**，而脚本本地规则写成 `rollup === 0`（严格相等）⇒ NULL !== 0 ⇒ 走进"只有 rollup 有数"
+ * 分支。现在 SQL 全部 COALESCE 成 0，且**两条路径共用同一个 `summarizeRollupHealthV2`**。
+ */
+
+/** 空库（只有表结构，没有任何 events/rollup 行）。 */
+function makeEmptyFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crosery-empty-window-'))
+  const file = path.join(dir, 'console.db')
+  const db = new DatabaseSync(file)
+  db.exec(`CREATE TABLE usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT UNIQUE, timestamp TEXT NOT NULL,
+    timestamp_ms INTEGER NOT NULL DEFAULT 0, key_hash TEXT, provider TEXT NOT NULL, model TEXT NOT NULL, model_group TEXT NOT NULL,
+    endpoint TEXT NOT NULL, success INTEGER NOT NULL, status_code INTEGER NOT NULL, latency_ms INTEGER NOT NULL, ttft_ms INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, cached_tokens INTEGER NOT NULL,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL, user_agent TEXT NOT NULL DEFAULT '',
+    client_type TEXT NOT NULL DEFAULT '', client_ip TEXT NOT NULL DEFAULT '', error_detail TEXT NOT NULL DEFAULT '',
+    error_category TEXT NOT NULL DEFAULT '', upstream_request_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
+    auth_index TEXT NOT NULL DEFAULT '', reasoning_effort TEXT NOT NULL DEFAULT '', service_tier TEXT NOT NULL DEFAULT '',
+    response_headers_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL)`)
+  db.exec(`CREATE TABLE usage_hourly_rollup (hour_ms INTEGER NOT NULL, hour_text TEXT NOT NULL, day_text TEXT NOT NULL,
+    key_hash TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, model_group TEXT NOT NULL, endpoint TEXT NOT NULL,
+    client_type TEXT NOT NULL, success INTEGER NOT NULL, status_code INTEGER NOT NULL, error_category TEXT NOT NULL,
+    request_count INTEGER NOT NULL, total_tokens INTEGER NOT NULL, input_tokens INTEGER NOT NULL, uncached_input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL, cached_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL,
+    latency_sum_ms INTEGER NOT NULL, ttft_sum_ms INTEGER NOT NULL, cost_usd_sum REAL NOT NULL, cost_usd_count INTEGER NOT NULL,
+    first_timestamp_ms INTEGER NOT NULL,
+    PRIMARY KEY (hour_ms, key_hash, provider, model, model_group, endpoint, client_type, success, status_code, error_category)) WITHOUT ROWID`)
+  return { dir, file, db }
+}
+
+const insertRollupRow = (db: DatabaseSync, hourMs: number, count: number) => db.exec(`INSERT INTO usage_hourly_rollup
+  (hour_ms,hour_text,day_text,key_hash,provider,model,model_group,endpoint,client_type,success,status_code,error_category,
+   request_count,total_tokens,input_tokens,uncached_input_tokens,output_tokens,cached_tokens,cache_write_tokens,reasoning_tokens,
+   latency_sum_ms,ttft_sum_ms,cost_usd_sum,cost_usd_count,first_timestamp_ms)
+  VALUES (${hourMs}, '2026-10-01T08', '2026-10-01', 'k1', 'openai', 'openai/m', 'openai', '/v1/x', 'cursor', 1, 200, '',
+   ${count}, 1000, 1000, 1000, 0, 0, 0, 0, 0, 0, 1.5, 3, ${hourMs})`)
+
+test('三种「0」①：两边都 0（真空窗口）→ ok（夜间无流量不该报警）', () => {
+  const fixture = makeEmptyFixture()
+  const health = checkRollupHealthV2(fixture.db, 24, {})
+  fixture.db.close()
+  fs.rmSync(fixture.dir, { recursive: true, force: true })
+  assert.equal(health.severity, 'ok', '空窗口必须 ok')
+  assert.equal(health.ratio, 1, '两侧都为 0 → ratio 记 1（不是 null）')
+  assert.equal(health.driftPct, 0)
+  assert.equal(health.rollupRequests, 0)
+  assert.equal(health.eventRequests, 0)
+  assert.ok(health.metrics.every((metric) => metric.severity === 'ok'), '五个维度在空窗口下都应 ok')
+  assert.equal(health.rowDrift.driftingRows, 0)
+  assert.equal(health.rowDrift.severity, 'ok')
+})
+
+test('三种「0」②：events=0 但 rollup>0 → alert（真漂移）', () => {
+  const fixture = makeEmptyFixture()
+  insertRollupRow(fixture.db, Math.floor((Date.now() - 3_600_000) / 3_600_000) * 3_600_000, 7)
+  const health = checkRollupHealthV2(fixture.db, 24, {})
+  fixture.db.close()
+  fs.rmSync(fixture.dir, { recursive: true, force: true })
+  assert.equal(health.eventRequests, 0)
+  assert.ok(health.rollupRequests > 0)
+  assert.equal(health.metrics[0].ratio, null, 'events=0 且 rollup>0 → ratio 是 null（客户端要处理）')
+  assert.equal(health.metrics[0].driftPct, 100)
+  assert.equal(health.severity, 'alert')
+  assert.ok(health.rowDrift.driftingRows > 0, '行级差异也要报')
+})
+
+test('三种「0」③：events>0 但 rollup=0 → alert（触发器漏跑）', () => {
+  const fixture = makeFixture([{ ts: NOW - 2 * HOUR, provider: 'openai', model: 'openai/gpt-5.4-mini', tokens: 900, cost: 0.4 }])
+  fixture.db.exec('DELETE FROM usage_hourly_rollup')   // 模拟触发器没跑
+  const health = checkRollupHealthV2(fixture.db, 24, {})
+  fixture.db.close()
+  fs.rmSync(fixture.dir, { recursive: true, force: true })
+  assert.ok(health.eventRequests > 0)
+  assert.equal(health.rollupRequests, 0)
+  assert.equal(health.metrics[0].severity, 'alert')
+  assert.equal(health.metrics[0].driftPct, 100)
+  assert.equal(health.severity, 'alert')
+  assert.ok(health.rowDrift.driftingRows > 0)
+})
+
+test('负向验证：若把规则写成「任何一边为 0 就判 ok」，②③两条用例必红', () => {
+  // 这是"错误规则"的显式对照实现：拿来证明上面两条用例确实能抓住它。
+  const naiveAnyZeroIsOk = (rollup: number, events: number) => (rollup === 0 || events === 0 ? 'ok' : 'alert')
+  assert.equal(naiveAnyZeroIsOk(7, 0), 'ok', '错误规则会把"触发器漏跑"(③) 判成 ok')
+  assert.equal(naiveAnyZeroIsOk(0, 7), 'ok', '错误规则会把"只有 rollup 有数"(②) 判成 ok')
+  assert.equal(naiveAnyZeroIsOk(0, 0), 'ok')
+  // 正确规则（服务端实现）：只有两边都 0 才 ok
+  assert.equal(compareMetric('requests', '请求数', 7, 0).severity, 'alert')
+  assert.equal(compareMetric('requests', '请求数', 0, 7).severity, 'alert')
+  assert.equal(compareMetric('requests', '请求数', 0, 0).severity, 'ok')
+})
+
+test('端到端（脚本）：空窗口下 check 与接口路径**同判 ok**（同库同窗口）', () => {
+  const fixture = makeEmptyFixture()
+  fixture.db.close()
+  try {
+    const scriptRun = runScript('check', fixture.file)
+    assert.equal(scriptRun.code, 0, `空窗口 check 退出码应为 0：${scriptRun.stdout}`)
+    const scriptResult = JSON.parse(scriptRun.stdout.trim().split('\n').pop()!)
+    assert.equal(scriptResult.severity, 'ok', '脚本路径：空窗口必须 ok')
+    assert.equal(scriptResult.ratio, 1)
+
+    const db = new DatabaseSync(fixture.file, { readOnly: true })
+    const apiResult = checkRollupHealthV2(db, 24, {})
+    db.close()
+    assert.equal(apiResult.severity, 'ok', '接口路径：空窗口必须 ok')
+    assert.equal(apiResult.severity, scriptResult.severity, '两条路径的判定必须一致')
+    assert.equal(apiResult.ratio, scriptResult.ratio)
+    assert.equal(apiResult.rowDrift.driftingRows, scriptResult.rowDrift.driftingRows)
+  } finally {
+    fs.rmSync(fixture.dir, { recursive: true, force: true })
+  }
 })

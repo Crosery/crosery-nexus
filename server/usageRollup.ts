@@ -437,19 +437,21 @@ export function rollupDriftSql(_cutoffMs: number) {
     WHEN client_type='' THEN 'legacy-unknown' ELSE client_type END)`
   return `
     SELECT
-      SUM(r_requests) rollupRequests, SUM(e_requests) eventRequests,
-      SUM(r_tokens) rollupTokens, SUM(e_tokens) eventTokens,
-      SUM(r_cached) rollupCached, SUM(e_cached) eventCached,
-      SUM(r_latency) rollupLatency, SUM(e_latency) eventLatency,
-      ROUND(SUM(r_cost), 6) rollupCost, ROUND(SUM(e_cost), 6) eventCost,
-      SUM(CASE WHEN r_requests <> e_requests
+      -- 空窗口（没有任何分组行）时 SUM(...) 是 NULL，会让上游把 null 当成"非 0"从而误报；
+      -- 统一 COALESCE 成 0：**两边都 0 = 真空窗口**（判 ok），只有一边为 0 才是漂移。
+      COALESCE(SUM(r_requests), 0) rollupRequests, COALESCE(SUM(e_requests), 0) eventRequests,
+      COALESCE(SUM(r_tokens), 0) rollupTokens, COALESCE(SUM(e_tokens), 0) eventTokens,
+      COALESCE(SUM(r_cached), 0) rollupCached, COALESCE(SUM(e_cached), 0) eventCached,
+      COALESCE(SUM(r_latency), 0) rollupLatency, COALESCE(SUM(e_latency), 0) eventLatency,
+      ROUND(COALESCE(SUM(r_cost), 0), 6) rollupCost, ROUND(COALESCE(SUM(e_cost), 0), 6) eventCost,
+      COALESCE(SUM(CASE WHEN r_requests <> e_requests
                  OR ABS(r_tokens - e_tokens) > 1e-6
                  OR ABS(r_cached - e_cached) > 1e-6
                  OR ABS(r_latency - e_latency) > 1e-6
-                 OR ABS(r_cost - e_cost) > 1e-6 THEN 1 ELSE 0 END) driftingRows,
-      SUM(ABS(r_requests - e_requests)) sumAbsRequests, MAX(ABS(r_requests - e_requests)) maxAbsRequests,
-      SUM(ABS(r_tokens - e_tokens)) sumAbsTokens, MAX(ABS(r_tokens - e_tokens)) maxAbsTokens,
-      SUM(ABS(r_cost - e_cost)) sumAbsCost, MAX(ABS(r_cost - e_cost)) maxAbsCost
+                 OR ABS(r_cost - e_cost) > 1e-6 THEN 1 ELSE 0 END), 0) driftingRows,
+      COALESCE(SUM(ABS(r_requests - e_requests)), 0) sumAbsRequests, COALESCE(MAX(ABS(r_requests - e_requests)), 0) maxAbsRequests,
+      COALESCE(SUM(ABS(r_tokens - e_tokens)), 0) sumAbsTokens, COALESCE(MAX(ABS(r_tokens - e_tokens)), 0) maxAbsTokens,
+      COALESCE(SUM(ABS(r_cost - e_cost)), 0) sumAbsCost, COALESCE(MAX(ABS(r_cost - e_cost)), 0) maxAbsCost
     FROM (
       SELECT ${ROW_KEY_COLUMNS},
         COALESCE(SUM(CASE WHEN src='r' THEN requests END), 0) r_requests,

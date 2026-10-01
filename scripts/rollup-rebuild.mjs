@@ -21,7 +21,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { rollupDriftSql } from '../server/usageRollup.ts'
+import { rollupDriftSql, summarizeRollupHealthV2 } from '../server/usageRollup.ts'
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -55,32 +55,23 @@ const severityOf = (driftPct) => (driftPct < 1 ? 'ok' : driftPct <= 5 ? 'warn' :
  * 自检（task-67 起为多维度 + 行级差异版）：一次分组扫描同时给出两边总量与逐行差异。
  * `all = true` 时不做窗口过滤（整表，含历史漂移）——这是窗口自检看不见的那部分。
  */
+/**
+ * 自检 = **直接复用服务端同一份判定**（task-74）。
+ *
+ * 之前这里自己写了一套 severity 计算，结果在空窗口上和服务端**判得不一样**：SQL 的 `SUM(...)`
+ * 在没有任何分组行时返回 NULL，而本地规则写的是 `rollup === 0`（严格相等）⇒ NULL !== 0 ⇒ 走进
+ * "只有 rollup 有数"分支 ⇒ **空窗口误报 alert**（红队 N1：夜间无流量必然误报，会让巡检员
+ * 学会忽略告警）。现在两条路径共用 `summarizeRollupHealthV2`，判定不可能再漂移；
+ * SQL 侧也统一 COALESCE 成 0（`server/usageRollup.ts`）。
+ *
+ * 三种「0」的语义：两边都 0 = 真空窗口 → ok；只有一边为 0 = 漂移（events=0&rollup>0 是多余数据，
+ * events>0&rollup=0 是触发器漏跑）→ alert。
+ */
 function checkHealth(db, hours = windowHours, all = false) {
   const cutoffMs = all ? 0 : alignedCutoffMs(hours)
   const sql = rollupDriftSql(cutoffMs)
   const row = db.prepare(sql).get(cutoffMs, cutoffMs)
-  const metrics = [
-    ['requests', '请求数', row.rollupRequests, row.eventRequests],
-    ['totalTokens', '总 token', row.rollupTokens, row.eventTokens],
-    ['cachedTokens', '缓存命中 token', row.rollupCached, row.eventCached],
-    ['latencySumMs', '延迟合计(ms)', row.rollupLatency, row.eventLatency],
-    ['costUsdSum', '金额(USD)', row.rollupCost, row.eventCost],
-  ].map(([id, label, rollup, events]) => {
-    const driftPct = events === 0 ? (rollup === 0 ? 0 : 100) : Math.abs(rollup - events) / events * 100
-    return { id, label, rollup, events, ratio: events === 0 ? (rollup === 0 ? 1 : null) : Number((rollup / events).toFixed(6)),
-      driftPct: Number(driftPct.toFixed(3)), severity: severityOf(driftPct) }
-  })
-  const driftingRows = Number(row.driftingRows) || 0
-  const relative = Number(row.eventRequests) === 0 ? (driftingRows > 0 ? 100 : 0) : (Number(row.sumAbsRequests) / Number(row.eventRequests)) * 100
-  const rowDrift = { driftingRows, sumAbsRequests: Number(row.sumAbsRequests) || 0, maxAbsRequests: Number(row.maxAbsRequests) || 0,
-    sumAbsTokens: Number(row.sumAbsTokens) || 0, maxAbsTokens: Number(row.maxAbsTokens) || 0,
-    sumAbsCost: Number(row.sumAbsCost) || 0, maxAbsCost: Number(row.maxAbsCost) || 0,
-    severity: driftingRows === 0 ? 'ok' : relative > 5 ? 'alert' : 'warn' }
-  const rank = { ok: 0, warn: 1, alert: 2 }
-  const severity = [...metrics.map((m) => m.severity), rowDrift.severity].reduce((worst, current) => (rank[current] > rank[worst] ? current : worst), 'ok')
-  return { windowHours: all ? 0 : hours, cutoffMs, cutoffIso: new Date(cutoffMs).toISOString(),
-    rollupRequests: metrics[0].rollup, eventRequests: metrics[0].events, ratio: metrics[0].ratio,
-    driftPct: metrics[0].driftPct, severity, metrics, rowDrift }
+  return summarizeRollupHealthV2(row, { windowHours: all ? 0 : hours, cutoffMs })
 }
 
 /** rollup 表指纹：重建幂等性的判据。 */

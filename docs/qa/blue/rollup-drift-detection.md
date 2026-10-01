@@ -220,3 +220,71 @@ verdict     rebuilt-and-verified          （整轮 0.315s）
 - 测试：`server/usageRollupDriftV2.test.ts` 5 条（两个盲区必红用例 + 不误报 + 边界 + 判据负向）+ 原 `server/usageRollupDrift.test.ts` 6 条，**11/11 通过**。
 - `tsc -b` **0** · `lint` **0**（4 条既存 warning）· `build` **0** · `npm test` **0**（`677 / 676 / 0 / 1 skipped`）。
 - 已重启本机服务（`launchctl kickstart -k`，**未用 bootout**）并抽验接口；**生产仅只读 SSH 查询**。
+
+---
+
+# 附：task-74 —— 空窗口误报 alert（告警可信度）与「三种 0」
+
+红队崩溃恢复演练的附带发现 **N1（低）**：空窗口下 `scripts/rollup-rebuild.mjs check` 报 `alert`，
+而 `GET /api/usage/rollup-health` 报 `ok`。**为什么要修**：一个在"夜间无流量"必然误报的检查，
+会训练巡检员忽略告警——那比没有告警更糟。
+
+## 1. 根因：两条路径各自实现了一遍判定，其中一份把 NULL 当成"非 0"
+
+脚本里的本地规则写的是 `rollup === 0`（**严格相等**），而 SQL 的 `SUM(...)` 在**没有任何分组行**时返回
+**NULL** ⇒ `NULL !== 0` ⇒ 走进"只有 rollup 有数"分支 ⇒ `driftPct = 100` ⇒ **alert**。
+服务端那份（`compareMetric`）用的是 `Number(x) || 0`，所以同一状态报 `ok`。复现证据（同库同窗口）：
+
+```
+修复前：{"脚本 check": {"severity": "alert", "ratio": null, "events": null, "rollup": null, "driftPct": null}}
+        接口路径： {"severity": "ok", "ratio": 1, "metrics": 五个全 ok, "driftingRows": 0}
+```
+
+## 2. 修法：**只留一份判定**（结构性对齐，而不是把两条规则都改对）
+
+1. `server/usageRollup.ts` 的 `rollupDriftSql`：外层聚合**全部 COALESCE 成 0**
+   （`SUM/MAX` 在空集上是 NULL），空窗口从此是真·0 而不是 null。
+2. `scripts/rollup-rebuild.mjs` 的 `checkHealth`：删掉本地那套 severity 计算，
+   **直接调用服务端的 `summarizeRollupHealthV2`** ⇒ 两条路径不可能再判得不一样。
+   （教训：同一条判定写两遍，早晚会漂移——这次漂的就是 NULL 语义。）
+
+**修复后 · 同库同窗口并列输出**（本机空库 `/tmp/empty-db/console.db`，24h 窗口）：
+
+```json
+{ "脚本 check":                        { "severity": "ok", "ratio": 1, "rollup": 0, "events": 0, "driftingRows": 0,
+                                         "metrics": { "requests": "ok", "totalTokens": "ok", "cachedTokens": "ok",
+                                                      "latencySumMs": "ok", "costUsdSum": "ok" } },
+  "接口路径 (checkRollupHealthV2)":     { "severity": "ok", "ratio": 1, "rollup": 0, "events": 0, "driftingRows": 0,
+                                         "metrics": { …五个 ok } },
+  "同判": true }
+```
+
+脚本退出码 **0**；本机实例接口（只读，未重启）`{"severity":"ok","ratio":1,"rollup":2910,"events":2910}`；
+生产只读（`ssh cpa-vps`，本轮同一会话内实测）24h `12,206 = 12,206`、168h `147,237 = 147,237`，
+五维度全 ok、`driftingRows 0`（生产不是空窗口，所以三个「0」的用例在临时空库上验证）。
+
+## 3. 三种「0」的判定（每条一个用例）
+
+| 场景 | 含义 | 判定 | 证据 |
+| --- | --- | --- | --- |
+| ① events=0 且 rollup=0 | **真空窗口**（夜间无流量） | **ok**（ratio 记 1，driftPct 0，五维度全 ok，`driftingRows 0`） | 空库用例 + 脚本/接口并列输出 |
+| ② events=0 但 rollup>0 | **真漂移**（多余数据/重复累加） | **alert**（`ratio: null`、`driftPct: 100`、`driftingRows > 0`） | 用例「三种 0 ②」 |
+| ③ events>0 但 rollup=0 | **触发器漏跑**（events 由别的路径写入） | **alert**（`driftPct: 100`、`driftingRows > 0`） | 用例「三种 0 ③」 |
+
+**负向验证**：用例里显式实现了一个"错误规则" `anyZeroIsOk = (rollup, events) => rollup === 0 || events === 0 ? 'ok' : 'alert'`，
+并断言它会把 ② 和 ③ 判成 `ok`；同时断言正确实现（`compareMetric`）对 ②③ 都是 `alert`、只有 0/0 是 `ok`。
+⇒ 若后人把规则改成"任何 0 都 ok"，这两条用例必红。
+
+## 4. 空窗口语义对 `metrics[]` 与 `rowDrift` 的影响（顺手核对）
+
+空窗口下：五个维度**全部 ok**（0/0）、`rowDrift.driftingRows = 0`、`rowDrift.severity = ok`、
+顶层 `ratio = 1`（不是 null）、`driftPct = 0`。**只有 ② 那种"单边为 0"才会出现 `ratio: null` + `driftPct: 100`** ——
+客户端只需处理这一种 null 情况（`events=0 且 rollup>0`），这一点已写进 `server/usageRollup.ts` 的注释与文档。
+
+## 5. 验证
+
+- 新增/更新测试：`server/usageRollupDriftV2.test.ts` 追加 5 条（三种 0 + 错误规则负向 + **脚本与接口同判**的端到端），
+  该文件 **10/10 通过**；`server/usageRollupDrift.test.ts` 6/6 通过。
+- `tsc -b` **0** · `lint` **0** · `npm test` **0**（`685 / 684 / 0 / 1 skipped`）。
+- **未重启/未停服务**：服务端改动是 SQL 侧 `COALESCE` + 复用同一判定函数，对运行实例的行为是**幂等**的
+  （接口此前就判 ok，实测也仍 ok）；脚本路径的修复立刻生效（脚本每次都由 node 重新加载）。
