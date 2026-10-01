@@ -1,14 +1,25 @@
 /* 页面版式：布局与间距规范，颜色读取 --tx-* 令牌 */
 
-.page {
+/*
+ * 页面容器有两个名字：`.page`（6 个页面）与 `.page-stack`（7 个页面）。
+ * **它们的盒模型必须一样**——`.page-stack` 以前完全没有 padding/居中，
+ * 于是那 7 个页面（统计/缓存/帮助/模型/监控/RTK/请求明细）的内容**紧贴顶栏与屏幕边缘**，
+ * 和另外 6 个页面对不上；这正是"紧凑粘连"最刺眼的一处。
+ * 这里把盒模型合并成一条，只有内部的 flex 节奏按用途分开。
+ */
+.page,
+.page-stack {
   width: 100%;
   max-width: 1360px;
   margin: 0 auto;
   padding: 24px 32px 48px;
+  min-width: 0;
+}
+
+.page {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-width: 0;
 }
 
 /*
@@ -285,11 +296,9 @@ pre code,
 }
 
 @media (max-width: 900px) {
-  .page {
-    /*
-     * 顶部留白 12px 时，页面标题会贴到顶栏下沿（390px 实测：标题几乎粘在菜单按钮下方）。
-     * 20px 让"标题属于这一页"这件事在视觉上成立——顶栏与内容是两件事，不该粘连。
-     */
+  /* 顶栏与内容之间必须留出间距：390px 实测过标题直接贴住顶栏下沿。 */
+  .page,
+  .page-stack {
     padding: 20px 16px 40px;
   }
   .grid-2,
