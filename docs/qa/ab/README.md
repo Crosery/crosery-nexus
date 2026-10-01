@@ -44,13 +44,12 @@
 | `src/ab/registry.ts` | **唯一** import 变体组件的地方：A 侧 4 个冻结 `.vue`、B 侧真实页面。Phase 2 换 B 侧只改这里。 |
 | `src/ab/labState.ts` | 深链解析/生成（纯函数）：`parseLabQuery` / `labLink`。 |
 | `src/ab/preference.ts` | 投票的客户端契约（类型 + 提交前校验 + `submitPreference`）。权威校验在服务端。 |
+| `src/ab/readOnlyGate.ts` | **只读闸门**（红队 R1 收口）：api 函数层 / fetch / XHR 三层拦写，唯一放行本页自己的投票；实现与验证见 `comparison.md` §7。 |
 | `src/ab/variants/legacy/*.legacy.vue` | A 侧：`git show 281c30e:<path>` 的冻结页面副本（逐字，仅改 import 指向）。 |
 | `server/abLab.ts` | `POST /api/ab/preference` 的实现与校验（独立文件，路由由 Lead 注册）。 |
 | `scripts/ab-report.mjs` | 汇总命令：按流程统计 A/B 票数与理由摘要。 |
 
-**接线由 Lead 负责**（截至本文件写作时尚未注册）：
-1. `src/router.ts` → `{ path: 'ab', name: 'ab', component: () => import('./pages/AbLabPage.vue') }`
-2. `server/index.ts` → `import { handleAbPreference } from './abLab.js'` + `app.post('/api/ab/preference', handleAbPreference)`
+**接线已由 Lead 完成**：`src/router.ts`（`/ab` + 侧栏入口）、`server/index.ts`（`POST /api/ab/preference`）。
 
 ---
 
@@ -148,6 +147,7 @@ D24（轮询无上限）、D27（开关即时生效）、D30（术语漂移）�
 - `POST /api/ab/preference` 已接线（`server/index.ts`）：未登录 401；页面投票实测成功后 `data/ab-preferences.jsonl` 出现该条记录，`node scripts/ab-report.mjs` 能读出（输出见 `comparison.md` §6）。
 - `server/abLab.ts` 隔离环境自测（`DATA_DIR=/tmp/...`，未碰真实 data/）：9/9 校验用例通过；额外键（`apiKey`/`password`/`prompt`）被完全丢弃；`sk-…`/`Bearer …` 被替换为「[已隐去疑似密钥]」并置 `redacted:true`；落盘 0600、每行合法 JSON。
 - A/B 任务式评估已完成：`docs/qa/ab/comparison.md`（三个流程各一张对照表 + A/B 真实截图 + 复现命令）。
+- **只读闸门已完成并逐一验证**（红队 R1）：4 个 legacy 副本各实点一条交互，页内无非 GET 请求、计数符合预期、无真实副作用；闸门逻辑自测 19/19；投票通道例外已验证。详见 `comparison.md` §7。
 
 **未验证 / 残余风险（详见 `comparison.md` §5）**
 - 样本量 1（唯一操作者），不得外推。

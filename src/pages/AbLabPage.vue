@@ -18,6 +18,8 @@ import { TxInput } from '@talex-touch/tuffex/input'
 import { AB_FLOWS, AB_METRICS, findFlow, flowPair } from '../ab/flows'
 import { AB_CHOICE_LABEL, AB_CHOICES, AB_NOTE_MAX, submitPreference, validatePreference, type AbChoice, type AbFlowId } from '../ab/preference'
 import { AB_VIEWS, AB_VIEW_LABEL, labLink, parseLabQuery, type AbView } from '../ab/labState'
+import { installReadOnlyGate } from '../ab/readOnlyGate'
+import { api } from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,32 +31,28 @@ const router = useRouter()
  * 红队实测在 `/ab?flow=keys-access&v=a` 点「重置今日用量」**没有确认框**，直接发出
  * `POST /api/keys/<id>/quota/reset` —— 本轮刚验收为「已修」的零确认重置，被自己的实验台绕过了。
  *
- * 对照页面本来就不该产生写副作用（要写就去真实页面写），所以实验台挂载期间拦截所有非 GET/HEAD
- * 请求，并把拦截次数显示出来，避免「点了没反应」被误读成页面坏了。
+ * 对照页面本来就不该产生写副作用（要写就去真实页面写）。闸门分三层（api 函数层 / fetch / XHR），
+ * **唯一放行**的是本页自己的投票 `POST /api/ab/preference`：v1 的 fetch 拦截把投票也一起拦了，
+ * 等于亲手废掉「真实用户参与」通道，这里按「同源 + 精确路径 + POST」开例外。实现见 `src/ab/readOnlyGate.ts`。
+ * 每次拦截都显示出来，避免「点了没反应」被误读成页面坏了。
  */
 const blockedWrites = ref(0)
-let restoreFetch: (() => void) | null = null
+const lastBlocked = ref('')
+let releaseGate: (() => void) | null = null
 
 onMounted(() => {
-  const raw = window.fetch.bind(window)
-  window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    const fromInit = init?.method
-    const fromRequest = typeof input === 'object' && input !== null && 'method' in input ? (input as Request).method : undefined
-    const method = String(fromInit || fromRequest || 'GET').toUpperCase()
-    if (method !== 'GET' && method !== 'HEAD') {
+  releaseGate = installReadOnlyGate({
+    api: api as unknown as Record<string, unknown>,
+    onBlocked: (info) => {
       blockedWrites.value += 1
-      return Promise.reject(new Error('实验台为只读对照：写请求已被拦截，请到真实页面执行'))
-    }
-    return raw(input as RequestInfo, init)
-  }) as typeof window.fetch
-  restoreFetch = () => {
-    window.fetch = raw
-  }
+      lastBlocked.value = info.layer === 'api' ? `api.${info.detail}()` : info.detail
+    },
+  })
 })
 
 onBeforeUnmount(() => {
-  restoreFetch?.()
-  restoreFetch = null
+  releaseGate?.()
+  releaseGate = null
 })
 
 const state = computed(() => parseLabQuery(route.query as Record<string, unknown>))
@@ -260,7 +258,7 @@ async function submit() {
         本页是<strong>只读对照</strong>：A/B 两侧的写操作（删除、重置、剪枝、开关）都会被拦截，不会改到真实数据；要真的执行请到对应真实页面。
       </span>
       <span v-if="blockedWrites > 0" class="ab-lab__readonly-hit" role="status">
-        已拦截 {{ blockedWrites }} 次写请求
+        已拦截 {{ blockedWrites }} 次写请求<template v-if="lastBlocked">（最近：{{ lastBlocked }}）</template>
       </span>
     </div>
 

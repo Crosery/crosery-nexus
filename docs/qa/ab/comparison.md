@@ -173,35 +173,37 @@ rmdir /tmp/cac-browser.lock
 6. **B 侧重置确认框仍叠在额度弹窗上**（§2.1 末注）：这是本次唯一发现的 B 侧遗留交互问题，属「可接受但值得改」级别，未纳入缺陷计数。
 7. **A 侧 chip 计数不一致**（「已停用 (0)」却筛出 1 行）只记录现象，未追根因（A 侧为冻结副本，不打算修）。
 8. **`integration-rtk` 的 A/B 主视图不是同一页面**（见 §2.2 口径坦白）：该行结论只说明「迁移前无此能力」，不构成同页性能对比。
+9. **只读闸门的覆盖边界**：闸门拦的是 api 模块方法、`fetch` 与 `XMLHttpRequest`（见 §7.2）。**未覆盖** `navigator.sendBeacon`、WebSocket 以及「GET 但会改状态」的端点（本仓库 4 个副本里都不存在这类调用，属推断而非实测）。
 
 ---
 
 ## 6. 真实用户通道与留痕证据
 
 `/ab` 顶部写死只读说明 + 深链；底部投票「选 A / 选 B / 都不行 + 一句话理由（+ 可选卡点）」，落 `data/ab-preferences.jsonl`。
-**本次唯一一票由 `ab-harness` 自测投出**（用于证明链路），用户随时可自己再投。
+**现有 2 票都是 `ab-harness` 自测票**（用于证明链路，其中第二票同时验证了只读闸门的投票例外，见 §7.4），用户随时可自己再投。
 
 入口与说明区（未投票时的样子，任何人打开都能自己上手）：`docs/qa/ab/shots/00-lab-入口.png`
 
 ```bash
 $ tail -1 data/ab-preferences.jsonl
-{"schema":1,"id":"abp_muotin26_78be4e56","at":"2026-10-01T00:50:46.974Z","flow":"keys-access","choice":"b",
- "note":"对比结论：B 的搜索/筛选进 URL，刷新不丢；删除确认只有一层且写清目标 Key，A 会叠在编辑弹窗上。",
+{"schema":1,"id":"abp_muoud1wc_96084090","at":"2026-10-01T01:14:25.884Z","flow":"integration-rtk","choice":"b",
+ "note":"只看只读对照：A 侧控制台里根本没有 RTK 面，B 侧同屏能读到平面解析与节省率。",
  "blocker":"","userAgent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
  "admin":true,"redacted":false}
 
 $ node scripts/ab-report.mjs
 A/B 偏好留痕汇总 · 文件：/Users/crosery/work_file/crosery-api-console/data/ab-preferences.jsonl
-共 1 票｜时间范围 2026-10-01T00:50:46.974Z → 2026-10-01T00:50:46.974Z
+共 2 票｜时间范围 2026-10-01T00:50:46.974Z → 2026-10-01T01:14:25.884Z
 
 【① API Key 列表：筛选 / 搜索 / 删除确认】  样本量 1
   A 0 · B 1 · 都不行 0 （A:B = 0% : 100%）
   理由：
     - [选 B（迁移后）] 对比结论：B 的搜索/筛选进 URL，刷新不丢；删除确认只有一层且写清目标 Key，A 会叠在编辑弹窗上。
 
-【② 接入与 RTK 配置】  样本量 0
-  A 0 · B 0 · 都不行 0
-  理由：（无）
+【② 接入与 RTK 配置】  样本量 1
+  A 0 · B 1 · 都不行 0 （A:B = 0% : 100%）
+  理由：
+    - [选 B（迁移后）] 只看只读对照：A 侧控制台里根本没有 RTK 面，B 侧同屏能读到平面解析与节省率。
 
 【③ 运行概览 Dashboard 首屏】  样本量 0
   A 0 · B 0 · 都不行 0
@@ -210,8 +212,8 @@ A/B 偏好留痕汇总 · 文件：/Users/crosery/work_file/crosery-api-console/
 提醒：以上是主观偏好，样本量可能只有 1 人，不得外推成「所有用户都觉得 B 更好」。
 ```
 
-UI 侧回执（投票成功态，截图 `docs/qa/ab/shots/01-lab-投票成功.png`）：
-`已记录（abp_muotin26_78be4e56）：这一票会出现在 data/ab-preferences.jsonl 里。`
+UI 侧回执（投票成功态，截图 `docs/qa/ab/shots/01-lab-投票成功.png`、`docs/qa/ab/shots/r1-vote-通道恢复.png`）：
+`已记录（abp_muotin26_78be4e56）…` / `已记录（abp_muoud1wc_96084090）…`
 
 补充证据（未鉴权即被拒，证明接口不是「谁都能写」）：
 
@@ -222,3 +224,66 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application
 $ curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8791/api/ab/preference
 {"error":"请先登录"}
 ```
+
+---
+
+## 7. 实验台只读闸门（红队第二轮 R1 收口）
+
+### 7.1 修前：R1 是什么（红队 `docs/qa/red-team/ui-round2-verification.md` §2.1）
+
+A 侧是 `281c30e` 的冻结页面副本，但它们 import 的是**活的 api 模块**——A 侧不是沙箱，它写的是真实数据。
+红队在 `/ab?flow=keys-access&v=a` 实测：点「重置今日用量」**没有确认框**，直接发出 `POST /api/keys/<id>/quota/reset`。
+而 `/ab` 在侧栏一键可达、深链可分享，等于把本轮刚修好的「零确认重置」（D5）从后门重新打开了。
+
+### 7.2 闸门实现：三层 + 唯一例外（`src/ab/readOnlyGate.ts`）
+
+| 层 | 拦什么 | 为什么需要 |
+| --- | --- | --- |
+| **api 函数层** | 把活 `api` 上**不在只读白名单**的方法换成拒绝 stub | 最内层：不管是 fetch、XHR 还是以后改成别的传输，走 api 的写都出不去；白名单**穷举读接口**，新增方法默认被拦（fail-closed） |
+| **fetch 层** | 非 `GET/HEAD` 一律拒绝 | 覆盖页面自己直接 fetch 的探索代码、第三方组件 |
+| **XHR 层** | 非 `GET/HEAD` 的 `XMLHttpRequest.open` 直接抛错 | 覆盖手写/库内 XHR 这类非 fetch 路径 |
+
+**唯一例外**：实验台自己的投票 `POST /api/ab/preference`（同源 + 精确路径 + POST）必须放行。
+这一条例外是补上来的：**Lead 的第一版 fetch 拦截把投票一起拦了**，实测在页内 POST 该端点返回
+`实验台为只读对照：写请求已被拦截，请到真实页面执行` —— 等于亲手废掉「真实用户参与」通道。
+例外加上后，真实投票再次落盘（§7.4 的 `abp_muoud1wc_96084090`）。
+
+每次拦截都会回调计数并显示在横幅上（`已拦截 N 次写请求（最近：api.<方法>()）`），避免「点了没反应」被误读成页面坏了。
+
+**闸门逻辑自测**（`node --import tsx`，假 api/假 window，不碰浏览器、不碰真实服务）→ **19/19 通过**：写方法在函数层被拦且不调用原实现、读方法仍可用、
+未来新增写方法默认被拦、投票 POST 放行、其它 POST 被拦、`Request` 对象的 method 也能识别、XHR 非 GET 被拦 / GET 放行、`release()` 精确还原。
+
+### 7.3 修后：4 个 legacy 副本逐一实点验证
+
+判据统一为三条：**(a) 页内 fetch 日志里没有非 GET**；**(b) 拦截计数按预期递增（或保持 0）**；**(c) 没有真实副作用**。
+弹窗判据用 **DOM 存在性**（`.tx-modal__overlay` 计数），不用「可见性」——离场过渡约 1.2s 会误判。
+
+| 副本 | 写路径 | 实点结果 | 判据 | 截图 |
+| --- | --- | --- | --- | --- |
+| `KeysPage.legacy` | 额度弹窗「重置今日用量」→ `api.resetQuota()` | ✅ 点到底 | 页内 fetch 日志 **0 条**；计数 `已拦截 1 次写请求（最近：api.resetQuota()）`；弹窗内「已用 $2.36 / $292.76 / $292.76」**点击前后完全一致**；弹窗仍在 DOM（未误判关闭） | `shots/r1-keys-a-重置被拦.png` |
+| `OAuthPage.legacy` | 提供商卡片「开始登录」→ `api.startOAuth()` | ✅ 点到底 | 页内 fetch 日志 **0 条**；**CDP 协议层非 GET = 0**（只有 data: 图标与扩展 locale 的 GET）；计数 `已拦截 1 次写请求（最近：api.startOAuth()）`；未新开标签页（8 → 8）；页面自身弹出「发起登录失败 / 实验台为只读对照…」 | `shots/r1-oauth-a-开始登录被拦.png` |
+| `DashboardPage.legacy` | **无 api 写路径**（只有站内导航与只读筛选） | ✅ 点 Key 选择器 | 读依然正常（首屏 `214 / 7.7万 / 14-14 / 4843 ms` 有数据）；fetch 日志 0 条；计数保持 **0** | `shots/r1-dashboard-a-无写路径.png` |
+| `HelpPage.legacy` | **无 api 写路径**（复制走剪贴板） | ✅ 点「复制」 | fetch 日志 0 条；计数保持 **1**（未增加） | `shots/r1-help-a-复制无请求.png` |
+
+> 第 1、2 行是「有写路径且被拦住」；第 3、4 行是**否定结果**（这两个副本根本没有 api 写路径），
+> 按实测记录，不把它们算成「也拦住了写」。
+
+### 7.4 投票通道复核（闸门例外）
+
+```
+点「选 B」→ 填一句话理由 → 提交 → 页面回执：
+已记录（abp_muoud1wc_96084090）：这一票会出现在 data/ab-preferences.jsonl 里。   （类名 ab-lab__status--ok）
+```
+
+`data/ab-preferences.jsonl` 里确实出现该条（`flow=integration-rtk, choice=b, admin=true`），
+`node scripts/ab-report.mjs` 现在读出 **共 2 票**（两条都是 `ab-harness` 自测票，用于证明链路；用户可随时自己再投）。
+截图：`shots/r1-vote-通道恢复.png`
+
+### 7.5 UI 上是否已明确告知「本页不会替你写数据」
+
+已告知，且是**主动说明而非事后兜底**：视图切换器下方有一条常驻横幅（`role="note"`）：
+
+> 本页是**只读对照**：A/B 两侧的写操作（删除、重置、剪枝、开关）都会被拦截，不会改到真实数据；要真的执行请到对应真实页面。
+
+被拦后横幅右侧出现 `已拦截 N 次写请求（最近：api.<方法>()）`，同时 legacy 页面自己的错误提示也会弹出
+（见 `shots/r1-oauth-a-开始登录被拦.png` 右下角「发起登录失败」），两条路径都不静默。
