@@ -29,7 +29,7 @@ const router = useRouter()
 const rtk = ref<RTKStatusResponse | null>(null)
 const rtkLoading = ref(false)
 const rtkError = ref('')
-const PLANE_LABEL: Record<RtkPlaneId, string> = { kernel: '内核', relay: '中转站', local: '本机' }
+const PLANE_LABEL: Record<RtkPlaneId, string> = { kernel: '内核', relay: '远端网关', local: '本机' }
 const PLANE_STATE_TEXT: Record<RtkPlaneState, string> = {
   available: '可用',
   not_configured: '未配置',
@@ -222,7 +222,7 @@ onUnmounted(() => {
             <!--
               RTK 状态以 /api/rtk/status 的 planes 为真源（Lead/blue-rtk T12）：
               原来读 `cpa.rtk.connected`，而那个值来自「本机装了 rtk 二进制」，
-              于是把「本机装了」显示成「已接通」——中转站侧其实没有 RTK 路由（404）。
+              于是把「本机装了」显示成「已接通」——远端网关侧其实没有 RTK 路由（404）。
             -->
             <div class="prop-row">
               <span>RTK 状态</span>

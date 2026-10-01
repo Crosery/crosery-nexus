@@ -66,8 +66,8 @@ function compactTokens(value: number) {
 async function resetQuota(account: any) {
   const name = account.email || account.name
   const ok = await confirm({
-    title: '重置账号窗口配额',
-    body: `将消耗 1 次主动重置额度，重置账号「${name}」的窗口配额。此操作不可逆。`,
+    title: '重置账号窗口额度',
+    body: `将消耗 1 次主动重置额度，重置账号「${name}」的窗口额度。此操作不可逆。`,
     confirmText: '重置额度',
     danger: true,
   })
@@ -162,7 +162,7 @@ async function resetQuota(account: any) {
                   size="sm"
                   variant="outline"
                   :disabled="acc.normalizedQuota.resetCredits.available <= 0 || resetting"
-                  :aria-label="`重置额度：${acc.email || acc.name} 的窗口配额`"
+                  :aria-label="`重置额度：${acc.email || acc.name} 的窗口额度`"
                   @click="resetQuota(acc)"
                 >
                   重置额度

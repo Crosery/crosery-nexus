@@ -278,7 +278,7 @@ onUnmounted(() => {
       </div>
       <div class="page-head__actions">
         <TxButton variant="secondary" icon="i-carbon-network-4" @click="handleGoChannels">
-          查看渠道与账号池
+          查看渠道与上游账号池
         </TxButton>
       </div>
     </header>

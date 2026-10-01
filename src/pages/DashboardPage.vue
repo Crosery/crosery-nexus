@@ -37,7 +37,7 @@ const dayOptions = [
   { value: '90', label: '最近 90 天' },
 ]
 
-/** 概览与密钥各自一个读取状态：都带重试，刷新时保留旧数据（useResource 成功前不碰 data）。 */
+/** 概览与 API Key 各自一个读取状态：都带重试，刷新时保留旧数据（useResource 成功前不碰 data）。 */
 const dashRes = useResource(
   () => api.dashboard<DashboardData>(days.value, scope.state.keyId),
   [() => scope.state.days, () => scope.state.keyId],
@@ -103,7 +103,7 @@ const chartPath = computed(() => {
   <div class="page">
     <PageHeader
       title="运行概览"
-      description="全景掌握网关请求吞吐、Token 消耗、活跃密钥及底层推理内核状态。筛选条件写在地址栏里，刷新和分享链接都会保持同一视图。"
+      description="全景掌握网关请求吞吐、Token 消耗、活跃 API Key 及底层推理内核状态。筛选条件写在地址栏里，刷新和分享链接都会保持同一视图。"
     >
       <template #actions>
         <TxSelect
@@ -173,7 +173,7 @@ const chartPath = computed(() => {
       <TxStatCard
         label="活跃 API Key"
         :value="keys.length ? `${activeKeysCount} / ${keys.length}` : '—'"
-        meta="已启用有效密钥占比"
+        meta="已启用有效 API Key 占比"
         icon-class="i-carbon-password text-indigo-600"
         clickable
         @click="handleOpenKeys"
@@ -262,12 +262,12 @@ const chartPath = computed(() => {
         </div>
       </TxCard>
 
-      <!-- 密钥健康与快捷操作 -->
+      <!-- API Key 健康与快捷操作 -->
       <TxCard class="keys-health-card">
         <template #header>
           <div class="card-head">
             <div>
-              <h2 class="section-title">活跃密钥状态</h2>
+              <h2 class="section-title">活跃 API Key 状态</h2>
               <span class="card-sub">最近调用的前 5 把 API Key</span>
             </div>
             <TxButton variant="secondary" size="sm" @click="handleOpenKeys">查看全部</TxButton>
@@ -303,7 +303,7 @@ const chartPath = computed(() => {
           <EmptyState
             v-if="!keys.length"
             title="还没有 API Key"
-            description="创建一把密钥后，这里会显示最近调用情况和用量。"
+            description="创建一个 API Key 后，这里会显示最近调用情况和用量。"
             action-label="去创建 API Key"
             to="/keys"
             size="small"

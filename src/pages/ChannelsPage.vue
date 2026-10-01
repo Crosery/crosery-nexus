@@ -485,7 +485,7 @@ async function submitCreateChannel() {
           </div>
         </TxFormItem>
 
-        <TxFormItem label="API Key 访问密钥">
+        <TxFormItem label="上游密钥">
           <TxInput v-model="createForm.apiKey" type="password" placeholder="sk-..." />
         </TxFormItem>
 

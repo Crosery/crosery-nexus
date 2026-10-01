@@ -27,7 +27,7 @@ const emit = defineEmits<{
 
 const PLANE_LABEL: Record<RtkPlaneId, string> = {
   kernel: '内核（沙箱 HOME）',
-  relay: '中转站',
+  relay: '远端网关',
   local: '本机',
 }
 
@@ -61,8 +61,8 @@ const authorityHint = computed(() => {
   const status = props.status
   if (!status) return ''
   if (status.plane === 'kernel') return '权威数据来自本机内核进程，但内核以沙箱 HOME 运行，其中的 agent 配置不是你这台机器的 ~/.codex / ~/.claude。'
-  if (status.plane === 'relay') return '权威数据来自中转站那台机器，不是本机。'
-  return '权威数据来自本机：内核与中转站都不可用（或都没有 RTK 接口），已如实回退。'
+  if (status.plane === 'relay') return '权威数据来自远端网关那台机器，不是本机。'
+  return '权威数据来自本机：内核与远端网关都不可用（或都没有 RTK 接口），已如实回退。'
 })
 </script>
 
@@ -89,7 +89,7 @@ const authorityHint = computed(() => {
           </div>
           <code class="mono">{{ plane.reason }}</code>
           <p v-if="plane.id === 'kernel'" class="plane-note">内核以 <code>HOME=&lt;runtime&gt;/home</code> 运行，不含本机 agent 配置。</p>
-          <p v-else-if="plane.id === 'relay'" class="plane-note">中转站是否暴露 RTK 管理面由对方部署决定（当前实测 404）。</p>
+          <p v-else-if="plane.id === 'relay'" class="plane-note">远端网关是否暴露 RTK 管理面由对方部署决定（当前实测 404）。</p>
           <p v-else class="plane-note">本机 = 控制台所在机器，开关真正生效的地方。</p>
           <p v-if="plane.detail" class="plane-detail">{{ plane.detail }}</p>
         </div>
@@ -155,7 +155,7 @@ const authorityHint = computed(() => {
       <div class="board-head">
         <div>
           <h2>远端下发（默认只读）</h2>
-          <p class="hint">写远端需要有对应接口 + 显式开关 + 请求级确认，全部操作进 audit_log。当前中转站为 CPA 主机，没有 RTK 接口，下发一定失败并如实报错。</p>
+          <p class="hint">写远端需要有对应接口 + 显式开关 + 请求级确认，全部操作进 audit_log。当前远端网关为 CPA 主机，没有 RTK 接口，下发一定失败并如实报错。</p>
         </div>
       </div>
       <div class="remote-actions">
@@ -163,7 +163,7 @@ const authorityHint = computed(() => {
           下发 codex 到内核（沙箱 HOME）
         </TxButton>
         <TxButton size="sm" variant="ghost" :disabled="busy === 'remote:relay'" @click="emit('remote', 'relay', true, 'codex')">
-          下发 codex 到中转站
+          下发 codex 到远端网关
         </TxButton>
         <TxButton size="sm" variant="ghost" :disabled="busy === 'install'" @click="emit('install', status?.plane || 'local')">安装 rtk</TxButton>
         <TxButton size="sm" variant="ghost" :disabled="busy === 'upgrade'" @click="emit('upgrade', status?.plane || 'local')">升级 rtk</TxButton>

@@ -34,7 +34,7 @@ const res = useResource(
   () => api.analytics<AnalyticsData>(days.value, scope.state.keyId),
   [() => scope.state.days, () => scope.state.keyId],
 )
-/** 密钥清单只取一次，用来填充 Key 筛选（原实现里筛选框永远是空的）。 */
+/** API Key 清单只取一次，用来填充 Key 筛选（原实现里筛选框永远是空的）。 */
 const keysRes = useResource(() => api.bootstrap<{ keys: ApiKeyItem[] }>(), [])
 
 const analytics = computed(() => res.data.value)

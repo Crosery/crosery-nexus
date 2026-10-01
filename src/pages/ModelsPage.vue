@@ -98,7 +98,7 @@ const syncing = ref(false)
 /** 持久提示：同步与单渠道开关的结果都落在这里（原来 emit('notify') 全仓无人监听 + catch{} 吞错）。 */
 const notice = ref<{ type: 'success' | 'warning' | 'error'; message: string } | null>(null)
 
-const kindLabel: Record<string, string> = { compat: '兼容渠道', oauth: '账号池' }
+const kindLabel: Record<string, string> = { compat: '兼容渠道', oauth: '上游账号池' }
 const publicModelId = (model: string) => (model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model)
 
 const usageByModel = computed(() => {
@@ -232,7 +232,7 @@ const moneyFmt = (value: number | null) => (value === null ? '未定价' : fmtUs
  */
 const columns = [
   { key: 'model', title: '模型名称', width: 300, sortable: true },
-  { key: 'sources', title: '服务渠道映射', width: 300, sortable: true },
+  { key: 'sources', title: '渠道来源', width: 300, sortable: true },
   { key: 'pricing', title: '每 1M Token 定价', width: 260, sortable: true },
   { key: 'usage', title: '用量与花费', width: 200, align: 'right' as const, sortable: true },
 ]
@@ -403,7 +403,7 @@ async function handleSyncUpstream() {
         <TxSelect :model-value="scope.state.kind" placeholder="全部协议" class="w-140px" @update:model-value="v => scope.patch({ kind: String(v), page: '1' })">
           <TxSelectItem value="all" label="全部协议" />
           <TxSelectItem value="compat" label="兼容渠道" />
-          <TxSelectItem value="oauth" label="账号池" />
+          <TxSelectItem value="oauth" label="上游账号池" />
         </TxSelect>
         <TxSelect :model-value="scope.state.keyId" placeholder="选择 API Key" class="w-180px" @update:model-value="setKey">
           <TxSelectItem value="" label="全部 API Key" />
