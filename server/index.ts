@@ -1173,7 +1173,7 @@ app.get('/api/rtk/status', async (_req, res) => {
     res.json(status)
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
-    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}) })
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
   }
 })
 
@@ -1183,7 +1183,7 @@ app.get('/api/rtk/planes', async (_req, res) => {
     res.json(await resolveRtkPlane({ fresh: true }))
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
-    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}) })
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
   }
 })
 
@@ -1206,7 +1206,7 @@ app.post('/api/rtk/toggle', async (req, res) => {
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
     addAudit('toggle_rtk_hook', agent, `on=${on}, plane=${failure.plane || plane}, outcome=error, status=${failure.status}, reason=${failure.reason || 'unknown'}`)
-    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}) })
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.backup ? { backup: failure.backup } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
   }
 })
 
@@ -1221,7 +1221,7 @@ app.post('/api/rtk/rollback', async (req, res) => {
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
     addAudit('rollback_rtk_hook', backup || 'latest', `outcome=error, status=${failure.status}, reason=${failure.reason || 'unknown'}`)
-    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}) })
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
   }
 })
 
@@ -1239,7 +1239,7 @@ const rtkBinaryRoute = (
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
     addAudit(`${action}_rtk`, failure.plane || plane || 'authoritative', `outcome=error, status=${failure.status}, reason=${failure.reason || 'unknown'}`)
-    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}) })
+    res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
   }
 }
 
