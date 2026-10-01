@@ -1,0 +1,74 @@
+# 主张1：连带写入双向化 —— 结论：**已验证，但语义按「文件」粒度，且分类字段自相矛盾**
+
+隔离实例 A（PORT=8801，RTK_BIN=真实 rtk 0.50.0，HOME=/tmp/cac-r3/home，生产零写入）
+
+## 1.1 cursor ON：claude 被连带打开 → 被按快照抓回（逐字节一致）
+
+```
+before: .claude/settings.json a02af8807dce | .claude/CLAUDE.md 138ebabec6ce | .claude/RTK.md ABSENT
+$ curl -X POST /api/rtk/toggle {"agent":"cursor","on":true,"plane":"local","confirm":true}   → HTTP 200
+  cli: {command:"rtk init -g --agent cursor --auto-patch", exitCode:0, stderr:""}
+  mechanism: "rtk-cli"
+after : .claude/settings.json a02af8807dce（IDENTICAL）| .claude/CLAUDE.md 138ebabec6ce（IDENTICAL）| .claude/RTK.md ABSENT
+        .cursor/hooks.json 0544ca51cef6（目标文件，预期变化）
+        .claude/settings.json.bak → absent（CLI 新建的 .bak 被清掉）
+        CLAUDE.md 里的 "@RTK.md" 追加被撤回（grep -c = 0）
+claude PreToolUse 恢复为 1 条第三方条目，model 字段保留
+```
+
+## 1.2 反向：claude OFF 仍 collateralRestored:["cursor"]（没改坏）
+
+```
+$ curl -X POST /api/rtk/toggle {"agent":"claude","on":false,...}  → HTTP 200
+{"ok":true,"collateralRestored":["cursor"],"collateralFiles":[".cursor/hooks.json"]}
+cursor 仍保留 rtk 条目: 1
+```
+
+## 1.3 ⚠️ 新发现：同一个 agent 同时出现在 collateralRestored 与 collateralReverted，审计也随之自相矛盾
+
+前置条件很常见：`.claude/CLAUDE.md` 存在（尚未含 `@RTK.md`）、claude 未挂 rtk。
+
+```
+setup: claude_rtk=0, CLAUDE.md 含 @RTK.md = false
+$ curl -X POST /api/rtk/toggle {"agent":"cursor","on":true,"plane":"local","confirm":true}   → HTTP 200
+{
+ "collateralRestored": ["claude"],
+ "collateralReverted": ["claude"],
+ "collateralFiles": [".claude/RTK.md", ".claude/CLAUDE.md", ".claude/settings.json"]
+}
+audit : "on=true, plane=local, outcome=ok, mechanism=rtk-cli, collateral=reverted:claude|restored:claude"
+UI   : src/pages/RtkPage.vue:62-66 会同时渲染两行——
+       「已撤回 rtk 连带打开的其他客户端：claude（…三个文件…）」
+       「已修复被 rtk 连带关掉的其他客户端：claude（…同样三个文件…）」
+```
+
+根因：`server/rtkService.ts` `reconcileCollateral()` 里，hook 文件按 on/off 翻转分类（正确），
+而 `extra` 文件按「原来是否存在」分类：`before === null → reverted`，否则 `→ restored`。
+`.claude/CLAUDE.md` 原本存在、被 CLI 追加了 `@RTK.md` → 记入 `restored`；
+同一轮里 `.claude/settings.json` 从 off→on → 记入 `reverted`。同一个 owner 因此同时进两个集合。
+
+建议：owner 级分类只看 hook 文件的 on/off 翻转；extra 文件的变化只进 `collateralFiles`，
+或在返回前做互斥归并（出现在 reverted 就不出现在 restored）。
+
+## 1.4 ⚠️ 必查项：还原是「整文件替换」，同一窗口内的其它合法改动会被一并抹掉
+
+用假 rtk 精确构造「CLI 运行时同窗口另一写入」：假 CLI 在 `.claude/settings.json` 里同时追加
+rtk 钩子 **和** 一条与 rtk 无关的合法条目 `echo legit-concurrent-edit`。
+
+```
+before: claude_sha=f9a5de2988ef  has_legit=0
+cursor ON → HTTP 200 {collateralRestored:["claude"],collateralReverted:["claude"],
+                      collateralFiles:[".claude/RTK.md",".claude/CLAUDE.md",".claude/settings.json"]}
+after : claude_sha=f9a5de2988ef  has_legit=0   ← 合法条目被一起抹掉，文件回到快照字节
+```
+
+对照（窗口之外）：请求结束后手工往 `.claude/settings.json` 加一条 `echo user-late-edit`，
+再执行 cursor OFF →
+
+```
+加完后 user-late-edit=1 ；cursor OFF 之后 user-late-edit=1   ← 窗口外的改动不受影响
+```
+
+结论：**语义确实过宽，但只作用于「CLI 执行期间」这个窗口**（毫秒级）。
+本机同时有 Clawd on Desk / orca 等工具写 `.claude/settings.json`，并发写入虽概率低但真实存在；
+一旦撞上，那一次合法写入会**静默丢失**。修法建议：hook 文件按「只删/只加 rtk 那一条」做合并式还原，而不是整文件回填。

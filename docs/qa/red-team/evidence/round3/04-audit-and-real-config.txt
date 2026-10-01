@@ -1,0 +1,31 @@
+# 审计留痕 + 真实配置零改动自证
+
+## 4.1 审计（实例 A 8801，真实 rtk）
+
+```
+$ curl -s -b ck-8801.txt http://127.0.0.1:8801/api/audit
+[
+ {"target":"cursor","details":"on=true, plane=local, outcome=ok, mechanism=rtk-cli, collateral=reverted:claude"},
+ {"target":"claude","details":"on=false, plane=local, outcome=ok, mechanism=rtk-cli, collateral=restored:cursor"},
+ {"target":"cursor","details":"on=true, plane=local, outcome=ok, mechanism=rtk-cli, collateral=none"}
+]
+```
+
+- `collateral=none`：实例 G（8810）24 行 toggle 全部为 none（无连带影响时）。
+- `collateral=reverted:claude` / `collateral=restored:cursor`：两个方向都真的落库。
+- ⚠️ 当 `.claude/CLAUDE.md` 被连带修改时，同一行会写成
+  `collateral=reverted:claude|restored:claude`（自相矛盾，见 01-collateral.txt 第 1.3 节）。
+
+## 4.2 真实 agent 配置 sha256 自证（全部只读；本轮未对真实 HOME 发起任何写操作）
+
+| 文件 | 本轮开始（09:19Z 抓取） | 本轮结束 | 变化 |
+| --- | --- | --- | --- |
+| ~/.codex/hooks.json | d234642427dd4c2e | d234642427dd4c2e | 无 |
+| ~/.claude/settings.json | c08f957851d68845 | c08f957851d68845 | 无 |
+| ~/.claude/RTK.md | dc37dc6afdf51320 | dc37dc6afdf51320 | 无 |
+| ~/.claude/CLAUDE.md | 5afc2f75a1f96a72 | 5afc2f75a1f96a72 | 无 |
+| ~/.cursor/hooks.json | 4734d152efa28ffb | 4734d152efa28ffb | 无 |
+| ~/.gemini/settings.json | 196e2dca8dacab1b | 196e2dca8dacab1b | 无 |
+
+（sha256 前 16 位；开始值与我第二轮开始时记录的完全一致。）
+本轮所有 toggle/rollback 都打在隔离实例（8801/8803/8804/8805/8808/8809/8810）与临时 HOME `/tmp/cac-r3/home` 上。
