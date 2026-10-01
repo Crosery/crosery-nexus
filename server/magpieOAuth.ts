@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import { invalidateGatewaySnapshot } from './channels.js'
 import { saveLocalAuthFile } from './magpieControl.js'
+import { isSupportedOAuthProvider, supportedOAuthProviders } from './cpa.js'
 
 export type OAuthSession = {
   id: string
@@ -32,6 +33,15 @@ function base64url(buffer: Buffer): string {
   return buffer.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
 }
 
+/** 入口白名单（task-61）：provider 进入 URL/文件名之前必须先过注册表（与 cpa.ts 同一份表）。 */
+function requireSupportedProvider(provider: unknown): string {
+  const norm = String(provider ?? '').toLowerCase().trim()
+  if (!isSupportedOAuthProvider(norm)) {
+    throw new Error(`不支持的 OAuth 提供商: ${String(provider ?? '')}。可选: ${supportedOAuthProviders().join(', ')}`)
+  }
+  return norm
+}
+
 export function startLocalOAuth(provider: string): {
   status: string
   url: string
@@ -42,7 +52,7 @@ export function startLocalOAuth(provider: string): {
   provider: string
 } {
   cleanExpiredSessions()
-  const norm = provider.toLowerCase().trim()
+  const norm = requireSupportedProvider(provider)
   const state = base64url(crypto.randomBytes(24))
   const verifier = base64url(crypto.randomBytes(32))
   const challenge = base64url(crypto.createHash('sha256').update(verifier).digest())
@@ -170,7 +180,8 @@ export async function submitLocalOAuthCallback(
 
   const session = activeSessions.get(qState) || (state ? activeSessions.get(state) : undefined)
 
-  const norm = (provider || session?.provider || 'oauth').toLowerCase().trim()
+  // 白名单（task-61 F2/F4）：`norm` 会进凭据文件名与 `auth.${norm}.com`，只允许注册表里的值
+  const norm = requireSupportedProvider(provider || session?.provider)
   const token = code || base64url(crypto.randomBytes(32))
   const accountEmail = `${norm}-${crypto.randomBytes(4).toString('hex')}@oauth.crosery.local`
 

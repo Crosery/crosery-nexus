@@ -541,6 +541,21 @@ export const OAUTH_PROVIDER_ENDPOINTS: Record<string, string> = {
   grok: '/xai-auth-url?is_webui=true',
 }
 
+/**
+ * 入口白名单（task-61 F2/F4）：`provider` 只允许注册表里的值，**未知值不再原样返回**。
+ *
+ * 以前 `submitOAuthCallback` 直接 `canonicalCPAProvider(provider)`，而它对未知值原样返回，
+ * 于是 `provider="../../../../tmp/canary"` 会一路拼进凭据文件名（越界写）与 `authUrl`（反射）。
+ * 启动路径 `startOAuthLogin` 早就有这张表，这里把回调路径也纳入同一份注册表。
+ */
+export function isSupportedOAuthProvider(provider: unknown): boolean {
+  const norm = String(provider ?? '').toLowerCase().trim()
+  return Boolean(norm) && Object.prototype.hasOwnProperty.call(OAUTH_PROVIDER_ENDPOINTS, norm)
+}
+
+/** 取支持列表（错误文案与「可选值」提示共用）。 */
+export const supportedOAuthProviders = (): string[] => Object.keys(OAUTH_PROVIDER_ENDPOINTS)
+
 export function canonicalCPAProvider(provider: string): string {
   const norm = provider.toLowerCase().trim()
   if (norm === 'claude' || norm === 'anthropic') return 'anthropic'
@@ -588,6 +603,9 @@ export async function getOAuthStatus(state: string): Promise<OAuthStatusResponse
 export async function submitOAuthCallback(provider: string, redirectUrl: string, sessionState?: string): Promise<{ ok: boolean }> {
   const raw = redirectUrl.trim()
   if (!raw) throw new Error('缺少回调 URL 或授权码')
+  if (!isSupportedOAuthProvider(provider)) {
+    throw new Error(`不支持的 OAuth 提供商: ${provider}。可选: ${supportedOAuthProviders().join(', ')}`)
+  }
   const canonical = canonicalCPAProvider(provider)
 
   let code = ''

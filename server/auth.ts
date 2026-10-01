@@ -165,9 +165,10 @@ export const PUBLIC_PATHS: PublicPathRule[] = [
     why: '登出必须匿名可达：持过期/已撤销 Cookie 的请求也要能被清理（否则用户卡在坏会话里）。',
   },
   {
-    pattern: /^\/v1(\/|$)/,
-    why: '自助用量接口用 Authorization 里的 API Key **自鉴权**（index.ts:publicUsageKey），与控制台会话无关，'
-      + '且只返回该 Key 自己的数据。',
+    // task-61：从 `/^\/v1(\/|$)/` 前缀规则收紧为**精确路径集合**——将来在 /v1 下新增接口必须显式加进白名单
+    pattern: /^\/v1\/(?:usage|usage\/requests)$/,
+    why: '自助用量接口（/v1/usage、/v1/usage/requests）用 Authorization 里的 API Key **自鉴权**'
+      + '（index.ts:publicUsageKey），与控制台会话无关，且只返回该 Key 自己的数据。',
   },
   {
     pattern: /^\/docs(\/|$)/,

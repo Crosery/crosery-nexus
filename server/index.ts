@@ -18,6 +18,7 @@ import {
   validateCredentials,
 } from './auth.js'
 import { errorResponseBody, loginRateLimitKey, loginRateLimiter } from './security.js'
+import { assertAuthFileName, authFilePath } from './magpieControl.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
@@ -1073,30 +1074,54 @@ app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
 })
 
+/**
+ * 路由层入参校验（task-61，纵深防御）：`:name` 必须是 auth-files 目录下的**单段文件名**。
+ * 真正的单点校验在 `magpieControl.ts:authFilePath()`；这里先拦一道，给出明确的 400 reason。
+ */
+const requireCredentialName = (req: express.Request, res: express.Response): string | null => {
+  try {
+    const safe = assertAuthFileName(req.params.name)
+    // 提前跑一遍单点校验（归属 + realpath + nlink），好把 400 的 reason 说清楚；
+    // 真正的强制点仍在 magpieControl.ts 内部，任何调用方都绕不过去。
+    authFilePath(safe)
+    return safe
+  } catch (error) {
+    const code = error instanceof Error && /^credential_/.test(error.message) ? error.message : 'credential_name_invalid'
+    res.status(400).json({ error: '凭据名不合法或指向 auth-files 目录之外', reason: code })
+    return null
+  }
+}
+
 app.patch('/api/credentials/:name', async (req, res) => {
   try {
+    const name = requireCredentialName(req, res)
+    if (!name) return
     const enabled = Boolean(req.body?.enabled)
-    await setCredentialEnabled(req.params.name, enabled)
+    await setCredentialEnabled(name, enabled)
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
-    addAudit(enabled ? 'enable_credential' : 'disable_credential', req.params.name)
+    addAudit(enabled ? 'enable_credential' : 'disable_credential', name)
     res.json({ ok: true })
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
 })
 
 app.delete('/api/credentials/:name', async (req, res) => {
   try {
-    await removeCredential(req.params.name)
+    const name = requireCredentialName(req, res)
+    if (!name) return
+    await removeCredential(name)
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
-    addAudit('delete_credential', req.params.name)
+    addAudit('delete_credential', name)
     res.json({ ok: true })
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '删除失败' }) }
 })
 
 app.get('/api/credentials/:name/proxy', async (req, res) => {
   try {
-    const proxyUrl = await credentialProxyCoordinator.run(req.params.name, () => getAuthFileProxy(req.params.name))
+    const name = requireCredentialName(req, res)
+    if (!name) return
+    const proxyUrl = await credentialProxyCoordinator.run(name, () => getAuthFileProxy(name))
     res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=300')
     res.json({ proxyUrl })
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取代理失败' }) }
@@ -1109,10 +1134,12 @@ app.patch('/api/credentials/:name/proxy', async (req, res) => {
       res.status(400).json({ error: '代理地址必须是 http/https/socks5 开头的完整地址，或填 direct 强制直连' })
       return
     }
-    await setCredentialProxy(req.params.name, proxyUrl)
-    credentialProxyCoordinator.clear(req.params.name)
+    const name = requireCredentialName(req, res)
+    if (!name) return
+    await setCredentialProxy(name, proxyUrl)
+    credentialProxyCoordinator.clear(name)
     invalidateControlPlaneCaches()
-    addAudit('update_credential_proxy', req.params.name, proxyUrl || 'inherit')
+    addAudit('update_credential_proxy', name, proxyUrl || 'inherit')
     res.json({ ok: true, proxyUrl })
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
 })
@@ -1162,6 +1189,14 @@ app.post('/api/cpa/oauth/callback', async (req, res) => {
     const redirectUrl = String(req.body?.redirectUrl || req.body?.code || '').trim()
     const state = String(req.body?.state || '').trim()
     if (!provider || !redirectUrl) return res.status(400).json({ error: '缺少 provider 或回调内容/授权码' })
+    // 入口白名单（task-61 F2/F4）：未知 provider 不再原样返回——它会进凭据文件名与 authUrl
+    const { isSupportedOAuthProvider, supportedOAuthProviders } = await import('./cpa.js')
+    if (!isSupportedOAuthProvider(provider)) {
+      return res.status(400).json({
+        error: `不支持的 OAuth 提供商：${provider}。可选：${supportedOAuthProviders().join(', ')}`,
+        reason: 'provider_not_supported',
+      })
+    }
     const result = await submitOAuthCallback(provider, redirectUrl, state)
     invalidateControlPlaneCaches()
     addAudit('oauth_callback_submit', `provider=${provider}`)

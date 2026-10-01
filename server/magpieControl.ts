@@ -133,6 +133,73 @@ export function writeChannels(channels: MagpieChannel[]) {
 }
 
 const authFilesDir = () => path.join(config.dataDir, 'auth-files')
+
+/* ────────────────────────── 凭据文件名的单点校验（task-61，fail closed） ────────────────────────── */
+
+/**
+ * 红队第十七轮在 `/api/credentials/:name` 上实测出路径穿越：`name` 一路拼到
+ * `path.join(authFilesDir, name)` + `unlinkSync` / `readFileSync`，
+ * 于是 `..%2F..%2Fcanary.txt` 能**越界删除/读取 DATA_DIR 之外的文件**。
+ *
+ * 这里做**单点收口**：`saveLocalAuthFile` / `deleteLocalAuthFile` / `getLocalAuthFile` /
+ * `setLocalAuthFileStatus` / `setLocalAuthFileProxy` 全部先过 `authFilePath()`，
+ * 任何调用方（HTTP 路由、OAuth 回调、上传、管理面转发）都自动受保护。
+ * 校验失败一律抛错（不静默跳过），路由层再补一道入参校验给出明确的 400 reason。
+ */
+function realPathOf(target: string): string {
+  const resolved = path.resolve(target)
+  let current = resolved
+  const tail: string[] = []
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current)
+      return tail.length ? path.join(real, ...tail.reverse()) : real
+    } catch {
+      const parent = path.dirname(current)
+      if (parent === current) return resolved
+      tail.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+const insideDir = (parent: string, child: string) => child === parent || child.startsWith(parent + path.sep)
+
+/** 凭据文件名必须是**单段**：非空、无分隔符（`/` `\`）、无 NUL、非 `.`/`..`、非绝对路径。 */
+export function assertAuthFileName(name: unknown): string {
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new MagpieManagementError(400, 'credential_name_invalid')
+  }
+  const value = name.trim()
+  if (value === '.' || value === '..' || value.includes('/') || value.includes('\\')
+    || value.includes('\0') || path.isAbsolute(value)) {
+    throw new MagpieManagementError(400, 'credential_name_invalid')
+  }
+  return value
+}
+
+/**
+ * 解析凭据文件路径并确认它**确实在 auth-files 目录内**：
+ * 形状（单段）→ 解析前缀 → realpath（防软链逃逸）→ nlink（防硬链接绕过 realpath）。
+ */
+export function authFilePath(name: unknown): string {
+  const safe = assertAuthFileName(name)
+  const dir = path.resolve(authFilesDir())
+  const target = path.resolve(dir, safe)
+  if (!insideDir(dir, target)) throw new MagpieManagementError(400, 'credential_path_escape')
+  const realDir = realPathOf(dir)
+  const realTarget = realPathOf(target)
+  if (!insideDir(realDir, realTarget)) throw new MagpieManagementError(400, 'credential_path_escape')
+  // 硬链接：realpath 看不出（路径确实在目录内），但它与目录外的文件是同一个 inode —— 凭据文件不该有多个链接
+  try {
+    if (fs.lstatSync(target).nlink > 1) throw new MagpieManagementError(400, 'credential_hardlink_rejected')
+  } catch (error) {
+    if (error instanceof MagpieManagementError) throw error
+    if ((error as { code?: string }).code !== 'ENOENT') throw new MagpieManagementError(400, 'credential_path_invalid')
+  }
+  return target
+}
+
 const authFilesMetaFile = () => path.join(config.dataDir, 'auth-files-meta.json')
 const oauthExcludedModelsFile = () => path.join(config.dataDir, 'oauth-excluded-models.json')
 
@@ -199,38 +266,38 @@ export function listLocalAuthFiles(): Array<Record<string, unknown>> {
 }
 
 export function saveLocalAuthFile(name: string, content: Buffer | string) {
-  const dir = authFilesDir()
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const filePath = path.join(dir, name)
+  const filePath = authFilePath(name) // 单点校验：越界/软链/硬链接一律拒绝
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
   fs.writeFileSync(filePath, content, { mode: 0o600 })
 }
 
 export function deleteLocalAuthFile(name: string) {
-  const dir = authFilesDir()
-  const filePath = path.join(dir, name)
+  const safe = assertAuthFileName(name)   // 先把名字校验完，再碰文件系统（顺序本身也是安全属性）
+  const filePath = authFilePath(safe)     // 非法名字直接抛错（不静默「删了个不存在的文件」）
   try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath) } catch { /* ignore */ }
   const meta = readAuthFilesMeta()
-  if (meta[name]) {
-    delete meta[name]
+  if (meta[safe]) {
+    delete meta[safe]
     writeAuthFilesMeta(meta)
   }
 }
 
 export function setLocalAuthFileStatus(name: string, disabled: boolean) {
+  const safe = assertAuthFileName(name)
   const meta = readAuthFilesMeta()
-  meta[name] = { ...meta[name], disabled }
+  meta[safe] = { ...meta[safe], disabled }
   writeAuthFilesMeta(meta)
 }
 
 export function setLocalAuthFileProxy(name: string, proxyUrl: string) {
+  const safe = assertAuthFileName(name)
   const meta = readAuthFilesMeta()
-  meta[name] = { ...meta[name], proxy_url: proxyUrl }
+  meta[safe] = { ...meta[safe], proxy_url: proxyUrl }
   writeAuthFilesMeta(meta)
 }
 
 export function getLocalAuthFile(name: string): Record<string, unknown> | null {
-  const dir = authFilesDir()
-  const filePath = path.join(dir, name)
+  const filePath = authFilePath(name) // 单点校验：越界读取同样拒绝
   try {
     if (fs.existsSync(filePath)) {
       return JSON.parse(fs.readFileSync(filePath, 'utf8'))
