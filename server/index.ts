@@ -12,6 +12,7 @@ import { isAuthenticated, login, logout, requireAuth } from './auth.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
+import { staticCompression } from './compression.js'
 import { buildNamedAPIKey, deriveKeySlug } from './keyNaming.js'
 import { activeProviderPredicate, activeProviderValues } from './currentChannels.js'
 import { canonicalModelSql } from './modelIdentity.js'
@@ -1268,6 +1269,10 @@ app.get(['/docs', '/docs/'], (_req, res) => {
 })
 // 入口 HTML 必须每次重新验证，避免浏览器把旧 bundle 引用缓存一小时；
 // 带内容哈希的 asset 可以安全长期缓存，且不再让 static middleware 截获 index.html。
+// 静态文本压缩（task-50）：只接管 dist 下「可压缩扩展名 + ≥1KB」的 GET/HEAD 且无 Range 的请求；
+// 其余一律 next() 交给 express.static / SPA 回退，两个 HTML 都 <1KB 所以完全不受影响。
+// 语义细节（ETag/304/immutable/Vary/内存缓存上限）见 server/compression.ts 顶部注释。
+app.use(staticCompression(dist, { maxAgeSeconds: 3600 }))
 app.use(express.static(dist, { maxAge: '1h', immutable: true, index: false }))
 app.use((_req, res) => {
   res.setHeader('Cache-Control', 'no-cache')
