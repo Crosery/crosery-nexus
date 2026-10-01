@@ -1384,3 +1384,152 @@ test('双实例跨进程「连带还原」竞态：A 的 cursor ON 不得被 B �
     assert.equal(fs.existsSync(path.join(path.dirname(backups), 'rtk-write.lock')), false, `round ${round}: 不能留残留锁`)
   }
 })
+
+/* ------------------------------------------------------------------ */
+/* 路径穿越（task-56）：rollback 的 backupId 与 manifest.files[].rel        */
+/* ------------------------------------------------------------------ */
+
+test('路径收口单元契约：assertRelShape / assertInsideDir / homeRelPath', () => {
+  const dir = path.join(workspace, 'path-guard')
+  const home = path.join(dir, 'home')
+  fs.mkdirSync(home, { recursive: true })
+  // 形状白名单
+  for (const bad of ['', '   ', '/etc/passwd', '../x', 'a/../b', 'a//b', './a', 'a\\b', 'x\0y']) {
+    assert.throws(() => service.assertRelShape(bad), (error: { reason?: string; status?: number }) => {
+      assert.equal(error.status, 400, `应 400：${JSON.stringify(bad)}`)
+      assert.equal(error.reason, 'rel_path_invalid')
+      return true
+    }, `应拒绝非法 rel：${JSON.stringify(bad)}`)
+  }
+  assert.equal(service.assertRelShape('.codex/hooks.json'), '.codex/hooks.json', '合法 rel 原样返回')
+  // 归属：resolve 与 realpath 两道
+  assert.equal(service.homeRelPath(home, '.codex/hooks.json'), path.join(home, '.codex/hooks.json'))
+  assert.throws(() => service.assertInsideDir(home, path.join(home, '..', 'outside.txt')), /允许目录之外/)
+  const outside = path.join(dir, 'outside-dir')
+  fs.mkdirSync(outside, { recursive: true })
+  fs.symlinkSync(outside, path.join(home, 'link-out'))
+  // 形状合法但经软链接逃出 home：assertInsideDir 用默认 reason，homeRelPath 会把 reason 换成调用方给的
+  assert.throws(() => service.assertInsideDir(home, 'link-out/written.txt'), (error: { reason?: string }) => {
+    assert.equal(error.reason, 'path_escape')
+    return true
+  }, '经软链接逃出 home 必须被拒（assertInsideDir）')
+  assert.throws(() => service.homeRelPath(home, 'link-out/written.txt'), (error: { reason?: string }) => {
+    assert.equal(error.reason, 'rel_path_invalid')
+    return true
+  }, '经软链接逃出 home 必须被拒（homeRelPath）')
+})
+
+test('安全：POST /api/rtk/rollback 的路径穿越利用链全部被拒（红队 ①②③ + symlink 变体）', { timeout: 90_000 }, async () => {
+  const dir = path.join(workspace, 'traversal-e2e')
+  const secHome = path.join(dir, 'home')
+  const secBackups = path.join(dir, 'backups')
+  for (const sub of ['home', 'backups']) fs.mkdirSync(path.join(dir, sub), { recursive: true })
+  // 哨兵：home 内的文件（删除类利用的目标）
+  const canary = path.join(secHome, 'pwned-canary.txt')
+  fs.writeFileSync(canary, 'KEEP-ME\n')
+  // 哨兵：home 之外的文件（越界写入的目标）
+  const outsideTarget = path.join(dir, 'cac-sec-write-canary.txt')
+  const validId = '2026-10-01T00-00-00-000Z-cafe01'
+  const rogueDir = path.join(dir, 'evil')                       // 备份根之外
+  const symlinkOutside = path.join(dir, 'symlink-outside')
+
+  const instance = await startInstance({ dir: path.join(dir, 'a'), home: secHome, backups: secBackups }) as StageInstance & { cookie: string }
+  const rollback = async (backup: unknown) => {
+    const response = await fetch(`http://127.0.0.1:${instance.port}/api/rtk/rollback`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: instance.cookie },
+      body: JSON.stringify({ confirm: true, backup }),
+    })
+    return { status: response.status, body: await response.json().catch(() => ({})) as Record<string, unknown> }
+  }
+  const writeManifest = (target: string, manifest: unknown) => {
+    fs.mkdirSync(target, { recursive: true })
+    fs.writeFileSync(path.join(target, 'manifest.json'), JSON.stringify(manifest))
+  }
+  try {
+    // ① backup="../../etc"（对照：以前只做存在性判断 → 404；现在白名单直接拒）
+    const case1 = await rollback('../../etc')
+    assert.equal(case1.status, 400)
+    assert.equal(case1.body.reason, 'backup_id_invalid')
+
+    // ② 备份根之外的 rogue 备份：以前会删掉 home 下文件
+    writeManifest(rogueDir, { id: '../evil', home: secHome, files: [{ rel: 'pwned-canary.txt', existed: false }] })
+    const case2 = await rollback('../evil')
+    assert.equal(case2.status, 400)
+    assert.equal(case2.body.reason, 'backup_id_invalid')
+    assert.equal(fs.readFileSync(canary, 'utf8'), 'KEEP-ME\n', '哨兵文件不得被删除')
+
+    // ③ 形似合法的 id 落在备份根内，但 rel 逃出 home：以前会越界写任意文件
+    const escapeDir = path.join(secBackups, validId)
+    writeManifest(escapeDir, { id: validId, home: secHome, files: [{ rel: '../cac-sec-write-canary.txt', existed: true }] })
+    fs.writeFileSync(path.join(escapeDir, '..__cac-sec-write-canary.txt'), 'ARBITRARY-WRITE-PROOF\n')
+    const case3 = await rollback(validId)
+    assert.equal(case3.status, 400)
+    assert.equal(case3.body.reason, 'manifest_rel_invalid')
+    assert.equal(fs.existsSync(outsideTarget), false, 'home 之外不得被创建文件')
+    fs.rmSync(escapeDir, { recursive: true, force: true })
+
+    // ③b symlink 变体：rel 形状合法（无 ..），但中间目录是指向 home 之外的软链
+    fs.mkdirSync(symlinkOutside, { recursive: true })
+    fs.symlinkSync(symlinkOutside, path.join(secHome, 'link-out'))
+    writeManifest(escapeDir, { id: validId, home: secHome, files: [{ rel: 'link-out/written-by-rollback.txt', existed: true }] })
+    fs.writeFileSync(path.join(escapeDir, 'link-out__written-by-rollback.txt'), 'ARBITRARY-WRITE-PROOF\n')
+    const case3b = await rollback(validId)
+    assert.equal(case3b.status, 400, `symlink 变体必须被拒：${JSON.stringify(case3b.body)}`)
+    assert.equal(case3b.body.reason, 'manifest_rel_outside_home')
+    assert.equal(fs.existsSync(path.join(symlinkOutside, 'written-by-rollback.txt')), false, '软链接之外不得被写入')
+
+    // ③c 备份目录本身是软链（指向备份根之外）→ 归属校验必须拦住
+    fs.mkdirSync(symlinkOutside, { recursive: true })
+    fs.rmSync(escapeDir, { recursive: true, force: true })
+    const linkId = '2026-10-01T00-00-00-000Z-cafe02'
+    fs.symlinkSync(symlinkOutside, path.join(secBackups, linkId))
+    const case3c = await rollback(linkId)
+    assert.equal(case3c.status, 400)
+    assert.equal(case3c.body.reason, 'backup_path_escape')
+    fs.rmSync(path.join(secBackups, linkId), { force: true })
+
+    // ④ manifest 结构类：home 不一致 / id 不一致 / files 为空 —— 全部整单拒绝
+    for (const [label, manifest, reason] of [
+      ['home 不一致', { id: validId, home: '/somewhere/else', files: [{ rel: '.codex/hooks.json', existed: true }] }, 'manifest_invalid'],
+      ['id 不一致', { id: 'other-id', home: secHome, files: [{ rel: '.codex/hooks.json', existed: true }] }, 'manifest_invalid'],
+      ['files 为空', { id: validId, home: secHome, files: [] }, 'manifest_invalid'],
+      ['files 项结构非法', { id: validId, home: secHome, files: [{ rel: 123, existed: true }] }, 'manifest_invalid'],
+    ] as const) {
+      writeManifest(escapeDir, manifest)
+      const result = await rollback(validId)
+      assert.equal(result.status, 400, `${label} 必须被拒：${JSON.stringify(result.body)}`)
+      assert.equal(result.body.reason, reason, label)
+      assert.equal(fs.readFileSync(canary, 'utf8'), 'KEEP-ME\n')
+      fs.rmSync(escapeDir, { recursive: true, force: true })
+    }
+
+    // ⑤ 审计仍留痕：被拒的 rollback 必须在审计里有 outcome=error + reason
+    const audit = await fetch(`http://127.0.0.1:${instance.port}/api/audit`, { headers: { cookie: instance.cookie } })
+    const auditBody = await audit.json() as { items: Array<{ action?: string; target?: string; details?: string }> }
+    const rejected = auditBody.items.filter(item => String(item.details || '').includes('rollback_rtk_hook') || String(item.action || '').includes('rollback'))
+    assert.ok(rejected.length > 0, `审计里必须有被拒的回滚记录：${JSON.stringify(auditBody.items.slice(0, 3))}`)
+    assert.ok(rejected.some(item => /reason=(backup_id_invalid|manifest_invalid|manifest_rel_invalid|manifest_rel_outside_home|backup_path_escape)/.test(String(item.details))),
+      `审计必须记下明确 reason：${rejected.map(item => item.details).join(' | ')}`)
+
+    // ⑥ 合法回滚仍然可用（没把正常路径一起堵死）：注意本进程也要用实例那套 RTK_BACKUP_DIR，
+    // 否则备份会写到默认目录、实例按 RTK_BACKUP_DIR 找不到
+    const previousBackups = process.env.RTK_BACKUP_DIR
+    process.env.RTK_BACKUP_DIR = secBackups
+    let seeded: Awaited<ReturnType<typeof service.setRTKAgentHook>>
+    try {
+      seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home: secHome, bin: path.join(dir, 'no-rtk'), ...offlineTargets })
+    } finally {
+      if (previousBackups === undefined) delete process.env.RTK_BACKUP_DIR
+      else process.env.RTK_BACKUP_DIR = previousBackups
+    }
+    assert.ok(seeded.backupId, '需要一份真实备份')
+    fs.writeFileSync(canary, 'MUTATED\n')
+    const happy = await rollback(seeded.backupId)
+    assert.equal(happy.status, 200, `合法回滚必须仍然成功：${JSON.stringify(happy.body)}`)
+    fs.rmSync(canary, { force: true })
+  } finally {
+    instance.stop()
+    await new Promise(resolve => setTimeout(resolve, 200))
+    fs.rmSync(path.join(secHome, 'link-out'), { force: true })
+  }
+})

@@ -710,6 +710,83 @@ export async function acquireRtkFileLock(options: {
 }
 
 /* ------------------------------------------------------------------ */
+/* 路径收口（安全，task-56）                                            */
+/*                                                                     */
+/* 红队第十五轮在 POST /api/rtk/rollback 上做出路径穿越：backupId 没校验就      */
+/* path.join(备份根, id)、manifest.files[].rel 没校验就 path.join(home, rel)，   */
+/* 结果可以越界删除 home 内文件、并在 home 之外写任意内容。                      */
+/* 现在所有吃 rel / 路径的地方**统一走下面这组校验器**（单点实现）：              */
+/*   - assertRelShape：形状白名单（非空、相对、无 NUL、无空段/./..、无反斜杠）    */
+/*   - assertInsideDir：解析后必须落在允许目录内，并对已存在部分做 realpath，     */
+/*     防「软链接逃逸」（已存在的文件/目录被换成指向外部的符号链接）              */
+/*   - homeRelPath：home 下的 rel → 绝对路径（所有消费 rel 的地方都用它）         */
+/* 任一处不合法一律抛 RtkPlaneError(400)，整单拒绝，不做部分还原。               */
+/* ------------------------------------------------------------------ */
+
+const RtkPathError = (reason: string, detail: string) => new RtkPlaneError(400, 'local', reason, detail)
+
+/** 解析「真实」路径：已存在就 realpath；不存在则把最近的已存在祖先 realpath 后再接回剩余段。 */
+function realPathOf(target: string): string {
+  const resolved = path.resolve(target)
+  let current = resolved
+  const tail: string[] = []
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current)
+      return tail.length ? path.join(real, ...tail.reverse()) : real
+    } catch {
+      const parent = path.dirname(current)
+      if (parent === current) return resolved
+      tail.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+const isInsideDir = (parent: string, child: string): boolean => child === parent || child.startsWith(parent + path.sep)
+
+/** 相对路径形状校验：非空、相对、无 NUL、无空段 / `.` / `..`、无反斜杠。 */
+export function assertRelShape(rel: unknown, reason = 'rel_path_invalid'): string {
+  if (typeof rel !== 'string' || !rel.trim()) throw RtkPathError(reason, '文件路径必须是非空字符串')
+  const value = rel.trim()
+  if (value.includes('\0')) throw RtkPathError(reason, '文件路径含 NUL 字节')
+  if (path.isAbsolute(value)) throw RtkPathError(reason, `文件路径必须是相对路径：${value}`)
+  if (value.includes('\\')) throw RtkPathError(reason, `文件路径不得包含反斜杠：${value}`)
+  for (const segment of value.split('/')) {
+    if (segment === '' || segment === '.' || segment === '..') {
+      throw RtkPathError(reason, `文件路径含非法片段（空 / . / ..）：${value}`)
+    }
+  }
+  return value
+}
+
+/** 断言 child（绝对路径，或相对 parent 的相对路径）解析后位于 parent 之内；含 realpath 防软链接逃逸。 */
+export function assertInsideDir(parent: string, child: string, reason = 'path_escape', what = '路径'): string {
+  const resolvedParent = path.resolve(parent)
+  const resolved = path.resolve(resolvedParent, child)
+  if (!isInsideDir(resolvedParent, resolved)) {
+    throw RtkPathError(reason, `${what} 解析后落在允许目录之外：${child}`)
+  }
+  const realParent = realPathOf(resolvedParent)
+  const real = realPathOf(resolved)
+  if (!isInsideDir(realParent, real)) {
+    throw RtkPathError(reason, `${what} 经符号链接解析后落在允许目录之外：${child}`)
+  }
+  return resolved
+}
+
+/** `home` 下的相对路径 → 绝对路径。**所有消费 rel 的地方都必须走这里**（含 registry 里的 rel）。 */
+export function homeRelPath(home: string, rel: unknown, reason = 'rel_path_invalid'): string {
+  const safe = assertRelShape(rel, reason)
+  return assertInsideDir(home, safe, reason, `home 下的文件路径 ${safe}`)
+}
+
+/** 两个路径是否指向同一处（先按解析结果比，再按 realpath 比，兼容软链接过的 home）。 */
+function samePath(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right) || realPathOf(left) === realPathOf(right)
+}
+
+/* ------------------------------------------------------------------ */
 /* 备份与回退                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -730,10 +807,12 @@ export function createRtkBackup(home: string, rels: string[]): RtkBackupCreated 
   const dir = path.join(rtkBackupRoot(home), id)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const files = [...new Set(rels)].filter(Boolean).map(rel => {
-    const source = path.join(home, rel)
+    // 备份也 fail closed：rel 不合法就整单拒绝，绝不写出一个能越界的清单
+    const safeRel = assertRelShape(rel, 'backup_rel_invalid')
+    const source = assertInsideDir(home, safeRel, 'backup_rel_invalid', `备份源文件 ${safeRel}`)
     const existed = fs.existsSync(source)
-    if (existed) fs.copyFileSync(source, path.join(dir, backupFileName(rel)))
-    return { rel, existed }
+    if (existed) fs.copyFileSync(source, path.join(dir, backupFileName(safeRel)))
+    return { rel: safeRel, existed }
   })
   fs.writeFileSync(
     path.join(dir, 'manifest.json'),
@@ -877,7 +956,8 @@ export function countRtkBackupForeign(home: string = resolveHome()): number {
 }
 
 export function listRtkBackups(home: string = resolveHome(), limit = rtkBackupKeep()): RtkBackupSummary[] {
-  return backupEntries(home).filter(entry => entry.hasManifest).slice(0, Math.max(1, limit)).map(entry => {
+  // 只列白名单 id：备份根里其它名字的目录（含 `..`/rogue）不能被当成「可用备份」
+  return backupEntries(home).filter(entry => entry.hasManifest && entry.recognized).slice(0, Math.max(1, limit)).map(entry => {
     try {
       const manifest = JSON.parse(fs.readFileSync(path.join(rtkBackupRoot(home), entry.id, 'manifest.json'), 'utf8')) as { at?: string; files?: unknown[] }
       return { id: entry.id, at: manifest.at || entry.id, fileCount: (manifest.files || []).length }
@@ -887,26 +967,78 @@ export function listRtkBackups(home: string = resolveHome(), limit = rtkBackupKe
   })
 }
 
-/** 从备份原地恢复：写过的文件回滚，原本不存在的文件删掉。 */
+/**
+ * 从备份原地恢复：写过的文件回滚，原本不存在的文件删掉。
+ *
+ * 安全（task-56，fail closed）：
+ * - `backupId` 必须匹配 `BACKUP_ID_PATTERN`（白名单），且解析后落在备份根内（含 realpath 防软链接逃逸）；
+ * - manifest 必须是合法结构、`id` 与请求一致、`home` 与当前 home 一致、`files` 非空；
+ * - 每个 `files[].rel` 必须是相对路径、无 `..`，解析（含 realpath）后落在 `home` 内；
+ * - **先全量校验出一个计划，再动手写**：任何一条不合法就整体拒绝，绝不部分还原。
+ */
 export function restoreRtkBackup(home: string, backupId?: string): { id: string; restored: string[] } {
   const root = rtkBackupRoot(home)
-  const id = backupId || listRtkBackups(home, 1)[0]?.id
+  const requested = typeof backupId === 'string' ? backupId.trim() : ''
+  const id = requested || listRtkBackups(home, 1)[0]?.id || ''
   if (!id) throw new RtkPlaneError(404, 'local', 'backup_not_found', '没有可用的 RTK 备份')
-  const dir = path.join(root, id)
+
+  // ① backupId：白名单 + 必须落在备份根内
+  if (!BACKUP_ID_PATTERN.test(id) || id.includes('/') || id.includes('\\') || id.includes('..')) {
+    throw RtkPathError('backup_id_invalid', `备份 id 不合法（只接受备份根下形如 2026-10-01T01-10-10-661Z 的 id）：${redact(id).slice(0, 60)}`)
+  }
+  const dir = assertInsideDir(root, id, 'backup_path_escape', '备份目录')
   const manifestPath = path.join(dir, 'manifest.json')
-  if (!fs.existsSync(manifestPath)) throw new RtkPlaneError(404, 'local', 'backup_not_found', `备份 ${id} 不存在`)
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { files?: Array<{ rel: string; existed: boolean }> }
-  const restored: string[] = []
-  for (const file of manifest.files || []) {
-    const target = path.join(home, file.rel)
-    const source = path.join(dir, backupFileName(file.rel))
-    if (file.existed && fs.existsSync(source)) {
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.copyFileSync(source, target)
-    } else if (!file.existed && fs.existsSync(target)) {
-      fs.rmSync(target)
+  if (!fs.existsSync(manifestPath)) {
+    throw new RtkPlaneError(404, 'local', 'backup_not_found', `备份 ${id} 不存在`)
+  }
+
+  // ② manifest：结构 / id / home / files 全量校验
+  let raw: unknown
+  try {
+    raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  } catch {
+    throw RtkPathError('manifest_invalid', `备份 ${id} 的 manifest.json 不是合法 JSON，拒绝还原`)
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw RtkPathError('manifest_invalid', `备份 ${id} 的 manifest 结构非法，拒绝还原`)
+  }
+  const manifest = raw as { id?: unknown; home?: unknown; files?: unknown }
+  if (manifest.id !== id) {
+    throw RtkPathError('manifest_invalid', `备份 ${id} 的 manifest.id（${String(manifest.id)}）与请求不一致，拒绝还原`)
+  }
+  if (typeof manifest.home !== 'string' || !samePath(manifest.home, home)) {
+    throw RtkPathError('manifest_invalid', `备份 ${id} 属于另一个 home（${String(manifest.home)}），拒绝还原`)
+  }
+  if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+    throw RtkPathError('manifest_invalid', `备份 ${id} 的清单为空或结构非法，拒绝还原`)
+  }
+  const plan = manifest.files.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw RtkPathError('manifest_invalid', `备份 ${id} 的清单第 ${index + 1} 项结构非法，拒绝还原`)
     }
-    restored.push(file.rel)
+    const { rel, existed } = entry as { rel?: unknown; existed?: unknown }
+    if (typeof rel !== 'string' || typeof existed !== 'boolean') {
+      throw RtkPathError('manifest_invalid', `备份 ${id} 的清单第 ${index + 1} 项必须是 { rel: string, existed: boolean }，拒绝还原`)
+    }
+    const safeRel = assertRelShape(rel, 'manifest_rel_invalid')
+    return {
+      rel: safeRel,
+      existed,
+      target: assertInsideDir(home, safeRel, 'manifest_rel_outside_home', `清单文件路径 ${safeRel}`),
+      source: assertInsideDir(dir, backupFileName(safeRel), 'backup_path_escape', `备份文件 ${safeRel}`),
+    }
+  })
+
+  // ③ 全部校验通过后才提交
+  const restored: string[] = []
+  for (const item of plan) {
+    if (item.existed && fs.existsSync(item.source)) {
+      fs.mkdirSync(path.dirname(item.target), { recursive: true })
+      fs.copyFileSync(item.source, item.target)
+    } else if (!item.existed && fs.existsSync(item.target)) {
+      fs.rmSync(item.target)
+    }
+    restored.push(item.rel)
   }
   return { id, restored }
 }
@@ -921,8 +1053,8 @@ export function restoreRtkBackup(home: string, backupId?: string): { id: string;
  */
 export function detectAgentHooks(home: string = resolveHome()): RtkAgentView[] {
   return RTK_AGENT_SPECS.map(spec => {
-    const dirPath = path.join(home, spec.dir)
-    const hookPath = spec.hookFile ? path.join(home, spec.hookFile) : null
+    const dirPath = homeRelPath(home, spec.dir)
+    const hookPath = spec.hookFile ? homeRelPath(home, spec.hookFile) : null
     const installed = fs.existsSync(dirPath) || Boolean(hookPath && fs.existsSync(hookPath))
     let on = false
     if (hookPath && fs.existsSync(hookPath)) {
@@ -1313,7 +1445,7 @@ const JSON_HOOK_FILES = new Set([
  */
 export function hookFileIntegrity(spec: RtkAgentSpec, home: string): string | null {
   if (!spec.hookFile || !JSON_HOOK_FILES.has(spec.hookFile)) return null
-  const content = readFileIfExists(path.join(home, spec.hookFile))
+  const content = readFileIfExists(homeRelPath(home, spec.hookFile))
   if (content === null || !content.trim()) return null
   try {
     const parsed: unknown = JSON.parse(content)
@@ -1476,7 +1608,7 @@ function reconcileCollateral(
   for (const [rel, before] of snapshot) {
     const entry = byRel.get(rel)
     if (!entry || entry.kind === 'bak') continue
-    const target = path.join(home, rel)
+    const target = homeRelPath(home, rel)
     const after = readFileIfExists(target)
     if (after === before) continue
     const spec = rtkAgentSpec(entry.owner)
@@ -1526,7 +1658,7 @@ function reconcileCollateral(
     if (!spec?.hookFile) continue
     const bakRel = `${spec.hookFile}.bak`
     if (snapshot.get(bakRel)) continue
-    const bakPath = path.join(home, bakRel)
+    const bakPath = homeRelPath(home, bakRel)
     if (fs.existsSync(bakPath)) {
       fs.rmSync(bakPath)
       files.push(bakRel)
@@ -1644,12 +1776,12 @@ export async function applyLocalAgentHook(
       const backup = createRtkBackup(home, allFiles)
       beginRtkBackupUse(backup.id)
       const snapshot = new Map<string, string | null>()
-      for (const rel of allFiles) snapshot.set(rel, readFileIfExists(path.join(home, rel)))
+      for (const rel of allFiles) snapshot.set(rel, readFileIfExists(homeRelPath(home, rel)))
       pruneRtkBackups(home, rtkBackupKeep(), { protect: [backup.id] })
 
       const restoreTargetsRaw = () => {
         for (const rel of targets) {
-          const target = path.join(home, rel)
+          const target = homeRelPath(home, rel)
           const before = snapshot.get(rel) ?? null
           const after = readFileIfExists(target)
           if (after !== before) restoreToSnapshot(target, before, after)
@@ -1660,7 +1792,7 @@ export async function applyLocalAgentHook(
         if (!hookBak) return []
         const before = snapshot.get(hookBak) ?? null
         if (before === null) return []
-        const target = path.join(home, hookBak)
+        const target = homeRelPath(home, hookBak)
         if (readFileIfExists(target) === before) return []
         restoreToSnapshot(target, before, readFileIfExists(target))
         return [hookBak]
@@ -1677,7 +1809,7 @@ export async function applyLocalAgentHook(
       // 任何后续写入与「报成功」之前校验锁，失去锁就放弃提交并报 409 lock_lost_during_write。
       // 触发条件见 docs/qa/blue/rtk-fencing-and-heartbeat.md §3。
       // rtk init 需要目标目录已存在（cursor 还会写 .claude/RTK.md），否则它自己 exit 1。
-      for (const rel of targets) fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
+      for (const rel of targets) fs.mkdirSync(path.dirname(homeRelPath(home, rel)), { recursive: true })
       fs.mkdirSync(path.join(home, spec.dir), { recursive: true })
 
       const restoreTargets = () => {
@@ -1733,7 +1865,7 @@ export async function applyLocalAgentHook(
 
         const jsonSpec = HOOK_JSON[spec.id]
         if (spec.hookFile && jsonSpec) {
-          const filePath = path.join(home, spec.hookFile)
+          const filePath = homeRelPath(home, spec.hookFile)
           fs.mkdirSync(path.dirname(filePath), { recursive: true })
           // 提交点：兜底写入前确认锁还是自己的（R11-C）
           lock.assertOwned()
