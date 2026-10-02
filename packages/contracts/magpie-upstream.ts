@@ -15,6 +15,8 @@ export type MagpieUpstreamStatus = {
     implementationFileCount: number
     addedLoginAgents: string[]
     removedLoginAgents: string[]
+    /** Magpie settings the candidate adds / removes / changes against deploy/magpie/catalog.json (absent on older status files) */
+    settings?: { added: string[]; removed: string[]; changed: string[] }
   }
   oauthConnected: boolean
   rtkConnected: boolean

@@ -6,6 +6,7 @@ import { persistUsageRecords } from './sync.js'
 import { quotaStateFor, type KeyQuotaRow } from './quotaEnforcer.js'
 import { readMagpieChannels, resolveMagpieCredential, resolveMagpieSecret } from './magpieControl.js'
 import { createMagpieAdmission, mapMagpieRoutes, type AdmissionKey } from './magpieEngine.js'
+import { accountPicks, pushAccountPicksAtBoot } from './magpieAccountProxies.js'
 
 export async function magpieRoutes() {
   if (config.magpieControlPlane === 'local') {
@@ -33,7 +34,7 @@ export async function magpieRoutes() {
     }))
     const channels = resolvedChannels.filter((c): c is NonNullable<typeof c> => c !== null) as unknown as CompatChannel[]
 
-    const { listLocalAuthFiles, readExcludedModels, getLocalAuthFileModels } = await import('./magpieControl.js')
+    const { listLocalAuthFiles, readExcludedModels, getLocalAuthFileModels, readLocalAuthFileCredential } = await import('./magpieControl.js')
     const oauthFiles = listLocalAuthFiles().filter(f => !f.disabled)
     const excluded = readExcludedModels()
     const oauthChannels: CompatChannel[] = []
@@ -44,7 +45,9 @@ export async function magpieRoutes() {
       const models = rawModels.filter(m => !(excluded[type] || []).includes(m))
       if (!models.length) continue
 
-      const token = String(file.access_token || file['api-key'] || file.token || 'oauth-token')
+      // 列表只有白名单字段；凭据本身只在这里、在服务端按文件名读一次
+      const credential = readLocalAuthFileCredential(String(file.name || ''))
+      const token = credential.token || 'oauth-token'
       const proxy = String(file.proxy_url || '')
 
       const useBridge = Boolean(config.magpieSourceCpaBaseUrl && config.magpieSourceCpaKey)
@@ -67,7 +70,7 @@ export async function magpieRoutes() {
           protocol: 'responses',
           'api-key-entries': [{ 'api-key': effectiveKey, ...(effectiveProxy !== 'direct' ? { 'proxy-url': effectiveProxy } : {}) }],
           models: models.map(m => ({ name: m })),
-          headers: file.account_id ? { 'chatgpt-account-id': String(file.account_id) } : undefined,
+          headers: credential.accountId ? { 'chatgpt-account-id': credential.accountId } : undefined,
         } as CompatChannel)
       } else if (type === 'antigravity' || type === 'gemini' || type === 'google') {
         oauthChannels.push({
@@ -115,6 +118,7 @@ export async function startMagpieServer() {
     settle: records => persistUsageRecords(records, records.map(record => ({
       id: record.provider!, name: record.provider!, color: '', kind: 'compat' as const, models: [record.alias || record.model!],
     }))),
+    ...(config.magpieControlPlane === 'local' ? { extraProviders: () => accountPicks() } : {}),
   })
   server.requestTimeout = config.magpieTimeoutMs
   server.headersTimeout = 30_000
@@ -123,5 +127,7 @@ export async function startMagpieServer() {
     server.listen(config.magpiePort, '127.0.0.1', resolve)
   })
   console.log(JSON.stringify({ event: 'gateway_started', engine: 'magpie', address: `http://127.0.0.1:${config.magpiePort}`, controlPlane: config.magpieControlPlane }))
+  // per-account exits must reach the kernel before it reads any account's usage, not at the first inference request
+  void pushAccountPicksAtBoot().catch(() => false)
   return server
 }

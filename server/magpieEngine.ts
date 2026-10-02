@@ -29,6 +29,8 @@ type Dependencies = {
   key: (token: string) => AdmissionKey | undefined
   exceeded: (key: AdmissionKey) => boolean
   settle: (records: UsageRecord[]) => void
+  /** endpoint-less kernel providers pushed with the slots (per-account exits, magpieAccountProxies.ts) */
+  extraProviders?: () => unknown[]
 }
 class AdmissionError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code) }
@@ -189,7 +191,7 @@ export function createMagpieAdmission(deps: Dependencies) {
   let signature = ''
   let updates: Promise<unknown> = Promise.resolve()
   async function configure(routes: MagpieRoute[]) {
-    const providers = routes.map(route => route.provider)
+    const providers = [...routes.map(route => route.provider), ...(deps.extraProviders?.() ?? [])]
     const hash = createHash('sha256').update(JSON.stringify(providers)).digest('hex')
     const next = updates.then(async () => {
       if (hash !== signature) {

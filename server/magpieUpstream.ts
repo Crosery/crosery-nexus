@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { MAGPIE_API_REVISION, MAGPIE_API_ROUTES, MAGPIE_LOGIN_AGENTS } from '../packages/contracts/magpie-upstream.generated.js'
 import type { MagpieUpstreamStatus } from '../packages/contracts/magpie-upstream.js'
+import { autoupdatePathsFor, readAutoAppliedRevision } from './autoupdate.js'
 
 const revision = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value)
 const list = (value: unknown): string[] => {
@@ -29,7 +30,8 @@ export function readMagpieUpstreamStatus(activeRevision: string, filename = path
     oauthConnected: options.oauthConnected ?? false,
     rtkConnected: options.rtkConnected ?? false,
   }
-  if (activeRevision !== MAGPIE_API_REVISION) {
+  // a kernel the scheduled job auto-applied (compatible with this baseline by its classifier) is not a mismatch
+  if (activeRevision !== MAGPIE_API_REVISION && activeRevision !== readAutoAppliedRevision(autoupdatePathsFor(path.dirname(filename)))) {
     result.status = 'baseline_mismatch'
     return result
   }
@@ -45,6 +47,9 @@ export function readMagpieUpstreamStatus(activeRevision: string, filename = path
       addedRoutes: list(diff.addedRoutes), removedRoutes: list(diff.removedRoutes), changedRoutes: list(diff.changedRoutes),
       schemaCount: list(diff.changedSchemas).length, implementationFileCount: list(diff.implementationFiles).length,
       addedLoginAgents: list(diff.addedLoginAgents), removedLoginAgents: list(diff.removedLoginAgents),
+      ...(Array.isArray(diff.addedSettings) ? {
+        settings: { added: list(diff.addedSettings), removed: list(diff.removedSettings), changed: list(diff.changedSettings) },
+      } : {}),
     }
     result.status = value.status
     result.candidateRevision = value.candidateRevision

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { compareContracts, generateTypes, generateReference, withUpstreamLock, publishCandidate, checkServiceEnvironment } from './magpie-upstream.mjs'
+import { compareContracts, generateTypes, generateReference, withUpstreamLock, publishCandidate, checkServiceEnvironment, processStartTime } from './magpie-upstream.mjs'
 
 const route = (path = '/api/signin') => ({
   surface: 'management', method: 'POST', path, handler: 'inline', source: 'internal/gui/providers.go',
@@ -106,4 +106,89 @@ test('scheduled checks inherit public proxy configuration but never credentials'
   assert.equal('CONSOLE_PASSWORD' in env, false)
   assert.throws(() => checkServiceEnvironment({ HTTPS_PROXY: 'http://user:password@proxy.invalid' }), /credential-free/)
   assert.throws(() => checkServiceEnvironment({ HTTPS_PROXY: 'http://proxy.invalid?token=fixture' }), /credential-free/)
+})
+
+/* ────────────────────────── review-sync-balance ────────────────────────── */
+
+test('SB-08 abandoned check.lock is recovered when its owner is gone or its pid was reused; a live owner is never robbed', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'magpie-check-stale-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const lockFile = path.join(directory, 'check.lock')
+  const writeLock = (owner) => fs.writeFile(lockFile, typeof owner === 'string' ? owner : JSON.stringify(owner), { mode: 0o600 })
+
+  // 被 SIGKILL 的检查：pid 已不存在
+  await writeLock({ pid: 2147483646, startedAt: new Date().toISOString() })
+  assert.equal(await withUpstreamLock(directory, () => 'recovered'), 'recovered')
+  await assert.rejects(fs.access(lockFile), 'lock released after the recovered run')
+
+  // 活着的持有者（父进程）且锁龄正常：不抢
+  await writeLock({ pid: process.ppid, startedAt: new Date().toISOString() })
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter')), /locked by a live process/)
+
+  // pid 还在，但那个进程比锁还晚启动（父进程几分钟前才起，锁写于 3 小时前）：pid 被复用，原持有者早已不在
+  await writeLock({ pid: process.ppid, startedAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString() })
+  assert.equal(await withUpstreamLock(directory, () => 'old lock recovered'), 'old lock recovered')
+
+  // 写内容之前就崩溃的空锁：新鲜的不动，过了 10 分钟按残留处理
+  await writeLock('')
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter')), /locked/)
+  const old = new Date(Date.now() - 11 * 60_000)
+  await fs.utimes(lockFile, old, old)
+  assert.equal(await withUpstreamLock(directory, () => 'empty lock recovered'), 'empty lock recovered')
+
+  // 另一个回收者正持有回收互斥：本轮按已上锁退出，不并发回收
+  await writeLock({ pid: 2147483646, startedAt: new Date().toISOString() })
+  await fs.writeFile(path.join(directory, 'check.lock.recover'), '')
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter')), /locked/)
+  await fs.rm(path.join(directory, 'check.lock.recover'))
+  assert.equal(await withUpstreamLock(directory, () => 'next round'), 'next round')
+})
+
+test('SB-08 活着的持有者不管锁多老都不抢（机器睡眠/进程挂起后它还会回来）；活着但身份确认不了也不抢', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'magpie-check-live-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const lockFile = path.join(directory, 'check.lock')
+  const startedAt = Date.now() - 3 * 60 * 60_000
+  await fs.writeFile(lockFile, JSON.stringify({ pid: process.ppid, startedAt: new Date(startedAt).toISOString() }), { mode: 0o600 })
+  // 父进程活着，且启动得比锁早：就是写锁的那个进程
+  const sameProcess = { processStartTime: () => startedAt - 60_000 }
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter'), sameProcess), /locked by a live process/)
+  assert.ok(JSON.parse(await fs.readFile(lockFile, 'utf8')).pid === process.ppid, '锁原样保留')
+  // 拿不到启动时间：确认不了是不是 pid 复用，宁可本轮按已上锁退出
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter'), { processStartTime: () => null }), /locked by a live process/)
+  assert.ok(JSON.parse(await fs.readFile(lockFile, 'utf8')).pid === process.ppid)
+  assert.ok(typeof processStartTime(process.pid) === 'number' && processStartTime(process.pid) <= Date.now(), '本机能读到进程启动时间')
+})
+
+test('SB-08 结束时只删自己的锁：期间锁被换成了别人的，不能把别人的删掉', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'magpie-check-own-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const lockFile = path.join(directory, 'check.lock')
+  const successor = JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() })
+  await withUpstreamLock(directory, async () => {
+    await fs.rm(lockFile)
+    await fs.writeFile(lockFile, successor, { mode: 0o600 })
+  })
+  assert.equal(await fs.readFile(lockFile, 'utf8'), successor)
+})
+
+test('SB-08 回收互斥：活着的回收者不管停了多久都不被清掉；持有者已死的互斥被清掉，下一轮照常回收', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'magpie-check-guard-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const lockFile = path.join(directory, 'check.lock')
+  const guardFile = path.join(directory, 'check.lock.recover')
+  await fs.writeFile(lockFile, JSON.stringify({ pid: 2147483646, startedAt: new Date().toISOString() }), { mode: 0o600 })
+  const old = new Date(Date.now() - 10 * 60_000)
+
+  await fs.writeFile(guardFile, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }))
+  await fs.utimes(guardFile, old, old)
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter')), /locked/)
+  await fs.access(guardFile) // 活着的回收者（停了 10 分钟）仍持有互斥
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter'), { processStartTime: () => null }), /locked/)
+  await fs.access(guardFile) // 活着但拿不到启动时间：同样不清
+
+  await fs.writeFile(guardFile, JSON.stringify({ pid: 2147483646, startedAt: new Date().toISOString() }))
+  await assert.rejects(withUpstreamLock(directory, () => assert.fail('must not enter')), /locked/, '本轮只清互斥，按已上锁退出')
+  await assert.rejects(fs.access(guardFile), '持有者已死的互斥被清掉')
+  assert.equal(await withUpstreamLock(directory, () => 'recovered'), 'recovered')
 })

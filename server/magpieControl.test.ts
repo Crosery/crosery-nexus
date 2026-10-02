@@ -136,3 +136,125 @@ test('凭据路径单点校验：越界删除/读取/写入一律拒绝，合法
     fs.rmSync(probe, { force: true })
   }
 })
+
+test('readMagpieSource：源失败时 3s 负缓存，并发读取共用一次请求（推理准入热路径）', async () => {
+  const { config } = await import('./config.js')
+  const { readMagpieSource, resetMagpieSourceCache } = await import('./magpieControl.js')
+  const original = { base: config.magpieSourceCpaBaseUrl, key: config.magpieSourceCpaKey, fetch: globalThis.fetch, now: Date.now }
+  let clock = 1_000_000
+  let calls = 0
+  config.magpieSourceCpaBaseUrl = 'https://source.example.test'
+  config.magpieSourceCpaKey = 'fixture-key'
+  Date.now = () => clock
+  globalThis.fetch = async () => { calls += 1; return new Response('down', { status: 503 }) }
+  resetMagpieSourceCache()
+  try {
+    await Promise.all([
+      assert.rejects(readMagpieSource('openai-compatibility'), /unavailable/),
+      assert.rejects(readMagpieSource('openai-compatibility'), /unavailable/),
+    ])
+    assert.equal(calls, 1, '并发失败只打一次')
+    await assert.rejects(readMagpieSource('openai-compatibility'), /unavailable/)
+    assert.equal(calls, 1, '负缓存窗口内不再打源')
+
+    clock += 3_001
+    globalThis.fetch = async () => {
+      calls += 1
+      return new Response(JSON.stringify({ 'openai-compatibility': [{ name: 'x' }] }), { status: 200 })
+    }
+    assert.equal((await readMagpieSource('openai-compatibility')).length, 1)
+    assert.equal(calls, 2)
+    await readMagpieSource('openai-compatibility')
+    assert.equal(calls, 2, '成功结果照旧缓存 5s')
+  } finally {
+    config.magpieSourceCpaBaseUrl = original.base
+    config.magpieSourceCpaKey = original.key
+    globalThis.fetch = original.fetch
+    Date.now = original.now
+    resetMagpieSourceCache()
+  }
+})
+
+test('SB-09 凭据源卡死（每次等满超时）：失败缓存不短于那次等待，并逐次翻倍封顶 60s；恢复后清零', async () => {
+  const { config } = await import('./config.js')
+  const { readMagpieSource, resetMagpieSourceCache } = await import('./magpieControl.js')
+  const original = { base: config.magpieSourceCpaBaseUrl, key: config.magpieSourceCpaKey, fetch: globalThis.fetch, now: Date.now }
+  let clock = 2_000_000
+  let calls = 0
+  let healthy = false
+  config.magpieSourceCpaBaseUrl = 'https://source.example.test'
+  config.magpieSourceCpaKey = 'fixture-key'
+  Date.now = () => clock
+  // 每次请求都「挂满」10s 超时（推进假时钟模拟），然后失败。
+  globalThis.fetch = async () => {
+    calls += 1
+    if (healthy) return new Response(JSON.stringify({ 'openai-compatibility': [{ name: 'x' }] }), { status: 200 })
+    clock += 10_000
+    throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+  }
+  resetMagpieSourceCache()
+  try {
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 1)
+    clock += 9_000
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 1, '失败缓存 ≥ 这次等待的 10s（旧实现 3s 后就让下一批准入再等 10s）')
+    clock += 1_001
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 2)
+    clock += 19_000
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 2, '第二次连续失败翻倍到 20s')
+    clock += 1_001
+    healthy = true
+    assert.equal((await readMagpieSource('openai-compatibility')).length, 1)
+    assert.equal(calls, 3)
+    healthy = false
+    clock += 5_001
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    clock += 10_001
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 5, '成功后失败档位清零，又从 10s 起')
+  } finally {
+    config.magpieSourceCpaBaseUrl = original.base
+    config.magpieSourceCpaKey = original.key
+    globalThis.fetch = original.fetch
+    Date.now = original.now
+    resetMagpieSourceCache()
+  }
+})
+
+test('SB-09 连续失败冷却只增不减：一次 10s 超时后紧跟一次秒失败，冷却翻倍到 20s，而不是缩回 6s', async () => {
+  const { config } = await import('./config.js')
+  const { readMagpieSource, resetMagpieSourceCache } = await import('./magpieControl.js')
+  const original = { base: config.magpieSourceCpaBaseUrl, key: config.magpieSourceCpaKey, fetch: globalThis.fetch, now: Date.now }
+  let clock = 3_000_000
+  let calls = 0
+  config.magpieSourceCpaBaseUrl = 'https://source.example.test'
+  config.magpieSourceCpaKey = 'fixture-key'
+  Date.now = () => clock
+  globalThis.fetch = async () => {
+    calls += 1
+    if (calls === 1) clock += 10_000 // 第一次挂满超时
+    throw new TypeError('fetch failed') // 之后立刻失败（连接被拒）
+  }
+  resetMagpieSourceCache()
+  try {
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    clock += 10_001
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 2)
+    clock += 19_000
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 2, '第二次连续失败的冷却是 20s（≥ 上一档的两倍），不会因为这次失败得快就缩短')
+    clock += 1_001
+    await assert.rejects(readMagpieSource('openai-compatibility'))
+    assert.equal(calls, 3)
+  } finally {
+    config.magpieSourceCpaBaseUrl = original.base
+    config.magpieSourceCpaKey = original.key
+    globalThis.fetch = original.fetch
+    Date.now = original.now
+    resetMagpieSourceCache()
+  }
+})

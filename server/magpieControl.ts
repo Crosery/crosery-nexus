@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { config, fileBackedSecret } from './config.js'
+import { LOCAL_AUTH_FILE_FIELDS } from './accountProjection.js'
+import { registryAccountsSection } from './magpieAccountProxies.js'
 
 export type MagpieChannel = {
   name: string
@@ -18,12 +20,58 @@ export const magpieCredentialReference = (endpoint: string, identity: string, sl
   `cpa:${endpoint}:${createHash('sha256').update(identity).digest('hex').slice(0, 24)}:${slot}`
 const secretReference = /^(env:[A-Z_][A-Z0-9_]*|cpa:(openai-compatibility|claude-api-key|codex-api-key):[a-f0-9]{24}:\d{1,3})$/
 const sourceCache = new Map<string, { until: number; value: Array<Record<string, unknown>> }>()
+/**
+ * 推理准入的热路径：源挂掉时失败也要缓存，并发读取共用一次请求，否则每个请求都要再等一次超时。
+ * 失败缓存时长 = max(3s, 这次失败本身花掉的时间)，连续失败翻倍，封顶 60s：
+ * 源卡死时（每次都等满 CPA_REQUEST_TIMEOUT_MS）准入被挡住的时间占比逐轮下降，
+ * 而不是「等 10s → 快速失败 3s → 再等 10s」的循环；一次快速失败（比如 502）只停 3s。
+ * 失败期间不回落到旧凭据：吊销后的 key 能否继续用是策略问题，需要人来定。
+ */
+const SOURCE_FAILURE_MIN_MS = 3_000
+const SOURCE_FAILURE_MAX_MS = 60_000
+const sourceFailures = new Map<string, { until: number; error: unknown; failures: number; ttl: number }>()
+const sourceInflight = new Map<string, Promise<Array<Record<string, unknown>>>>()
+
+export function resetMagpieSourceCache(): void {
+  sourceCache.clear()
+  sourceFailures.clear()
+  sourceInflight.clear()
+}
 
 export async function readMagpieSource(endpoint: string): Promise<Array<Record<string, unknown>>> {
   if (!['openai-compatibility', 'claude-api-key', 'codex-api-key', 'gemini-api-key', 'vertex-api-key', 'auth-files'].includes(endpoint) ||
       !config.magpieSourceCpaBaseUrl || !config.magpieSourceCpaKey) throw new Error('Read-only CPA credential source is not configured')
   const cached = sourceCache.get(endpoint)
   if (cached && cached.until > Date.now()) return cached.value
+  const failed = sourceFailures.get(endpoint)
+  if (failed && failed.until > Date.now()) throw failed.error
+  const pending = sourceInflight.get(endpoint)
+  if (pending) return pending
+  const startedAt = Date.now()
+  const request: Promise<Array<Record<string, unknown>>> = fetchMagpieSource(endpoint).then(
+    (list) => {
+      sourceCache.set(endpoint, { until: Date.now() + 5_000, value: list })
+      sourceFailures.delete(endpoint)
+      return list
+    },
+    (error: unknown) => {
+      const now = Date.now()
+      const previous = sourceFailures.get(endpoint)
+      const failures = (previous?.failures ?? 0) + 1
+      const base = Math.max(SOURCE_FAILURE_MIN_MS, now - startedAt)
+      // 连续失败的冷却只增不减：一次 10s 超时之后紧跟一次秒失败，不能把冷却缩回几秒、让下一批准入又去等满超时。
+      const ttl = Math.min(SOURCE_FAILURE_MAX_MS, Math.max(base, (previous?.ttl ?? 0) * 2))
+      sourceFailures.set(endpoint, { until: now + ttl, error, failures, ttl })
+      throw error
+    },
+  ).finally(() => {
+    if (sourceInflight.get(endpoint) === request) sourceInflight.delete(endpoint)
+  })
+  sourceInflight.set(endpoint, request)
+  return request
+}
+
+async function fetchMagpieSource(endpoint: string): Promise<Array<Record<string, unknown>>> {
   const response = await fetch(`${config.magpieSourceCpaBaseUrl}/v0/management/${endpoint}`, {
     headers: { Authorization: `Bearer ${config.magpieSourceCpaKey}` },
     signal: AbortSignal.timeout(config.cpaRequestTimeoutMs), redirect: 'error',
@@ -40,7 +88,6 @@ export async function readMagpieSource(endpoint: string): Promise<Array<Record<s
   const object = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
   const list = object[endpoint === 'auth-files' ? 'files' : endpoint]
   if (!Array.isArray(list)) throw new Error('Invalid CPA credential source')
-  sourceCache.set(endpoint, { until: Date.now() + 5_000, value: list })
   return list
 }
 
@@ -128,7 +175,9 @@ export function writeChannels(channels: MagpieChannel[]) {
   const filename = config.magpieChannelsFile
   const temporary = `${filename}.${process.pid}.tmp`
   fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(temporary, `${JSON.stringify({ version: 1, channels }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+  // the optional `accounts` section (per-account exits) has its own writer (magpieAccountProxies.ts): keep it
+  const accounts = registryAccountsSection(filename)
+  fs.writeFileSync(temporary, `${JSON.stringify({ version: 1, channels, ...(accounts ? { accounts } : {}) }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   fs.renameSync(temporary, filename)
 }
 
@@ -231,6 +280,10 @@ export function writeAuthFilesMeta(meta: Record<string, { disabled?: boolean; pr
   fs.writeFileSync(file, JSON.stringify(meta, null, 2), { mode: 0o600 })
 }
 
+/**
+ * 本机凭据列表：只含 LOCAL_AUTH_FILE_FIELDS 白名单字段（2026-10-02：以前 `...data` 把 access/refresh/id token
+ * 一路带进 /api/monitor 与 /auth-files 的响应）。需要凭据本身的服务端路径用 readLocalAuthFileCredential。
+ */
 export function listLocalAuthFiles(): Array<Record<string, unknown>> {
   const dir = authFilesDir()
   if (!fs.existsSync(dir)) return []
@@ -246,15 +299,19 @@ export function listLocalAuthFiles(): Array<Record<string, unknown>> {
         const raw = fs.readFileSync(fullPath, 'utf8')
         const data = JSON.parse(raw) as Record<string, unknown>
         const fileMeta = meta[name] || {}
+        const picked: Record<string, unknown> = {}
+        for (const field of LOCAL_AUTH_FILE_FIELDS) {
+          if (typeof data[field] === 'string') picked[field] = data[field]
+        }
         files.push({
           name,
           filename: name,
+          status: 'active',
+          ...picked,
           type: data.type || data.provider || 'oauth',
           provider: data.provider || data.type || 'oauth',
           email: data.email || data.account || '',
           account: data.account || data.email || '',
-          status: 'active',
-          ...data,
           // 本地覆盖优先（与 localAuthFileView 同一语义）：列表页显示的必须是用户实际设置的值
           disabled: Boolean(fileMeta.disabled ?? data.disabled),
           proxy_url: fileMeta.proxy_url ?? data.proxy_url ?? '',
@@ -264,6 +321,13 @@ export function listLocalAuthFiles(): Array<Record<string, unknown>> {
   } catch { /* ignore */ }
 
   return files
+}
+
+/** 服务端专用：本机凭据文件里推理要用的凭据（magpieRuntime 组渠道时读），从不进任何响应。 */
+export function readLocalAuthFileCredential(name: string): { token: string; accountId: string } {
+  const data = getLocalAuthFile(name) || {}
+  const token = [data.access_token, data['api-key'], data.token].find((value): value is string => typeof value === 'string' && value !== '')
+  return { token: token || '', accountId: typeof data.account_id === 'string' ? data.account_id : '' }
 }
 
 /**
@@ -417,22 +481,13 @@ export async function magpieManagementRequest<T>(route: string, init: RequestIni
       writeExcludedModels(JSON.parse(String(init.body)))
       result = { ok: true }
     }
-  } else if (url.pathname.endsWith('-auth-url')) {
-    const name = url.pathname.slice(1).replace(/-auth-url$/, '')
-    const { startLocalOAuth } = await import('./magpieOAuth.js')
-    result = startLocalOAuth(name)
+  } else if (url.pathname.endsWith('-auth-url') || (url.pathname === '/oauth-callback' && method === 'POST')) {
+    // 本机 OAuth 模拟器已退役（2026-10-02）：它不换 token、写的是伪造凭据。登录走 Magpie 内核（/api/accounts/signin）。
+    throw new MagpieManagementError(410, 'use_accounts_signin')
   } else if (url.pathname === '/get-auth-status' && method === 'GET') {
-    const state = url.searchParams.get('state') || ''
-    const { getLocalOAuthStatus } = await import('./magpieOAuth.js')
-    result = getLocalOAuthStatus(state)
-  } else if (url.pathname === '/oauth-callback' && method === 'POST') {
-    const body = JSON.parse(String(init.body)) as { provider: string; redirect_url: string; state: string }
-    const { submitLocalOAuthCallback } = await import('./magpieOAuth.js')
-    result = await submitLocalOAuthCallback(body.provider, body.redirect_url, body.state)
+    throw new MagpieManagementError(404, 'signin_not_found')
   } else if (url.pathname === '/oauth-session' && method === 'DELETE') {
-    const state = url.searchParams.get('state') || ''
-    const { cancelLocalOAuthSession } = await import('./magpieOAuth.js')
-    result = cancelLocalOAuthSession(state)
+    result = { ok: true }
   } else if (url.pathname === '/proxy-url' && method === 'GET') {
     result = { 'proxy-url': '' }
   } else if (url.pathname === '/usage-queue' && method === 'GET') {

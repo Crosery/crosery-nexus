@@ -4,10 +4,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { settingsDrift } from './magpie-settings.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const baselinePath = path.join(root, 'deploy/magpie/upstream/api.json')
 const runtime = path.resolve(process.env.MAGPIE_UPSTREAM_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-upstream'))
+export const upstreamRuntime = runtime
 const repository = 'https://github.com/yetone/magpie.git'
 const label = 'com.crosery.magpie-upstream-check'
 const plist = path.join(os.homedir(), 'Library/LaunchAgents', `${label}.plist`)
@@ -167,12 +169,64 @@ export async function publishCandidate(contract, directory) {
   return artifact
 }
 
-async function publicJSON(url) {
+const BACKOFF_BASE_MS = 30 * 60_000
+const BACKOFF_MAX_MS = 6 * 60 * 60_000
+/** launchd 的 StartInterval 不是精确时钟：差这么一点就到期的不算「还在退避」。 */
+const BACKOFF_TOLERANCE_MS = 2 * 60_000
+
+class UpstreamHttpError extends Error {
+  /** retryAt：收到响应那一刻换算出的绝对截止时间——相对值要从响应时刻起算，不能加到本轮开始时间上。 */
+  constructor(status, retryAfterMs, retryAt = retryAfterMs === null ? null : Date.now() + retryAfterMs) {
+    super('GitHub upstream metadata unavailable')
+    this.status = status
+    this.retryAfterMs = retryAfterMs
+    this.retryAt = retryAt
+  }
+}
+
+/** 被 GitHub 限流时它自己说的等待时间：Retry-After（秒数或 HTTP 日期），或配额耗尽时的 x-ratelimit-reset。 */
+export function rateLimitDelay(headers, now = Date.now()) {
+  const retryAfter = String(headers.get('retry-after') || '').trim()
+  if (/^\d+$/.test(retryAfter)) return Number(retryAfter) * 1000
+  if (retryAfter) {
+    const at = Date.parse(retryAfter)
+    if (Number.isFinite(at)) return Math.max(0, at - now)
+  }
+  if (headers.get('x-ratelimit-remaining') === '0') {
+    const reset = Number(headers.get('x-ratelimit-reset'))
+    if (Number.isFinite(reset) && reset > 0) return Math.max(0, reset * 1000 - now)
+  }
+  return null
+}
+
+/** 连续失败的退避：第一次失败照常等下一轮，之后 30 分钟起翻倍到 6 小时；上游给的等待时间是下限。 */
+export function nextAttemptDelay(failures, retryAfterMs = null) {
+  const exponential = failures <= 1 ? 0 : Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 2))
+  return Math.max(retryAfterMs ?? 0, exponential)
+}
+
+/**
+ * GitHub 匿名配额是每 IP 每小时 60 次，和本机其它工具共用。带 ETag 的条件请求省的是带宽：
+ * 304 不计主配额只对**已认证**请求成立，这里是匿名请求，每次照样计数。
+ * 真正省下的是「提交没变就不 git fetch、不 go run 提取」（见 inspectUpstream 的复用分支）。
+ */
+async function publicJSON(url, cache = null) {
+  const cached = cache?.[url]
   const response = await fetch(url, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'Crosery-Magpie-Contract-Check' },
+    headers: {
+      accept: 'application/vnd.github+json', 'user-agent': 'Crosery-Magpie-Contract-Check',
+      ...(cached?.etag ? { 'if-none-match': cached.etag } : {}),
+    },
     signal: AbortSignal.timeout(20_000), redirect: 'error',
   })
-  if (!response.ok) { await response.body?.cancel(); throw new Error('GitHub upstream metadata unavailable') }
+  if (response.status === 304 && cached) {
+    await response.body?.cancel()
+    return cached.body
+  }
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new UpstreamHttpError(response.status, rateLimitDelay(response.headers))
+  }
   const parts = []
   let size = 0
   for await (const chunk of response.body) {
@@ -180,10 +234,35 @@ async function publicJSON(url) {
     if (size > 2 * 1024 * 1024) throw new Error('Upstream metadata is too large')
     parts.push(chunk)
   }
-  return JSON.parse(Buffer.concat(parts).toString('utf8'))
+  const body = JSON.parse(Buffer.concat(parts).toString('utf8'))
+  const etag = response.headers.get('etag')
+  // 只缓存用得到的字段（提交 sha / 发布 tag）：commits 响应带完整 patch，整份存下来没有意义。
+  if (cache && etag) cache[url] = { etag, body: { sha: body?.sha, tag_name: body?.tag_name } }
+  return body
 }
 
-async function candidateCheckout(revision) {
+async function readHttpCache(filename) {
+  try {
+    const value = JSON.parse(await fs.readFile(filename, 'utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+/** 提取器本身变了，同一个上游提交也必须重新提取；指纹覆盖 scripts/magpie-api 下的全部源文件。 */
+export async function extractorFingerprint(directory = path.join(root, 'scripts/magpie-api')) {
+  const hash = createHash('sha256')
+  for (const name of (await fs.readdir(directory)).sort()) {
+    const filename = path.join(directory, name)
+    if (!(await fs.lstat(filename)).isFile()) continue
+    hash.update(name).update('\0').update(await fs.readFile(filename)).update('\0')
+  }
+  return hash.digest('hex').slice(0, 16)
+}
+
+/** Fetch and detach `<runtime>/source` at a candidate commit (shallow); refuses a dirty or foreign checkout. Callers hold the upstream lock. */
+export async function candidateCheckout(revision) {
   if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('Invalid upstream revision')
   const source = path.join(runtime, 'source')
   await fs.mkdir(runtime, { recursive: true, mode: 0o700 })
@@ -201,22 +280,158 @@ async function candidateCheckout(revision) {
   return source
 }
 
-export async function withUpstreamLock(directory, action) {
+/** 锁文件内容写入前就崩溃（空文件/坏 JSON）：给正常写入留足时间后按残留处理。 */
+const LOCK_UNREADABLE_STALE_MS = 10 * 60_000
+/** 回收互斥只覆盖「复核 → 删除 → 重建」几个系统调用；内容都没写进去（读不出持有者）的互斥超过这个时长才按残留清掉。 */
+const RECOVER_STALE_MS = 60_000
+/** ps 的 lstart 是秒级截断：同一进程的启动时间 ≤ 它写下的 startedAt；留一点余量防时钟抖动。 */
+const PID_BIRTH_SLACK_MS = 2_000
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error.code === 'EPERM'
+  }
+}
+
+/** 进程启动时间（`ps -o lstart=`，本地时区、秒级）；拿不到返回 null。只读。 */
+export function processStartTime(pid) {
+  for (const command of ['/bin/ps', 'ps']) {
+    try {
+      const output = execFileSync(command, ['-o', 'lstart=', '-p', String(pid)], {
+        encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+      }).trim()
+      const at = Date.parse(output)
+      return Number.isFinite(at) ? at : null
+    } catch (error) {
+      if (error.code !== 'ENOENT') return null
+    }
+  }
+  return null
+}
+
+/**
+ * 记录里的 pid 还是不是写下这条记录的那个进程：`dead` 已不存在；`reused` 活着但启动得比记录还晚（pid 被复用）；
+ * `alive` 确认是同一个进程；`unknown` 活着但拿不到启动时间。
+ */
+function ownerIdentity(pid, startedAt, startTime) {
+  if (!processAlive(pid)) return 'dead'
+  const birth = startTime(pid)
+  if (birth === null) return 'unknown'
+  return birth > startedAt + PID_BIRTH_SLACK_MS ? 'reused' : 'alive'
+}
+
+async function readOwner(filename) {
+  try {
+    const owner = JSON.parse(await fs.readFile(filename, 'utf8'))
+    const pid = Number(owner?.pid)
+    const startedAt = Date.parse(owner?.startedAt || '')
+    return Number.isInteger(pid) && pid > 0 && Number.isFinite(startedAt) ? { pid, startedAt } : null
+  } catch {
+    return null
+  }
+}
+
+/** 只删仍是同一个 inode 的文件：它要是已经被回收、换成了别人的，不能把别人的删掉。 */
+async function removeIfSame(filename, ino) {
+  if (ino === null || ino === undefined) return
+  const current = await fs.lstat(filename).catch(() => null)
+  if (current && current.ino === ino) await fs.rm(filename, { force: true })
+}
+
+/**
+ * 残留判定：持锁进程已不存在或 pid 被复用；读不出内容的锁按文件时间判断。
+ * **活着的持有者绝不抢**，不管锁多老——机器睡眠/进程挂起几小时后它还会醒来继续用这把锁；
+ * 活着但拿不到启动时间（确认不了是不是 pid 复用）也按活着处理。
+ */
+async function staleLock(filename, startTime, now = Date.now()) {
+  let stat
+  try { stat = await fs.lstat(filename) } catch (error) { if (error.code === 'ENOENT') return { stale: true, missing: true }; throw error }
+  if (!stat.isFile()) return { stale: false }
+  const owner = await readOwner(filename)
+  if (!owner) return { stale: now - stat.mtimeMs > LOCK_UNREADABLE_STALE_MS, ino: stat.ino }
+  if (owner.pid === process.pid) return { stale: false }
+  const identity = ownerIdentity(owner.pid, owner.startedAt, startTime)
+  // 活着但身份确认不了：宁可这一轮按已上锁退出（同步中心会显示逾期），也不抢可能还在用的锁。
+  if (identity === 'alive' || identity === 'unknown') return { stale: false, ino: stat.ino }
+  return { stale: true, ino: stat.ino }
+}
+
+/**
+ * 回收互斥的持有者已经不在了（死了 / pid 被复用 / 内容都没写进去就崩溃且超时）才清掉；
+ * 活着的回收者一律不动——包括活着但拿不到启动时间的（停多久都不清）。本轮照常按已上锁退出。
+ */
+async function reclaimAbandonedGuard(recover, startTime) {
+  const stat = await fs.lstat(recover).catch(() => null)
+  if (!stat) return
+  const owner = await readOwner(recover)
+  const identity = owner && owner.pid !== process.pid ? ownerIdentity(owner.pid, owner.startedAt, startTime) : owner ? 'alive' : 'unreadable'
+  const abandoned = identity === 'dead' || identity === 'reused'
+    || (identity === 'unreadable' && Date.now() - stat.mtimeMs > RECOVER_STALE_MS)
+  if (abandoned) await removeIfSame(recover, stat.ino)
+}
+
+/**
+ * 回收残留锁（race-safe）：持有 `check.lock.recover`（wx 互斥，写入自己的 pid）期间复核同一个 inode 仍是残留才删，
+ * 再用 wx 重新抢 check.lock。正常路径只用 wx 抢锁，残留文件还在时它们不可能建出新锁；
+ * 别的回收者只会清掉持有者已不在的互斥，所以复核到重建之间这把互斥不会被人抢走。抢失败（别人先建了）就照常按已上锁退出。
+ */
+async function recoverStaleLock(directory, filename, startTime) {
+  const recover = path.join(directory, 'check.lock.recover')
+  let guard
+  try {
+    guard = await fs.open(recover, 'wx', 0o600)
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    await reclaimAbandonedGuard(recover, startTime)
+    return null
+  }
+  let guardIno = null
+  try {
+    guardIno = (await guard.stat()).ino
+    await guard.writeFile(json({ pid: process.pid, startedAt: new Date().toISOString() }))
+    const verdict = await staleLock(filename, startTime)
+    if (!verdict.stale) return null
+    if (!verdict.missing) {
+      const current = await fs.lstat(filename).catch(() => null)
+      if (current && current.ino !== verdict.ino) return null
+      await fs.rm(filename, { force: true })
+    }
+    try {
+      return await fs.open(filename, 'wx', 0o600)
+    } catch (error) {
+      if (error.code === 'EEXIST') return null
+      throw error
+    }
+  } finally {
+    await guard.close()
+    await removeIfSame(recover, guardIno)
+  }
+}
+
+export async function withUpstreamLock(directory, action, options = {}) {
+  const startTime = options.processStartTime ?? processStartTime
   await fs.mkdir(directory, { recursive: true, mode: 0o700 })
   const filename = path.join(directory, 'check.lock')
   let lock
   try {
     lock = await fs.open(filename, 'wx', 0o600)
   } catch (error) {
-    if (error.code === 'EEXIST') throw new Error('Upstream check is locked; verify the recorded process before removing a stale check.lock')
-    throw error
+    if (error.code !== 'EEXIST') throw error
+    // 被 SIGKILL/重启打断的检查会留下 check.lock：以前此后每一轮 launchd 都在这里失败、连状态都不写，检查永久停摆。
+    lock = (await staleLock(filename, startTime)).stale ? await recoverStaleLock(directory, filename, startTime) : null
+    if (!lock) throw new Error('Upstream check is locked by a live process; a stale check.lock is recovered automatically once its owner is gone')
   }
+  let ino = null
   try {
+    ino = (await lock.stat()).ino
     await lock.writeFile(json({ pid: process.pid, startedAt: new Date().toISOString() }))
     return await action()
   } finally {
     await lock.close()
-    await fs.rm(filename, { force: true })
+    await removeIfSame(filename, ino)
   }
 }
 
@@ -224,38 +439,107 @@ export async function checkUpstream(options = {}) {
   return withUpstreamLock(runtime, () => inspectUpstream(options))
 }
 
-async function inspectUpstream({ source } = {}) {
+/** 三个元数据请求共用同一个匿名配额：任何一个被限流，都按它们给出的最晚时间整体停手。 */
+async function fetchPublicMetadata(cache, now) {
+  const settled = await Promise.allSettled([
+    publicJSON('https://api.github.com/repos/yetone/magpie/commits/main', cache),
+    publicJSON('https://api.github.com/repos/yetone/magpie-releases/releases/latest', cache),
+    publicJSON('https://api.github.com/repos/rtk-ai/rtk/releases/latest', cache),
+  ])
+  const throttles = settled
+    .filter(outcome => outcome.status === 'rejected' && outcome.reason instanceof UpstreamHttpError && outcome.reason.retryAt !== null)
+    .map(outcome => outcome.reason.retryAt)
+  const retryAt = throttles.length ? Math.max(...throttles) : null
+  const [commit, release, rtk] = settled
+  if (commit.status === 'rejected') {
+    const failure = commit.reason
+    if (retryAt === null) throw failure
+    if (failure instanceof UpstreamHttpError) {
+      failure.retryAt = Math.max(failure.retryAt ?? 0, retryAt)
+      failure.retryAfterMs = Math.max(0, failure.retryAt - now)
+      throw failure
+    }
+    throw new UpstreamHttpError(0, Math.max(0, retryAt - now), retryAt)
+  }
+  return {
+    commit: commit.value,
+    release: release.status === 'fulfilled' ? release.value : null,
+    rtk: rtk.status === 'fulfilled' ? rtk.value : null,
+    // 主请求成功、可选请求被限流：本轮照常完成，但 GitHub 给的等待时间同样要遵守。
+    retryNotBefore: retryAt && retryAt > now ? new Date(retryAt).toISOString() : undefined,
+  }
+}
+
+async function inspectUpstream({ source, now = Date.now() } = {}) {
   const baseline = JSON.parse(await fs.readFile(baselinePath, 'utf8'))
   let previous
   try { previous = JSON.parse(await fs.readFile(path.join(runtime, 'status.json'), 'utf8')) } catch { /* First run. */ }
+  // 退避期内这一轮不发任何请求，状态文件保持原样。容差只放宽本地算出来的指数退避（launchd 间隔不精确）；
+  // GitHub 自己给的等待时间（retryNotBefore）一秒都不提前。
+  const nextAttemptAt = Date.parse(previous?.nextAttemptAt || '')
+  const retryNotBefore = Date.parse(previous?.retryNotBefore || '')
+  if (!source && ((Number.isFinite(retryNotBefore) && retryNotBefore > now) ||
+      (Number.isFinite(nextAttemptAt) && nextAttemptAt - now > BACKOFF_TOLERANCE_MS))) {
+    return { ...previous, skipped: true }
+  }
+  const cacheFile = path.join(runtime, 'http-cache.json')
+  const cache = source ? null : await readHttpCache(cacheFile)
   let stage = 'public-metadata'
+  // 可选端点给的等待时间要带到本轮的每一个出口：之后的 checkout/提取失败也不能把它丢掉。
+  let throttledUntil
   try {
-    const [commit, release, rtk] = source ? [null, null, null] : await Promise.all([
-      publicJSON('https://api.github.com/repos/yetone/magpie/commits/main'),
-      publicJSON('https://api.github.com/repos/yetone/magpie-releases/releases/latest').catch(() => null),
-      publicJSON('https://api.github.com/repos/rtk-ai/rtk/releases/latest').catch(() => null),
-    ])
+    const metadata = source
+      ? { commit: null, release: null, rtk: null, retryNotBefore: undefined }
+      : await fetchPublicMetadata(cache, now)
+    const { commit, release, rtk } = metadata
+    throttledUntil = metadata.retryNotBefore
+    if (cache) await writeAtomic(cacheFile, json(cache)).catch(() => undefined)
+    const extractor = await extractorFingerprint()
+    // 上游 main 没动、基线和提取器也没变：沿用上次的候选结果，不再 git fetch + go run。
+    if (!source && previous && previous.status !== 'error' && previous.candidateRevision === commit?.sha &&
+        previous.baselineRevision === baseline.revision && previous.extractor === extractor && previous.diff && previous.artifact &&
+        // a status written before the settings drift existed is re-checked once, so 网关功能 sees the candidate's settings
+        Array.isArray(previous.diff.addedSettings)) {
+      stage = 'status-publication'
+      const { error: _error, errorStage: _errorStage, nextAttemptAt: _next, retryNotBefore: _notBefore, skipped: _skipped, ...kept } = previous
+      const status = {
+        ...kept, checkedAt: new Date(now).toISOString(), failures: 0, reused: true,
+        latestRelease: release?.tag_name || previous.latestRelease || null, rtkRelease: rtk?.tag_name || previous.rtkRelease || null,
+        ...(throttledUntil ? { retryNotBefore: throttledUntil } : {}),
+      }
+      await writeAtomic(path.join(runtime, 'status.json'), json(status))
+      return status
+    }
     stage = 'source-checkout'
     const checkout = source || await candidateCheckout(commit.sha)
     stage = 'source-extraction'
     const candidate = extractContract(checkout)
-    const diff = compareContracts(baseline, candidate)
+    // settings Magpie added or changed since the committed catalog (网关功能 shows「上游新增 N 项设置，待评审」)
+    const diff = { ...compareContracts(baseline, candidate), ...await settingsDrift(checkout, path.join(root, 'deploy/magpie/catalog.json')) }
     const changed = baseline.revision !== candidate.revision
     stage = 'candidate-publication'
     const artifact = await publishCandidate(candidate, path.join(runtime, 'candidates'))
     const status = {
-      version: 1, checkedAt: new Date().toISOString(), status: changed ? 'review_required' : 'unchanged',
+      version: 1, checkedAt: new Date(now).toISOString(), status: changed ? 'review_required' : 'unchanged',
       baselineRevision: baseline.revision, candidateRevision: candidate.revision,
       latestRelease: release?.tag_name || null, rtkRelease: rtk?.tag_name || null,
-      diff, artifact: `candidates/${artifact}`,
+      diff, artifact: `candidates/${artifact}`, extractor, failures: 0,
+      ...(throttledUntil ? { retryNotBefore: throttledUntil } : {}),
       note: 'Candidate contracts and types are generated automatically; running code and credentials are not changed.',
     }
     stage = 'status-publication'
     await writeAtomic(path.join(runtime, 'status.json'), json(status))
     return status
-  } catch {
-    const status = { version: 1, ...previous, checkedAt: new Date().toISOString(), status: 'error', errorStage: stage,
-      error: `Upstream check failed at ${stage}; the previous candidate and running kernel were retained.` }
+  } catch (failure) {
+    const failures = (Number(previous?.failures) || 0) + 1
+    const providerAt = Math.max(failure instanceof UpstreamHttpError ? failure.retryAt ?? 0 : 0, Date.parse(throttledUntil || '') || 0)
+    const providerDelay = providerAt > now ? providerAt - now : null
+    const delay = nextAttemptDelay(failures, providerDelay)
+    const { reused: _reused, retryNotBefore: _notBefore, ...kept } = previous || {}
+    const status = { version: 1, ...kept, checkedAt: new Date(now).toISOString(), status: 'error', errorStage: stage,
+      error: `Upstream check failed at ${stage}; the previous candidate and running kernel were retained.`,
+      failures, ...(delay > 0 ? { nextAttemptAt: new Date(now + delay).toISOString() } : { nextAttemptAt: undefined }),
+      ...(providerDelay ? { retryNotBefore: new Date(providerAt).toISOString() } : {}) }
     await writeAtomic(path.join(runtime, 'status.json'), json(status))
     throw new Error(status.error)
   }
@@ -296,7 +580,9 @@ async function installCheck() {
     run('launchctl', ['bootout', `gui/${process.getuid()}`, plist])
   }
   const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;')
-  const args = [process.execPath, path.join(root, 'scripts/magpie-upstream.mjs'), 'check']
+  // `scheduled` = check, then the auto-update steps the console enabled (<runtime>/autoupdate.json; magpie-autoupdate.mjs).
+  // The kernel restart of an auto-apply ends the console process, so it must run here, in launchd's process.
+  const args = [process.execPath, path.join(root, 'scripts/magpie-upstream.mjs'), 'scheduled']
   await fs.mkdir(runtime, { recursive: true, mode: 0o700 })
   await fs.mkdir(path.dirname(plist), { recursive: true })
   await writeAtomic(plist, `<?xml version="1.0" encoding="UTF-8"?>
@@ -310,7 +596,7 @@ async function installCheck() {
 <key>StandardErrorPath</key><string>${xml(path.join(runtime, 'check-errors.log'))}</string>
 </dict></plist>\n`)
   run('launchctl', ['bootstrap', `gui/${process.getuid()}`, plist])
-  console.log(json({ installed: label, intervalSeconds: 1800, mode: 'detect-and-generate-only' }))
+  console.log(json({ installed: label, intervalSeconds: 1800, mode: 'check-then-auto-update', config: path.join(runtime, 'autoupdate.json') }))
 }
 
 async function main() {
@@ -324,7 +610,11 @@ async function main() {
     const typesPath = path.join(root, 'packages/contracts/magpie-upstream.generated.ts')
     if (action === 'generate') await writeArtifacts(contract, directory, typesPath)
     else {
-      const outputs = [[baselinePath, json(contract)], [path.join(directory, 'API.md'), generateReference(contract)], [typesPath, generateTypes(contract)]]
+      // --artifacts <dir>: verify against a candidate's published artifacts (candidates/<rev>-<digest>) instead of the repo's
+      const artifacts = arg('--artifacts')
+      const outputs = artifacts
+        ? [[path.join(artifacts, 'api.json'), json(contract)], [path.join(artifacts, 'API.md'), generateReference(contract)], [path.join(artifacts, 'magpie-upstream.generated.ts'), generateTypes(contract)]]
+        : [[baselinePath, json(contract)], [path.join(directory, 'API.md'), generateReference(contract)], [typesPath, generateTypes(contract)]]
       for (const [filename, expected] of outputs) {
         if (await fs.readFile(filename, 'utf8') !== expected) throw new Error('Generated upstream artifacts are stale')
       }
@@ -332,9 +622,22 @@ async function main() {
     console.log(json({ action, revision: contract.revision, routes: contract.routes.length, schemas: Object.keys(contract.schemas).length, loginAgents: contract.loginAgents, diagnostics: contract.diagnostics }))
   } else if (action === 'check') {
     const result = await checkUpstream({ source: arg('--source') })
-    console.log(json({ status: result.status, revision: result.candidateRevision, artifact: result.artifact, diff: result.diff }))
+    if (result.skipped) console.log(json({ status: 'skipped', reason: 'backoff', nextAttemptAt: result.nextAttemptAt }))
+    else console.log(json({ status: result.status, revision: result.candidateRevision, artifact: result.artifact, diff: result.diff, ...(result.reused ? { reused: true } : {}) }))
+  } else if (action === 'scheduled') {
+    // launchd's every-30-minutes run: the check, then auto-update (rehearse / apply / rtk) as the console configured it.
+    // A failed or backed-off check still lets the auto step act on the last good status (e.g. the window just opened).
+    let failure = null
+    try {
+      const result = await checkUpstream()
+      console.log(json({ at: new Date().toISOString(), check: result.skipped ? 'skipped' : result.status, revision: result.candidateRevision }))
+    } catch (error) { failure = error; console.error(error.message) }
+    const { runScheduled } = await import('./magpie-autoupdate.mjs')
+    const auto = await runScheduled().catch(error => ({ error: error.message }))
+    console.log(json({ at: new Date().toISOString(), auto }))
+    if (failure || auto?.error) process.exitCode = 1
   } else if (action === 'install-check') await installCheck()
-  else throw new Error('Use generate, verify, check, or install-check')
+  else throw new Error('Use generate, verify, check, scheduled, or install-check')
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

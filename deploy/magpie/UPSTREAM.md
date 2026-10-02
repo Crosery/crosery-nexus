@@ -20,7 +20,11 @@ Observable acceptance for this change:
 
 This implements source-contract following and candidate generation, not arbitrary
 business-code rewriting or automatic installation of an unverified kernel.
-OAuth and RTK operations are still unconnected in the headless host.
+The headless host exposes Magpie's own sign-in, account list/actions, per-agent
+usage and Codex reset on its private socket (see CONSOLE-KERNEL.md); the
+subscription catalog is generated from the same pin by `scripts/magpie-catalog.mjs`
+and its build check fails on reviewed sign-in policy drift. Accounts signed in
+there do not serve inference yet.
 
 ## Source API Analysis
 
@@ -157,6 +161,84 @@ Candidate adoption remains a deliberate local change:
    available for rollback. Do not install the official desktop binary over the
    headless host, which would bypass Crosery policy/accounting overlays.
 
+## Automatic Update Policy
+
+`scripts/magpie-autoupdate.mjs` adds a guarded path after detection. It is
+driven by `~/.agents/crosery/magpie-upstream/autoupdate.json` (Console Settings
+or `cradmin magpie auto on|off`; a missing file means on, window 03:00–06:00
+local). The LaunchAgent runs `magpie-upstream.mjs scheduled`: `check`, then the
+auto steps in the job's own process. The Console never replaces the kernel,
+because the restart would kill it. An agent installed before this change still
+runs `check` only, and the Console says so; activate with
+`npm run magpie:upstream:install -- --replace` (the job needs `go` on PATH and
+the proxy environment for `proxy.golang.org`).
+
+Each new candidate is rehearsed once per input fingerprint:
+
+1. Check out the clean candidate.
+2. Classify it against the baseline with `scripts/magpie-autoupdate-policy.mjs`.
+   A removed or changed route the Console uses, a changed schema those routes
+   reach, removed login agents, catalog drift, settings drift, a new contract
+   version or new diagnostics hold the candidate for review. Additive routes and
+   schemas are allowed.
+3. Build the overlay with `build-magpie-kernel.mjs --candidate --test`. This
+   runs the contract verify, catalog check, every overlay seam, `go vet` and
+   `go test`.
+4. Run `scripts/magpie-kernel-smoke.mjs` on the staged binary with a temporary
+   HOME.
+
+A held candidate stays held until the baseline or candidate changes. Infra
+failures (network, `go mod download`) back off for at least 30 minutes and do
+not count as an attempt.
+
+An eligible build is applied only inside the window, and never while a sign-in
+lease (`signin-active.json`, written by the Console with a live pid) is open.
+Each revision gets one attempt. The apply holds `check.lock`, then decides
+again from disk (window, sign-in lease, switch, candidate, rehearsal), so a
+decision made before a long rehearsal or a lock wait is never acted on stale. A
+busy lock waits for the next round without spending the attempt. A staged build
+that is missing or changed stops the apply before anything is touched; the
+attempt is not spent and the candidate is rehearsed again after a back-off. A
+rehearsal removes the superseded staged build. The apply sequence:
+
+1. Verify the staged sha256.
+2. Record the attempt, then copy the binary and kernel HOME to
+   `autoupdate-backups/` (three are kept).
+3. Rename the new binary into place.
+4. `launchctl kickstart -k gui/$UID/com.crosery.console-magpie`.
+5. Require kernel health with the new revision, the gateway `/health` and the
+   Console session within 60 seconds.
+
+If the restart command fails or any check fails, the backup binary and HOME are
+restored (the backup HOME is copied aside first and renamed into place just
+before the restart), the failed HOME is kept as `home.failed-*`, the kernel is
+kicked again, and the revision is not retried. A rollback that cannot finish is
+recorded as `rollback-failed`.
+
+Manual rollback: `node scripts/magpie-autoupdate.mjs rollback --confirm`. It
+only restores the kernel this job installed, and only while that kernel is the
+one running (or the kernel is down). The HOME it restores is the one from the
+moment of the install; the current HOME is kept as `home.failed-*`.
+
+`scripts/rtk-autoupdate.mjs` upgrades RTK the same way. It reads releases
+through the shared ETag cache and back-off, then downloads the platform asset
+from GitHub. The asset must match a published sha256 (`checksums.txt` or the
+release asset digest). Signature-only releases and releases without a checksum
+are refused. The upgrade backs up the binary, swaps it atomically, checks
+`rtk --version`, and restores the backup on failure. Right before the swap it
+checks that the target is still the file it detected (same link target and
+inode); otherwise nothing is replaced and the attempt is not spent. A release
+that declares a BREAKING change between the local and latest versions is held
+until `cradmin rtk upgrade --accept-breaking`. Homebrew installs use
+`brew upgrade rtk`; a formula that is not updated yet is retried after a
+back-off, not every round.
+
+State and evidence live next to the candidates:
+
+- `autoupdate-magpie.json`
+- `autoupdate-rtk.json`
+- `autoupdate/<rev12>/build.log`
+
 ## Recovery and Remaining Gates
 
 Stop the read-only timer without touching the Console or kernel:
@@ -172,7 +254,8 @@ credentials, account data, prompts or usage records.
 Remaining work: expose narrowly authenticated headless management operations
 using upstream provider/library functions, translate Crosery OAuth/account
 flows and RTK controls, isolate their storage/agent-write effects, and gate
-token refresh, migration, hook installation and automatic artifact promotion.
+token refresh, migration and hook installation. Automatic kernel promotion is
+limited to the guarded policy above.
 No production cutover, historical-data migration or live OAuth/RTK action is
 authorized or claimed by this source-contract change.
 

@@ -189,6 +189,8 @@ async function main() {
       latestVersion: status?.latestVersion ?? null,
       backupPath: status?.backupPath ?? null,
       error: status?.error ?? null,
+      // check/rehearse/apply 都要一个发布源；只报类别，不回显路径或 URL。null = 三步现在一定会以「缺少发布源」失败
+      releaseSource: source ? 'release' : fromBuild ? 'build' : null,
     })
   }
 

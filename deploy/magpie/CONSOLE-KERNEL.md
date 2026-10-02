@@ -56,10 +56,66 @@ The build uses an asserted Go overlay, not an untracked fork:
 
 - provider configuration is injected and kept in process memory;
 - usage records have a request ID and an in-memory sink instead of a JSONL file;
-- inference request IDs are attached to ordinary, image and Codex usage records.
+- inference request IDs are attached to ordinary, image and Codex usage records;
+- the macOS login keychain is never used (`claudeKeychain`, `cursorKeychain` off,
+  Copilot CLI secret empty), so the owner's own Claude Code, Cursor and Copilot
+  sign-ins never surface in, or get overwritten by, the kernel;
+- every program Magpie starts goes through `internal/proc`, which refuses by name
+  `security`, `secret-tool` and `claude` always, and the CLIs of the host-exec
+  agents (`cursor-agent`/`agent`, `grok`, `devin`) unless enabled.
 
 The original source remains clean. The overlay fails if its expected seams
-change. The separate host is under `deploy/magpie/kernel/main.go`.
+change. The separate host is `deploy/magpie/kernel/*.go` (each file becomes
+`crosery_kernel*.go` in the overlay; `*_test.go` run with `--test`).
+
+### Accounts and sign-in control routes
+
+All on the private socket; JSON in and out; errors are `{"error","code"}` with
+400 (refused request or flow), 404 (unknown id or route; an unknown `/internal/*`
+path never reaches inference), 500 (kernel fault), 504 (Magpie too slow).
+
+| Route | Magpie call | Result |
+| --- | --- | --- |
+| `GET /internal/health` | - | `{ok, engine, revision, capabilities, loginAgents, signinDeny, keychain:false}` |
+| `POST /internal/signin {agent, site?}` | `StartSignInAt` | `SignInState`; `agent_disabled` for host-exec agents, `agent_unknown` |
+| `GET /internal/signin/{id}` | `SignInStatus` | `SignInState` or 404 |
+| `POST /internal/signin/callback {id, url}` | `SubmitSignInCallback` (DimAgent at the pin) | 204 |
+| `POST /internal/signin/cancel {id}` | `CancelSignIn` | 204 |
+| `GET /internal/accounts` | `Logins(agent)` per login agent, `Excluded()` | `{agents:[{agent, signinDenied?, accounts:[{id, agent, user, plan?, active, on, own?, needsRelogin, lapsed?, seen?}]}], excluded}` |
+| `POST /internal/accounts/{on,off,switch,forget} {agent, user}` | `SetLoginOn`, `SwitchLogin`, `ForgetLogin` | the agent's accounts; `account_active`, `not_found` |
+| `GET /internal/accounts/usage?agent=` | `LoginUsage` | `{agent, usage:{<user>: SubscriptionQuota}}` |
+| `POST /internal/accounts/codex-reset {user}` | `UseCodexReset` | `{user, code, windows, text}` |
+
+`loginAgents` is embedded at build time from the contract. `cursor`, `grok` and
+`devin` sign in by running a vendor CLI or a `curl … | bash` installer on the
+host; they stay refused unless the kernel's environment names them in
+`MAGPIE_KERNEL_HOST_EXEC` (comma-separated). There is no import route.
+Accounts signed in here are listed and managed, but do not serve inference yet:
+admission still sends only channel slots. The subscription catalog for the UI
+(names, plans, sites, risk copy, completion mode per agent) is generated from the
+same pin into `deploy/magpie/catalog.json` by `scripts/magpie-catalog.mjs`.
+
+### Gateway settings (网关功能)
+
+| Route | Magpie call | Result |
+| --- | --- | --- |
+| `GET /internal/settings` | `settings.Load`, `gateway.AutoVision/AutoDrawer/Drawers`, `provider.Served/All` | `{redact, redactPersonal, redactWords, redactRules, vision, imageGen, visionAuto, imageGenAuto, visionEffective, imageGenEffective, visionModels, imageGenModels, models, telemetry:{off, forced:true, sender:false}, applies:"next-request", keys}` |
+| `POST /internal/settings {key: value…}` | merge into `settings.Load()`, `redact.CheckRules`, `provider.Resolve`, `settings.Save` | the same view; `unknown_setting` for any key outside the six above, `invalid_setting` with Magpie's own error text |
+
+Only the six gateway-effective keys are read or written; `lanKey`, `proxy`, warm-ups and the
+desktop's keys are never returned or changed, and every write forces `noStats` on (the kernel
+never starts the stats sender; the launcher also sets `MAGPIE_NO_STATS`/`DO_NOT_TRACK`). The
+console caps masked words (≤100, 2–64 bytes each) and compiled regex size (≤2000 RE2
+instructions) on top of Magpie's rule checks (≤32 rules, prefix 3–64, regex ≤300, must
+compile, must not match empty). The gateway reads the file on every request, so a write applies
+from the next request; no restart. The build overlays `settings.Save` to write a `0600` temp file
+and rename it, so a request reading mid-write never sees an empty file (which would mean defaults:
+redaction off). A named model that no longer resolves runs on the automatic pick
+(`*Effective` says which). `imageGen` only affects `/v1/images/*`, which the console does not
+admit yet. Labels and the classification of every `settings.Settings` tag come from
+`deploy/magpie/catalog.json` `settings` (`scripts/magpie-settings.mjs`): generation fails when the
+pinned source adds, removes or retypes a tag or rewords a row, and the scheduled upstream check
+reports `addedSettings/removedSettings/changedSettings` for a candidate.
 
 The host's socket is `0600` inside a `0700` directory. Both inference and internal
 configuration operations are accessible only through that socket, not another
@@ -120,10 +176,13 @@ Local channel/model enable, disable and restore operate on this registry only.
 ## Build and Run
 
 Requires the repository's Node 24 runtime and Go >= 1.26.3. No new npm production
-dependency was added. Set `MAGPIE_SOURCE` to a clean clone at the pinned revision.
+dependency was added. Pass `--source` (or set `MAGPIE_SOURCE`) to a clean clone at
+the pinned revision. `--out <dir>` writes the binary to a staging directory
+instead of the runtime's `bin`, leaving the running binary untouched. The build
+also verifies `deploy/magpie/catalog.json` against that source.
 
 ```sh
-MAGPIE_SOURCE=/path/to/pinned/magpie npm run magpie:build
+npm run magpie:build -- --source /path/to/pinned/magpie
 npm run magpie:prepare
 npm run magpie:install
 ```
