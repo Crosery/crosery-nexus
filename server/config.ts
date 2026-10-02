@@ -82,10 +82,16 @@ export const config = {
   magpieControlPlane: choiceSetting('MAGPIE_CONTROL_PLANE', process.env.MAGPIE_CONTROL_PLANE, 'local', ['local', 'cpa'] as const),
   magpiePort: positiveInteger('MAGPIE_PORT', process.env.MAGPIE_PORT, 8790, { min: 1024, max: 65535 }),
   magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
+  /** The launcher runs the kernel under a sandbox HOME, so its RTK view lacks this host's agents: opt-in only. */
+  rtkKernelPlane: booleanSetting('RTK_KERNEL_PLANE', process.env.RTK_KERNEL_PLANE, false),
   magpieChannelsFile: process.env.MAGPIE_CHANNELS_FILE || path.join(dataDir, 'magpie-channels.json'),
   magpieTimeoutMs: positiveInteger('MAGPIE_TIMEOUT_MS', process.env.MAGPIE_TIMEOUT_MS, 600_000, { min: 1000, max: 3_600_000 }),
   magpieSourceCpaBaseUrl: internalHttpBaseUrl('MAGPIE_SOURCE_CPA_BASE_URL', process.env.MAGPIE_SOURCE_CPA_BASE_URL, false),
   magpieSourceCpaKey: fileBackedSecret('MAGPIE_SOURCE_CPA_KEY', process.env.MAGPIE_SOURCE_CPA_KEY, process.env.MAGPIE_SOURCE_CPA_KEY_FILE) || '',
+  /** Sign-ins that run a vendor CLI or installer on this host (cursor, grok, devin): off unless set, and the kernel must allow them too. */
+  magpieSigninHostExec: booleanSetting('MAGPIE_SIGNIN_HOST_EXEC', process.env.MAGPIE_SIGNIN_HOST_EXEC, false),
+  /** Magpie account allowance reads: one per agent per this interval (never under 5 min). */
+  magpieAccountQuotaTtlMs: positiveInteger('MAGPIE_ACCOUNT_QUOTA_TTL_MS', process.env.MAGPIE_ACCOUNT_QUOTA_TTL_MS, 5 * 60_000, { min: 5 * 60_000, max: 24 * 60 * 60_000 }),
   nativeResponsesPolicySource: choiceSetting('NATIVE_RESPONSES_POLICY_SOURCE', process.env.NATIVE_RESPONSES_POLICY_SOURCE, 'cpa', ['cpa', 'console'] as const),
   nativeResponsesEnabled: booleanSetting('NATIVE_RESPONSES_ENABLED', process.env.NATIVE_RESPONSES_ENABLED, false),
   nativeResponsesPort: positiveInteger('NATIVE_RESPONSES_PORT', process.env.NATIVE_RESPONSES_PORT, 8788, { min: 1, max: 65535 }),
@@ -97,6 +103,8 @@ export const config = {
   dataDir,
   cpaBaseUrl: (process.env.CPA_BASE_URL || 'http://127.0.0.1:8317').replace(/\/$/, ''),
   cpaManagementKey: process.env.CPA_MANAGEMENT_KEY || '',
+  /** 给 API Key 用户看的网关地址（如 https://ai.crosery.com/v1）；空 = 回退到本机网关地址。 */
+  publicGatewayBaseUrl: internalHttpBaseUrl('PUBLIC_GATEWAY_BASE_URL', process.env.PUBLIC_GATEWAY_BASE_URL, false),
   consoleUsername: process.env.CONSOLE_USERNAME || 'admin',
   consolePassword: fileBackedSecret('CONSOLE_PASSWORD', process.env.CONSOLE_PASSWORD, process.env.CONSOLE_PASSWORD_FILE) || '',
   sessionSecret: fileBackedSecret('SESSION_SECRET', process.env.SESSION_SECRET, process.env.SESSION_SECRET_FILE) || '',
@@ -128,11 +136,6 @@ export const config = {
   claudeQuotaProfileTtlMs: positiveInteger('CLAUDE_QUOTA_PROFILE_TTL_MS', process.env.CLAUDE_QUOTA_PROFILE_TTL_MS, 60 * 60 * 1000, { min: 1_000, max: 7 * 24 * 60 * 60 * 1000 }),
   claudeQuotaRateLimitCooldownMs: positiveInteger('CLAUDE_QUOTA_RATE_LIMIT_COOLDOWN_MS', process.env.CLAUDE_QUOTA_RATE_LIMIT_COOLDOWN_MS, 10 * 60 * 1000, { min: 1_000, max: 24 * 60 * 60 * 1000 }),
   claudeQuotaMaxRateLimitCooldownMs: positiveInteger('CLAUDE_QUOTA_MAX_RATE_LIMIT_COOLDOWN_MS', process.env.CLAUDE_QUOTA_MAX_RATE_LIMIT_COOLDOWN_MS, 60 * 60 * 1000, { min: 1_000, max: 7 * 24 * 60 * 60 * 1000 }),
-  credentialUploadMaxBytes: positiveInteger('CREDENTIAL_UPLOAD_MAX_BYTES', process.env.CREDENTIAL_UPLOAD_MAX_BYTES, 64 * 1024 * 1024, { min: 1024, max: 128 * 1024 * 1024 }),
-  credentialUploadMaxEntries: positiveInteger('CREDENTIAL_UPLOAD_MAX_ENTRIES', process.env.CREDENTIAL_UPLOAD_MAX_ENTRIES, 500, { min: 1, max: 1000 }),
-  credentialUploadMaxEntryBytes: positiveInteger('CREDENTIAL_UPLOAD_MAX_ENTRY_BYTES', process.env.CREDENTIAL_UPLOAD_MAX_ENTRY_BYTES, 256 * 1024, { min: 1024, max: 1024 * 1024 }),
-  credentialUploadMaxExpandedBytes: positiveInteger('CREDENTIAL_UPLOAD_MAX_EXPANDED_BYTES', process.env.CREDENTIAL_UPLOAD_MAX_EXPANDED_BYTES, 32 * 1024 * 1024, { min: 1024, max: 64 * 1024 * 1024 }),
-  credentialUploadConcurrency: positiveInteger('CREDENTIAL_UPLOAD_CONCURRENCY', process.env.CREDENTIAL_UPLOAD_CONCURRENCY, 4, { min: 1, max: 8 }),
   nginxUnlimitedSyncEnabled: booleanSetting('NGINX_UNLIMITED_SYNC_ENABLED', process.env.NGINX_UNLIMITED_SYNC_ENABLED, false),
   nginxUnlimitedPolicyPath: path.resolve(process.env.NGINX_UNLIMITED_POLICY_PATH || path.join(dataDir, 'nginx-unlimited-policy.json')),
   nginxUnlimitedStatusPath: path.resolve(process.env.NGINX_UNLIMITED_STATUS_PATH || path.join(dataDir, 'nginx-unlimited-status.json')),

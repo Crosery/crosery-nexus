@@ -282,3 +282,20 @@ test('OMP ingestion reaches filtered SSE with its own UI label and never include
   assert.equal(uiClientLabel(payload(target.frames)[0].clientType), 'OMP')
   assert.equal(uiClientLabel(payload(pi.frames)[0].clientType), 'Pi')
 })
+
+test('已移除渠道的新事件：默认订阅（全部渠道，与首帧回放同口径）照收并带 removed，只看当前渠道的订阅不收', () => {
+  const all = fakeRes()
+  const current = fakeRes()
+  addClient(all.res)
+  const buffered = addBufferedClient(current.res, '', '', '', '', true)!
+  broadcast([
+    { removed: true, ...toLiveEvent(raw({ requestId: 'retired', model: 'gpt-5.6-sol', provider: 'retired', inputTokens: 1, cachedTokens: 9 })) },
+    { removed: false, ...toLiveEvent(raw({ requestId: 'live', model: 'gpt-5.6-sol', provider: 'codex', inputTokens: 1, cachedTokens: 9 })) },
+  ])
+  const events = JSON.parse(all.frames[0].replace(/^event: usage\ndata: /, '').trim()) as Array<{ requestId: string; removed: boolean }>
+  assert.deepEqual(events.map((event) => [event.requestId, event.removed]), [['retired', true], ['live', false]])
+  assert.deepEqual(buffered.activate([]).map((event) => event.requestId), ['live'])
+  broadcast([{ removed: true, ...toLiveEvent(raw({ requestId: 'retired-2', model: 'gpt-5.6-sol', provider: 'retired', inputTokens: 1 })) }])
+  assert.equal(current.frames.length, 0, 'a currentOnly subscriber gets no frame for removed-channel traffic')
+  buffered.remove()
+})

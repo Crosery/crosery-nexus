@@ -112,10 +112,10 @@ function acknowledgeRelay(init: RequestInit | undefined): Response {
   })
 }
 
-test('maps a validated data-plane snapshot to the existing dashboard contract', () => {
+test('maps a validated data-plane snapshot to the existing dashboard contract (activeKeys: null = not known in snapshot mode)', () => {
   assert.deepEqual(dashboardFromSnapshot({ value: snapshot, generatedAt: Date.parse(generatedAt), storedAt: Date.parse(generatedAt), stale: true }), {
     days: 7,
-    summary: { requests: 20, tokens: 450, avgLatency: 42.5, errorRate: 0.15 },
+    summary: { requests: 20, tokens: 450, avgLatency: 42.5, errorRate: 0.15, activeKeys: null },
     trend: [{ bucket: '2026-08-31T10', requests: 20, tokens: 450, errors: 3 }],
     generatedAt,
     sourceWatermark: '2026-08-31T10:14:59.000Z',

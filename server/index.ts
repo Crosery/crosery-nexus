@@ -1,7 +1,4 @@
 import crypto from 'node:crypto'
-import { execFile } from 'node:child_process'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -9,18 +6,30 @@ import cookieParser from 'cookie-parser'
 import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/index.js'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
+import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
-import {
-  createSessionGuard,
-  isAuthenticated,
-  issueSession,
-  logout,
-  readSessionToken,
-  revokeSession,
-  validateCredentials,
-} from './auth.js'
-import { errorResponseBody, loginRateLimitKey, loginRateLimiter } from './security.js'
+import { createSessionGuard, setKeySessionLookup } from './auth.js'
+import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
+import { findKeyByPresentedValue, keySessionState } from './keySession.js'
+import { loginRoute, logoutRoute, sessionProbe } from './sessionRoutes.js'
+import { createMeRouter } from './meRoutes.js'
+import { registerPulseRoutes } from './pulseRoutes.js'
+import { registerChannelHealthRoutes } from './channelHealth.js'
+import { registerModelInsightsRoutes } from './modelInsights.js'
+import { registerKeysViewRoutes } from './keysView.js'
+import { registerConnectRoutes } from './connectRoutes.js'
+import { registerPerfRoutes } from './perfReports.js'
+import { registerCacheSummaryRoutes } from './cacheSummary.js'
+import { registerOverviewRoutes } from './overviewRoutes.js'
+import { registerUsageWorkspaceRoutes } from './usageWorkspaceRoutes.js'
+import { registerMagpieVersionRoutes } from './magpieVersion.js'
+import { registerAutoupdateRoutes } from './autoupdate.js'
+import { accountsService, registerAccountsRoutes } from './accountsRoutes.js'
+import { createGatewaySettingsService, registerGatewaySettingsRoutes } from './gatewaySettings.js'
+import { proxyService, registerProxyRoutes } from './proxyRoutes.js'
+import { installCredentialProxyHook, registerProxyPoolJobs } from './proxyPoolJobs.js'
+import { installProxyChecks } from './proxyCheckPool.js'
+import { startManagedMihomo } from './mihomoPool.js'
 
 /** 已知错误 reason（task-66）：`请求格式不正确` 以前无法区分「JSON 坏」与「业务拒绝」。 */
 const knownErrorReason = (error: unknown, status: number): string | undefined => {
@@ -48,7 +57,7 @@ import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } fro
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
 import { staticCompression } from './compression.js'
 import { buildNamedAPIKey, deriveKeySlug } from './keyNaming.js'
-import { activeProviderPredicate, activeProviderValues } from './currentChannels.js'
+import { activeProviderPredicate, activeProviderValues, parseCurrentOnly, scopedProviderPredicate } from './currentChannels.js'
 import { canonicalModelSql } from './modelIdentity.js'
 import { NEW_INPUT_SQL } from './tokenSql.js'
 import { buildUsageBreakdown, type BreakdownRow } from './usageBreakdown.js'
@@ -56,19 +65,16 @@ import { buildCacheAnalytics, type CacheEventRow } from './cacheAnalytics.js'
 import { addBufferedClient, clientCount, hasClientCapacity, heartbeat, sseClientLimit } from './liveStream.js'
 import { clientTypeSql } from './clientAgent.js'
 import { isMonitoredAccountType, normalizeAccountQuota } from './accountQuota.js'
-import { fetchAntigravityAccountQuota } from './antigravityQuota.js'
-import { ClaudeQuotaCache } from './claudeQuotaCache.js'
+import { accountQuotaSupport, clearAccountQuota, readAccountQuota, summarizeAccountQuota } from './accountQuotaReader.js'
+import { maskProxyUserinfo, projectMonitorAccount } from './accountProjection.js'
 import { normalizeResetCredits, resolveChatgptAccountId } from './codexAccount.js'
+import { allowFreshInvalidation, mapWithConcurrency, syncRegistry } from './syncRegistry.js'
+import { installSyncCenter } from './syncRoutes.js'
 import { validateQuota, type KeyQuotaState } from './quota.js'
 import { enforceQuotas, quotaStateFor, quotaStatesForAsync, resetQuotaWindow, type KeyQuotaRow } from './quotaEnforcer.js'
 import { consumeKeyRevealToken, issueKeyRevealToken } from './keySecrets.js'
 import { normalizeProxyUrl } from './proxyPresets.js'
 import { boundedInteger, readBearerToken } from './publicUsage.js'
-import { CredentialUploadError, prepareCredentialUpload } from './credentialUpload.js'
-import { uploadCredentialBatch } from './credentialUploadBatch.js'
-import { mergeCredentialUploadItems } from './credentialUploadMerge.js'
-import { MultipartUploadError, receiveUploadFile } from './multipartUpload.js'
-import { UploadGate, UploadGateBusyError } from './uploadGate.js'
 import { cutoffEpochMs } from './timeRange.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { SQLiteReadPool } from './sqliteReadWorker.js'
@@ -79,14 +85,13 @@ import { SnapshotStore } from './snapshotStore.js'
 import { loadCacheLiveHistory } from './cacheLiveHistory.js'
 import { ReportSnapshotCache } from './reportSnapshotCache.js'
 import { loadMonitorQuotaShare } from './monitorQuotaShare.js'
-import { loadModelCatalog, visibleModelIds, refreshGatewayPricing, refreshSharedPricingIfStale } from './modelCatalog.js'
+import { loadModelCatalog, visibleModelIds, refreshSharedPricingIfStale } from './modelCatalog.js'
 import { mergePriceSourceEntries } from './modelIndex.js'
 import { pricingSourceStatus } from './pricing.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
 import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
 const app = express()
-const credentialUploadGate = new UploadGate()
 const analyticsCoordinator = new RequestCoordinator<Record<string, unknown>>({
   ttlMs: 20_000,
   staleWhileRevalidateMs: 5 * 60_000,
@@ -101,14 +106,19 @@ const latencyReader = new SQLiteReadPool(reportDatabaseFile, 1)
 const REPORT_FRESH_MS = 20_000
 const REPORT_WARM_INTERVAL_MS = 15_000
 const reportSnapshots = new ReportSnapshotCache(db, { maxStaleMs: 5 * 60_000 })
+/**
+ * 报表快照键（持久化在 SQLite）。v→+1 + 口径段（2026-10-02）：默认口径从「只看当前渠道」改成「全部渠道」，
+ * 旧版本号下按当前渠道算出的快照不会被新口径读到；`current` / `all` 两种口径各自缓存。
+ */
+const scopeTag = (currentOnly: boolean) => (currentOnly ? 'current' : 'all')
 const reportCacheKey = {
-  usagePage: (days: number, keyId: string, policyHash: string) => `usage-page:v4:${days}:${keyId}:${policyHash}`,
-  usageKeys: (days: number, policyHash: string) => `usage-key-summaries:v2:${days}:${policyHash}`,
-  charts: (days: number, keyId: string, policyHash: string) => `charts:v2:${days}:${keyId}:${policyHash}`,
-  chartLatency: (days: number, keyId: string, policyHash: string) => `charts-latency:v2:${days}:${keyId}:${policyHash}`,
-  cacheTrend: (hours: number, model: string, clientType: string, keyId: string, provider: string, policyHash: string) =>
-    `cache-trend:v3:${hours}:${model}:${clientType}:${keyId}:${provider}:${policyHash}`,
-  usageBreakdown: (days: number, keyId: string, policyHash: string) => `usage-breakdown:v2:${days}:${keyId}:${policyHash}`,
+  usagePage: (days: number, keyId: string, policyHash: string, currentOnly = false) => `usage-page:v5:${scopeTag(currentOnly)}:${days}:${keyId}:${policyHash}`,
+  usageKeys: (days: number, policyHash: string, currentOnly = false) => `usage-key-summaries:v3:${scopeTag(currentOnly)}:${days}:${policyHash}`,
+  charts: (days: number, keyId: string, policyHash: string, currentOnly = false) => `charts:v3:${scopeTag(currentOnly)}:${days}:${keyId}:${policyHash}`,
+  chartLatency: (days: number, keyId: string, policyHash: string, currentOnly = false) => `charts-latency:v3:${scopeTag(currentOnly)}:${days}:${keyId}:${policyHash}`,
+  cacheTrend: (hours: number, model: string, clientType: string, keyId: string, provider: string, policyHash: string, currentOnly = false) =>
+    `cache-trend:v4:${scopeTag(currentOnly)}:${hours}:${model}:${clientType}:${keyId}:${provider}:${policyHash}`,
+  usageBreakdown: (days: number, keyId: string, policyHash: string, currentOnly = false) => `usage-breakdown:v3:${scopeTag(currentOnly)}:${days}:${keyId}:${policyHash}`,
 }
 const dataPlaneSnapshots = new DataPlaneSnapshotClient(
   new SnapshotStore<UsageSnapshot>(db, parseUsageSnapshot, { maxStaleMs: config.dataPlaneSnapshotMaxStaleMs }),
@@ -160,16 +170,6 @@ const invalidateControlPlaneCaches = () => {
   monitorCoordinator.clear()
   analyticsCoordinator.clear()
 }
-const claudeQuotaCache = new ClaudeQuotaCache({
-  usageTtlMs: config.claudeQuotaUsageTtlMs,
-  profileTtlMs: config.claudeQuotaProfileTtlMs,
-  rateLimitCooldownMs: config.claudeQuotaRateLimitCooldownMs,
-  maxRateLimitCooldownMs: config.claudeQuotaMaxRateLimitCooldownMs,
-})
-const antigravityQuotaCoordinator = new RequestCoordinator<Awaited<ReturnType<typeof fetchAntigravityAccountQuota>>>({
-  ttlMs: 5 * 60_000,
-  staleWhileRevalidateMs: 10 * 60_000,
-})
 app.disable('x-powered-by')
 // 限流按来源 IP 计数：控制台部署在 127.0.0.1 上的 nginx 之后，
 // 只有信任回环代理才能从 X-Forwarded-For 读到真实客户端地址（否则所有请求都是 127.0.0.1）。
@@ -185,42 +185,33 @@ app.use(cookieParser())
  * 后者保证 SPA 深链接仍返回 index.html 而不是 401 页面；前者保证将来新增的任何路由默认需要登录。
  * 结构性断言测试见 `server/authDefaultDeny.test.ts`。
  */
+// Key 会话（role=key）每次请求回库确认 Key 仍存在且未被人工停用；守卫与 /api/me* 共用这一个判定。
+setKeySessionLookup(keySessionState)
 app.use(createSessionGuard(app))
 
 
-app.get('/api/session', (req, res) => res.json({ authenticated: isAuthenticated(req) }))
-app.post('/api/login', (req, res) => {
-  // 限流（task-57 ②）：按「来源 IP + 用户名」滑动窗口计数，超阈值 429 + Retry-After。
-  // 放在凭据校验**之前**，且对任何用户名一视同仁——不泄漏「该用户名是否存在」。
-  const username = String(req.body?.username || '')
-  const password = String(req.body?.password || '')
-  const limitKey = loginRateLimitKey(req, username)
-  const decision = loginRateLimiter.check(limitKey)
-  if (!decision.allowed) {
-    res.setHeader('Retry-After', String(decision.retryAfterSeconds))
-    return res.status(429).json({ error: '登录尝试过于频繁，请稍后再试' })
-  }
-  try {
-    if (!validateCredentials(username, password, config.consoleUsername, config.consolePassword)) {
-      loginRateLimiter.recordFailure(limitKey)
-      // 文案与「用户名不存在 / 密码错误」完全一致，也不区分时序（保持红队认可的两条优点）。
-      return res.status(401).json({ error: '管理员账号或密码不正确' })
-    }
-    loginRateLimiter.clear(limitKey)
-    // Cookie 的 Secure 按请求协议推导（即使环境变量写着 false，HTTPS 下也一定带 Secure）。
-    issueSession(req, res)
-    addAudit('login', 'console')
-    res.json({ ok: true })
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : '登录失败' })
-  }
-})
-// 登出做**服务端吊销**（task-57 ③）：记下 token 摘要直到它自己到期，旧 cookie 重放立即失效。
-app.post('/api/logout', (req, res) => {
-  revokeSession(readSessionToken(req))
-  logout(res)
-  res.json({ ok: true })
-})
+// 会话/登录/登出（admin 与 API Key 用户共用同一入口，契约 C1）：处理器在 server/sessionRoutes.ts。
+app.get('/api/session', sessionProbe)
+app.post('/api/login', loginRoute)
+app.post('/api/logout', logoutRoute)
+// API Key 用户的只读数据面（契约 C2）：一律按会话里的 Key 过滤，见 server/meRoutes.ts。
+app.use('/api/me', createMeRouter({ usageReader }))
+// 控制台页眉实时边与状态栏的网关读数（契约 C6，只读本地 usage_events，每秒最多算一次）。
+registerPulseRoutes(app, db)
+registerChannelHealthRoutes(app, { reader: usageReader, listChannels })
+registerModelInsightsRoutes(app, { usageReader })
+registerKeysViewRoutes(app, { usageReader })
+registerConnectRoutes(app)
+registerPerfRoutes(app, { reader: latencyReader, groups: listGroupsForReporting, timeZone: config.quotaTimeZone, retentionDays: config.usageRetentionDays })
+registerCacheSummaryRoutes(app, { reader: usageReader, groups: listGroupsForReporting, timeZone: config.quotaTimeZone, retentionDays: config.usageRetentionDays })
+registerOverviewRoutes(app, { reader: usageReader, groups: listGroupsForReporting })
+registerUsageWorkspaceRoutes(app, { usageReader, latencyReader, reportingContext, retentionDays: config.usageRetentionDays, timeZone: config.quotaTimeZone })
+// 账号（ACCOUNTS-ALIGN）：magpie + local 下是 Magpie 内核的账号与登录；CPA 模式下这些路由只列目录，账号仍走下面的旧入口。
+registerAccountsRoutes(app, accountsService())
+// 网关功能（#gateway-features）：Magpie 的脱敏 / 识图 / 生图设置，经内核 /internal/settings 读写；CPA 模式如实返回不可用。
+registerGatewaySettingsRoutes(app, createGatewaySettingsService())
+// 代理池（PROXY-SPEC）：/api/proxies/* 仅管理员（默认拒绝守卫），响应全部脱敏；账号的 proxy_url 仍是唯一事实来源。
+registerProxyRoutes(app, proxyService())
 
 const parseJson = <T>(value: string, fallback: T): T => {
   try { return JSON.parse(value) as T } catch { return fallback }
@@ -239,26 +230,48 @@ const parseJson = <T>(value: string, fallback: T): T => {
  */
 const resolveActiveProviderFilter = async (): Promise<{
   active: { sql: string; params: string[] }
-  degraded: { reason: string; note: string; detail: string } | null
+  degraded: { reason: string; note: string } | null
 }> => {
   try {
     return { active: activeProviderPredicate(await listGroupsForReporting(), 'provider'), degraded: null }
-  } catch (error) {
+  } catch {
+    // 控制面的原始错误文本不回给 Key 持有者（可能带内部地址/诊断），只给原因与语义说明。
     return {
       active: { sql: '1 = 1', params: [] },
       degraded: {
         reason: 'provider_filter_unavailable',
         note: '无法读取渠道分组，本次结果未按 provider 过滤（可能包含已停用渠道的历史用量）',
-        detail: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
       },
     }
   }
 }
 
-const publicUsageKey = (req: express.Request) => {
+/**
+ * `/v1/usage*` 的 Key 自鉴权：与控制台 Key 登录同一套查找（sha256 主键 + 定长比较，不再 `WHERE key_value = ?`），
+ * 并按来源 IP 限制带错 Key 的次数（`publicUsageRateLimiter`）。失败时已写好响应并返回 null。
+ * 地址被锁时，此前在这个地址成功过的 Key 照常放行（`publicUsageKnownGood`）：同一出口上别人配错的客户端
+ * 不该把正在跑的状态栏一起锁 15 分钟；没在这里成功过的 Key 不论真假都 429，锁定期间不泄漏有效性。
+ * 长度界放宽到存量 Key 的范围（旧实现是 `key_value = ?` 精确匹配，不能让过短/过长的已存 Key 失效）。
+ */
+const PUBLIC_USAGE_KEY_BOUNDS = { min: 1, max: 8192 }
+const publicUsageKey = (req: express.Request, res: express.Response): KeyQuotaRow | null => {
+  const limitKey = keyLoginRateLimitKey(req)
   const token = readBearerToken(req.header('authorization'))
-  if (!token) return null
-  return db.prepare('SELECT * FROM api_keys WHERE key_value = ?').get(token) as KeyQuotaRow | undefined
+  const found = token ? findKeyByPresentedValue(token, PUBLIC_USAGE_KEY_BOUNDS) : null
+  const key = found && (found.enabled || found.quota_blocked_reason) ? found : null
+  const decision = publicUsageRateLimiter.check(limitKey)
+  if (!decision.allowed && !(key && publicUsageKnownGood.has(limitKey, key.key_hash))) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds))
+    res.status(429).json({ error: { message: '尝试过于频繁，请稍后再试', type: 'rate_limited' } })
+    return null
+  }
+  if (!key) {
+    if (token) publicUsageRateLimiter.recordFailure(limitKey)
+    res.status(401).json({ error: { message: '无效或不可用的 API Key', type: 'invalid_api_key' } })
+    return null
+  }
+  publicUsageKnownGood.remember(limitKey, key.key_hash)
+  return key
 }
 
 /**
@@ -266,8 +279,8 @@ const publicUsageKey = (req: express.Request) => {
  * 只按 Authorization 中的 Key 查询它自己，并且不返回控制台管理字段或其他 Key。
  */
 app.get('/v1/usage', async (req, res) => {
-  const key = publicUsageKey(req)
-  if (!key || (!key.enabled && !key.quota_blocked_reason)) return res.status(401).json({ error: { message: '无效或不可用的 API Key', type: 'invalid_api_key' } })
+  const key = publicUsageKey(req, res)
+  if (!key) return
   const days = boundedInteger(req.query.days, 30, 1, config.usageRetentionDays)
   // task-73 R26-B：管理面不可用时**降级为不过滤**，而不是把用户的请求打成 500。
   // 降级事实必须可见（header + 响应字段），绝不静默改变数据语义。
@@ -318,8 +331,8 @@ app.get('/v1/usage', async (req, res) => {
 })
 
 app.get('/v1/usage/requests', (req, res) => {
-  const key = publicUsageKey(req)
-  if (!key || (!key.enabled && !key.quota_blocked_reason)) return res.status(401).json({ error: { message: '无效或不可用的 API Key', type: 'invalid_api_key' } })
+  const key = publicUsageKey(req, res)
+  if (!key) return
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const limit = boundedInteger(req.query.limit, 50, 1, 200)
   const items = db.prepare(`
@@ -351,74 +364,6 @@ app.get('/api/public/model-catalog', async (req, res) => {
     return res.json({ object: 'model_catalog', generatedAt: new Date().toISOString(), models: catalog })
   } catch (error) {
     return res.status(502).json({ error: error instanceof Error ? error.message : '模型目录暂不可用' })
-  }
-})
-
-
-app.post('/api/credentials/upload', async (req, res) => {
-  const traceId = crypto.randomUUID()
-  const startedAt = Date.now()
-  res.setHeader('Cache-Control', 'no-store')
-  try {
-    const responseBody = await credentialUploadGate.run(async () => {
-      const file = await receiveUploadFile(req, config.credentialUploadMaxBytes)
-      const credentials = await prepareCredentialUpload(file, {
-        maxEntries: config.credentialUploadMaxEntries,
-        maxEntryBytes: config.credentialUploadMaxEntryBytes,
-        maxUncompressedBytes: config.credentialUploadMaxExpandedBytes,
-      })
-      console.info(JSON.stringify({
-        category: '[AUDIT]', event: 'credential_upload.start', trace_id: traceId,
-        stage: 'upload', filename: path.basename(file.filename), entries: credentials.length,
-      }))
-      const existingNames = new Set((await listAuthFiles()).files.map((item) => String(item.name || '')).filter(Boolean))
-      const skippedItems = credentials.filter((credential) => existingNames.has(credential.name))
-      const pendingCredentials = credentials.filter((credential) => !existingNames.has(credential.name))
-      const result = await uploadCredentialBatch(pendingCredentials, {
-        concurrency: config.credentialUploadConcurrency,
-        upload: async (credential) => {
-          try {
-            await uploadAuthFile(credential.name, credential.raw)
-          } catch (error) {
-            console.error(JSON.stringify({
-              category: '[ERROR]', event: 'credential_upload.item_failed', trace_id: traceId,
-              stage: 'cpa_upload', name: credential.name,
-              cause: error instanceof Error ? error.message.replace(/(access|refresh|id)[_-]?token[^ ]*/gi, '$1_token=[redacted]').slice(0, 400) : 'unknown',
-            }))
-            throw error
-          }
-        },
-      })
-      const items = mergeCredentialUploadItems(credentials, result.items, existingNames)
-      if (result.uploaded) invalidateControlPlaneCaches()
-      const total = credentials.length
-      const skipped = skippedItems.length
-      addAudit('upload_credentials', 'xai', JSON.stringify({
-        traceId, filename: path.basename(file.filename), total, uploaded: result.uploaded, skipped, failed: result.failed,
-      }))
-      console.info(JSON.stringify({
-        category: '[AUDIT]', event: 'credential_upload.finish', trace_id: traceId,
-        stage: 'complete', duration_ms: Date.now() - startedAt, outcome: result.failed ? 'partial' : 'ok',
-        total, uploaded: result.uploaded, skipped, failed: result.failed,
-      }))
-      return { status: result.failed ? 207 : 200, body: { traceId, total, uploaded: result.uploaded, skipped, failed: result.failed, items } }
-    })
-    res.status(responseBody.status).json(responseBody.body)
-  } catch (error) {
-    const known = error instanceof CredentialUploadError || error instanceof MultipartUploadError || error instanceof UploadGateBusyError
-    const code = known ? error.code : 'UPLOAD_INTERNAL_ERROR'
-    const stage = error instanceof CredentialUploadError ? error.stage : error instanceof MultipartUploadError ? 'receive' : error instanceof UploadGateBusyError ? 'queue' : 'upload'
-    const message = known ? error.message : '凭据上传失败，请按 trace ID 查询服务日志'
-    const rootCause = error instanceof Error && error.cause instanceof Error ? error.cause.message : ''
-    console.error(JSON.stringify({
-      category: '[ERROR]', event: 'credential_upload.failed', trace_id: traceId,
-      stage, code, duration_ms: Date.now() - startedAt, outcome: 'error',
-      cause: error instanceof Error ? error.message.slice(0, 400) : 'unknown',
-      root_cause: rootCause.slice(0, 400),
-    }))
-    addAudit('upload_credentials_failed', 'xai', JSON.stringify({ traceId, code, stage }))
-    const status = error instanceof UploadGateBusyError ? 409 : known ? 400 : 500
-    res.status(status).json({ error: { code, category: 'UPLOAD', message, stage, traceId, retryable: error instanceof UploadGateBusyError } })
   }
 })
 
@@ -554,12 +499,6 @@ app.get('/api/bootstrap', async (_req, res) => {
     // 网关侧 Key 级模型隔离是否真的生效。CPA v7.2.140 起上游删掉了该能力，
     // 分组配置仍然保留，但不能让 UI 继续把它显示成已经在网关生效的限制。
     gatewayModelAccess: getKeyModelAccessState(),
-    credentialUploadLimits: {
-      maxBytes: config.credentialUploadMaxBytes,
-      maxEntries: config.credentialUploadMaxEntries,
-      maxEntryBytes: config.credentialUploadMaxEntryBytes,
-      maxExpandedBytes: config.credentialUploadMaxExpandedBytes,
-    },
     versions: {
       cpa: cpaVer,
       console: consoleVer,
@@ -644,9 +583,11 @@ app.patch('/api/keys/:id', async (req, res) => {
   if (enabled && !hasKey) await replaceCPAKeys([...keys, value])
   if (!enabled && hasKey) await replaceCPAKeys(keys.filter((key) => key !== value))
   const now = new Date().toISOString()
-  // 人工启用时清掉超额停用标记，否则下一轮对账会把它当成「额度停用」反复处理
+  // 人工启用时清掉超额停用标记，否则下一轮对账会把它当成「额度停用」反复处理；
+  // 显式 `enabled:false` 是人工停用，同样清掉：否则它仍被当作额度停用（Key 会话照常、对账还会自动恢复它）。
+  const manualDisable = req.body?.enabled === false
   db.prepare('UPDATE api_keys SET name=?,note=?,enabled=?,groups_json=?,total_concurrency=?,group_concurrency_json=?,quota_blocked_reason=?,updated_at=? WHERE key_hash=?')
-    .run(name, note, enabled ? 1 : 0, JSON.stringify(groups), totalConcurrency, JSON.stringify(groupConcurrency), enabled ? '' : String(row.quota_blocked_reason || ''), now, req.params.id)
+    .run(name, note, enabled ? 1 : 0, JSON.stringify(groups), totalConcurrency, JSON.stringify(groupConcurrency), enabled || manualDisable ? '' : String(row.quota_blocked_reason || ''), now, req.params.id)
   await reconcileKeyModelAccess()
   addAudit('update_key', name, JSON.stringify({ enabled, groups, totalConcurrency }))
   await reconcileNginxUnlimitedAccess()
@@ -669,9 +610,10 @@ app.delete('/api/keys/:id', async (req, res) => {
 app.get('/api/usage-overview', async (req, res) => {
   const days = boundedInteger(req.query.days, 30, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await analyticsCoordinator.run(`usage-overview:${days}:${keyId}:${reporting.policyHash}`, async () =>
-    loadUsageOverviewReport(usageReader, reporting.groups, days, keyId))
+  const payload = await analyticsCoordinator.run(`usage-overview:${scopeTag(currentOnly)}:${days}:${keyId}:${reporting.policyHash}`, async () =>
+    loadUsageOverviewReport(usageReader, reporting.groups, days, keyId, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
@@ -679,18 +621,20 @@ app.get('/api/usage-overview', async (req, res) => {
 app.get('/api/usage-page', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await reportSnapshots.run(reportCacheKey.usagePage(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
-    loadUsagePageReport(usageReader, reporting.groups, days, keyId, config.quotaTimeZone))
+  const payload = await reportSnapshots.run(reportCacheKey.usagePage(days, keyId, reporting.policyHash, currentOnly), REPORT_FRESH_MS, async () =>
+    loadUsagePageReport(usageReader, reporting.groups, days, keyId, config.quotaTimeZone, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
 
 app.get('/api/usage-key-summaries', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await reportSnapshots.run(reportCacheKey.usageKeys(days, reporting.policyHash), REPORT_FRESH_MS, async () =>
-    loadUsageKeySummariesReport(usageReader, reporting.groups, days))
+  const payload = await reportSnapshots.run(reportCacheKey.usageKeys(days, reporting.policyHash, currentOnly), REPORT_FRESH_MS, async () =>
+    loadUsageKeySummariesReport(usageReader, reporting.groups, days, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
@@ -699,16 +643,19 @@ app.get('/api/usage-key-summaries', async (req, res) => {
 app.get('/api/dashboard', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const relayIntegrity = config.dataPlaneDashboardReadMode === 'snapshot'
+  // 数据面快照按「当前渠道」白名单预算；只在显式「只看当前渠道」时可用，默认的全部渠道口径一律读本地 SQLite。
+  const useSnapshot = config.dataPlaneDashboardReadMode === 'snapshot' && currentOnly
+  const relayIntegrity = useSnapshot
     ? readDataPlaneRelayStatus(db, config.dataPlaneEnabled)
     : null
   const snapshotGate = relayIntegrity && relayAllowsDashboardSnapshots(relayIntegrity) ? 'ready' : 'blocked'
-  const payload = await analyticsCoordinator.run(`dashboard:${days}:${keyId}:${reporting.policyHash}:${config.dataPlaneDashboardReadMode}:${snapshotGate}`, async () => {
-    const latest = config.dataPlaneDashboardReadMode === 'snapshot'
+  const payload = await analyticsCoordinator.run(`dashboard:${scopeTag(currentOnly)}:${days}:${keyId}:${reporting.policyHash}:${config.dataPlaneDashboardReadMode}:${snapshotGate}`, async () => {
+    const latest = useSnapshot
       ? db.prepare('SELECT timestamp_ms timestampMs FROM usage_events ORDER BY timestamp_ms DESC LIMIT 1').get() as { timestampMs?: number } | undefined
       : undefined
-    const snapshot = config.dataPlaneDashboardReadMode === 'snapshot'
+    const snapshot = useSnapshot
       ? await readDashboardSnapshot(
           dataPlaneSnapshots,
           days,
@@ -721,7 +668,7 @@ app.get('/api/dashboard', async (req, res) => {
         )
       : null
     if (snapshot) return snapshot
-    const report = await loadDashboardReport(usageReader, reporting.groups, days, keyId)
+    const report = await loadDashboardReport(usageReader, reporting.groups, days, keyId, Date.now(), currentOnly)
     return {
       ...report,
       generatedAt: new Date().toISOString(),
@@ -738,9 +685,10 @@ app.get('/api/dashboard', async (req, res) => {
 app.get('/api/analytics', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await analyticsCoordinator.run(`analytics:${days}:${keyId}:${reporting.policyHash}`, async () =>
-    loadAnalyticsReport(latencyReader, reporting.groups, days, keyId))
+  const payload = await analyticsCoordinator.run(`analytics:${scopeTag(currentOnly)}:${days}:${keyId}:${reporting.policyHash}`, async () =>
+    loadAnalyticsReport(latencyReader, reporting.groups, days, keyId, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
@@ -748,9 +696,10 @@ app.get('/api/analytics', async (req, res) => {
 app.get('/api/charts', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await reportSnapshots.run(reportCacheKey.charts(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
-    loadChartsReport(usageReader, reporting.groups, days, keyId))
+  const payload = await reportSnapshots.run(reportCacheKey.charts(days, keyId, reporting.policyHash, currentOnly), REPORT_FRESH_MS, async () =>
+    loadChartsReport(usageReader, reporting.groups, days, keyId, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
@@ -758,72 +707,45 @@ app.get('/api/charts', async (req, res) => {
 app.get('/api/charts-latency', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await reportSnapshots.run(reportCacheKey.chartLatency(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
-    loadChartsLatencyReport(latencyReader, reporting.groups, days, keyId))
+  const payload = await reportSnapshots.run(reportCacheKey.chartLatency(days, keyId, reporting.policyHash, currentOnly), REPORT_FRESH_MS, async () =>
+    loadChartsLatencyReport(latencyReader, reporting.groups, days, keyId, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
 
-app.get('/api/monitor', async (_req, res) => {
-  const payload = await monitorCoordinator.run('monitor', async () => {
-    const auths = await listAuthFiles()
-    const accounts = await Promise.all((auths.files || []).filter((file) => isMonitoredAccountType(file.type)).map(async (file) => {
+/**
+ * 一次整页额度刷新。上游请求只发生在 readAccountQuota 里（每账号 TTL + 失败冷却，见 accountQuotaReader.ts），
+ * 账号间扇出有并发上限；整页缓存过期后的后台刷新因此只会打到真正到期的账号。
+ */
+const loadMonitorPayload = async () => {
+  const auths = await listAuthFiles()
+  const files = (auths.files || []).filter((file) => isMonitoredAccountType(file.type))
+  const accounts = await mapWithConcurrency(files, syncRegistry.policy.globalUpstreamConcurrency, async (file) => {
     const type = String(file.type)
     let quota: unknown = null
+    let resetCredits: Awaited<ReturnType<typeof readAccountQuota>>['resetCredits'] = null
     try {
-      if (type === 'claude') {
-        const authIndex = String(file.auth_index)
-        const snapshot = await claudeQuotaCache.read(
-          authIndex,
-          {
-            usage: () => apiCall(authIndex, CLAUDE_USAGE_URL, { header: claudeHeaders() }),
-            profile: () => apiCall(authIndex, CLAUDE_PROFILE_URL, { header: claudeHeaders() }),
-          },
-          {
-            usageNextRetryAfter: file.next_retry_after,
-            usageUnavailable: file.unavailable === true,
-          },
-        )
-        quota = {
-          ...(snapshot.usage ? { usage: snapshot.usage } : {}),
-          ...(snapshot.profile ? { profile: snapshot.profile } : {}),
-          error: [snapshot.usageError, snapshot.profileError].filter(Boolean).join('；') || undefined,
-        }
-      } else if (type === 'antigravity') {
-        const authIndex = String(file.auth_index)
-        quota = await antigravityQuotaCoordinator.run(`antigravity:${authIndex}`, () => fetchAntigravityAccountQuota(file))
-      } else {
-        const result = await apiCall(String(file.auth_index), 'https://chatgpt.com/backend-api/wham/usage')
-        const body = result.body ?? result.body_text
-        const parsedBody = typeof body === 'string' ? JSON.parse(body) : body
-        const statusCode = Number(result.status_code ?? result.statusCode ?? 0)
-        if (statusCode < 200 || statusCode >= 300) throw new Error(`上游返回 HTTP ${statusCode}`)
-        quota = parsedBody
-      }
+      ({ quota, resetCredits } = await readAccountQuota(file))
     } catch (error) {
       quota = { error: error instanceof Error ? error.message : '读取失败' }
     }
-    let resetCredits: ReturnType<typeof normalizeResetCredits> | null = null
-    if (type === 'codex') {
-      // 主动重置额度在单独的 wham 端点，usage 里只有计数没有过期时间
-      try {
-        const credits = await getCodexResetCredits(String(file.auth_index), resolveChatgptAccountId(file) || undefined)
-        resetCredits = normalizeResetCredits(credits.body ?? credits.body_text)
-      } catch {
-        resetCredits = null
-      }
-    }
-      return { ...file, quota, normalizedQuota: normalizeAccountQuota(type, quota, resetCredits) }
-    }))
-    // 套餐额度不按美元计量，附带本窗口各 Key 的 token 占比，回答「额度是被谁用掉的」。
-    // 占比查询失败不能拖垮账号状态本身。
-    const quotaShare = await loadMonitorQuotaShare(usageReader, accounts, Date.now(), 'usage_hourly_rollup').catch((error) => {
-      console.warn(`[monitor] 各 Key 额度占比读取失败：${error instanceof Error ? error.message : '未知错误'}`)
-      return null
-    })
-    return { accounts, quotaShare }
+    return { ...file, quota, normalizedQuota: normalizeAccountQuota(type, quota, resetCredits) }
   })
+  // 套餐额度不按美元计量，附带本窗口各 Key 的 token 占比，回答「额度是被谁用掉的」。
+  // 占比查询失败不能拖垮账号状态本身。
+  const quotaShare = await loadMonitorQuotaShare(usageReader, accounts, Date.now(), 'usage_hourly_rollup').catch((error) => {
+    console.warn(`[monitor] 各 Key 额度占比读取失败：${error instanceof Error ? error.message : '未知错误'}`)
+    return null
+  })
+  // 本机控制面读不了额度时整页给一个能力标记（账号的 normalizedQuota 也带 unsupported:true），页面据此整体提示。
+  // 出口按字段白名单投影：凭据文件/网关记录里的 token、cookie、key 一律不进响应（也不进整页缓存）。
+  return { accounts: accounts.map(projectMonitorAccount), quotaShare, quotaSupport: accountQuotaSupport() }
+}
+
+app.get('/api/monitor', async (_req, res) => {
+  const payload = await monitorCoordinator.run('monitor', () => syncRegistry.observe('account-quota', loadMonitorPayload, summarizeAccountQuota))
   res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=600')
   res.json(payload)
 })
@@ -848,6 +770,7 @@ app.post('/api/accounts/:authIndex/reset-codex-quota', async (req, res) => {
     let cooldownCleared = true
     try { await clearAuthFileCooldown(String(file.name)) } catch { cooldownCleared = false }
     addAudit('reset-codex-quota', `${file.name || authIndex}`, cooldownCleared ? 'cooldown-cleared' : 'cooldown-clear-failed')
+    clearAccountQuota(authIndex)
     monitorCoordinator.clear('monitor')
     const credits = await getCodexResetCredits(authIndex, accountId)
     res.json({ ok: true, cooldownCleared, resetCredits: normalizeResetCredits(credits.body ?? credits.body_text) })
@@ -856,8 +779,11 @@ app.post('/api/accounts/:authIndex/reset-codex-quota', async (req, res) => {
   }
 })
 
-/** `fresh=1` 由页面刷新按钮触发：先丢掉网关快照，保证 CPA 官方面板里的改动立刻可见。 */
-const wantsFresh = (req: express.Request) => ['1', 'true'].includes(String(req.query.fresh || ''))
+/**
+ * `fresh=1` 由页面刷新按钮触发：先丢掉网关快照，保证 CPA 官方面板里的改动立刻可见。
+ * 有的页面每次加载都带 fresh=1：同一端点每分钟最多兑现一次，其余照常走 15s 快照（不会把上游扇出打满）。
+ */
+const wantsFresh = (req: express.Request) => ['1', 'true'].includes(String(req.query.fresh || '')) && allowFreshInvalidation(req.path)
 
 /**
  * 兑现 Claude 的 banked reset（cedar_ember）。与 Codex 的 reset-codex-quota 对称：
@@ -898,7 +824,8 @@ app.post('/api/accounts/:authIndex/reset-claude-quota', async (req, res) => {
     let cooldownCleared = true
     try { await clearAuthFileCooldown(String(file.name)) } catch { cooldownCleared = false }
     addAudit('reset-claude-quota', `${file.name || authIndex}`, cooldownCleared ? 'cooldown-cleared' : 'cooldown-clear-failed')
-    claudeQuotaCache.clear(authIndex)
+    // 同时更新落盘的冷却：只清内存的话，重启会把重置前的冷却恢复回来。
+    clearAccountQuota(authIndex)
     monitorCoordinator.clear('monitor')
     res.json({ ok: true, cooldownCleared, result: outcome, cleared: claimBody.cleared ?? [] })
   } catch (error) {
@@ -996,9 +923,10 @@ app.post('/api/channels/prune-stale', async (_req, res) => {
 app.get('/api/usage-breakdown', async (req, res) => {
   const days = boundedInteger(req.query.days, 30, 1, config.usageRetentionDays)
   const keyId = String(req.query.keyId || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await reportSnapshots.run(reportCacheKey.usageBreakdown(days, keyId, reporting.policyHash), REPORT_FRESH_MS, async () =>
-    loadUsageBreakdownReport(usageReader, reporting.groups, days, keyId, config.quotaTimeZone))
+  const payload = await reportSnapshots.run(reportCacheKey.usageBreakdown(days, keyId, reporting.policyHash, currentOnly), REPORT_FRESH_MS, async () =>
+    loadUsageBreakdownReport(usageReader, reporting.groups, days, keyId, config.quotaTimeZone, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
@@ -1012,8 +940,9 @@ app.get('/api/usage-breakdown', async (req, res) => {
 app.get('/api/cache-analytics', async (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const model = String(req.query.model || '')
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const groups = await listGroupsForReporting()
-  const active = activeProviderPredicate(groups, 'u.provider')
+  const active = scopedProviderPredicate(groups, 'u.provider', currentOnly)
   const clauses = ['u.timestamp_ms >= ?', 'u.success = 1', active.sql]
   const params: Array<string | number> = [cutoffEpochMs(days, 'days'), ...active.params]
   if (model) { clauses.push(`(u.model = ? OR ${canonicalModelSql('u')} = ?)`); params.push(model, model) }
@@ -1040,16 +969,16 @@ app.get('/api/cache-analytics', async (req, res) => {
 
   const models = db.prepare(hasRollup ? `
     SELECT DISTINCT ${canonicalModelSql()} model FROM usage_hourly_rollup
-    WHERE hour_ms >= ? AND success = 1 AND ${activeProviderPredicate(groups, 'provider').sql}
+    WHERE hour_ms >= ? AND success = 1 AND ${scopedProviderPredicate(groups, 'provider', currentOnly).sql}
     ORDER BY model
   ` : `
     SELECT DISTINCT ${canonicalModelSql()} model FROM usage_events
-    WHERE timestamp_ms >= ? AND success = 1 AND ${activeProviderPredicate(groups, 'provider').sql}
+    WHERE timestamp_ms >= ? AND success = 1 AND ${scopedProviderPredicate(groups, 'provider', currentOnly).sql}
     ORDER BY model
-  `).all(cutoffEpochMs(days, 'days'), ...activeProviderPredicate(groups, 'provider').params) as Array<{ model: string }>
+  `).all(cutoffEpochMs(days, 'days'), ...scopedProviderPredicate(groups, 'provider', currentOnly).params) as Array<{ model: string }>
 
   res.setHeader('Cache-Control', 'no-store')
-  res.json({ days, model, models: models.map((m) => m.model), ...buildCacheAnalytics(rows, groups) })
+  res.json({ days, model, models: models.map((m) => m.model), ...buildCacheAnalytics(rows, groups, currentOnly) })
 })
 
 /**
@@ -1062,9 +991,10 @@ app.get('/api/cache-trend', async (req, res) => {
   const clientType = String(req.query.client || '')
   const keyId = String(req.query.keyId || '')
   const provider = String(req.query.provider || '').trim().toLowerCase()
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   const reporting = await reportingContext()
-  const payload = await reportSnapshots.run(reportCacheKey.cacheTrend(hours, model, clientType, keyId, provider, reporting.policyHash), REPORT_FRESH_MS, async () =>
-    loadCacheTrendReport(usageReader, reporting.groups, hours, model, clientType, keyId, provider))
+  const payload = await reportSnapshots.run(reportCacheKey.cacheTrend(hours, model, clientType, keyId, provider, reporting.policyHash, currentOnly), REPORT_FRESH_MS, async () =>
+    loadCacheTrendReport(usageReader, reporting.groups, hours, model, clientType, keyId, provider, Date.now(), currentOnly))
   res.setHeader('Cache-Control', 'private, max-age=20, stale-while-revalidate=300')
   res.json(payload)
 })
@@ -1079,6 +1009,7 @@ app.get('/api/cache-live', async (req, res) => {
   const clientType = String(req.query.client || '')
   const keyId = String(req.query.keyId || '')
   const provider = String(req.query.provider || '').trim().toLowerCase()
+  const currentOnly = parseCurrentOnly(req.query.currentOnly)
   /**
    * 并发上限（task-76）：满了就**显式拒绝**（503 + Retry-After + 可读原因），
    * 绝不能静默丢弃——那会让客户端以为连上了却永远收不到事件。
@@ -1103,7 +1034,8 @@ app.get('/api/cache-live', async (req, res) => {
   })
   res.write('retry: 2000\n\n')
   let closed = false
-  const client = addBufferedClient(res, model, clientType, keyId, provider)
+  // 增量与首帧回放同一渠道口径：currentOnly 的订阅者收不到已移除渠道的新事件
+  const client = addBufferedClient(res, model, clientType, keyId, provider, currentOnly)
   if (!client) {
     // 兜底：容量检查之后到注册之间不可能再插入其它客户端（同一 tick），这里只是防御
     if (!res.headersSent) {
@@ -1128,7 +1060,7 @@ app.get('/api/cache-live', async (req, res) => {
   try {
     // Send SSE headers before a cold reporting-group fallback can wait on CPA.
     const groups = await listGroupsForReporting()
-    const history = await loadCacheLiveHistory(usageReader, groups, limit, model, clientType, keyId, provider)
+    const history = await loadCacheLiveHistory(usageReader, groups, limit, model, clientType, keyId, provider, currentOnly)
     if (closed) return
     const replay = client.activate(history)
     res.write(`event: history\ndata: ${JSON.stringify(replay)}\n\n`)
@@ -1167,98 +1099,40 @@ app.get('/api/model-index', async (req, res) => {
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取模型失败' }) }
 })
 
-/* ────────── task-79 ②：magpie 内核更新的服务端代跑（浏览器跑不了脚本） ────────── */
-
-/**
- * 更新脚本与安装根都可注入（测试用替身；生产用默认值）。**绝不碰 launchd、不重启服务**：
- * 本端点只跑 `scripts/magpie-update.mjs`，它自己只做"校验 → 备份 → 原子替换 → 失败回滚"。
- */
-const magpieUpdateScript = () =>
-  // 仓库根 = server/ 的上一级（与 dist 的写法一致：`path.resolve(root, '../dist')`）。
-  // 之前少了这一层，默认路径被解析成 `server/scripts/magpie-update.mjs`——那个文件不存在，
-  // 于是端点永远报 capability:false，功能看起来"没实现"。
-  process.env.MAGPIE_UPDATE_SCRIPT || path.join(root, '..', 'scripts/magpie-update.mjs')
-const magpieUpdateRoot = () => process.env.MAGPIE_UPDATE_ROOT || path.join(os.homedir(), '.agents/crosery/magpie-console/bin')
-
-/** 能力探测：脚本存在且能被 node 读；装不上就如实说"不可用"，不假装有。 */
-const magpieUpdateCapability = (): { capability: boolean; reason?: string; script: string; root: string } => {
-  const script = magpieUpdateScript()
-  const updateRoot = magpieUpdateRoot()
-  if (!fs.existsSync(script)) return { capability: false, reason: `找不到更新脚本：${script}`, script, root: updateRoot }
-  if (!fs.existsSync(updateRoot)) return { capability: false, reason: `找不到安装目录：${updateRoot}`, script, root: updateRoot }
-  return { capability: true, script, root: updateRoot }
-}
-
-/** 跑一次更新脚本（status 只读 / check 只读 / rehearse 临时目录 / apply 需显式确认）。 */
-const runMagpieUpdate = (args: string[], timeoutMs = 180_000) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-  execFile(process.execPath, [magpieUpdateScript(), ...args], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-    const code = error && typeof (error as { code?: unknown }).code === 'number' ? Number((error as { code: number }).code) : error ? 1 : 0
-    resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') })
-  })
+/* ────────── task-79 ②：magpie 内核更新的服务端代跑 + 「网关 Magpie」版本模型（server/magpieVersion.ts） ────────── */
+registerMagpieVersionRoutes(app, {
+  getCpaVersion, getConsoleVersion, wantsFresh, addAudit,
+  // 仓库根 = server/ 的上一级（之前少了这一层，脚本路径被解析成 server/scripts/…，端点永远 capability:false）
+  repoRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
 })
 
-const parseUpdateJson = (stdout: string): Record<string, unknown> | null => {
-  const line = stdout.trim().split('\n').filter(Boolean).pop()
-  if (!line) return null
-  try { return JSON.parse(line) as Record<string, unknown> } catch { return null }
-}
-
-app.get('/api/magpie/update-status', async (_req, res) => {
-  const capability = magpieUpdateCapability()
-  if (!capability.capability) {
-    return res.json({
-      capability: false, reason: capability.reason, script: capability.script, root: capability.root,
-      currentVersion: null, latestVersion: null, lastCheckedAt: null, lastResult: null, backupPath: null, error: null,
-    })
-  }
-  try {
-    const result = await runMagpieUpdate(['status', '--root', capability.root])
-    const parsed = parseUpdateJson(result.stdout) || {}
-    return res.json({ capability: true, script: capability.script, root: capability.root, ...parsed })
-  } catch (error) {
-    return res.status(502).json({ capability: true, error: error instanceof Error ? error.message : '读取更新状态失败' })
-  }
-})
-
-app.post('/api/magpie/update', async (req, res) => {
-  const action = String(req.body?.action || 'check')
-  const capability = magpieUpdateCapability()
-  if (!capability.capability) {
-    addAudit('magpie_update', action, `refused:no-capability（${capability.reason}）`)
-    return res.status(503).json({ error: capability.reason, reason: 'update_capability_unavailable' })
-  }
-  if (!['check', 'rehearse', 'apply'].includes(action)) {
-    return res.status(400).json({ error: 'action 只能是 check / rehearse / apply', reason: 'invalid_action' })
-  }
-  // **确认门**：真替换必须显式确认；缺确认一律拒绝，且**不执行任何命令**（零副作用）
-  if (action === 'apply' && req.body?.confirm !== true) {
-    addAudit('magpie_update', 'apply', 'refused:missing-confirm')
-    return res.status(403).json({ error: '替换内核需要显式确认（body 需要 {"confirm": true}）', reason: 'confirm_required' })
-  }
-  const args = action === 'apply'
-    ? ['apply', '--confirm-apply', '--root', capability.root]
-    : action === 'rehearse'
-      ? ['rehearse', '--root', capability.root, ...(req.body?.from ? ['--from', String(req.body.from)] : [])]
-      : ['check', '--root', capability.root, ...(req.body?.from ? ['--from', String(req.body.from)] : [])]
-  const result = await runMagpieUpdate(args)
-  const parsed = parseUpdateJson(result.stdout)
-  addAudit('magpie_update', action, `exit=${result.code}${parsed?.status ? `, status=${String(parsed.status)}` : ''}${result.code !== 0 ? `, stderr=${result.stderr.trim().slice(0, 200)}` : ''}`)
-  if (result.code !== 0) {
-    return res.status(500).json({
-      error: result.stderr.trim() || `更新脚本以退出码 ${result.code} 结束`, reason: 'update_failed',
-      ...(parsed ? { result: parsed } : {}),
-    })
-  }
-  return res.json({ ok: true, action, ...(parsed ? { result: parsed } : {}) })
+/* 「自动更新」开关与状态（server/autoupdate.ts）：只写开关、读定时任务记下的结果；替换内核只在 launchd 任务里做。 */
+registerAutoupdateRoutes(app, {
+  addAudit,
+  repoRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+  magpieLocal: () => config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local',
+  running: async () => {
+    if (config.gatewayEngine !== 'magpie') return null
+    const { kernelJSON } = await import('./magpieEngine.js')
+    const health = await kernelJSON(config.magpieKernelSocket, '/internal/health') as { revision?: unknown }
+    return typeof health.revision === 'string' && /^[a-f0-9]{40}$/.test(health.revision) ? health.revision : null
+  },
+  rtkLocal: async () => {
+    const { findRTKBinary, readLocalPayload } = await import('./rtkService.js')
+    const binary = findRTKBinary()
+    return binary ? (await readLocalPayload(binary)).version : null
+  },
 })
 
 app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
   try {
     // task-68：渠道不存在 → 404（原来报「渠道未启用，无法调整模型」）
-    if (!(await listChannels()).some(channel => channel.name === req.params.channel)) {
-      return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
-    }
+    // 账号池来源（kind:'oauth'）的「渠道」是 provider，要对凭据的 type 校验，不能查兼容渠道表（否则恒 404）
     const kind = req.body?.kind === 'oauth' ? 'oauth' : 'compat'
+    const known = kind === 'oauth'
+      ? (await listCredentials()).some(credential => credential.type === req.params.channel)
+      : (await listChannels()).some(channel => channel.name === req.params.channel)
+    if (!known) return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
     await setModelSourceEnabled(req.params.model, req.params.channel, kind, Boolean(req.body?.enabled))
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
@@ -1338,7 +1212,7 @@ app.patch('/api/credentials/:name/proxy', async (req, res) => {
     await setCredentialProxy(name, proxyUrl)
     credentialProxyCoordinator.clear(name)
     invalidateControlPlaneCaches()
-    addAudit('update_credential_proxy', name, proxyUrl || 'inherit')
+    addAudit('update_credential_proxy', name, maskProxyUserinfo(proxyUrl) || 'inherit')
     res.json({ ok: true, proxyUrl })
   } catch (error) {
     // task-68：凭据不存在是 404（错误自带状态），不再一律 400
@@ -1347,18 +1221,6 @@ app.patch('/api/credentials/:name/proxy', async (req, res) => {
 })
 
 
-app.get('/api/version', async (_req, res) => {
-  try {
-    const [cpa, consoleVersion] = await Promise.all([
-      getCpaVersion(true),
-      Promise.resolve(getConsoleVersion()),
-    ])
-    res.json({ cpa, console: consoleVersion })
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : '获取版本失败' })
-  }
-})
-
 /**
  * OAuth provider 的**唯一校验出口**（task-73 R26-A）：`/start` 与 `/callback` 共用。
  *
@@ -1366,6 +1228,13 @@ app.get('/api/version', async (_req, res) => {
  * 修前 `/callback` 是 400、`/start` 是 500 —— 同一份非法输入两条路径状态码不一致，
  * 5xx 会让监控误判成服务端故障，也可能被客户端重试放大。
  */
+/**
+ * magpie + local：本机 OAuth 模拟器已退役（它不换 token，回调只会写出伪造的凭据）。
+ * 登录改走 Magpie 内核：POST /api/accounts/signin。CPA 模式（含 magpie + cpa 控制面）不经过这里，行为不变。
+ */
+const LOCAL_OAUTH_RETIRED = { error: '本机 magpie 模式请在「账号」里登录（Magpie 真实登录）', code: 'use_accounts_signin' } as const
+const localOAuthRetired = () => config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local'
+
 const requireOAuthProvider = async (res: express.Response, provider: string): Promise<string | null> => {
   const { isSupportedOAuthProvider, supportedOAuthProviders } = await import('./cpa.js')
   if (isSupportedOAuthProvider(provider)) return provider
@@ -1383,6 +1252,7 @@ app.post('/api/cpa/oauth/start', async (req, res) => {
     // 与 /callback 同一个出口：非法 provider 是 400，不是 500
     const supported = await requireOAuthProvider(res, provider)
     if (!supported) return
+    if (localOAuthRetired()) return res.status(410).json(LOCAL_OAUTH_RETIRED)
     const result = await startOAuthLogin(supported)
     res.json(result)
   } catch (error) {
@@ -1391,6 +1261,7 @@ app.post('/api/cpa/oauth/start', async (req, res) => {
 })
 
 app.get('/api/cpa/oauth/status', async (req, res) => {
+  if (localOAuthRetired()) return res.status(404).json({ status: 'error', error: '会话已过期或不存在', code: 'signin_not_found' })
   try {
     const state = String(req.query.state || '').trim()
     if (!state) return res.status(400).json({ error: '缺少 state 参数' })
@@ -1415,6 +1286,8 @@ app.post('/api/cpa/oauth/callback', async (req, res) => {
     // task-73 R26-A：与 /start 共用**同一个校验出口**，两条路径状态码不会再分叉。
     const supported = await requireOAuthProvider(res, provider)
     if (!supported) return
+    // 先校验入参（400），再报能力（410）：非法输入在两种模式下得到同一个答复
+    if (localOAuthRetired()) return res.status(410).json(LOCAL_OAUTH_RETIRED)
     const result = await submitOAuthCallback(supported, redirectUrl, state)
     invalidateControlPlaneCaches()
     addAudit('oauth_callback_submit', `provider=${provider}`)
@@ -1439,6 +1312,7 @@ app.post('/api/cpa/credentials/api-key', async (req, res) => {
 })
 
 app.post('/api/cpa/oauth/cancel', async (req, res) => {
+  if (localOAuthRetired()) return res.status(404).json({ error: '会话已过期或不存在', code: 'signin_not_found' })
   try {
     const state = String(req.body?.state || '').trim()
     if (state) {
@@ -1452,8 +1326,13 @@ app.post('/api/cpa/oauth/cancel', async (req, res) => {
 
 app.post('/api/models/sync', async (_req, res) => {
   try {
-    const { syncUpstreamModels } = await import('./modelSync.js')
-    const result = await syncUpstreamModels({ force: true })
+    // 与 POST /api/sync/model-discovery/run 同一个准入：手动冷却期内 429（带 Retry-After），不再无限强制全量探测。
+    const outcome = await syncCenter.runModelDiscovery()
+    if (!('result' in outcome)) {
+      if (typeof outcome.body.retryAfterSec === 'number') res.setHeader('Retry-After', String(outcome.body.retryAfterSec))
+      return res.status(outcome.status).json(outcome.body)
+    }
+    const { result } = outcome
     invalidateControlPlaneCaches()
     addAudit('sync_upstream_models', 'all', `added=${result.addedModels.length}, total=${result.totalModels}`)
     res.json({ ok: true, result })
@@ -1575,10 +1454,22 @@ app.post('/api/rtk/upgrade', async (req, res) => {
   const { upgradeRTK } = await import('./rtkService.js')
   await rtkBinaryRoute('upgrade', upgradeRTK)(req, res)
 })
-// A/B 实验台的偏好留痕（Lead 挂载；处理器自带 401/400/500 映射与密钥脱敏）。
-app.post('/api/ab/preference', async (req, res) => {
-  const { handleAbPreference } = await import('./abLab.js')
-  await handleAbPreference(req, res)
+// 同步中心（契约 C3）与 RTK 全局开关（C4）：任务登记与路由在 server/syncRoutes.ts。
+const magpieAccountQuota = () => accountsService().magpieReady()
+const syncCenter = installSyncCenter(app, {
+  refreshAccountQuota: async () => {
+    // magpie + local：额度来自 Magpie 账号（到期的服务才读，5 分钟下限照旧）；内核不可用时回落到原路径（报不支持）
+    if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
+      const magpie = await accountsService().refreshForSync()
+      if (magpie) return magpie
+    }
+    monitorCoordinator.clear('monitor')
+    return monitorCoordinator.run('monitor', loadMonitorPayload)
+  },
+  magpieAccountQuota,
+  onModelsChanged: invalidateControlPlaneCaches,
+  dataPlaneStatus: () => readDataPlaneRelayStatus(db, config.dataPlaneEnabled),
+  addAudit,
 })
 app.get('/api/audit', (_req, res) => res.json({ items: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100').all() }))
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }))
@@ -1592,7 +1483,7 @@ app.get(['/docs', '/docs/'], (_req, res) => {
 // 入口 HTML 必须每次重新验证，避免浏览器把旧 bundle 引用缓存一小时；
 // 带内容哈希的 asset 可以安全长期缓存，且不再让 static middleware 截获 index.html。
 // 静态文本压缩（task-50）：只接管 dist 下「可压缩扩展名 + ≥1KB」的 GET/HEAD 且无 Range 的请求；
-// 其余一律 next() 交给 express.static / SPA 回退，两个 HTML 都 <1KB 所以完全不受影响。
+// 其余一律 next() 交给 express.static / SPA 回退（`/`、深链接、`/docs` 都不经过压缩层）。
 // 语义细节（ETag/304/immutable/Vary/内存缓存上限）见 server/compression.ts 顶部注释。
 app.use(staticCompression(dist, { maxAgeSeconds: 3600 }))
 app.use(express.static(dist, { maxAge: '1h', immutable: true, index: false }))
@@ -1628,8 +1519,21 @@ app.use((error: unknown, req: express.Request, res: express.Response, next: expr
 })
 
 startSync()
-const { startModelCatalogWatcher } = await import('./modelSync.js')
-startModelCatalogWatcher()
+// 代理订阅刷新与账号代理扫描（首次运行只新增出口与索引，不改任何账号）。
+registerProxyPoolJobs(syncRegistry, proxyService())
+void installCredentialProxyHook(proxyService()).catch(() => undefined)
+// 代理巡检（6h 一轮、只查在用出口）与托管 mihomo（只在有加密节点时启动；默认随控制台重启保活，由下一个控制台核验后接管）。
+installProxyChecks()
+void startManagedMihomo()
+// 模型发现、价格刷新的节拍与目录监听都由同步中心排程（单飞 + 退避 + 重启不重置节拍）。
+syncCenter.start()
+// 运行记录、requests24h 计数与账号冷却走 5s 防抖落盘：kickstart / Ctrl-C 前先写一次，再按原信号退出。
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    try { syncRegistry.flush() } catch { /* 落盘失败不能挡住退出 */ }
+    process.kill(process.pid, signal)
+  })
+}
 if (config.gatewayEngine === 'magpie') {
   const { startMagpieServer } = await import('./magpieRuntime.js')
   await startMagpieServer()
@@ -1643,14 +1547,5 @@ app.listen(config.port, config.host, () => {
   // before analytical workers begin reading a large production database.
   setTimeout(warmDefaultReportsSafely, 2_000).unref()
   setInterval(warmDefaultReportsSafely, REPORT_WARM_INTERVAL_MS).unref()
-  // 网关价格补进本地价格表，用量入库时才能给静态表缺失的模型结算成本。
-  // 拉取失败不影响启动；30 分钟一轮跟随上游改价。
-  void refreshGatewayPricing().then((added) => {
-    if (added) console.log(JSON.stringify({ category: '[AUDIT]', event: 'pricing.gateway_merge', stage: 'startup', outcome: 'ok', added }))
-  })
-  setInterval(() => {
-    void refreshGatewayPricing().then((added) => {
-      if (added) console.log(JSON.stringify({ category: '[AUDIT]', event: 'pricing.gateway_merge', stage: 'periodic', outcome: 'ok', added }))
-    })
-  }, 30 * 60_000).unref()
+  // 网关价格（30 分钟一轮）由同步中心的 pricing 任务负责，见 server/syncRoutes.ts。
 })

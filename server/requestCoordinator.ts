@@ -9,13 +9,38 @@ export class RequestCoordinator<T> {
   private readonly staleWhileRevalidateMs: number
   private readonly now: () => number
   private readonly schedule: Schedule
+  private readonly maxEntries: number
   private revision = 0
 
-  constructor(options: { ttlMs?: number; staleWhileRevalidateMs?: number; now?: () => number; schedule?: Schedule } = {}) {
+  /**
+   * `maxEntries` bounds the cache for callers whose keys come from user input (filters, pages, days): when a write
+   * would exceed it, entries past their stale window go first, then the least recently written. Default: unbounded
+   * (callers with a fixed key set).
+   */
+  constructor(options: { ttlMs?: number; staleWhileRevalidateMs?: number; now?: () => number; schedule?: Schedule; maxEntries?: number } = {}) {
     this.ttlMs = options.ttlMs ?? 0
     this.staleWhileRevalidateMs = options.staleWhileRevalidateMs ?? 0
     this.now = options.now ?? Date.now
     this.schedule = options.schedule ?? ((task) => setImmediate(task))
+    this.maxEntries = options.maxEntries !== undefined && options.maxEntries > 0 ? Math.floor(options.maxEntries) : Number.POSITIVE_INFINITY
+  }
+
+  /** Cached entries (expired ones included until they are evicted or read again). */
+  get size(): number {
+    return this.cache.size
+  }
+
+  private store(key: string, entry: Entry<T>) {
+    // re-insert so Map order is write order: the first key is the least recently written
+    this.cache.delete(key)
+    this.cache.set(key, entry)
+    if (this.cache.size <= this.maxEntries) return
+    const now = this.now()
+    for (const [cachedKey, cached] of this.cache) if (cached.staleUntil <= now) this.cache.delete(cachedKey)
+    for (const cachedKey of this.cache.keys()) {
+      if (this.cache.size <= this.maxEntries) break
+      this.cache.delete(cachedKey)
+    }
   }
 
   private load(key: string, loader: () => Promise<T> | T, deferred = false): Promise<T> {
@@ -27,7 +52,7 @@ export class RequestCoordinator<T> {
       const value = await loader()
       if (this.ttlMs > 0 && revision === this.revision) {
         const expiresAt = this.now() + this.ttlMs
-        this.cache.set(key, { value, expiresAt, staleUntil: expiresAt + this.staleWhileRevalidateMs })
+        this.store(key, { value, expiresAt, staleUntil: expiresAt + this.staleWhileRevalidateMs })
       }
       return value
     }

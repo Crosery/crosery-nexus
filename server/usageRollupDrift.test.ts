@@ -100,7 +100,8 @@ const runScript = (command: string, file: string, extra: string[] = []) => {
 }
 
 test('端到端（脚本）：一致的库 → check 退出码 0 / ok；漂移 2× 的库 → 退出码 1 / alert', () => {
-  const now = Date.UTC(2026, 9, 1, 8, 47, 33)
+  // 脚本按真实时钟取 24h 窗口：夹具锚定当前时刻，写死日期会随时间滑出窗口（空窗口恒 ok）
+  const now = Date.now()
   const rows = Array.from({ length: 400 }, (_, index) => ({ ts: now - (index % 200) * 60_000, provider: ['openai', 'claude'][index % 2], tokens: 1_000, cost: 0.01 }))
 
   const clean = makeFixture(rows, 1)

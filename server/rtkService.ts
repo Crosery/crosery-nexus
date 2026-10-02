@@ -1141,7 +1141,28 @@ export async function getRTKStats(
   return { version, gain, days }
 }
 
-export async function readLocalPayload(binPath: string | null, home: string = resolveHome()): Promise<RtkPlanePayload> {
+/**
+ * `rtk --version` / `rtk gain` 每次都是两个子进程；版本小组件、状态页、/api/version 会在同一次
+ * 页面加载里各读一遍。按 (二进制, HOME) 缓存 30s（缓存的是 Promise，并发读取共用一次执行）；
+ * `fresh` 读取（写入后的复核、测试）直接跳过缓存。agent 钩子状态是文件读取，不进这层缓存。
+ */
+const LOCAL_STATS_TTL_MS = 30_000
+const localStatsCache = new Map<string, { at: number; value: Promise<{ version: string | null; gain: RtkGain | null; days: RtkDay[] }> }>()
+
+function cachedRTKStats(binPath: string, home: string, fresh: boolean) {
+  const key = `${binPath}\0${home}`
+  const hit = localStatsCache.get(key)
+  if (!fresh && hit && Date.now() - hit.at < LOCAL_STATS_TTL_MS) return hit.value
+  const value = getRTKStats(binPath, home)
+  localStatsCache.set(key, { at: Date.now(), value })
+  return value
+}
+
+export function resetRtkStatsCache(): void {
+  localStatsCache.clear()
+}
+
+export async function readLocalPayload(binPath: string | null, home: string = resolveHome(), options: { fresh?: boolean } = {}): Promise<RtkPlanePayload> {
   const agents = detectAgentHooks(home)
   if (!binPath) {
     return {
@@ -1156,7 +1177,7 @@ export async function readLocalPayload(binPath: string | null, home: string = re
       agents,
     }
   }
-  const { version, gain, days } = await getRTKStats(binPath, home)
+  const { version, gain, days } = await cachedRTKStats(binPath, home, options.fresh === true)
   return { connected: true, path: binPath, version, gain, days, latest: null, url: RTK_URL, agents }
 }
 
@@ -1184,7 +1205,7 @@ export type AuthoritativeReadOptions = { home?: string; fresh?: boolean; kernel?
 export async function readAuthoritativeRtk(options: AuthoritativeReadOptions = {}): Promise<AuthoritativeRead> {
   const home = options.home || resolveHome()
   const bin = findRTKBinary()
-  const local = await readLocalPayload(bin, home)
+  const local = await readLocalPayload(bin, home, { fresh: options.fresh })
   const resolution = await resolveRtkPlane({ fresh: options.fresh, kernel: options.kernel, relay: options.relay })
   const planes = resolution.planes.map(probe => ({ ...probe }))
   const errors: string[] = []
@@ -2146,3 +2167,143 @@ export function rtkFailure(error: unknown): RTKFailure {
 }
 
 export { probeLocalPlane }
+
+/* ------------------------------------------------------------------ */
+/* 全局开关（CONTRACTS C4）：在权威平面上批量套用逐 agent 开关          */
+/* ------------------------------------------------------------------ */
+
+export type RtkGlobalView = {
+  /** true = 全部开；false = 全部关；null = 混合或没有可控 agent。 */
+  on: boolean | null
+  plane: RtkPlaneId | null
+  agents: { supported: number; on: number }
+  savings: { pct: number | null; tokens: number | null } | null
+  writable: boolean
+  reason: string | null
+  /** 只在 reason=rtk_binary_missing 时给出：人工安装命令（控制台不代装本机 rtk）。 */
+  installHint?: string
+}
+
+export type RtkGlobalResult = {
+  /** 每个 agent 都写成功，且写后复核的 on 等于目标；任一不满足即 false。 */
+  ok: boolean
+  on: boolean | null
+  plane: RtkPlaneId
+  /** 写后复核实际读到的平面；与 plane 不同时 on=null、degraded 说明原因（不拿别的平面的状态冒充写入结果）。 */
+  readPlane?: RtkPlaneId
+  degraded?: 'verify_plane_unavailable'
+  /** 写后复核仍不在目标状态的 agent（可能是被别的 agent 的 rtk CLI 连带改坏，或并发改动）。 */
+  offTarget: string[]
+  results: Array<{
+    agent: string
+    ok: boolean
+    error: string | null
+    reason?: string
+    unchanged?: boolean
+    /** 逐 agent 开关原样带回的备份与连带改动明细：未自动还原的文件需要人工确认，绝不吞掉。 */
+    backupId?: string
+    collateral?: RtkCollateralEntry[]
+    collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
+  }>
+}
+
+/**
+ * 全局开关只作用于「权威平面上可控的 agent」：远端平面取远端视图；本机平面只取已安装且支持全局钩子的
+ * agent——给没装的工具建配置目录不是「打开 RTK」，而是凭空改用户的 HOME。
+ */
+function globalTargets(status: RTKStatusView): RtkAgentView[] {
+  const agents = status.plane === 'local' ? status.localAgents : status.agents
+  return agents.filter(agent => agent.supported && !agent.blocked && (status.plane !== 'local' || agent.installed))
+}
+
+function globalWriteBlocker(status: RTKStatusView, policy: RtkWritePolicy, supported: number): { status: number; reason: string; message: string } | null {
+  if (!supported) return { status: 409, reason: 'no_supported_agents', message: '权威平面上没有可统一开关的 agent' }
+  // RTK_WRITE_MODE=off 是「全只读」：先于任何平面的远端/内核开关判定。
+  if (policy.mode === 'off') return { status: 403, reason: 'write_disabled', message: 'RTK_WRITE_MODE=off：RTK 写入已关闭' }
+  if (status.plane === 'local') {
+    if (!status.local.connected) return { status: 503, reason: 'rtk_binary_missing', message: `本机未安装 rtk：${RTK_INSTALL_HINT}` }
+    return null
+  }
+  if (status.plane === 'kernel') {
+    return policy.kernelWriteEnabled && policy.remoteWriteEnabled ? null
+      : { status: 403, reason: 'kernel_write_disabled', message: '内核平面写入默认关闭（RTK_ALLOW_KERNEL_WRITE + RTK_ALLOW_REMOTE_WRITE）' }
+  }
+  return policy.remoteWriteEnabled ? null
+    : { status: 403, reason: 'remote_write_disabled', message: '远端写入默认关闭，需显式设置 RTK_ALLOW_REMOTE_WRITE=1' }
+}
+
+export function rtkGlobalView(status: RTKStatusView, policy: RtkWritePolicy = readRtkWritePolicy()): RtkGlobalView {
+  const targets = globalTargets(status)
+  const onCount = targets.filter(agent => agent.on).length
+  const blocker = globalWriteBlocker(status, policy, targets.length)
+  return {
+    on: !targets.length ? null : onCount === targets.length ? true : onCount === 0 ? false : null,
+    plane: status.plane,
+    agents: { supported: targets.length, on: onCount },
+    savings: status.gain
+      ? { pct: Number.isFinite(status.gain.pct) ? status.gain.pct : null, tokens: Number.isFinite(status.gain.saved) ? status.gain.saved : null }
+      : null,
+    writable: !blocker,
+    reason: blocker?.reason ?? null,
+    ...(blocker?.reason === 'rtk_binary_missing' ? { installHint: RTK_INSTALL_HINT } : {}),
+  }
+}
+
+export async function readRTKGlobal(options: AuthoritativeReadOptions = {}): Promise<RtkGlobalView> {
+  return rtkGlobalView(await readRTKStatus(options))
+}
+
+let globalApplying = false
+
+/**
+ * 逐个调用现有的 setRTKAgentHook（同一套写闸门、备份、复核与回滚），已是目标状态的 agent 不动。
+ * 永远要求 confirm:true（即使 RTK_WRITE_MODE=local）：一次点击会改多个 agent 的配置。
+ * 部分失败如实逐条返回，不回滚已成功的 agent——每个 agent 的写入本身是原子且可单独回退的。
+ */
+export async function setRTKGlobal(on: boolean, options: Omit<RtkToggleOptions, 'plane'> = {}): Promise<RtkGlobalResult> {
+  if (options.confirm !== true) {
+    throw new RtkPlaneError(403, 'local', 'confirmation_required', '全局开关会改动多个 agent 的配置，需要请求带 confirm:true')
+  }
+  if (globalApplying) throw new RtkPlaneError(409, 'local', 'global_apply_running', '全局开关正在应用中')
+  globalApplying = true
+  try {
+    const home = options.home || resolveHome()
+    const readOptions = { home, fresh: true, kernel: options.kernel, relay: options.relay }
+    const status = await readRTKStatus(readOptions)
+    const targets = globalTargets(status)
+    const blocker = globalWriteBlocker(status, readRtkWritePolicy(), targets.length)
+    if (blocker) throw new RtkPlaneError(blocker.status, status.plane, blocker.reason, blocker.message)
+    const results: RtkGlobalResult['results'] = []
+    for (const agent of targets) {
+      if (agent.on === on) {
+        results.push({ agent: agent.id, ok: true, error: null, unchanged: true })
+        continue
+      }
+      try {
+        const applied = await setRTKAgentHook(agent.id, on, { ...options, plane: status.plane, home, confirm: true })
+        results.push({
+          agent: agent.id,
+          ok: true,
+          error: null,
+          ...(applied.backupId ? { backupId: applied.backupId } : {}),
+          ...(applied.collateral?.length ? { collateral: applied.collateral } : {}),
+          ...(applied.collateralSkipped?.length ? { collateralSkipped: applied.collateralSkipped } : {}),
+        })
+      } catch (error) {
+        const failure = rtkFailure(error)
+        results.push({ agent: agent.id, ok: false, error: failure.error, ...(failure.reason ? { reason: failure.reason } : {}) })
+      }
+    }
+    const afterStatus = await readRTKStatus(readOptions)
+    // 复核必须读写入的那个平面：权威读取回落到别的平面时，它的开关状态不能冒充写入结果。
+    if (afterStatus.plane !== status.plane) {
+      return { ok: false, on: null, plane: status.plane, readPlane: afterStatus.plane, degraded: 'verify_plane_unavailable', offTarget: [], results }
+    }
+    const after = rtkGlobalView(afterStatus)
+    // 复核以写后的真实文件为准：别的 agent 的 CLI 可能把先写好的 agent 连带改坏（结果仍是 ok:true）
+    const offTarget = globalTargets(afterStatus).filter(agent => agent.on !== on).map(agent => agent.id)
+    return { ok: results.every(result => result.ok) && after.on === on, on: after.on, plane: status.plane, offTarget, results }
+  } finally {
+    globalApplying = false
+  }
+}

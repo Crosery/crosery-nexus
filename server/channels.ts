@@ -363,10 +363,21 @@ export async function removeCredential(name: string) {
   await deleteAuthFile(name)
 }
 
+/** 凭据级代理写入成功后的观察者（代理池用它维护「账号 → 出口」索引）；观察者出错不影响写入。 */
+const credentialProxyListeners = new Set<(name: string, proxyUrl: string) => void>()
+
+export function onCredentialProxyChanged(listener: (name: string, proxyUrl: string) => void) {
+  credentialProxyListeners.add(listener)
+  return () => credentialProxyListeners.delete(listener)
+}
+
 /** 凭据级代理。'' 继承全局，'direct' 强制直连，其余为代理地址。 */
 export async function setCredentialProxy(name: string, proxyUrl: string) {
   invalidateGatewaySnapshot()
   await setAuthFileProxy(name, proxyUrl)
+  for (const listener of credentialProxyListeners) {
+    try { listener(name, proxyUrl) } catch { /* 索引可重建 */ }
+  }
 }
 
 type CredentialEntry = Awaited<ReturnType<typeof listCredentials>>[number]

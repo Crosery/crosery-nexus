@@ -43,6 +43,11 @@ export type LiveUsageEvent = {
   /** 该次请求实际花费的美元，未定价模型为 null */
   costUsd: number | null
   overCeiling: boolean
+  /**
+   * The provider is no longer a current channel (set by the sync loop when it broadcasts). History replays all
+   * channels by default, so the stream does too; a client that asked for `currentOnly` never receives these.
+   */
+  removed?: boolean
 }
 
 export type RawUsageInput = {
@@ -137,16 +142,19 @@ type Client = {
   clientType: string
   keyHash: string
   provider: string
+  /** 只看当前渠道：已移除渠道的事件不推给它（与首帧回放的 currentOnly 同一口径） */
+  currentOnly: boolean
   /** Non-null until the async history replay is ready. */
   buffered: LiveUsageEvent[] | null
 }
 
-const hasFilter = (client: Client) => Boolean(client.model || client.clientType || client.keyHash || client.provider)
+const hasFilter = (client: Client) => Boolean(client.model || client.clientType || client.keyHash || client.provider || client.currentOnly)
 
 const matchesClient = (client: Client, event: LiveUsageEvent) =>
   (!client.model || event.model === client.model)
   && (!client.clientType || event.clientType === client.clientType)
   && (!client.keyHash || event.keyHash === client.keyHash)
+  && (!client.currentOnly || !event.removed)
   && providerMatches(client.provider, event.provider)
 
 const clients = new Set<Client>()
@@ -182,15 +190,15 @@ export function clientCount(): number {
  * 注册客户端。**已达上限返回 null**（调用方必须回 503 + Retry-After；
  * 不要在这里静默丢弃，否则客户端以为连上了却收不到任何事件）。
  */
-function registerClient(res: Response, model: string, clientType: string, keyHash: string, provider: string, buffered: boolean): Client | null {
+function registerClient(res: Response, model: string, clientType: string, keyHash: string, provider: string, buffered: boolean, currentOnly = false): Client | null {
   if (!hasClientCapacity()) return null
-  const client: Client = { id: nextClientId++, res, model, clientType, keyHash, provider, buffered: buffered ? [] : null }
+  const client: Client = { id: nextClientId++, res, model, clientType, keyHash, provider, currentOnly, buffered: buffered ? [] : null }
   clients.add(client)
   return client
 }
 
-export function addClient(res: Response, model = '', clientType = '', keyHash = '', provider = ''): (() => void) | null {
-  const client = registerClient(res, model, clientType, keyHash, provider, false)
+export function addClient(res: Response, model = '', clientType = '', keyHash = '', provider = '', currentOnly = false): (() => void) | null {
+  const client = registerClient(res, model, clientType, keyHash, provider, false, currentOnly)
   if (!client) return null
   // 释放计数：**必须**在断开（含异常断开）时调用；只加不减会变成另一个泄漏
   return () => { clients.delete(client) }
@@ -201,8 +209,8 @@ export function addClient(res: Response, model = '', clientType = '', keyHash = 
  * arrive while the query is pending are retained in memory, then merged with
  * the history by request id so the history/live hand-off has no event gap.
  */
-export function addBufferedClient(res: Response, model = '', clientType = '', keyHash = '', provider = '') {
-  const client = registerClient(res, model, clientType, keyHash, provider, true)
+export function addBufferedClient(res: Response, model = '', clientType = '', keyHash = '', provider = '', currentOnly = false) {
+  const client = registerClient(res, model, clientType, keyHash, provider, true, currentOnly)
   if (!client) return null
   return {
     activate(history: LiveUsageEvent[]): LiveUsageEvent[] {

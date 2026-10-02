@@ -10,7 +10,7 @@
  *   `GET/HEAD` + 无 `Range` + 路径落在静态根目录内 + 扩展名属于可压缩文本 + 文件 ≥ 1KB。
  * - 其余一切（API、SSE、小文件、二进制、Range 请求、目录、SPA 回退）**原样 `next()`**，
  *   由既有处理器负责，因此 `express.static` 的 maxAge/immutable 语义、`/docs` 的 sendFile、
- *   SPA 回退都不受影响（`index.html`/`docs.html` 都 < 1KB，根本不会进入本中间件）。
+ *   SPA 回退都不受影响（`/`、深链接与 `/docs` 都不是 dist 里的可压缩文件路径，根本不会进入本中间件）。
  * - 命中可压缩文件时，**无论客户端是否接受压缩**都由本中间件出响应，这样 identity 响应也能
  *   带上 `Vary: Accept-Encoding`（否则共享缓存可能把压缩体发给不接受压缩的客户端）。
  *   ETag 统一按「文件 stat」生成（与 `send` 的弱 ETag 同构），三种编码共用一个 ETag，
@@ -180,7 +180,7 @@ export function staticCompression(root: string, options: { maxAgeSeconds?: numbe
       return next()
     }
     if (!stat.isFile()) return next()
-    if (stat.size < MIN_COMPRESS_BYTES) return next() // 小文件保持原行为（/docs 与 index.html 都在此列）
+    if (stat.size < MIN_COMPRESS_BYTES) return next() // 小文件保持原行为
 
     const etag = fileETag(stat)
     const baseHeaders = () => {

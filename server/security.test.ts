@@ -7,9 +7,10 @@ process.env.SESSION_SECRET = 'unit-test-session-secret'
 
 // task-58：会话实现已归并到 auth.ts，本文件只测「传输与滥用防护工具」，
 // 会话相关的原语改从 auth.js 导入（契约测试「签发↔验证」随之变成同模块内自洽 + 与 isAuthenticated 对照）。
-const { createLoginRateLimiter, shouldSecureCookie, errorResponseBody } = await import('./security.js')
+const { createKnownGoodSet, createLoginRateLimiter, shouldSecureCookie, errorResponseBody } = await import('./security.js')
 const {
   clearRevokedSessions,
+  createSessionToken,
   isAuthenticated,
   isSessionRevoked,
   issueSession,
@@ -72,6 +73,15 @@ test('不同来源互相独立（不同 IP、不同用户名都不共享计数�
   assert.equal(limiter.check('1.1.1.1|other').allowed, true, '同一 IP 的另一个用户名不受影响')
 })
 
+test('API Key 登录的限流键只看 IP：换 Key 猜不会换桶，且与管理员登录的桶互不串扰', async () => {
+  const { keyLoginRateLimitKey, keyLoginRateLimiter, loginRateLimiter } = await import('./security.js')
+  const request = { ip: '203.0.113.9', socket: {}, body: { apiKey: 'sk-guess-1' } } as unknown as import('express').Request
+  const other = { ip: '203.0.113.9', socket: {}, body: { apiKey: 'sk-guess-2' } } as unknown as import('express').Request
+  assert.equal(keyLoginRateLimitKey(request), keyLoginRateLimitKey(other), '同一 IP 的不同候选 Key 必须落进同一个桶')
+  assert.equal(keyLoginRateLimitKey(request), '203.0.113.9')
+  assert.notEqual(keyLoginRateLimiter, loginRateLimiter, 'Key 登录有独立的限流实例')
+})
+
 test('限流器内存有界：过期条目会被清理', () => {
   let now = 0
   const limiter = createLoginRateLimiter({ maxFailures: 5, windowMs: 1_000, now: () => now })
@@ -87,12 +97,37 @@ test('限流器内存有界：过期条目会被清理', () => {
 
 test('撤销集合按 token 摘要记录，且**不保存 token 原文**', () => {
   clearRevokedSessions()
-  const token = `${Date.now() + 60_000}.deadbeef`
+  const token = createSessionToken({ role: 'admin' })
   revokeSession(token)
   assert.equal(isSessionRevoked(token), true)
-  assert.equal(isSessionRevoked(`${Date.now() + 60_000}.other`), false)
+  assert.equal(isSessionRevoked(createSessionToken({ role: 'admin' }, Date.now() + 61_000)), false)
   assert.equal(revokedSessionCount(), 1)
   clearRevokedSessions()
+})
+
+test('AI-01 撤销表只收验签通过的 token：匿名登出灌伪造远期 Cookie 挤不掉已登出的 token', async () => {
+  const { logoutRoute } = await import('./sessionRoutes.js')
+  clearRevokedSessions()
+  const stolen = createSessionToken({ role: 'admin' })
+  revokeSession(stolen)
+  assert.equal(isSessionRevoked(stolen), true)
+  const fakeResponse = () => ({ clearCookie() { return this }, json() { return this } }) as unknown as import('express').Response
+  // 修复前：10,001 条伪造 token（远期到期）把真正登出的 token 按「最早到期」淘汰出去，它重新可用
+  for (let i = 0; i <= 10_000; i += 1) {
+    const forged = `9999999999999999.x${i}`
+    logoutRoute({ cookies: { [SESSION_COOKIE]: forged } } as unknown as import('express').Request, fakeResponse())
+    if (i % 2500 === 0) revokeSession(`${Date.now() + 3_600_000}.v2.admin.-.${'0'.repeat(64)}${i}`)
+  }
+  assert.equal(revokedSessionCount(), 1, '伪造/验签失败的 token 不得进入撤销表')
+  assert.equal(isSessionRevoked(stolen), true, '已登出的 token 仍然被撤销')
+  assert.equal(isAuthenticated({ cookies: { [SESSION_COOKIE]: stolen } } as unknown as import('express').Request), false)
+  clearRevokedSessions()
+})
+
+test('AI-02 Key 登录：成功次数按 Key 单独限流（独立实例），与 IP 失败桶互不串扰', async () => {
+  const { keyLoginRateLimiter, keyLoginSuccessLimiter, publicUsageRateLimiter } = await import('./security.js')
+  assert.notEqual(keyLoginSuccessLimiter, keyLoginRateLimiter)
+  assert.notEqual(publicUsageRateLimiter, keyLoginRateLimiter, '/v1/usage 的失败桶不吃登录的配额')
 })
 
 test('已过期的 token 不会被判定为「在撤销集合里」（集合有界）', () => {
@@ -169,4 +204,22 @@ test('错误响应体只有通用文案（不含堆栈/路径/内部细节）', 
   }
   assert.equal(errorResponseBody(413).error, '请求体过大')
   assert.equal(errorResponseBody(500).error, '服务器内部错误')
+})
+
+test('已知良好集合（/v1/usage 锁定时的放行口）：只认「本地址 + 本 Key」，过期即失效，条目有界', () => {
+  let now = 1_000
+  const known = createKnownGoodSet({ ttlMs: 100, max: 2, now: () => now })
+  known.remember('203.0.113.1', 'key-a')
+  assert.equal(known.has('203.0.113.1', 'key-a'), true)
+  assert.equal(known.has('203.0.113.2', 'key-a'), false, '换地址不算')
+  assert.equal(known.has('203.0.113.1', 'key-b'), false, '换 Key 不算')
+  now += 100
+  assert.equal(known.has('203.0.113.1', 'key-a'), false, '过期即失效')
+  assert.equal(known.size(), 0)
+  known.remember('ip', 'k1')
+  known.remember('ip', 'k2')
+  known.remember('ip', 'k1') // 刷新 k1：最旧的变成 k2
+  known.remember('ip', 'k3')
+  assert.equal(known.size(), 2)
+  assert.deepEqual([known.has('ip', 'k1'), known.has('ip', 'k2'), known.has('ip', 'k3')], [true, false, true], '超上限淘汰最久没成功的')
 })

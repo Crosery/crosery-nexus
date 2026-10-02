@@ -345,27 +345,23 @@ test('凭据名穿越（越界删/读）与 provider 穿越（越界写）在 HT
     const strays = fs.readdirSync('/tmp').filter(name => name.startsWith(path.basename(canaryWrite)))
     assert.deepEqual(strays, [], `DATA_DIR 之外不得落盘：${strays.join(', ')}`)
 
-    // ⑦ 合法 provider 的完整 OAuth 流程仍然可用：先 start 拿 state，再回调，落盘在 auth-files 内
+    // ⑦ 合法 provider 在 magpie + local 下走「账号」页的真实登录：模拟器 start/callback 410，且不落盘
+    const before = new Set(fs.readdirSync(authDir))
     const start = await fetch(`${base}/api/cpa/oauth/start`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json' },
       body: JSON.stringify({ provider: 'claude' }),
     })
-    const startText = await start.text()
-    assert.equal(start.status, 200, `合法 provider 的 oauth/start 必须成功：${start.status} ${startText}`)
-    const started = JSON.parse(startText) as { state?: string; url?: string }
-    assert.ok(started.state, `oauth/start 必须返回 state：${JSON.stringify(started)}`)
-    const before = new Set(fs.readdirSync(authDir))
-    const okCallback = await fetch(`${base}/api/cpa/oauth/callback`, {
+    assert.equal(start.status, 410, `本机模拟器已退役，合法 provider 的 oauth/start 必须 410：${start.status}`)
+    assert.equal((await start.json() as { code?: string }).code, 'use_accounts_signin')
+    const retiredCallback = await fetch(`${base}/api/cpa/oauth/callback`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude', redirectUrl: 'https://example.com/cb?code=xyz', state: started.state }),
+      body: JSON.stringify({ provider: 'claude', redirectUrl: 'https://example.com/cb?code=xyz', state: 'any' }),
     })
-    const okText = await okCallback.text()
-    assert.equal(okCallback.status, 200, `合法回调必须成功：${okCallback.status} ${okText}`)
-    // 落盘名用的是**规范化**后的 provider（claude → anthropic），所以按「新增了哪个文件」判断
-    const created = fs.readdirSync(authDir).filter(name => !before.has(name))
-    assert.equal(created.length, 1, `合法回调必须恰好落盘一个文件：${JSON.stringify(created)}`)
-    assert.match(created[0], /^[a-z-]+-\d+\.json$/, '落盘文件名必须是单段 <provider>-<ts>.json')
-    assert.ok(created.every(name => !name.includes('/')), '落盘文件名必须单段')
+    assert.equal(retiredCallback.status, 410, `退役的回调必须 410：${retiredCallback.status}`)
+    assert.deepEqual(fs.readdirSync(authDir).filter(name => !before.has(name)), [], '退役路径不得落盘')
+    const created = [`anthropic-${process.pid}.json`]
+    fs.writeFileSync(path.join(authDir, created[0]), JSON.stringify({ type: 'claude', provider: 'claude', email: 'fixture@example.test', access_token: 'fixture-token' }), { mode: 0o600 })
+    cleanup.push(path.join(authDir, created[0]))
 
     // ⑧ 合法凭据的读取/删除仍然可用（同一路由，合法名字必须 200 —— 与越界名字的 400 成对照）
     const legitRead = await fetch(`${base}/api/credentials/${encodeURIComponent(created[0])}/proxy`, { headers: { cookie } })

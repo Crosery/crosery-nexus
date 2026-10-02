@@ -119,8 +119,9 @@ const directRows = (file: string, sql: string, params: unknown[]) => {
 
 test('契约：cache-trend 的 SQL 文本带 `INDEXED BY idx_usage_cache_rollup`（路由的判定依据）', async () => {
   const now = Date.UTC(2026, 9, 1, 12, 0, 0)
+  // 只看当前渠道：provider 清单 = 当前分组（与改口径前完全相同的下发形状）
   const reader = fakeReader()
-  await REPORTS.loadCacheTrendReport(reader as never, GROUPS, 168, '', '', '', '', now)
+  await REPORTS.loadCacheTrendReport(reader as never, GROUPS, 168, '', '', '', '', now, true)
   const [operation] = captureOperations(reader)
   assert.ok(operation, 'loader 必须至少下发一条查询')
   // 路由判定就是靠这个 hint 字符串：改了它，rollup 路径静默失效（回落到 events）
@@ -129,6 +130,19 @@ test('契约：cache-trend 的 SQL 文本带 `INDEXED BY idx_usage_cache_rollup`
   assert.equal(operation.params.length, 3, '不带 keyId 时应是 3 个参数（cutoff, cutoff, provider）')
   assert.equal(Number(operation.params[0]), now - 168 * 3_600_000, 'params[0] 必须是 cutoff')
   assert.equal(operation.params[2], [...GROUPS.map((group) => group.id)].sort()[0], 'params[2] 必须是渠道名（activeProviderValues 会排序）')
+
+  // 默认（全部渠道）：先读窗口内出现过的 provider，再按同一形状逐个下发；已移除渠道也在其中
+  const seen: Array<{ sql: string; params: unknown[] }> = []
+  const discovering = {
+    run: async (ops: Array<{ sql: string; params?: unknown[] }>) => {
+      seen.push(...ops.map((op) => ({ sql: op.sql, params: (op.params ?? []) as unknown[] })))
+      return ops.map((op) => (op.sql.includes('cache-trend-providers') ? [{ p: 'retired-channel' }, { p: GROUPS[0].id }] : []))
+    },
+  }
+  await REPORTS.loadCacheTrendReport(discovering as never, GROUPS, 168, '', '', '', '', now)
+  const perProvider = seen.filter((op) => op.sql.includes('INDEXED BY idx_usage_cache_rollup'))
+  assert.deepEqual(perProvider.map((op) => op.params[2]), ['retired-channel', GROUPS[0].id])
+  assert.ok(perProvider.every((op) => op.params.length === 3 && Number(op.params[0]) === now - 168 * 3_600_000))
 })
 
 test('契约：不命中路由的查询，直连与经池**逐行相等**', async () => {

@@ -79,6 +79,26 @@ test('结构性断言：白名单只覆盖必须公开的路径（不误放行 /
     `公开的 /api 路由必须恰好是这三个（实际：${publicApi.join(', ')}）`)
 })
 
+test('结构性断言：key 会话的可达面只有 /api/me*、/api/session、/api/logout，且 /api/me 下只有只读路由', () => {
+  const allowed = (pathname: string) => auth.KEY_SESSION_PATHS.some(pattern => pattern.test(pathname))
+  for (const pathname of ['/api/me', '/api/me/usage', '/api/me/requests', '/api/session', '/api/logout']) {
+    assert.ok(allowed(pathname), `${pathname} 应对 key 会话可达`)
+  }
+  for (const pathname of ['/api/meta', '/api/mex', '/api/keys', '/api/keys/x/reveal-token', '/api/monitor', '/api/usage-page', '/api/audit', '/api', '/api/', '/me', '/v1/usage']) {
+    assert.ok(!allowed(pathname), `${pathname} 不得出现在 key 会话的可达面里`)
+  }
+
+  const index = fs.readFileSync(path.join(REPO, 'server/index.ts'), 'utf8')
+  const mounts = registeredPaths(index).filter(entry => entry.kind === 'mount' && /^\/api\/me(\/|$)/.test(entry.path))
+  assert.deepEqual(mounts.map(entry => entry.path), ['/api/me'], 'key 用户数据面只挂在 /api/me（受保护前缀下）')
+
+  // /api/me 的路由在独立模块里注册：解析它，断言全部是 GET（key 会话的数据面不提供任何写操作）
+  const meSource = fs.readFileSync(path.join(REPO, 'server/meRoutes.ts'), 'utf8')
+  const meRoutes = [...meSource.matchAll(/router\.(get|post|put|patch|delete|all|use)\(\s*('[^']*')?/g)].map(match => `${match[1]} ${match[2] ?? ''}`.trim())
+  assert.ok(meRoutes.filter(route => route.startsWith('get ')).length >= 5, `应解析出 /api/me 的全部 GET 路由：${meRoutes.join(', ')}`)
+  assert.deepEqual(meRoutes.filter(route => !route.startsWith('get ') && route !== 'use'), [], `/api/me 下只允许 GET：${meRoutes.join(', ')}`)
+})
+
 /* ────────────────── ② 端到端行为 ────────────────── */
 
 function freePort(): Promise<number> {
@@ -150,7 +170,7 @@ test('端到端：未认证时白名单内可访问、白名单外 401、SPA 深
       body: JSON.stringify({ username: 'admin', password: 'wrong-password' }),
     })
     assert.equal(login.status, 401, '登录入口必须匿名可达（凭据错误 → 它的 401，而不是守卫的）')
-    assert.deepEqual(await login.json(), { error: '管理员账号或密码不正确' })
+    assert.deepEqual(await login.json(), { error: '管理员账号或密码不正确', code: 'invalid_credentials' })
 
     const logout = await fetch(`${base}/api/logout`, { method: 'POST' })
     assert.equal(logout.status, 200, '登出必须匿名可达')

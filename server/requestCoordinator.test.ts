@@ -96,3 +96,24 @@ test('clear forces the next run to reload instead of serving the stale-while-rev
   assert.equal(await coordinator.run('gateway', load), 3)
   assert.equal(scheduled.length, 0)
 })
+
+test('maxEntries bounds the cache: entries past their stale window go first, then the least recently written', async () => {
+  let now = 1_000
+  const coordinator = new RequestCoordinator<number>({ ttlMs: 1_000, staleWhileRevalidateMs: 1_000, now: () => now, maxEntries: 3 })
+  let calls = 0
+  const load = async () => ++calls
+  await coordinator.run('old', load)
+  now += 2_500 // 'old' is past its stale window
+  for (const key of ['a', 'b', 'c']) await coordinator.run(key, load)
+  assert.equal(coordinator.size, 3, 'the dead entry was swept, not a live one')
+  assert.equal(await coordinator.run('a', load), 2, 'a is still cached')
+  await coordinator.run('d', load)
+  assert.equal(coordinator.size, 3)
+  assert.equal(await coordinator.run('a', load), 6, 'the least recently written live entry (a) made room')
+  for (let page = 0; page < 500; page += 1) await coordinator.run(`page:${page}`, load)
+  assert.equal(coordinator.size, 3, 'ordinary browsing never grows past the bound')
+
+  const unbounded = new RequestCoordinator<number>({ ttlMs: 1_000, now: () => now })
+  for (let page = 0; page < 50; page += 1) await unbounded.run(`page:${page}`, load)
+  assert.equal(unbounded.size, 50, 'callers without maxEntries keep the old behaviour')
+})

@@ -146,8 +146,9 @@ export type CacheAnalytics = {
   }>
 }
 
-export function buildCacheAnalytics(rows: CacheEventRow[], activeGroups?: ConsoleGroup[]): CacheAnalytics {
-  const currentRows = activeGroups ? rows.filter((row) => isActiveProvider(row.provider || '', activeGroups)) : rows
+/** `currentOnly = false`：行已按全部渠道口径取出，只用 activeGroups 折叠渠道写法，不再剔除已移除渠道。 */
+export function buildCacheAnalytics(rows: CacheEventRow[], activeGroups?: ConsoleGroup[], currentOnly = true): CacheAnalytics {
+  const currentRows = activeGroups && currentOnly ? rows.filter((row) => isActiveProvider(row.provider || '', activeGroups)) : rows
   rows = currentRows
   const overall = emptyStat('全部')
   for (const row of rows) accumulate(overall, row)

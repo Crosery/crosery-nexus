@@ -5,7 +5,11 @@ import type { SnapshotValue } from './snapshotStore.js'
 
 export type DashboardPayload = {
   days: number
-  summary: { requests: number; tokens: number; avgLatency: number; errorRate: number }
+  /**
+   * `activeKeys` is part of the `/api/dashboard` contract (Change usage-a). The data-plane snapshot carries no
+   * per-Key dimension, so snapshot mode answers `null` (= not known here), never a fake 0.
+   */
+  summary: { requests: number; tokens: number; avgLatency: number; errorRate: number; activeKeys: number | null }
   trend: Array<{ bucket: string; requests: number; tokens: number; errors: number }>
   generatedAt: string
   sourceWatermark: string | null
@@ -86,6 +90,7 @@ export function dashboardFromSnapshot(snapshot: SnapshotValue<UsageSnapshot>): D
       tokens: value.summary.totalTokens,
       avgLatency: value.summary.averageLatencyMs,
       errorRate: value.summary.requests > 0 ? value.summary.errors / value.summary.requests : 0,
+      activeKeys: null,
     },
     trend: value.trend.map((point) => ({
       bucket: point.bucket.slice(0, 13),

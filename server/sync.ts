@@ -317,10 +317,10 @@ export function persistUsageRecords(records: UsageRecord[], groups: ConsoleGroup
         authIndex: diagnostics.authIndex,
         clientType: diagnostics.clientType,
       })
-      // 历史删除渠道仍可保留在 usage_events，但不能进入当前实时流；
-      // 否则缓存页会再次把旧渠道误显示成正在工作的渠道。
-      if (!isActiveProvider(provider, groups)) continue
-      live.push(toLiveEvent({
+      // 已移除渠道（不在当前分组）的新流量照样推送，但带 `removed` 标记：缓存页的首帧回放默认含全部渠道，
+      // 实时流必须同一口径；只看当前渠道（currentOnly）的订阅者在 liveStream 里按标记滤掉。
+      const removed = !isActiveProvider(provider, groups)
+      live.push({ removed, ...toLiveEvent({
         requestId,
         timestamp,
         model,
@@ -342,7 +342,7 @@ export function persistUsageRecords(records: UsageRecord[], groups: ConsoleGroup
         totalTokens: tokens.total_tokens || 0,
         clientType: diagnostics.clientType,
         userAgent: diagnostics.userAgent,
-      }))
+      }) })
     }
   })
   broadcast(live)

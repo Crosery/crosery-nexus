@@ -135,6 +135,13 @@ test('T1 内核平面：非 magpie 引擎 / socket 不存在都如实报未配�
   assert.equal(bySocket.reason, 'kernel_socket_missing')
 })
 
+test('内核平面：默认不读隔离 HOME 里的内核 RTK（RTK_KERNEL_PLANE 未开）', async () => {
+  const probe = await plane.probeKernelPlane({ engine: 'magpie' })
+  assert.equal(probe.available, false)
+  assert.equal(probe.state, 'not_configured')
+  assert.equal(probe.reason, 'kernel_rtk_sandboxed')
+})
+
 test('T1/T2 内核 socket 不可用时 status 仍可用，plane=local 且数据来自本机', async () => {
   const status = await service.readRTKStatus({
     home: tempHome('t1-local'),

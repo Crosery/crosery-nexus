@@ -1,4 +1,4 @@
-import { activeProviderPredicate } from './currentChannels.js'
+import { scopedProviderPredicate } from './currentChannels.js'
 import type { ConsoleGroup } from './groups.js'
 import { providerAliases, toLiveEvent, type LiveUsageEvent } from './liveStream.js'
 import { canonicalModelSql } from './modelIdentity.js'
@@ -46,8 +46,10 @@ export async function loadCacheLiveHistory(
   clientType: string,
   keyId = '',
   provider = '',
+  /** 默认回放全部渠道（含已移除渠道的历史），与缓存页签的报表同一口径；true = 只看当前渠道 */
+  currentOnly = false,
 ): Promise<LiveUsageEvent[]> {
-  const active = activeProviderPredicate(groups, 'u.provider')
+  const active = scopedProviderPredicate(groups, 'u.provider', currentOnly)
   const clauses = ['u.success = 1', active.sql]
   const params: Array<string | number> = [...active.params]
   if (model) {

@@ -106,6 +106,12 @@ async function login(harness: Harness): Promise<string> {
   return String(response.headers.get('set-cookie') || '').split(';')[0]
 }
 
+/** A local credential fixture (the retired OAuth simulator used to write one); no real credential. */
+const seedCredential = (authDir: string, name: string) => {
+  fs.mkdirSync(authDir, { recursive: true, mode: 0o700 })
+  fs.writeFileSync(path.join(authDir, name), JSON.stringify({ type: 'claude', provider: 'claude', email: 'fixture@example.test', access_token: 'fixture-token' }), { mode: 0o600 })
+}
+
 const readMeta = (dataDir: string): Record<string, { disabled?: boolean; proxy_url?: string }> => {
   const file = path.join(dataDir, 'auth-files-meta.json')
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return {} }
@@ -125,18 +131,13 @@ test('local 控制面：凭据启用/禁用与凭据级代理写入 200 且状�
     const cookie = await login(harness)
     const authDir = path.join(harness.dataDir, 'auth-files')
 
-    // 临时凭据：走**合法** OAuth 流程落盘（不触碰任何真实凭据）
+    // 本机 OAuth 模拟器已退役（2026-10-02，410）：临时凭据直接落一个夹具文件（不触碰任何真实凭据）
     const start = await fetch(`${harness.base}/api/cpa/oauth/start`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json' },
       body: JSON.stringify({ provider: 'claude' }),
     })
-    assert.equal(start.status, 200)
-    const started = await start.json() as { state?: string }
-    const callback = await fetch(`${harness.base}/api/cpa/oauth/callback`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude', redirectUrl: 'https://example.com/cb?code=abc', state: started.state }),
-    })
-    assert.equal(callback.status, 200, `OAuth 回调必须成功：${callback.status} ${await callback.text()}`)
+    assert.equal(start.status, 410, 'magpie + local 下 OAuth 模拟器不再发起登录')
+    seedCredential(authDir, 'claude-fixture.json')
     const name = fs.readdirSync(authDir).find(entry => entry.endsWith('.json'))
     assert.ok(name, `auth-files 里应当有刚创建的凭据：${JSON.stringify(fs.readdirSync(authDir))}`)
 
@@ -295,16 +296,8 @@ test('写不存在的凭据必须 404 credential_not_found 且不留孤儿 meta�
     assert.equal(metaText(), '(不存在)')
 
     // ④ 合法凭据：写 200 + 回读一致 + 删除后 meta 不留残键
-    const start = await fetch(`${harness.base}/api/cpa/oauth/start`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude' }),
-    })
-    const started = await start.json() as { state?: string }
-    await fetch(`${harness.base}/api/cpa/oauth/callback`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude', redirectUrl: 'https://example.com/cb?code=abc', state: started.state }),
-    })
     const authDir = path.join(harness.dataDir, 'auth-files')
+    seedCredential(authDir, 'claude-fixture.json')
     const real = fs.readdirSync(authDir).find(entry => entry.endsWith('.json'))
     assert.ok(real)
     const okProxy = 'http://127.0.0.1:7890'

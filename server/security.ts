@@ -124,6 +124,77 @@ export function loginRateLimitKey(request: Request, username: string): string {
 /** 进程内单例：登录路由用它。 */
 export const loginRateLimiter = createLoginRateLimiter()
 
+/**
+ * API Key 登录的限流键：**只按来源 IP**。
+ *
+ * 不能像管理员那样拼上「用户名」：Key 登录里被猜的东西就是 Key 本身，
+ * 把它放进键等于每换一个候选就拿到一个新桶，限流形同虚设。
+ */
+export function keyLoginRateLimitKey(request: Request): string {
+  return request.ip || request.socket?.remoteAddress || 'unknown'
+}
+
+/**
+ * Key 登录独立一个限流实例（阈值同样读 `LOGIN_*` 环境变量），与管理员登录的桶互不串扰。
+ * 调用方在 Key 登录**成功后不清零**：否则持有一个有效 Key 的人可以「猜几次 → 用自己的 Key 登一次」无限续命。
+ */
+export const keyLoginRateLimiter = createLoginRateLimiter()
+
+/**
+ * 同一把 Key 的**成功**登录次数（键 = key_hash；`recordFailure` 在这里记的是一次成功）：默认 10 分钟 10 次，
+ * 超过 429。有效 Key 的持有者不受 IP 限流约束，不设这道上限就能循环登录，刷屏审计、刷满会话撤销表。
+ */
+export const keyLoginSuccessLimiter = createLoginRateLimiter({
+  maxFailures: positiveInt(process.env.KEY_LOGIN_MAX_PER_KEY, 10),
+  windowMs: 10 * 60 * 1000,
+  maxBlockMs: 15 * 60 * 1000,
+})
+
+/**
+ * `/v1/usage*`（Authorization 自鉴权）带错 Key 的次数，按来源 IP：默认 5 分钟 20 次，超过 429。
+ * 阈值比登录宽：状态栏一类客户端会轮询，配错 Key 的一台机器不该很快锁住同一出口的其他人；
+ * 目的只是让它不再是不限次的 Key 有效性探测口。与登录的桶互不串扰。
+ */
+export const publicUsageRateLimiter = createLoginRateLimiter({
+  maxFailures: positiveInt(process.env.PUBLIC_USAGE_MAX_FAILURES, 20),
+  windowMs: 5 * 60 * 1000,
+  maxBlockMs: 15 * 60 * 1000,
+})
+
+/**
+ * 「这个地址用这把 Key 成功过」：`地址|key_hash → 最近成功时刻`，默认 24h 过期、最多 1 万条（按最近成功淘汰）。
+ *
+ * 给 `/v1/usage` 的失败桶开一个口子：同一出口（NAT/代理）上别人的错 Key 把地址锁住时，已经在这个地址
+ * 跑通过的客户端照常放行；没在这个地址成功过的 Key 一律 429——不管它有效与否，所以猜 Key 的人得不到任何信号。
+ * 条目只能由有效 Key 的成功请求写入，外人塞不进来。
+ */
+export function createKnownGoodSet(options?: { ttlMs?: number; max?: number; now?: () => number }) {
+  const ttlMs = options?.ttlMs ?? 24 * 60 * 60 * 1000
+  const max = options?.max ?? 10_000
+  const clock = options?.now ?? (() => Date.now())
+  const entries = new Map<string, number>()
+  const id = (scope: string, subject: string) => `${scope}|${subject}`
+  return {
+    remember(scope: string, subject: string, now = clock()) {
+      const key = id(scope, subject)
+      entries.delete(key)
+      entries.set(key, now)
+      while (entries.size > max) entries.delete(entries.keys().next().value as string)
+    },
+    has(scope: string, subject: string, now = clock()): boolean {
+      const key = id(scope, subject)
+      const at = entries.get(key)
+      if (at === undefined) return false
+      if (now - at < ttlMs) return true
+      entries.delete(key)
+      return false
+    },
+    size: () => entries.size,
+  }
+}
+
+export const publicUsageKnownGood = createKnownGoodSet()
+
 /* ────────────────────────── ③ 错误响应（不泄堆栈） ────────────────────────── */
 
 /**

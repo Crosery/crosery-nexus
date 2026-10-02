@@ -13,7 +13,7 @@ import { brotliDecompressSync, gunzipSync } from 'node:zlib'
  * 端到端：真起一个 `server/index.ts` 子进程（临时 `DATA_DIR`），只打 HTTP：
  * - 不协商 / `gzip` / `br` 三态的实际字节数、`Content-Encoding`、`Vary`、`Content-Length`
  * - 解压后必须与磁盘字节**逐字节相同**（防「压缩层把响应写坏」）
- * - 小文件（index.html <1KB）与已压缩类型（.ico/.woff2/.png）**不被压缩**（也不带 Vary）
+ * - 小于 1KB 的可压缩文件与已压缩类型（.ico/.woff2/.png）**不被压缩**（也不带 Vary）
  * - 条件请求 304、`Range` 走回 express.static 的 206、SPA 深链接回退的 `no-cache`
  * - `Cache-Control` 仍是 `public, max-age=3600, immutable`（没破坏 express.static 语义）
  *
@@ -89,9 +89,25 @@ const largestAsset = (extension: string): { url: string; file: string; size: num
 const css = largestAsset('.css')
 const js = largestAsset('.js')
 
+// index.html 已因 modulepreload 列表超过 1KB，⑤ 改用 dist 里最小的可压缩文件守住「小文件不压」边界。
+const smallestCompressible = (): string | null => {
+  const found: { url: string; size: number }[] = []
+  for (const [dir, prefix] of [[DIST, '/'], [path.join(DIST, 'assets'), '/assets/']] as const) {
+    if (!fs.existsSync(dir)) continue
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.(js|css|html|svg)$/.test(name)) continue
+      const stat = fs.statSync(path.join(dir, name))
+      if (stat.isFile() && stat.size > 0 && stat.size < service.MIN_COMPRESS_BYTES) found.push({ url: `${prefix}${name}`, size: stat.size })
+    }
+  }
+  found.sort((left, right) => left.size - right.size)
+  return found[0]?.url ?? null
+}
+const small = smallestCompressible()
+
 test('静态文本压缩：三态协商 / 完整性 / 边界不被破坏', { timeout: 120_000 }, async (t) => {
-  if (!css || !js) {
-    t.skip('dist 里没有 ≥1KB 的 css/js 产物（先 npm run build）')
+  if (!css || !js || !small) {
+    t.skip('dist 里缺少 ≥1KB 的 css/js 或 <1KB 的可压缩产物（先 npm run build）')
     return
   }
   const port = await freePort()
@@ -155,10 +171,11 @@ test('静态文本压缩：三态协商 / 完整性 / 边界不被破坏', { tim
     assert.equal(jsBr.headers['content-encoding'], 'br')
     assert.ok(brotliDecompressSync(jsBody).equals(rawJs))
 
-    // ⑤ 边界：<1KB 的 index.html 不压、也不带 Vary（保持既有行为）
-    const small = await rawGet(`${base}/index.html`, { 'accept-encoding': 'br' })
-    assert.equal(small.headers['content-encoding'], undefined, '小文件不压')
-    assert.equal(small.headers.vary, undefined, '小文件不参与协商，不应凭空多出 Vary')
+    // ⑤ 边界：<1KB 的可压缩文件不压、也不带 Vary（保持既有行为）
+    const smallResponse = await rawGet(`${base}${small}`, { 'accept-encoding': 'br' })
+    assert.equal(smallResponse.status, 200)
+    assert.equal(smallResponse.headers['content-encoding'], undefined, `小文件不压：${small}`)
+    assert.equal(smallResponse.headers.vary, undefined, '小文件不参与协商，不应凭空多出 Vary')
 
     // ⑥ 边界：已压缩类型不被二次压缩（dist 里挑一个 .ico/.woff2/.png）
     const binary = fs.existsSync(path.join(DIST, 'favicon.ico'))

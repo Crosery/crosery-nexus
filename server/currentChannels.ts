@@ -54,3 +54,18 @@ export function activeProviderId(provider: string, groups: ConsoleGroup[]): stri
   const prefixed = groups.find((group) => `openai-compatible-${group.id}`.toLowerCase() === value)
   return prefixed?.id || value || 'unknown'
 }
+
+/**
+ * 报表的渠道口径（2026-10-02 决定）：历史就是历史，花了就是花了。
+ * 默认 `currentOnly = false`：统计全部流量，包括后来被移除的渠道；「只看当前渠道」是显式选择的筛选。
+ * 只有 `currentOnly = true` 时才套用 activeProviderPredicate（仍然 fail-closed）。
+ */
+export function scopedProviderPredicate(groups: ConsoleGroup[], column = 'provider', currentOnly = false) {
+  return currentOnly ? activeProviderPredicate(groups, column) : { sql: '1 = 1', params: [] as string[] }
+}
+
+/** `?currentOnly=1|true` → true；其它（含缺省）→ false（全部渠道）。 */
+export function parseCurrentOnly(value: unknown): boolean {
+  const raw = Array.isArray(value) ? value[0] : value
+  return typeof raw === 'string' && ['1', 'true'].includes(raw.trim().toLowerCase())
+}

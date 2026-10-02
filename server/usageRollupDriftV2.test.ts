@@ -73,8 +73,8 @@ function makeFixture(events: EventRow[]) {
   return { dir, file, db }
 }
 
-/** 用固定时刻，保证窗口对齐到整点后包含全部夹具数据。 */
-const NOW = Date.UTC(2026, 9, 1, 12, 0, 0)
+/** 夹具锚定在当前整点：被测函数按真实时钟取窗口，写死日期会随时间滑出 24h 窗口。 */
+const NOW = Math.floor(Date.now() / HOUR) * HOUR
 const baseEvents = (): EventRow[] => [
   { ts: NOW - 5 * HOUR, provider: 'openai', model: 'openai/gpt-5.4-mini', tokens: 1_000, cost: 0.5 },
   { ts: NOW - 5 * HOUR, provider: 'openai', model: 'openai/gpt-5.4-mini', tokens: 2_000, cost: 1.0 },

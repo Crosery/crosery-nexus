@@ -159,6 +159,8 @@ export function assertLocalWrite(confirm: boolean, policy: RtkWritePolicy = read
 }
 
 export function assertRemoteWrite(confirm: boolean, plane: RtkPlaneId, policy: RtkWritePolicy = readRtkWritePolicy()): void {
+  // off 是全只读：远端/内核开关打开了也不能写（与 assertLocalWrite 一致）。
+  if (policy.mode === 'off') throw new RtkPlaneError(403, plane, 'write_disabled', 'RTK_WRITE_MODE=off：RTK 写入已关闭')
   if (!policy.remoteWriteEnabled) {
     throw new RtkPlaneError(403, plane, 'remote_write_disabled', '远端写入默认关闭，需显式设置 RTK_ALLOW_REMOTE_WRITE=1')
   }
@@ -273,6 +275,14 @@ export async function probeKernelPlane(target: KernelTarget = {}): Promise<RtkPl
   const engine = target.engine ?? config.gatewayEngine
   if (engine !== 'magpie') {
     return { ...base, available: false, configured: false, state: 'not_configured', reason: 'gateway_engine_not_magpie' }
+  }
+  // scripts/magpie-console.mjs starts the kernel with a sandbox HOME: its RTK view has none of this host's agents
+  // and each read runs rtk / agent CLIs inside the sandbox. Only an injected probe target or RTK_KERNEL_PLANE=1 uses it.
+  if (target.socket === undefined && !config.rtkKernelPlane) {
+    return {
+      ...base, available: false, configured: false, state: 'not_configured', reason: 'kernel_rtk_sandboxed',
+      detail: '内核运行在隔离 HOME，RTK 以本机为准（设置 RTK_KERNEL_PLANE=1 改用内核）',
+    }
   }
   if (!socket || !existsSync(socket)) {
     return { ...base, available: false, configured: false, state: 'not_configured', reason: 'kernel_socket_missing' }

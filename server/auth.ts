@@ -5,6 +5,8 @@
  * - 本模块 = **会话域**：口令校验、会话签发/读取/校验/撤销、登出，以及「默认拒绝」的
  *   鉴权中间件与公开白名单。会话的生命周期只在这一个文件里，**签发与验证共用同一份签名规则**
  *   （过去签发在 `security.ts`、验证在 `auth.ts`，两处各写一遍 HMAC，只能靠一条契约测试防漂移）。
+ * - 会话分两种角色：`admin`（控制台管理员）与 `key`（用自己的 API Key 登录、只能读自己数据的用户）。
+ *   角色写在签名内，守卫在**进入任何处理器之前**按角色裁决（`createSessionGuard`）。
  * - `server/security.ts` = **传输与滥用防护工具**：Cookie 的 `Secure` 协议推导、登录限流、
  *   错误体文案。它们不持有会话状态，被本模块调用（依赖方向 auth → security，单向）。
  */
@@ -24,7 +26,8 @@ function sign(value: string) {
   return createHmac('sha256', config.sessionSecret).update(value).digest('hex')
 }
 
-function safeEqual(a: string, b: string) {
+/** 定长比较；长度不同直接 false（长度本身不是秘密：密钥/签名长度固定或已公开）。 */
+export function safeEqual(a: string, b: string) {
   const left = Buffer.from(a)
   const right = Buffer.from(b)
   return left.length === right.length && timingSafeEqual(left, right)
@@ -36,13 +39,56 @@ export function validateCredentials(username: string, password: string, expected
 
 /* ────────────────────────── 会话签发与验证 ────────────────────────── */
 
-/** 给定 token 是否通过本模块的签名与有效期校验（签发/校验共用这一份实现）。 */
+/**
+ * 会话主体。`key` 会话只携带该 Key 的 `key_hash`（sha256，`api_keys` 主键），
+ * 每次请求都回库确认 Key 仍存在且未被人工停用（见 `resolveSession`）。
+ */
+export type SessionPrincipal = { role: 'admin' } | { role: 'key'; keyHash: string }
+
+const KEY_HASH_PATTERN = /^[0-9a-f]{64}$/
+const EXPIRES_PATTERN = /^\d{1,16}$/
+/** 合法 token 最长 ~160 字符；超长直接拒绝，不进 HMAC。 */
+const MAX_TOKEN_LENGTH = 256
+
+/**
+ * v2 token：`<expires>.v2.<role>.<subject>.<hmac>`，HMAC 覆盖全部字段。
+ * - `expires` 必须留在第 0 段：撤销表按它推算条目寿命（`revokeSession`）。
+ * - 签名输入带固定前缀做域分离：v1 签名是 `HMAC(expires)`，无法被拼进 v2。
+ * - v1（`<expires>.<hmac>`，恰好两段）仍按 admin 接受，部署后已登录的管理员不掉线；
+ *   新签发一律 v2。
+ */
+const v2SignedPayload = (expiresText: string, role: string, subject: string) =>
+  `crosery-console-session|v2|${expiresText}|${role}|${subject}`
+
+/** 生成会话 token（签发与验证共用 `sign`）。 */
+export function createSessionToken(principal: SessionPrincipal, expires = Date.now() + SESSION_MAX_AGE_MS): string {
+  if (!config.sessionSecret) throw new Error('控制台登录配置缺失')
+  const subject = principal.role === 'key' ? principal.keyHash : '-'
+  if (principal.role === 'key' && !KEY_HASH_PATTERN.test(subject)) throw new Error('invalid_key_session_subject')
+  const expiresText = String(Math.floor(expires))
+  return `${expiresText}.v2.${principal.role}.${subject}.${sign(v2SignedPayload(expiresText, principal.role, subject))}`
+}
+
+/**
+ * 校验 token 的签名、格式与有效期，返回会话主体；任何不符一律 null。
+ * `SESSION_SECRET` 为空时拒绝验证：`HMAC('')` 是公开可算的，空密钥下任何人都能伪造 admin。
+ */
+export function verifySessionToken(token: string | null): SessionPrincipal | null {
+  if (!token || !config.sessionSecret || token.length > MAX_TOKEN_LENGTH) return null
+  const parts = token.split('.')
+  const expiresText = parts[0]
+  if (!EXPIRES_PATTERN.test(expiresText) || Number(expiresText) <= Date.now()) return null
+  if (parts.length === 2) return safeEqual(parts[1], sign(expiresText)) ? { role: 'admin' } : null
+  if (parts.length !== 5 || parts[1] !== 'v2') return null
+  const [, , role, subject, signature] = parts
+  const shapeOk = role === 'admin' ? subject === '-' : role === 'key' && KEY_HASH_PATTERN.test(subject)
+  if (!shapeOk || !safeEqual(signature, sign(v2SignedPayload(expiresText, role, subject)))) return null
+  return role === 'key' ? { role: 'key', keyHash: subject } : { role: 'admin' }
+}
+
+/** 给定 token 是否通过本模块的签名与有效期校验（不含撤销与 Key 存活检查）。 */
 export function sessionTokenValid(token: string | null): boolean {
-  if (!token) return false
-  const [expiresText, signature] = token.split('.')
-  const expires = Number(expiresText)
-  if (!Number.isFinite(expires) || expires <= Date.now()) return false
-  return safeEqual(signature || '', sign(expiresText))
+  return verifySessionToken(token) !== null
 }
 
 /** 读取请求里的会话 token（没有则 null）。 */
@@ -58,10 +104,8 @@ export function readSessionToken(request: Request): string | null {
  * `Secure`，即使环境变量写着 `COOKIE_SECURE=false` —— 生产启动脚本此前写死 false，
  * 只靠环境变量修不掉这条（task-57 ③、Lead 的 launcher 修复）。
  */
-export function issueSession(request: Request, response: Response): void {
-  if (!config.sessionSecret) throw new Error('控制台登录配置缺失')
-  const expires = Date.now() + SESSION_MAX_AGE_MS
-  const payload = `${expires}.${sign(String(expires))}`
+export function issueSession(request: Request, response: Response, principal: SessionPrincipal = { role: 'admin' }): string {
+  const payload = createSessionToken(principal)
   response.cookie(SESSION_COOKIE, payload, {
     httpOnly: true,
     sameSite: 'strict',
@@ -69,6 +113,7 @@ export function issueSession(request: Request, response: Response): void {
     maxAge: SESSION_MAX_AGE_MS,
     path: '/',
   })
+  return payload
 }
 
 export function logout(response: Response) {
@@ -98,16 +143,16 @@ function pruneRevoked(now = Date.now()) {
   for (const [key] of ordered.slice(0, revokedSessions.size - REVOCATION_CAPACITY)) revokedSessions.delete(key)
 }
 
-/** token 自带的到期时刻（解析失败时按满有效期处理，宁可多留一会儿也不误判）。 */
-function tokenExpiry(token: string): number {
-  const expires = Number(token.split('.')[0])
-  return Number.isFinite(expires) && expires > 0 ? expires : Date.now() + SESSION_MAX_AGE_MS
-}
-
-/** 登出：把该 token 记入撤销集合，直到它自己到期为止。 */
+/**
+ * 登出：把该 token 记入撤销集合，直到它自己到期为止。
+ *
+ * 只收**本服务签发、仍在有效期内**的 token，且寿命不超过一个会话周期：撤销表满了会淘汰最早到期的条目，
+ * 若匿名请求能塞进伪造的远期 token（`9999999999999999.x`），就能把真正被登出的 token 挤出去让它复活。
+ */
 export function revokeSession(token: string | null): void {
-  if (!token) return
-  revokedSessions.set(digest(token), tokenExpiry(token))
+  if (!token || verifySessionToken(token) === null) return
+  const expires = Math.min(Number(token.split('.')[0]), Date.now() + SESSION_MAX_AGE_MS)
+  revokedSessions.set(digest(token), expires)
   pruneRevoked()
 }
 
@@ -125,15 +170,70 @@ export const revokedSessionCount = () => revokedSessions.size
 /** 仅供测试：清空撤销集合。 */
 export const clearRevokedSessions = () => revokedSessions.clear()
 
+/* ────────────────────────── Key 会话的存活判定 ────────────────────────── */
+
+/** `active` = 启用，或仅因额度超限被自动停用（与 `/v1/usage` 一致：仍可读自己的数据）。 */
+export type KeySessionState = 'active' | 'disabled' | 'missing'
+export type KeySessionRejection = 'key_disabled' | 'key_invalid'
+
 /**
- * 请求是否持有一个**有效且未被撤销**的控制台会话。
+ * Key 存活查询由 `server/index.ts` 在启动时注入（本模块不依赖数据库）。
+ * 未注入时**一律视为不存在**：漏接线只会让 Key 会话失效，不会放行。
+ */
+let keySessionLookup: ((keyHash: string) => KeySessionState) | null = null
+
+export function setKeySessionLookup(lookup: ((keyHash: string) => KeySessionState) | null): void {
+  keySessionLookup = lookup
+}
+
+/**
+ * `unavailable` = Key 存活查询本身失败（库忙/锁）：既不能放行，也不能断定 Key 已失效。
+ * 守卫回 503、**不清 Cookie**，库恢复后同一会话继续可用，用户不必重新粘贴 Key。
+ */
+export type SessionResolution = { principal: SessionPrincipal | null; keyRejection: KeySessionRejection | null; unavailable?: true }
+
+/** 同一请求内只解析一次（守卫与路由处理器共用，Key 只回库一次）。 */
+const resolutions = new WeakMap<Request, SessionResolution>()
+
+/**
+ * 解析请求的会话：签名有效 + 未撤销 +（Key 会话）Key 仍存在且未被人工停用。
+ * Key 被删除 → `key_invalid`；被人工停用 → `key_disabled`；两者都让会话立即失效。
+ */
+export function resolveSession(request: Request): SessionResolution {
+  const cached = resolutions.get(request)
+  if (cached) return cached
+  const token = readSessionToken(request)
+  let resolution: SessionResolution = { principal: null, keyRejection: null }
+  const principal = verifySessionToken(token)
+  const revoked = principal !== null && isSessionRevoked(token)
+  if (principal?.role === 'admin') {
+    if (!revoked) resolution = { principal, keyRejection: null }
+  } else if (principal?.role === 'key') {
+    let state: KeySessionState | 'error'
+    try { state = keySessionLookup ? keySessionLookup(principal.keyHash) : 'missing' } catch { state = 'error' }
+    // Key 已删除/停用：即使这枚 token 已被撤销也照实报原因——守卫会顺手撤销它，并发的后续请求仍拿到同一个 code。
+    if (state === 'disabled' || state === 'missing') resolution = { principal: null, keyRejection: state === 'disabled' ? 'key_disabled' : 'key_invalid' }
+    else if (revoked) resolution = { principal: null, keyRejection: null }
+    else if (state === 'active') resolution = { principal, keyRejection: null }
+    else resolution = { principal: null, keyRejection: null, unavailable: true }
+  }
+  resolutions.set(request, resolution)
+  return resolution
+}
+
+/** 当前请求的会话主体（无会话 / 无效 / 已撤销 / Key 已失效 → null）。 */
+export function currentSession(request: Request): SessionPrincipal | null {
+  return resolveSession(request).principal
+}
+
+/**
+ * 请求是否持有一个**有效且未被撤销**的控制台会话（任一角色）。
  *
  * 注意这里包含撤销检查：`/api/session` 对已撤销会话返回 `200 {authenticated:false}`
  * 是**有意行为**（前端据此跳登录页），不要改成 401。
  */
 export function isAuthenticated(request: Request): boolean {
-  const token = readSessionToken(request)
-  return sessionTokenValid(token) && !isSessionRevoked(token)
+  return currentSession(request) !== null
 }
 
 /* ────────────────────────── 默认拒绝：白名单 + 全局守卫 ────────────────────────── */
@@ -176,8 +276,25 @@ export const PUBLIC_PATHS: PublicPathRule[] = [
   },
 ]
 
-/** 受会话保护的前缀：不在白名单里的这些前缀一律要求会话（保住「未知 /api 路径返回 401」的既有行为）。 */
-export const SESSION_PROTECTED_PREFIXES: RegExp[] = [/^\/api(\/|$)/]
+/**
+ * 受会话保护的前缀：不在白名单里的这些前缀一律要求会话（保住「未知 /api 路径返回 401」的既有行为）。
+ * 大小写不敏感：Express 路由默认不区分大小写，`/API/keys` 同样会落到 `/api/keys` 的处理器。
+ */
+export const SESSION_PROTECTED_PREFIXES: RegExp[] = [/^\/api(\/|$)/i]
+
+/**
+ * Key 会话（`role=key`）唯一可达的受保护路径。其余 `/api/*` 与已注册路由在**进入处理器之前** 403。
+ * `/api/session`、`/api/logout` 本就在公开白名单里，这里列出只为让允许面一眼可见。
+ */
+export const KEY_SESSION_PATHS: RegExp[] = [/^\/api\/me(\/|$)/i, /^\/api\/session\/?$/i, /^\/api\/logout\/?$/i]
+
+const FORBIDDEN_ROLE_BODY = { error: '无权访问', code: 'forbidden_role' } as const
+/** 会话查不清（Key 存活查询异常）时的 503 体；`/api/session` 与 `/api/me*` 共用。 */
+export const SESSION_UNAVAILABLE_BODY = { error: '暂时无法确认登录状态 · 稍后重试', code: 'session_unavailable' } as const
+const KEY_REJECTION_BODY: Record<KeySessionRejection, { error: string; code: KeySessionRejection }> = {
+  key_invalid: { error: 'API Key 已失效 · 重新登录', code: 'key_invalid' },
+  key_disabled: { error: 'API Key 已被停用', code: 'key_disabled' },
+}
 
 /** 请求是否命中公开白名单。 */
 export function isPublicRequest(request: Request): boolean {
@@ -211,24 +328,36 @@ function matchesRegisteredRoute(app: Express, request: Request): boolean {
  *
  * 挂载点：`cookieParser()` 之后、**所有路由之前**（`server/index.ts`）。判定顺序：
  * 1. 命中公开白名单 → 放行；
- * 2. 持有有效且未撤销的会话 → 放行；
- * 3. 路径在受保护前缀（`/api/*`）→ 401（保住「未知 API 路径也是 401」）；
- * 4. 会命中某条已注册路由（例如将来新增的 `/internal/...`）→ 401；
- * 5. 其余（静态资源、`/`、SPA 深链接回退）→ 放行：只可能返回前端产物，不返回数据。
- * 已撤销的会话在步骤 2 判为未认证，但**同样走 3~5 的归类**：受保护接口 401、
- * 深链接仍返回 index.html（清掉 Cookie 后由前端跳登录页），不会变成 401 页面。
+ * 2. admin 会话 → 放行；
+ * 3. key 会话 → 只放行 `KEY_SESSION_PATHS`；其余受保护前缀/已注册路由 → 403 `forbidden_role`；
+ * 4. 路径在受保护前缀（`/api/*`）→ 401（保住「未知 API 路径也是 401」）；
+ * 5. 会命中某条已注册路由（例如将来新增的 `/internal/...`）→ 401；
+ * 6. 其余（静态资源、`/`、SPA 深链接回退）→ 放行：只可能返回前端产物，不返回数据。
+ * 已撤销的会话、Key 已删除/停用的会话判为未认证并清 Cookie，**同样走 4~6 的归类**：
+ * 受保护接口 401、深链接仍返回 index.html，不会变成 401 页面。
+ * Key 已删除/停用时这枚 token 同时记入撤销表：Key 之后被重新启用，旧 token 也不会复活，必须重新登录。
+ * Key 存活查询异常（`unavailable`）：受保护接口 503 `session_unavailable`，Cookie 保留。
  */
 export function createSessionGuard(app: Express) {
   return function sessionGuard(request: Request, response: Response, next: NextFunction): void {
     const token = readSessionToken(request)
-    const revoked = isSessionRevoked(token)
-    if (revoked) logout(response)
+    const { principal, keyRejection, unavailable } = resolveSession(request)
+    if (keyRejection) revokeSession(token)
+    if (isSessionRevoked(token) || keyRejection) logout(response)
     if (isPublicRequest(request)) return next()
-    // isAuthenticated 已包含撤销检查：已撤销会话在这里必然为 false，随后走同一套归类
-    // （受保护前缀/已注册路由 → 401；静态与 SPA 回退 → 放行，不能把深链接变成 401 页面）。
-    if (isAuthenticated(request)) return next()
-    if (SESSION_PROTECTED_PREFIXES.some(pattern => pattern.test(request.path))) {
-      return void response.status(401).json({ error: '请先登录' })
+    if (principal?.role === 'admin') return next()
+    const protectedPath = SESSION_PROTECTED_PREFIXES.some(pattern => pattern.test(request.path))
+    if (principal?.role === 'key') {
+      if (KEY_SESSION_PATHS.some(pattern => pattern.test(request.path))) return next()
+      if (protectedPath || matchesRegisteredRoute(app, request)) return void response.status(403).json(FORBIDDEN_ROLE_BODY)
+      return next()
+    }
+    if (unavailable && (protectedPath || matchesRegisteredRoute(app, request))) {
+      response.setHeader('Retry-After', '5')
+      return void response.status(503).json(SESSION_UNAVAILABLE_BODY)
+    }
+    if (protectedPath) {
+      return void response.status(401).json(keyRejection ? KEY_REJECTION_BODY[keyRejection] : { error: '请先登录' })
     }
     if (matchesRegisteredRoute(app, request)) return void response.status(401).json({ error: '请先登录' })
     next()
