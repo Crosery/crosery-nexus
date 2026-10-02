@@ -2,8 +2,9 @@
  * 键盘可达性回归（task-72，第三十轮）。
  *
  * 用法：
- *   cat scripts/qa-a11y.mjs | ego-browser nodejs
- *   QA_A11Y_ROUTES=/dashboard,/keys cat scripts/qa-a11y.mjs | ego-browser nodejs
+ *   cat scripts/qa-a11y.mjs | QA_KEY_NAME='<测试 Key 名>' ego-browser nodejs
+ *   cat scripts/qa-a11y.mjs | QA_A11Y_ROUTES=/dashboard,/keys QA_KEY_NAME='<测试 Key 名>' ego-browser nodejs
+ *   环境变量写在管道右侧的 ego-browser 前：写在 cat 前只对 cat 生效，脚本读不到。
  *
  * 退出码：任何一条不通过 → 非 0（放进发布验收才有意义）。
  *
@@ -15,7 +16,13 @@
  *   登录页：焦点环可见性（键盘有环 / 鼠标点按钮无环）、环对相邻背景对比度 ≥3:1、Tab 顺序、
  *           错误提示的读屏可感知性（role=alert + aria-invalid + aria-describedby）。
  *   应用页：landmark（main + nav 带 aria-label）、skip link 是**第一个**可聚焦元素且回车后焦点真的落到主内容、
- *           Tab 顺序、深色表面（侧边栏）焦点环对比度、对话框 focus trap / Esc 关闭 / 焦点归还。
+ *           Tab 顺序、顶部导航焦点环对比度、图标按钮名字、对话框 focus trap / Esc 关闭 / 焦点归还。
+ *   Key 用户（QA_ROLES 含 key，默认含）：/me* 每页 main + nav + skip link，管理员专属控件（⌘K 输入框、脱敏）不出现。
+ *           测试 Key 由 QA_KEY_NAME 指定（必填，没有默认值）；密钥从 QA_KEY_DB 读取（默认：运行目录即仓库根下的
+ *           data/console.db），只留在变量里。登录后用 /api/session 核对确实是这把 Key（名称 + 掩码）再做泄漏断言。
+ *
+ * 登录板选择器：模式切换是 aria-label="登录方式" 的 Segmented，选项 `.tx-bui-filter-chips__chip`「API Key」/「管理员」；
+ *   管理员 `#ui-lp-user` + `.ui-lp__pw input`；Key 输入框 `input[placeholder="sk-…"]`（U+2026，password 类型）。
  *
  * 注意：本脚本只做**只读**操作 + 打开一次删除确认框后按 Esc 取消，不做任何写操作。
  */
@@ -27,7 +34,11 @@ try {
   const { execSync } = await import("node:child_process");
   const pw = process.env.QA_A11Y_PASSWORD
     || execSync('security find-generic-password -s com.crosery.console-magpie.local -a admin -w', { encoding: "utf8" }).trim();
-  const BASE = process.env.QA_A11Y_BASE || "http://127.0.0.1:8791";
+  const BASE = process.env.QA_A11Y_BASE || process.env.QA_BASE || "http://127.0.0.1:8791";
+  const KEY_NAME = (process.env.QA_KEY_NAME ?? "").trim();
+  const KEY_DB = process.env.QA_KEY_DB || `${process.cwd()}/data/console.db`;
+  const maskKey = (k) => (k.length >= 16 ? `${k.slice(0, 5)}…${k.slice(-4)}` : k.length >= 8 ? `${k.slice(0, 2)}…${k.slice(-2)}` : "…");
+  const isFixtureSession = (session, apiKey, keyName) => Boolean(session && session.authenticated === true && session.role === "key" && session.key && session.key.name === keyName && session.key.masked === maskKey(apiKey));
 
   const results = [];
   const check = (name, ok, detail) => {
@@ -120,13 +131,49 @@ try {
     return false;
   };
 
-  /* ───────────── 登录页 ───────────── */
+  /* ───────────── 登录页（v3 登录板，选择器见文件头）───────────── */
+  // 共享 profile 里可能已有会话（管理员或 Key）：先退出，否则 /login 会直接跳回角色首页
   await page.goto(`${BASE}/login`);
-  await page.evaluate(HELPERS);
-  await page.waitForSelector('input[placeholder="请输入控制台密码"]');
-  await page.waitForTimeout(400); // 入场动画（qa-contrast 记录过偶发 zero-sized 输入框）
+  await page.evaluate(() => fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => null));
+  const openLogin = async (mode) => {
+    await page.goto(`${BASE}/login`);
+    await page.evaluate(HELPERS);
+    await page.waitForSelector('[aria-label="登录方式"]', { timeout: 15000 });
+    await page.evaluate((want) => {
+      const chip = [...document.querySelectorAll('[aria-label="登录方式"] .tx-bui-filter-chips__chip')].find((b) => (b.textContent || "").trim() === want);
+      if (chip && !chip.classList.contains("is-active")) chip.click();
+    }, mode);
+    await page.waitForSelector(mode === "管理员" ? "#ui-lp-user" : 'input[placeholder="sk-…"]', { timeout: 10000 });
+    await page.waitForTimeout(400); // 入场动画（qa-contrast 记录过偶发 zero-sized 输入框）
+  };
 
-  await page.keyboard.press("Tab");
+  // Key 模式：输入框必须是 password 类型（输入时不回显），眼睛按钮有名字；只输入假值，绝不提交
+  await openLogin("API Key");
+  const FAKE = "sk-qa-fake-not-a-key-000";
+  await tabTo('input[placeholder="sk-…"]');
+  await page.keyboard.type(FAKE);
+  const keyField = await page.evaluate((fake) => {
+    const input = document.querySelector('input[placeholder="sk-…"]');
+    const eye = input?.closest(".tx-input")?.querySelector("button");
+    return {
+      type: input?.type ?? null,
+      autocomplete: input?.getAttribute("autocomplete") ?? null,
+      name: input?.getAttribute("name") ?? null,
+      typed: input?.value?.length ?? 0,
+      echoed: document.body.innerText.includes(fake),
+      eyeName: eye?.getAttribute("aria-label") ?? null,
+      eyePressed: eye?.getAttribute("aria-pressed") ?? null,
+      label: Boolean(document.querySelector('label[for="' + (input?.id || "") + '"]')),
+    };
+  }, FAKE);
+  check("登录页：Key 输入框是 password 类型，输入时不回显", keyField.type === "password" && keyField.typed > 0 && !keyField.echoed, keyField);
+  check("登录页：Key 输入框可被密码管理器识别（name + autocomplete=current-password）",
+    keyField.autocomplete === "current-password" && Boolean(keyField.name), keyField);
+  check("登录页：显示/隐藏按钮有可读名字和 aria-pressed，输入框有 <label for>",
+    Boolean(keyField.eyeName) && keyField.eyePressed === "false" && keyField.label, keyField);
+
+  await openLogin("管理员");
+  await tabTo("#ui-lp-user");
   const kbInput = await focusNow();
   check("登录页：键盘 Tab 到输入框时焦点环已绘制（内层或外层容器画出实线环）",
     kbInput.focusVisible
@@ -135,41 +182,34 @@ try {
   check("登录页：输入框焦点环对相邻背景对比度 ≥ 3:1（非文本对比度要求）",
     kbInput.contrast >= 3, { contrast: kbInput.contrast, ring: kbInput.outlineColor, bg: kbInput.adjacentBg });
 
-  // 用真实键盘输入（红队用直接赋 value，驱动不了 v-model），再验证 Tab 顺序与按钮焦点环
-  await page.evaluate(() => document.body.focus());
-  await page.keyboard.press("Tab");
-  await page.keyboard.type("admin");
-  await page.keyboard.press("Tab");
-  await page.keyboard.type(pw);
-  // disabled 绑定在 v-model 更新后才移除：等按钮可用再 Tab，否则焦点会掉到 body（假失败）
-  await page.waitForFunction(() => {
-    const button = [...document.querySelectorAll("form button")].find((b) => /进入控制台|正在验证/.test(b.textContent || ""));
-    return button ? (!button.disabled && button.offsetParent !== null) : false;
-  }, undefined, { timeout: 5000 }).catch(() => {});
+  // 用真实键盘输入（红队用直接赋 value，驱动不了 v-model）；账号框预填了 admin，先全选再输入
+  const typeAdmin = async (password) => {
+    await tabTo("#ui-lp-user");
+    await page.evaluate(() => document.querySelector("#ui-lp-user")?.select());
+    await page.keyboard.type("admin");
+    await page.keyboard.press("Tab");          // → 密码框
+    await page.keyboard.type(password);
+  };
+  await typeAdmin(pw);
+  // Tab 依次经过眼睛按钮，再到提交按钮
   let kbButton = await focusNow();
-  for (let i = 0; i < 5; i += 1) {          // disabled 解除与重渲染有竞态：最多再 Tab 几次找按钮
+  for (let i = 0; i < 6; i += 1) {
     await page.keyboard.press("Tab");
     kbButton = await focusNow();
-    if (kbButton.el.startsWith("button")) break;
+    if (await page.evaluate(() => document.activeElement?.matches('button[type="submit"]') ?? false)) break;
   }
   check("登录页：键盘 Tab 到提交按钮时焦点环已绘制",
     kbButton.focusVisible && kbButton.outlineStyle === "solid", kbButton);
   check("登录页：提交按钮焦点环对比度 ≥ 3:1", kbButton.contrast >= 3, { contrast: kbButton.contrast, bg: kbButton.adjacentBg });
 
-  // 错误提示的读屏可感知性：先制造一次失败登录
-  await page.goto(`${BASE}/login`);
-  await page.waitForSelector('input[placeholder="请输入控制台密码"]');
-  await page.evaluate(HELPERS);
-  await page.evaluate(() => document.body.focus());
-  await page.keyboard.press("Tab");
-  await page.keyboard.type("admin");
-  await page.keyboard.press("Tab");
-  await page.keyboard.type("definitely-wrong-password");
+  // 错误提示的读屏可感知性：先制造一次失败登录（管理员密码错一次）
+  await openLogin("管理员");
+  await typeAdmin("definitely-wrong-password");
   await page.keyboard.press("Enter");
-  await page.waitForSelector("[role=alert]", { timeout: 10000 }).catch(() => {});
+  await page.waitForSelector("form [role=alert]", { timeout: 10000 }).catch(() => {});
   const errorAria = await page.evaluate(() => {
-    const alert = document.querySelector("[role=alert]");
-    const input = document.querySelector('input[placeholder="请输入控制台密码"]');
+    const alert = document.querySelector("form [role=alert]");
+    const input = document.querySelector(".ui-lp__pw input");
     return {
       alertExists: Boolean(alert),
       alertText: (alert?.textContent || "").trim().slice(0, 40),
@@ -177,6 +217,7 @@ try {
       ariaInvalid: input?.getAttribute("aria-invalid") || null,
       ariaDescribedby: input?.getAttribute("aria-describedby") || null,
       describedbyResolves: Boolean(document.getElementById(input?.getAttribute("aria-describedby") || "")),
+      focusReturned: document.activeElement === input,
     };
   });
   check("登录页：错误提示是 role=alert 且有可读文案", errorAria.alertExists && errorAria.alertText.length > 0, errorAria);
@@ -192,16 +233,11 @@ try {
   check("登录页：存在 main landmark", loginLandmarks.main >= 1, loginLandmarks);
 
   // 正确密码：keyboard.type + Enter（红队没测成的那一步）
-  await page.goto(`${BASE}/login`);
-  await page.waitForSelector('input[placeholder="请输入控制台密码"]');
-  await page.evaluate(() => document.body.focus());
-  await page.keyboard.press("Tab");
-  await page.keyboard.type("admin");
-  await page.keyboard.press("Tab");
-  await page.keyboard.type(pw);
+  await openLogin("管理员");
+  await typeAdmin(pw);
   const typedOk = await page.evaluate(() => ({
-    user: document.querySelector('input[placeholder="请输入管理员账号"]')?.value?.length ?? 0,
-    pass: document.querySelector('input[placeholder="请输入控制台密码"]')?.value?.length ?? 0,
+    user: document.querySelector("#ui-lp-user")?.value?.length ?? 0,
+    pass: document.querySelector(".ui-lp__pw input")?.value?.length ?? 0,
   }));
   check("登录页：keyboard.type 逐字符输入真的进了 v-model（两格都非空）", typedOk.user > 0 && typedOk.pass > 0, typedOk);
   await page.keyboard.press("Enter");
@@ -245,18 +281,24 @@ try {
   check("应用页：Tab 顺序前 6 项可枚举且首项是 skip link",
     appTabOrder.length > 0 && /跳到主内容/.test(appTabOrder[0] || ""), appTabOrder);
 
-  // 深色表面（侧边栏）里的焦点环对比度
-  const sidebarTarget = "nav a, nav button, .shell__sidebar a, .shell__sidebar button";
-  const reachedSidebar = await tabTo(sidebarTarget, 30);
-  const sidebarFocus = await focusNow();
-  if (reachedSidebar) {
-    check("应用页：侧边栏（深色表面）里的焦点环可见且对比度 ≥ 3:1",
-      sidebarFocus.focusVisible && sidebarFocus.outlineStyle === "solid" && sidebarFocus.contrast >= 3, sidebarFocus);
+  // 顶部导航（v3 没有侧边栏）：导航项的焦点环可见且对比度够
+  const railTarget = "nav a, nav button";
+  const reachedRail = await tabTo(railTarget, 30);
+  const railFocus = await focusNow();
+  if (reachedRail) {
+    check("应用页：顶部导航项的焦点环可见且对比度 ≥ 3:1",
+      railFocus.focusVisible && railFocus.outlineStyle === "solid" && railFocus.contrast >= 3, railFocus);
   } else {
-    check("应用页：能在 30 次 Tab 内到达侧边栏导航项", false, sidebarFocus);
+    check("应用页：能在 30 次 Tab 内到达导航项", false, railFocus);
   }
 
-  for (const route of (process.env.QA_A11Y_ROUTES || "/dashboard,/keys,/models").split(",").filter(Boolean)) {
+  // 图标按钮必须有可读名字（aria-label / 文本），否则读屏只念"按钮"
+  const unnamedIconButtons = await page.evaluate(() => [...document.querySelectorAll("button, a[href]")]
+    .filter((el) => el.offsetParent !== null && !(el.getAttribute("aria-label") || (el.textContent || "").trim() || el.getAttribute("title")))
+    .map((el) => el.outerHTML.slice(0, 80)));
+  check("应用页：没有无名字的图标按钮", unnamedIconButtons.length === 0, { unnamed: unnamedIconButtons.slice(0, 5) });
+
+  for (const route of (process.env.QA_A11Y_ROUTES || "/dashboard,/keys,/accounts,/usage,/settings").split(",").filter(Boolean)) {
     await page.goto(`${BASE}${route}`);
     await page.evaluate(HELPERS);
     await page.waitForTimeout(700);
@@ -275,7 +317,44 @@ try {
   const deleteButton = 'css=button[aria-label*="删除"] >> nth=0';
   const hasDelete = await page.evaluate(() => Boolean(document.querySelector('button[aria-label*="删除"]')));
   if (!hasDelete) {
-    check("对话框：/keys 上找到「删除」触发按钮（用于 trap/Esc/归还验证）", false, { selector: deleteButton });
+    // v3 的 /keys 把删除收进了行内「⋯」菜单：改用页头 ⌘K 按钮（真实触发按钮）打开命令面板（role=dialog），
+    // 做同样的 trap / Esc / 焦点归还验证。删除确认框本身走同一个 ConfirmHost（Esc = 取消、焦点回到触发处）。
+    const trigger = 'button[aria-label^="跳转或执行"]';
+    await page.goto(`${BASE}/dashboard`);
+    await page.evaluate(HELPERS);
+    await page.waitForTimeout(700);
+    const visible = () => page.evaluate(() => {
+      const node = document.querySelector("[role=dialog]");
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      const cs = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0.1;
+    });
+    await page.click(`css=${trigger}`, { label: "open command palette" });
+    let open = false;
+    for (let i = 0; i < 10 && !open; i += 1) {
+      await page.waitForTimeout(200);
+      open = await visible();
+    }
+    check("对话框：命令面板能从页头按钮打开（/keys 无独立删除按钮时的替代）", open, { trigger });
+    if (open) {
+      let trapped = true;
+      for (let i = 0; i < 6; i += 1) {
+        await page.keyboard.press("Tab");
+        const inside = await page.evaluate(() => document.querySelector("[role=dialog]")?.contains(document.activeElement) ?? false);
+        if (!inside) trapped = false;
+      }
+      check("对话框：Tab 不会逃出命令面板（focus trap）", trapped, {});
+      await page.keyboard.press("Escape");
+      let closed = false;
+      for (let i = 0; i < 10 && !closed; i += 1) {
+        await page.waitForTimeout(200);
+        closed = !(await visible());
+      }
+      check("对话框：Esc 可关闭命令面板", closed, { closed });
+      const restored = await page.evaluate((sel) => document.activeElement?.matches(sel) ?? false, trigger);
+      check("对话框：关闭后焦点回到触发按钮", closed && restored, await focusNow());
+    }
   } else {
     // 「键盘有环 / 鼠标无环」用**注入的探针元素**验证规则语义：产品 UI 上点击删除会弹对话框、
     // 焦点被对话框抢走，在触发按钮上测鼠标态没有意义。探针元素吃的是同一条全局规则。
@@ -356,6 +435,57 @@ try {
         check("对话框：关闭后焦点回到触发按钮", false, { note: "对话框未关闭，无法验证焦点归还" });
       }
     }
+  }
+
+  /* ───────────── Key 用户（/me*）───────────── */
+  // Key 登录会替换并吊销本 profile 里的管理员会话：放在最后，结束时再登回管理员。只试一次（按 IP 限流）。
+  const ROLES = (process.env.QA_ROLES || "admin,key").split(",").map((r) => r.trim());
+  if (ROLES.includes("key")) {
+    if (!KEY_NAME) throw new Error("QA_KEY_NAME 未设置：Key 角色需要指定测试 Key 的名称（没有默认值）");
+    const { execFileSync } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(KEY_DB)) throw new Error("找不到控制台数据库：在仓库根目录运行，或设置 QA_KEY_DB");
+    const apiKey = execFileSync("/usr/bin/sqlite3", ["-readonly", KEY_DB,
+      `SELECT key_value FROM api_keys WHERE name = '${KEY_NAME.replace(/'/g, "''")}' LIMIT 1`], { encoding: "utf8" }).trim();
+    if (!apiKey.startsWith("sk-")) throw new Error("key lookup failed");
+    await page.evaluate(() => fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => null));
+    await openLogin("API Key");
+    await page.fill('loc=css:input[placeholder="sk-…"]', apiKey);
+    await page.keyboard.press("Enter");      // Enter submits the native form
+    let keyAuthed = true;
+    try { await page.waitForURL("**/me", { timeout: 20000 }); } catch { keyAuthed = false; }
+    check("Key 登录：Enter 提交后进入 /me", keyAuthed, {
+      path: await page.evaluate(() => location.pathname),
+      alert: await page.evaluate(() => document.querySelector("form [role=alert]")?.textContent?.trim() || null),
+    });
+    // the leak check below looks for this fixture's secret: it only means something if this key is the session
+    if (keyAuthed) {
+      const session = await page.evaluate(() => fetch("/api/session", { credentials: "same-origin" }).then((r) => r.json()).catch(() => null));
+      keyAuthed = isFixtureSession(session, apiKey, KEY_NAME);
+      check("Key 登录：会话确实是所选测试 Key（名称 + 掩码）", keyAuthed, { role: session?.role ?? null });
+    }
+    if (keyAuthed) {
+      for (const route of ["/me", "/me/usage", "/me/models", "/me/connect"]) {
+        await page.goto(`${BASE}${route}`);
+        await page.evaluate(HELPERS);
+        await page.waitForTimeout(700);
+        const facts = await page.evaluate((k) => ({
+          main: document.querySelectorAll("main, [role=main]").length,
+          navLabelled: [...document.querySelectorAll("nav")].some((n) => Boolean(n.getAttribute("aria-label"))),
+          skips: [...document.querySelectorAll("a")].filter((a) => /跳到主内容/.test(a.textContent || "")).length,
+          adminOnly: Boolean(document.querySelector('button[aria-label^="跳转或执行"], button[aria-label="隐私脱敏"]')),
+          keyVisible: document.body.innerText.includes(k),
+        }), apiKey);
+        check(`Key 路由 ${route}：main + 带名字的 nav + skip link，没有管理员控件，页面不含完整 Key`,
+          facts.main >= 1 && facts.navLabelled && facts.skips >= 1 && !facts.adminOnly && !facts.keyVisible, facts);
+      }
+    }
+    // hand the shared profile back to the admin session
+    await page.evaluate(() => fetch("/api/logout", { method: "POST", credentials: "same-origin" }).catch(() => null));
+    await openLogin("管理员");
+    await typeAdmin(pw);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => location.pathname !== "/login", undefined, { timeout: 20000 }).catch(() => {});
   }
 
   const failed = results.filter((item) => !item.ok);

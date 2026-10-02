@@ -22,12 +22,19 @@
  *   V2 dist 与源码一致（产物新鲜度 + index.html/manifest 引用完整性 + 入口 chunk 存在 + 记录 dist 树哈希）
  *   V3 Node 版本（生产 runtime / 本地构建用 node / package.json engines 三方对照）
  * 附加自检：V4 MANIFEST 自洽；V5 禁运清单（docs/qa、.env、data、node_modules、*.log、*.tar.gz）
+ *
+ * 删除的传递（review RR-7）：基底复制不带 --delete，所以仓库已删除的代码文件（git 记录为删除、HEAD 不再跟踪、
+ * 位于 server/ src/ scripts/ apps/ packages/）在叠加后从组装树里移除，在 V1 里计为「仓库删除」而非缺失；
+ * 规则与理由见 release-prune.mjs。其它「git 删了但基底还有」的路径只告警，不删除。
+ * 注意：这只作用于组装树。runbook §2.1/§2.2 在主机上 `cp -a` 基底再 rsync（不带 --delete），这些文件仍会留在
+ * $NEW 里——报告的警告列出它们；runbook 尚无对应的删除步骤。
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { planPrune, splitZ } from './release-prune.mjs'
 
 /* ------------------------------------------------------------------ */
 /* 参数与工具                                                          */
@@ -194,6 +201,27 @@ for (const rel of tracked) {
   shipped.push({ rel, action, localSha, prodSha, bytes: fs.statSync(src).size })
 }
 
+// 仓库删除的文件不随基底留下（见 release-prune.mjs）：已提交的删除用 --no-renames，改名的旧路径也算删除；
+// --allow-dirty 演练时，工作区里删掉（还在索引里）的文件同样算删除。
+const gitZ = (...args) => execFileSync('git', ['-C', REPO, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+const deletedInGit = new Set([
+  ...splitZ(gitZ('log', '--no-renames', '--diff-filter=D', '--name-only', '--format=', '-z', 'HEAD')),
+  ...(ALLOW_DIRTY ? [
+    ...splitZ(gitZ('ls-files', '--deleted', '-z')),
+    ...splitZ(gitZ('diff', '--cached', '--no-renames', '--diff-filter=D', '--name-only', '-z')),
+  ] : []),
+])
+const prunePlan = planPrune({
+  assembled: walk(OUT),
+  kept: tracked.filter((rel) => fs.existsSync(path.join(REPO, rel))),
+  deleted: deletedInGit,
+})
+for (const rel of prunePlan.prune) fs.rmSync(path.join(OUT, rel), { force: true })
+const prunedSet = new Set(prunePlan.prune)
+if (prunePlan.review.length) {
+  warn(`仓库已删除、生产基底仍有、但不在代码目录的 ${prunePlan.review.length} 个文件未自动删除，请人工确认：${prunePlan.review.slice(0, 10).join(', ')}${prunePlan.review.length > 10 ? ' …' : ''}`)
+}
+
 // dist：vue 模式用本地构建产物整体替换；keep-prod 模式保留生产 dist
 let distInfo = null
 if (FRONTEND === 'vue') {
@@ -250,6 +278,7 @@ fs.writeFileSync(path.join(OUT, 'MANIFEST.sha256'), manifestLines.join('\n') + '
 const assembled = new Map(walk(OUT).map((rel) => [rel, sha256(path.join(OUT, rel))]))
 const missing = []
 const expectedAbsent = []
+const prunedAbsent = []
 const changedVsProd = []
 const distReplaced = []
 for (const [rel, prodSha] of prodManifest) {
@@ -258,6 +287,7 @@ for (const [rel, prodSha] of prodManifest) {
     continue
   }
   if (FRONTEND === 'vue' && rel.startsWith('dist/')) { distReplaced.push(rel); continue } // 整个 dist 由 Vue 构建替换
+  if (prunedSet.has(rel)) { prunedAbsent.push(rel); continue } // 仓库已删除（release-prune.mjs）
   if (rel.startsWith('.cache/') || rel.endsWith('tsbuildinfo')) expectedAbsent.push(rel) // 构建元数据，重新生成
   else if (rel.endsWith('/._.DS_Store') || rel === '._.DS_Store') expectedAbsent.push(rel) // AppleDouble 噪音
   else missing.push(rel)
@@ -266,6 +296,10 @@ const addedAll = [...assembled.keys()].filter((rel) => !prodManifest.has(rel) &&
 const addedVsProd = addedAll.filter((rel) => !rel.startsWith('dist/'))
 const addedDist = addedAll.filter((rel) => rel.startsWith('dist/'))
 if (missing.length) fail(`V1 组装树缺失 ${missing.length} 个生产文件：${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ' …' : ''}`)
+// 移除只发生在组装树：runbook §2.1 `cp -a` 基底 + §2.2 rsync 不带 --delete，这些文件仍会留在 $NEW 里
+if (prunedAbsent.length) {
+  warn(`组装树已移除 ${prunedAbsent.length} 个仓库删除的文件，但 runbook §2.1/§2.2（cp -a 基底 + rsync 不带 --delete）不会从 $NEW 删除它们；走模式 V（npm ci && npm run build）前须先从 $NEW 移除，否则 tsc -b 仍会编译到它们：${prunedAbsent.slice(0, 10).join(', ')}${prunedAbsent.length > 10 ? ' …' : ''}`)
+}
 if (FRONTEND === 'keep-prod' && !fs.existsSync(path.join(OUT, 'dist/index.html'))) fail('V1 keep-prod 模式下 dist/index.html 丢失')
 
 /* ------------------------------------------------------------------ */
@@ -390,7 +424,7 @@ P(`## 校验结论`)
 P()
 P(`| 校验 | 结果 | 说明 |`)
 P(`| --- | --- | --- |`)
-P(`| V1 不缺失生产文件 | ${missing.length ? '**FAIL**' : 'PASS'} | 生产 MANIFEST ${prodManifest.size} 条；缺失 ${missing.length}；预期缺失（构建元数据/AppleDouble）${expectedAbsent.length}；内容变化 ${changedVsProd.length}；非 dist 新增 ${addedVsProd.length}；dist 替换 ${distReplaced.length}+${addedDist.length} |`)
+P(`| V1 不缺失生产文件 | ${missing.length ? '**FAIL**' : 'PASS'} | 生产 MANIFEST ${prodManifest.size} 条；缺失 ${missing.length}；预期缺失（构建元数据/AppleDouble）${expectedAbsent.length}；仓库删除 ${prunedAbsent.length}；内容变化 ${changedVsProd.length}；非 dist 新增 ${addedVsProd.length}；dist 替换 ${distReplaced.length}+${addedDist.length} |`)
 P(`| V2 dist 与源码一致 | ${v2Fail ? '**FAIL**' : 'PASS'} | ${distChecks.join('；')} |`)
 P(`| V3 Node 版本 | ${nodeVerdict} | ${nodeChecks.join('；')} |`)
 P(`| V4 MANIFEST 自洽 | ${manifestMismatch.length ? '**FAIL**' : 'PASS'} | 逐条重算比对 |`)
@@ -402,6 +436,7 @@ P(`## V1 明细`)
 P()
 P(`- 缺失的生产文件（必须为空）：${missing.length ? missing.join(', ') : '无'}`)
 P(`- 预期缺失（`+'`.cache/*.tsbuildinfo`'+` 构建元数据、AppleDouble）：${expectedAbsent.join(', ') || '无'}`)
+P(`- 仓库已删除、已从组装树移除（$NEW 里仍需人工移除，见警告）：${prunedAbsent.length ? prunedAbsent.join(', ') : '无'}`)
 P(`- 相对生产内容不同的文件：${changedVsProd.length} 个（见 release-plan.md 逐文件表）`)
 P(`- 生产 dist 被替换：${distReplaced.length} 个旧 chunk 移除、${addedDist.length} 个新 chunk 加入（Vue 构建，整体替换，见 V2）`)
 P(`- 新增且生产没有的文件：${addedVsProd.length} 个：${addedVsProd.slice(0, 40).join(', ')}${addedVsProd.length > 40 ? ' …' : ''}`)
@@ -431,7 +466,7 @@ console.log(`组装目录: ${OUT}`)
 console.log(`releaseId: ${RELEASE_ID} | mode: ${FRONTEND} | HEAD: ${head.slice(0, 7)}${dirtyTracked.length ? ` (+${dirtyTracked.length} 脏文件)` : ''}`)
 console.log(`文件 ${stats.files} 个 / ${mb(stats.bytes)} | MANIFEST ${stats.manifestEntries} 条 | dist ${distInfo?.files} 个 (tree ${distInfo?.treeHash?.slice(0, 16)}…)`)
 console.log(`本地动作: ${Object.entries(byAction).map(([k, v]) => `${k}=${v}`).join(' ') || '无'}`)
-console.log(`V1 缺失生产文件: ${missing.length} | 预期缺失: ${expectedAbsent.length} | 替换: ${changedVsProd.length} | 新增: ${addedVsProd.length}`)
+console.log(`V1 缺失生产文件: ${missing.length} | 预期缺失: ${expectedAbsent.length} | 仓库删除: ${prunedAbsent.length} | 替换: ${changedVsProd.length} | 新增: ${addedVsProd.length}`)
 console.log(`V3 node: local=${localNode} prod=${EXPECT_NODE || '-'} engines=${engines} -> ${nodeVerdict}`)
 for (const w of warnings) console.log('⚠ ' + w)
 for (const p of problems) console.log('✖ ' + p)

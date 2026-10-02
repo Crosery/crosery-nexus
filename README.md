@@ -114,6 +114,20 @@ npm test
 npm run verify
 ```
 
+### 5. 管理 CLI（cradmin）
+
+`cradmin` 是中转站的管理员命令行，和公开分发的 `crapi` 分开，只随本仓库使用。
+它只调控制台的 HTTP API，凭据走控制台自己的 `CONSOLE_USERNAME` / `CONSOLE_PASSWORD(_FILE)`、仓库 `.env` 或 macOS 钥匙串。
+默认目标是本地沙盒 `http://127.0.0.1:8791`，生产要显式 `--profile prod`。详见 [docs/cli.md](docs/cli.md)。
+
+```bash
+node cli/cradmin.mjs                                   # 交互菜单
+ln -s "$PWD/cli/cradmin.mjs" ~/.local/bin/cradmin       # 可选：装成 cradmin 命令（仓库根目录执行一次）
+node cli/cradmin.mjs channels models codex --only 'gpt-5*'
+node cli/cradmin.mjs keys create --name <名称> --groups codex --daily-usd 5
+node cli/cradmin.mjs config export > crosery.json && node cli/cradmin.mjs config apply crosery.json --dry-run
+```
+
 ---
 
 ## 🚢 生产部署
