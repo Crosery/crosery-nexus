@@ -384,7 +384,8 @@ test('cache trend aggregates in SQLite and preserves aggregate request counts', 
     }],
   ]])
 
-  const result = await loadCacheTrendReport(reader, groups, 24, '', '', '', '', Date.parse('2026-08-31T12:00:00Z'))
+  // currentOnly = true: provider list = current groups, no discovery read (the default all-channel scope is tested below)
+  const result = await loadCacheTrendReport(reader, groups, 24, '', '', '', '', Date.parse('2026-08-31T12:00:00Z'), true)
 
   assert.match(reader.operations[0].sql, /COUNT\(\*\) requests/)
   // task-59：预聚合粒度改成**展示桶**（24h 窗口 → 900s 桶；900000ms / 60000 = 15）。
@@ -417,7 +418,7 @@ test('cache trend filters by key in SQL and by provider in Node while keeping bo
   }
   const reader = new FakeReader([[[claudeRow], [codexRow]]])
 
-  const result = await loadCacheTrendReport(reader, twoGroups, 24, '', '', 'key-hash-1', 'claude', Date.parse('2026-08-31T12:00:00Z'))
+  const result = await loadCacheTrendReport(reader, twoGroups, 24, '', '', 'key-hash-1', 'claude', Date.parse('2026-08-31T12:00:00Z'), true)
 
   assert.equal(reader.operations.length, 2)
   for (const operation of reader.operations) {
@@ -438,8 +439,23 @@ test('cache trend filters by key in SQL and by provider in Node while keeping bo
   assert.equal(result.points[0]?.cacheWriteTokens, 300)
 
   const unfiltered = new FakeReader([[[claudeRow], [codexRow]]])
-  const all = await loadCacheTrendReport(unfiltered, twoGroups, 24, '', '', '', '', Date.parse('2026-08-31T12:00:00Z'))
+  const all = await loadCacheTrendReport(unfiltered, twoGroups, 24, '', '', '', '', Date.parse('2026-08-31T12:00:00Z'), true)
   assert.doesNotMatch(unfiltered.operations[0].sql, /key_hash/)
   assert.equal(all.points[0]?.requests, 10)
   assert.deepEqual(all.clients.map((item) => item.requests), [6, 4])
+})
+
+test('cache trend counts every channel by default: providers come from the window, a removed one included', async () => {
+  const minuteBucket = Math.floor(Date.parse('2026-08-31T11:00:00.000Z') / 60_000)
+  const row = (provider: string, requests: number) => ({
+    minuteBucket, model: 'gpt-5.6-sol', provider, clientType: 'codex-cli', firstTimestampMs: minuteBucket * 60_000,
+    requests, inputTokens: 1_000 * requests, uncachedInputTokens: 100 * requests, cacheReadTokens: 900 * requests, cacheWriteTokens: 0, outputTokens: 10,
+  })
+  // batch 1: the provider discovery read on the rollup; batch 2: one read per discovered provider
+  const reader = new FakeReader([[[{ p: 'codex' }, { p: 'retired' }]], [[row('codex', 4)], [row('retired', 6)]]])
+  const result = await loadCacheTrendReport(reader, groups, 24, '', '', '', '', Date.parse('2026-08-31T12:00:00Z'))
+  assert.match(reader.operations[0].sql, /FROM usage_hourly_rollup/)
+  assert.deepEqual(reader.operations.slice(1).map((operation) => operation.params?.[2]), ['codex', 'retired'])
+  assert.equal(result.points[0]?.requests, 10)
+  assert.deepEqual(result.providers.map((item) => [item.id, item.requests]), [['retired', 6], ['codex', 4]])
 })

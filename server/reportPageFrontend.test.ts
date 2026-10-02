@@ -3,74 +3,98 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 /**
- * 这一组曾经断言 React 死树（`src/App.tsx` / `pages/ChartsPage.tsx` / `pages/CachePage.tsx`）。
- * 死树已删除（task-17），活代码是 `.vue` + `src/lib/resource.ts`，所以改为**对活代码的等价断言**：
- * 原来盯的四件事——「专用 loader + 竞态守卫」「跨 scope 不串数据」「按顺序取数」「图表/筛选不被空列表打断」——
- * 在 Vue 树里分别落到 `useResource` 的序号守卫、页面的 `api.*` 调用与 URL 派生依赖上。
+ * 用量工作台（`src/features/usage/`）四个页签的取数不变量。v3 把 v2 的 Usage / Analytics / Cache / Charts
+ * 四页收进一个工作台（`/usage` · `/usage/requests` · `/usage/cache` · `/usage/performance`），断言跟着文件走，
+ * 盯的仍是原来四件事：
+ * 1. 每个页签有专用 loader，竞态由序号守卫统一丢弃过期响应（`lib/resource.ts` 的 useResource 或
+ *    `ui/composables/useLive.ts` 的 useLive —— 两者都在这里被钉住，页面换用哪个都受约束）。
+ * 2. 取数只跟随 URL 派生的筛选（工作台共享 days / keyId / hours …），不把数据写回共享状态、不 import 别的页面。
+ * 3. 总览页签只读一次 /api/usage-overview；性能页签真的请求 /api/usage-performance 并画出 trend。
+ * 4. 共享筛选条（工作台 FilterBar）的目录来自响应，但选中值来自 URL（换 scope 不清空选择）。
  *
- * 明确删掉的断言（在 Vue 树上已无意义，不为绿灯保留假断言）：
- * - React 版「usage 先渲染 core 再后台合并 key summaries」：Vue 版只有一次 `api.usageOverview`，
- *   不存在两段式合并，该断言没有对应实现。
- * - React 版「charts 先取 core 再取 latency」：Vue 版只请求 `/api/charts`，
- *   `api.chartsLatency` 在活代码里零调用（见下面对它的反向断言）。
- * - React 版「recharts 系列 `isAnimationActive={false}`」：活代码不用 recharts，
- *   图表是 SVG/CSS，动画由 `styles/theme.css` 的 `prefers-reduced-motion` 统一处理。
+ * 明确不再断言的（v3 重设计后没有对应实现，不为绿灯保留假断言）：v2 的 `TxAlert type="info"`、
+ * `<path :d="line"`、`v-for="m in topModels"` 这类具体标记；行为（未定价如实提示、趋势真的画出来）仍断言。
  */
-const app = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
-const resource = fs.readFileSync(new URL('../src/lib/resource.ts', import.meta.url), 'utf8')
-const usage = fs.readFileSync(new URL('../src/pages/UsagePage.vue', import.meta.url), 'utf8')
-const charts = fs.readFileSync(new URL('../src/pages/ChartsPage.vue', import.meta.url), 'utf8')
-const cache = fs.readFileSync(new URL('../src/pages/CachePage.vue', import.meta.url), 'utf8')
+const read = (file: string) => fs.readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8')
+const app = read('App.vue')
+const resource = read('lib/resource.ts')
+const live = read('ui/composables/useLive.ts')
+const workspace = read('features/usage/UsageWorkspace.vue')
+const filters = read('features/usage/filters.ts')
+const usage = read('features/usage/tabs/UsageOverviewTab.vue')
+const performance = read('features/usage/tabs/PerformanceTab.vue')
+const cache = read('features/usage/tabs/CacheTab.vue')
+const requests = read('features/usage/tabs/RequestsTab.vue')
+const insightModel = read('features/usage/tabs/insight/model.ts')
+const insightApiSrc = read('features/usage/tabs/insight/api.ts')
+const TABS = [['UsageOverviewTab', usage], ['RequestsTab', requests], ['CacheTab', cache], ['PerformanceTab', performance]] as const
 
-test('report 页面用专用 loader，竞态由 useResource 的序号守卫统一丢弃过期响应', () => {
-  assert.match(usage, /api\.usageOverview<UsagePageData>/)
-  assert.match(charts, /api\.charts<ChartsData>\(days\.value, scope\.state\.keyId\)/)
-  assert.match(cache, /api\.cacheTrend<CacheTrendData>/)
-  // 竞态守卫：后发的请求赢，先发的过期响应被丢弃（React 版每个 loader 各写一份 request ref）。
+const usesGuardedLoader = (source: string) => /\b(useResource|useLive)\s*(<[^>]*>)?\(/.test(source)
+
+test('竞态守卫：useResource 与 useLive 都是「后发的请求赢」，刷新失败保留旧数据', () => {
   assert.match(resource, /const mine = \+\+seq/)
   assert.match(resource, /if \(mine === seq && !disposed\) \{\s*data\.value = result/)
   assert.match(resource, /if \(mine === seq && !disposed\) error\.value = err/)
-  // 刷新时保留旧数据：成功前不碰 data，页面不闪空。
   assert.doesNotMatch(resource, /data\.value = undefined/)
+  assert.match(live, /const mine = \+\+seq/)
+  assert.match(live, /if \(mine !== seq \|\| disposed\) return\s*data\.value = result/)
+  assert.doesNotMatch(live, /data\.value = undefined/)
+  for (const [name, source] of TABS) assert.ok(usesGuardedLoader(source), `${name} 必须经 useResource / useLive 取数（序号守卫）`)
 })
 
-test('report 页面的取数只跟随 URL 派生的 scope，不把数据写回共享状态', () => {
-  assert.match(usage, /\[\(\) => scope\.state\.days, \(\) => scope\.state\.keyId\]/)
-  assert.match(cache, /\[\(\) => scope\.state\.hours, \(\) => scope\.state\.model, \(\) => scope\.state\.client, \(\) => scope\.state\.keyId, \(\) => scope\.state\.provider\]/)
-  assert.match(charts, /\[\(\) => scope\.state\.days, \(\) => scope\.state\.keyId\]/)
-  // 页面之间不共享可变数据：每个页面自持 useResource 结果，不 import 别的页面的状态。
-  for (const [name, source] of [['UsagePage', usage], ['ChartsPage', charts], ['CachePage', cache]]) {
-    assert.doesNotMatch(source, /from '\.\/(Analytics|Dashboard|Keys|Models)Page\.vue'/, `${name} 不应 import 其它页面`)
+test('每个页签只用自己的 loader，取数跟随 URL 派生的筛选，不 import 别的页面', () => {
+  assert.match(usage, /api\.usageOverview<\w+>\(/)
+  assert.match(requests, /api\.analytics<\w+>\(/)
+  assert.match(cache, /insightApi\.cacheSummary\(scope\.value/)
+  assert.match(performance, /insightApi\.performance\(scope\.value/)
+  // 依赖驱动重取：筛选变化必须触发重取（否则筛选静默失效——修过的真实缺陷）
+  for (const [name, source] of [['UsageOverviewTab', usage], ['RequestsTab', requests]] as const) {
+    for (const key of ['days', 'keyId', 'model', 'provider', 'client']) {
+      assert.match(source, new RegExp(`\\(\\) => scope\\.state\\.${key}`), `${name} 必须随 ${key} 重取`)
+    }
+  }
+  // 缓存 / 性能：scope 只从 URL 派生，scopeQuery 覆盖全部共享筛选键，变化即重取
+  for (const [name, source] of [['CacheTab', cache], ['PerformanceTab', performance]] as const) {
+    assert.match(source, /const scope = computed\(\(\) => scopeFromQuery\(route\.query\)\)/, `${name} 的筛选必须来自 URL`)
+    assert.match(source, /watch\(\(\) => scopeQuery\(scope\.value\)[\s\S]{0,80}live\.refresh\(\)/, `${name} 必须随筛选重取`)
+  }
+  assert.match(insightModel, /params\.set\('days', String\(scope\.days\)\)/)
+  assert.match(insightModel, /for \(const key of \['keyId', 'model', 'client', 'provider'\] as const\)/)
+  for (const [name, source] of TABS) {
+    assert.doesNotMatch(source, /from '\.\.?\/[^']*(Tab|Page|Workspace)\.vue'/, `${name} 不应 import 其它页面`)
   }
 })
 
-test('usage 页只有一次 /api/usage-overview 读取（不再有两段式 core+summaries 合并）', () => {
+test('工作台切页签只带共享筛选，不带页签私有状态（page / q / request）', () => {
+  assert.match(workspace, /:to="\{ path: tab\.to, query: carried \}"/)
+  assert.match(workspace, /sharedUsageQuery\(route\.query\)/)
+  // currentOnly（只看当前渠道）是四个页签共享的口径筛选，切页签要带着走
+  assert.match(filters, /SHARED_USAGE_KEYS = \['days', 'from', 'to', 'keyId', 'hours', 'model', 'client', 'provider', 'currentOnly'\]/)
+  assert.doesNotMatch(filters, /'page'|'q'|'request'/)
+})
+
+test('总览页签只有一次 /api/usage-overview 读取，未定价如实提示', () => {
   const calls = usage.match(/api\.usage(Overview|Page|KeySummaries|Breakdown)/g) || []
   assert.deepEqual(calls, ['api.usageOverview'])
-  // 未定价告警仍然如实渲染（原来用 TxAlert variant，Tuffex 不认这个 prop → 正文没渲染，本轮修掉）。
-  assert.match(usage, /v-if="data\?\.hasPartialCost"/)
-  assert.match(usage, /type="info"/)
+  assert.match(usage.slice(usage.indexOf('<template>')), /hasPartialCost/, '部分模型未定价时必须在模板里如实提示')
 })
 
-test('charts 页真的请求 /api/charts 并把 trend 画出来（D3 回归守卫）', () => {
-  assert.match(charts, /const trend = computed\(\(\) => charts\.value\?\.trend \?\? \[\]\)/)
-  assert.match(charts, /<path :d="line"/)
-  assert.match(charts, /v-for="m in topModels"/)
-  // 曾经 18 行的占位组件：永不请求、永久显示「加载图表数据中」。
-  // 只在模板里断言，避免把脚本注释里的这句历史说明当成缺陷。
-  const template = charts.slice(charts.indexOf('<template>'))
+test('性能页签真的请求 /api/usage-performance 并把 trend 画出来（D3 回归守卫）', () => {
+  assert.match(insightApiSrc, /\/api\/usage-performance\?/)
+  assert.match(performance, /\.trend\b/)
+  const template = performance.slice(performance.indexOf('<template>'))
   assert.doesNotMatch(template, /加载图表数据中/)
-  // 活代码不再使用 chartsLatency（React 死树才用它做第二段读取）。
-  assert.doesNotMatch(charts, /api\.chartsLatency/)
+  assert.doesNotMatch(performance, /api\.chartsLatency/)
 })
 
-test('cache 筛选依赖响应里的目录但保留当前选中值（换 scope 不清空选择）', () => {
-  assert.match(cache, /const internalModels = computed\(\(\) => internalTrend\.value\?\.models \?\? \[\]\)/)
-  assert.match(cache, /const internalClients = computed\(\(\) => internalTrend\.value\?\.clients \?\? \[\]\)/)
-  // 选中值来自 URL，不来自目录：目录还在加载时选择不会被重置。
-  assert.match(cache, /:model-value="scope\.state\.model"/)
-  assert.match(cache, /:model-value="scope\.state\.client"/)
-  assert.match(cache, /:model-value="scope\.state\.provider"/)
-  // 页面根部仍挂着全局确认框宿主（危险操作统一走 confirm()）。
+test('共享筛选条的目录来自响应，选中值来自 URL（换 scope 不清空选择）', () => {
+  // v3：模型 / 客户端 / 渠道 / Key 的筛选从缓存页签收进工作台唯一的 FilterBar，四个页签共用
+  assert.match(workspace, /api\.facets\(filter\.value/)
+  for (const [key, facet] of [['keyId', 'keys'], ['model', 'models'], ['provider', 'channels'], ['client', 'clients']]) {
+    assert.match(workspace, new RegExp(`withSelected\\(data\\.value\\?\\.${facet} \\?\\? \\[\\], scope\\.state\\.${key},`), `${key} 的选项来自响应、选中值来自 URL`)
+  }
+  // 选中值不在当前目录里时仍保留（不因换 scope 清空）
+  assert.match(workspace, /if \(selected && !items\.some\(\(o\) => o\.value === selected\)\) items\.unshift/)
+  // 根组件仍挂着全局确认框宿主（危险操作统一走 confirm()）
   assert.match(app, /<ConfirmHost \/>/)
 })

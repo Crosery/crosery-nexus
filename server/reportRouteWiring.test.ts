@@ -44,12 +44,12 @@ test('p95 reports use a dedicated one-worker reader outside the core report pool
 test('cache live history never runs a synchronous SQLite seed on the request thread', () => {
   const segment = route('/api/cache-live', '/api/cache-live/status')
   assert.match(segment, /await loadCacheLiveHistory\(usageReader/)
-  assert.match(segment, /addBufferedClient\(res, model, clientType, keyId, provider\)/)
+  assert.match(segment, /addBufferedClient\(res, model, clientType, keyId, provider, currentOnly\)/)
   assert.match(segment, /client\.activate\(history\)/)
   assert.doesNotMatch(segment, /db\.prepare/)
   assert.match(segment, /if \(closed\) return/)
   assert.ok(segment.indexOf('res.writeHead(200') < segment.indexOf('await listGroupsForReporting()'))
-  assert.ok(segment.indexOf('addBufferedClient(res, model, clientType, keyId, provider)') < segment.indexOf('await loadCacheLiveHistory'))
+  assert.ok(segment.indexOf('addBufferedClient(res, model, clientType, keyId, provider, currentOnly)') < segment.indexOf('await loadCacheLiveHistory'))
 })
 
 test('default report scopes warm at startup and stay warm in the background', () => {
@@ -88,29 +88,45 @@ test('bootstrap always ships a complete quotaState per key even when the quota r
 })
 
 /**
- * 原来这条断言读 React 死树 `src/App.tsx`，检查「channels/models 页面每 N 秒静默轮询」的 `refreshCurrent`。
- * 死树已删除（task-17），并且**这个功能在活代码（Vue 树）里不存在**：`src/pages/*.vue` 只有
- * 显式「刷新」按钮 + `useResource` 依赖变化重取，没有任何 channels/models 轮询定时器
- * （`grep -rn setInterval src/pages/*.vue` → 只有 OAuthPage 的授权轮询与 CachePage 的 SSE 重连）。
- * 所以这条断言不是「换个文件继续断言」，而是它描述的行为已经不在产品里 —— 删掉，避免绿灯来自一个不存在的功能。
- * 若「静默轮询」是期望行为，应单独立项在产品里实现，而不是留在测试里当装饰。
+ * 前端定时器边界（v3：页面在 `src/features/**`，外壳在 `src/shell/**`、`src/app/**`）。
+ *
+ * 历史：React 死树里有过「channels/models 每 N 秒静默轮询」的 `refreshCurrent`，Vue 树里这个功能不存在，
+ * 那条断言随之删除——不让绿灯来自一个不存在的功能。留下的不变量是：
+ * - 页面与外壳里**唯一**允许的 `setInterval` 是账号页的 OAuth 授权状态轮询（它必须读 `getOAuthStatus`）。
+ * - 其它周期性取数一律走 `useLive`（单循环、隐藏标签页暂停、乱序丢弃）或 `useNow` 的共享 1s 时钟，
+ *   DESIGN §3.2 #15「没有逐元素 setInterval」。
  */
-test('活代码里只有授权轮询与 SSE 重连两类定时器，不存在隐式的渠道/模型轮询', () => {
-  const pagesDir = new URL('../src/pages/', import.meta.url)
-  const pages = fs.readdirSync(pagesDir).filter((name) => name.endsWith('.vue'))
-  const intervals = pages.filter((name) => /setInterval/.test(fs.readFileSync(new URL(name, pagesDir), 'utf8')))
-  assert.deepEqual(intervals, ['OAuthPage.vue'])
+function sourceFiles(dir: URL, rel = ''): string[] {
+  const out: string[] = []
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) out.push(...sourceFiles(new URL(`${entry.name}/`, dir), `${rel}${entry.name}/`))
+    else if (/\.(vue|ts)$/.test(entry.name)) out.push(`${rel}${entry.name}`)
+  }
+  return out
+}
 
-  const app = fs.readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+test('页面与外壳里只有 OAuth 授权轮询一个 setInterval，不存在隐式的渠道/模型轮询', () => {
+  const src = new URL('../src/', import.meta.url)
+  const scanned = ['features/', 'shell/', 'app/'].flatMap((dir) => sourceFiles(new URL(dir, src), dir))
+  assert.ok(scanned.some((file) => file.startsWith('features/')), '没有扫描到任何 features 文件，扫描逻辑需要更新')
+  const intervals = scanned.filter((file) => /setInterval\(/.test(fs.readFileSync(new URL(file, src), 'utf8')))
+  for (const file of intervals) {
+    const source = fs.readFileSync(new URL(file, src), 'utf8')
+    assert.ok(file.startsWith('features/accounts/') && /getOAuthStatus/.test(source), `${file} 用了 setInterval：周期取数请改用 useLive，倒计时用 useNow`)
+  }
+
+  const app = fs.readFileSync(new URL('App.vue', src), 'utf8')
   assert.doesNotMatch(app, /setInterval|refreshCurrent/)
 })
 
-test('cache trend and cache live accept key and provider filters with a v3 snapshot key', () => {
+test('cache trend and cache live accept key, provider and channel-scope filters with a v4 scoped snapshot key', () => {
   const trend = route('/api/cache-trend', '/api/cache-live')
   assert.match(trend, /req\.query\.keyId/)
   assert.match(trend, /req\.query\.provider/)
-  assert.match(trend, /loadCacheTrendReport\(usageReader, reporting\.groups, hours, model, clientType, keyId, provider\)/)
-  assert.match(source, /cache-trend:v3:/)
+  assert.match(trend, /parseCurrentOnly\(req\.query\.currentOnly\)/)
+  assert.match(trend, /loadCacheTrendReport\(usageReader, reporting\.groups, hours, model, clientType, keyId, provider, Date\.now\(\), currentOnly\)/)
+  // 口径改为「默认全部渠道」后快照键升版并带口径段：旧版本号下按当前渠道算的快照不会被读到
+  assert.match(source, /cache-trend:v4:\$\{scopeTag\(currentOnly\)\}:/)
   const live = route('/api/cache-live', '/api/cache-live/status')
-  assert.match(live, /loadCacheLiveHistory\(usageReader, groups, limit, model, clientType, keyId, provider\)/)
+  assert.match(live, /loadCacheLiveHistory\(usageReader, groups, limit, model, clientType, keyId, provider, currentOnly\)/)
 })
