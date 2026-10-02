@@ -138,7 +138,8 @@ function pricingKeysFor(id: string): string[] {
  * 不需要重新构建 console。网关没有该模型价格时（models.dev 未收录，例如
  * muse-spark）调用方回落静态表。
  */
-export async function gatewayPricingMap(): Promise<Map<string, ModelPricing>> {
+/** `failures`（可选）收集本轮没取到的网关价格来源名，供同步中心如实报 partial。 */
+export async function gatewayPricingMap(failures?: string[]): Promise<Map<string, ModelPricing>> {
   const map = new Map<string, ModelPricing>()
   if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
     const { readSharedCatalog } = await import('./modelSync.js')
@@ -165,13 +166,14 @@ export async function gatewayPricingMap(): Promise<Map<string, ModelPricing>> {
   // the channels declared in config (openai-compatibility, codex-api-key) whose
   // own endpoints return raw configuration without capability metadata. Without
   // it muse-spark-1.3-contributor and grok-4.6 stay unpriced.
-  const sources: Array<{ models: ModelDefinition[] }> = [...(await loadDefinitions())]
+  const sources: Array<{ models: ModelDefinition[] }> = [...(await loadDefinitions(failures))]
   try {
     const headers = { Authorization: `Bearer ${config.cpaManagementKey}` }
     const all = await fetchJson<{ models?: ModelDefinition[] }>(`${config.cpaBaseUrl}/v0/management/available-models`, headers, config.cpaRequestTimeoutMs)
     if (all.models?.length) sources.push({ models: all.models })
   } catch {
     // 取不到就只用按渠道拉到的那份，价格表仍可用。
+    failures?.push('available-models')
   }
   for (const source of sources) {
     for (const definition of source.models) {
@@ -273,7 +275,7 @@ async function fetchJson<T>(url: string, headers: Record<string, string>, timeou
   return response.json() as Promise<T>
 }
 
-async function loadDefinitions(): Promise<Array<{ provider: string; models: ModelDefinition[] }>> {
+async function loadDefinitions(failures?: string[]): Promise<Array<{ provider: string; models: ModelDefinition[] }>> {
   if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
     const { readMagpieChannels } = await import('./magpieControl.js')
     const { readSharedCatalog } = await import('./modelSync.js')
@@ -300,6 +302,7 @@ async function loadDefinitions(): Promise<Array<{ provider: string; models: Mode
       const response = await fetchJson<{ models?: ModelDefinition[] }>(`${config.cpaBaseUrl}/v0/management/model-definitions/${provider}`, headers, config.cpaRequestTimeoutMs)
       return { provider, models: response.models || [] }
     } catch {
+      failures?.push(provider)
       return { provider, models: [] }
     }
   }))
@@ -310,6 +313,7 @@ async function loadDefinitions(): Promise<Array<{ provider: string; models: Mode
     }
   } catch {
     // The catalog remains useful when an older CPA lacks the compatibility endpoint.
+    failures?.push('openai-compatibility')
   }
   return result
 }
@@ -495,12 +499,28 @@ function persistGatewayPricing(map: Map<string, ModelPricing>): void {
  * 拉取失败不抛出：价格表保持原样（含落盘回读的内容），服务照常。
  */
 export async function refreshGatewayPricing(): Promise<number> {
+  return (await refreshGatewayPricingDetailed()).added
+}
+
+/**
+ * 同步中心用的同一次刷新，带上可观测字段。本机控制面只读共享目录（0 次上游请求）；
+ * CPA 控制面是每个原生渠道一次 model-definitions + openai-compatibility + available-models。
+ */
+export async function refreshGatewayPricingDetailed(): Promise<{
+  ok: boolean; added: number; priced: number; requests: number; error: string | null
+  /** 本轮失败的价格来源（这些来源的旧价格仍保留在快照里）；非空时同步中心报 partial。 */
+  failedSources: string[]
+}> {
+  const local = config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local'
+  const requests = local ? 0 : definitionChannels.length + 2
+  const failedSources: string[] = []
   try {
-    const map = await gatewayPricingMap()
+    const map = await gatewayPricingMap(failedSources)
     persistGatewayPricing(map)
-    return applyGatewayPricing(map as unknown as Map<string, PriceEntry>)
-  } catch {
-    return 0
+    const added = applyGatewayPricing(map as unknown as Map<string, PriceEntry>)
+    return { ok: map.size > 0, added, priced: map.size, requests, error: map.size > 0 ? null : '网关未返回任何价格', failedSources }
+  } catch (error) {
+    return { ok: false, added: 0, priced: 0, requests, error: error instanceof Error ? error.message : '刷新失败', failedSources }
   }
 }
 

@@ -1,5 +1,6 @@
 import type { ChannelView } from './channelView.js'
 import { getModelPricing, type ModelPricing, getPricingSources, pricingSourceModelIds, type SourcePrice } from './pricing.js'
+import { modelKind, type ModelKind } from './modelKind.js'
 
 export type ModelSource = {
   channel: string
@@ -29,6 +30,8 @@ export type ModelEntry = {
   unpriced?: boolean
   /** 是否在网关上可用；只在价格来源里出现的模型 ⇒ false（并集里的"仅目录收录"） */
   availableOnGateway?: boolean
+  /** 按输出分的模型类型（server/modelKind.ts：输出模态元数据优先，名字兜底）；buildModelIndex / 并集总会带上。 */
+  kind?: ModelKind
 }
 
 export type OAuthProviderModels = {
@@ -85,6 +88,7 @@ export function mergePriceSourceEntries(models: ModelEntry[]): ModelEntry[] {
       sources: [],
       enabledSources: 0,
       contested: false,
+      kind: modelKind(id),
       ...priceSourceFields(id, false),
     })
     seen.add(id)
@@ -140,6 +144,7 @@ export function buildModelIndex(channels: ChannelView[], oauth: OAuthProviderMod
         enabledSources,
         // 只有多个「启用中」的来源才会真的分流；停用渠道仍列在 sources 里供恢复，但不算争用。
         contested: enabledSources > 1,
+        kind: modelKind(id),
       }
     })
     .map(withPriceSourceFields)

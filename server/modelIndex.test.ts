@@ -96,3 +96,49 @@ test('attaches public per-million pricing to a model even without recorded usage
   const { input, output, cacheRead, cacheWrite, unit } = pricing
   assert.deepEqual({ input, output, cacheRead, cacheWrite, unit }, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, unit: 'token' })
 })
+
+test('每条模型带按输出分的类型 kind（目录并集补进来的也带），渠道来源的 kind 不受影响', async () => {
+  const { mergePriceSourceEntries } = await import('./modelIndex.js')
+  const { applySharedPricing, resetSharedPricing } = await import('./pricing.js')
+  const { resetModelKindCache } = await import('./modelKind.js')
+  // 与本机共享目录无关：指向不存在的文件，只走名字规则
+  const previous = process.env.CROSERY_SHARED_CATALOG
+  process.env.CROSERY_SHARED_CATALOG = '/nonexistent/model-index-test/catalog.json'
+  resetModelKindCache()
+  const index = buildModelIndex(
+    [channel('or', true, [['google/gemini-3.1-flash-image', true, 1], ['gemini-3.8-flash', true, 1], ['openai/text-embedding-3-small', true, 1]])],
+    [{ provider: 'codex', models: ['gpt-image-2.5', 'gpt-6-sol'], excluded: [], activeAccounts: 1 }],
+  )
+  const kinds = Object.fromEntries(index.map((model) => [model.id, model.kind]))
+  assert.equal(kinds['google/gemini-3.1-flash-image'], 'image')
+  assert.equal(kinds['gemini-3.8-flash'], 'chat')
+  assert.equal(kinds['openai/text-embedding-3-small'], 'embedding')
+  assert.equal(kinds['gpt-image-2.5'], 'image')
+  assert.equal(kinds['gpt-6-sol'], 'chat')
+  assert.equal(index.find((model) => model.id === 'gpt-6-sol')?.sources[0].kind, 'oauth')
+  try {
+    applySharedPricing({ rows: [{ id: 'veo-3.1-generate-preview', source: 'models.dev', prices: { 'models.dev': { input: 0, output: 0.4, unit: 'usd-per-million-tokens' } } }], sources: {} })
+    const merged = mergePriceSourceEntries(index)
+    assert.equal(merged.find((model) => model.id === 'veo-3.1-generate-preview')?.kind, 'video')
+  } finally {
+    resetSharedPricing()
+    if (previous === undefined) delete process.env.CROSERY_SHARED_CATALOG
+    else process.env.CROSERY_SHARED_CATALOG = previous
+    resetModelKindCache()
+  }
+})
+
+test('modelKind 与 modelSync 读同一个共享目录路径（两处解析必须一致）', async () => {
+  const { sharedCatalogFile } = await import('./modelKind.js')
+  const { sharedCatalogPath } = await import('./modelSync.js')
+  const previous = process.env.CROSERY_SHARED_CATALOG
+  try {
+    delete process.env.CROSERY_SHARED_CATALOG
+    assert.equal(sharedCatalogFile(), sharedCatalogPath())
+    process.env.CROSERY_SHARED_CATALOG = '/tmp/x/catalog.json'
+    assert.equal(sharedCatalogFile(), sharedCatalogPath())
+  } finally {
+    if (previous === undefined) delete process.env.CROSERY_SHARED_CATALOG
+    else process.env.CROSERY_SHARED_CATALOG = previous
+  }
+})
