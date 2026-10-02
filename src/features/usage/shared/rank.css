@@ -1,0 +1,14 @@
+/* Kit RankList inside the 用量 tabs (calm-down, page-scoped):
+   - the order already is the rank, so the 01…08 index is not shown;
+   - a list that has any `err x%` cell reserves that column on every row, so values and shares stay aligned;
+   - on phones the bar under each name already separates rows: no extra hairline under it. */
+:is(.uov, .uxi) .ui-rank__i { display: none; }
+:is(.uov, .uxi) .ui-rank li { grid-template-columns: minmax(0, 1fr) minmax(40px, 22%) auto auto auto; }
+:is(.uov, .uxi) .ui-rank:has(.ui-rank__err) li { grid-template-columns: minmax(0, 1fr) minmax(40px, 22%) auto auto 10ch; }
+:is(.uov, .uxi) .ui-rank__err { text-align: right; }
+:is(.uov, .uxi) .ui-rank li:has(.ui-rank__sub) { padding: 5px 0; }
+@media (max-width: 599px) {
+  :is(.uov, .uxi) .ui-rank li { grid-template-columns: minmax(0, 1fr) auto auto auto; border-bottom: 0; }
+  :is(.uov, .uxi) .ui-rank:has(.ui-rank__err) li { grid-template-columns: minmax(0, 1fr) auto auto 10ch; }
+  :is(.uov, .uxi) .ui-rank__bar { grid-column: 1 / -1; }
+}

@@ -1,0 +1,19 @@
+/* Shared form pieces of the Key sheets (editor, quota). Global, kx- prefixed, shipped with the /keys chunk.
+   Inputs are TxInput (styles/tx/input.css draws the one 1px ctl boundary); html:root beats tuffex's scoped rules. */
+.kx-field { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.kx-field__k { display: flex; align-items: baseline; gap: 8px; padding: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--ink); }
+/* a <legend> is not a grid item of its fieldset, so it gets the field gap as a margin */
+legend.kx-field__k { margin-bottom: 6px; }
+.kx-field__opt { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
+.kx-field__hint { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.kx-field__err { margin: 0; font-size: var(--fs-xs); color: var(--signal-ink); }
+html:root :is(.kx-form, .kx-quota) .tx-input:has(> .tx-input__inner[aria-invalid="true"]) { border-color: var(--signal); }
+html:root .tx-input.kx-num { width: 84px; }
+html:root .kx-num .tx-input__inner { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+html:root .tx-input.kx-money { width: 100%; }
+.kx-money__cur { flex: none; margin-right: 4px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--ink-3); pointer-events: none; }
+.kx-form__fail { margin: 0; padding: 8px 10px; border-left: 2px solid var(--signal); background: var(--paper-2); font-size: var(--fs-sm); color: var(--ink); overflow-wrap: anywhere; }
+.kx-form__submit { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+/* the whole form locks while its own write is in flight (a disabled fieldset disables every control in it) */
+.kx-form__lock { display: grid; gap: inherit; min-width: 0; margin: 0; padding: 0; border: 0; }
+@media (pointer: coarse) { html:root :is(.kx-form, .kx-quota) .tx-input { height: var(--tap); } }

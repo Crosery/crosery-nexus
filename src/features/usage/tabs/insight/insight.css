@@ -1,0 +1,66 @@
+/* 用量 · 缓存 / 性能 tabs (local; shipped with their route chunk). Kit tokens only, no hex. */
+@import '../../shared/rank.css';
+
+/* ledger: readouts in one plate, separated by spacing alone (no hairline between every cell), no tiles */
+.uxi-ledger { display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); gap: 14px 28px; padding: 4px 0 6px; }
+.uxi-ledger.is-4 { --cols: 4; }
+.uxi-ledger.is-5 { --cols: 5; }
+.uxi-ledger > * { align-content: start; }
+.uxi-ledger .ui-ro__d { font-family: var(--font-sans); white-space: normal; overflow: visible; line-height: 1.45; }
+.uxi-ledger .ui-ro__d b { font-weight: 500; color: var(--ink-2); }
+.uxi-ledger .ui-ro__d b.sig, .uxi-ledger .ui-ro__d .sig { color: var(--signal-ink); }
+
+.uxi-basis { color: var(--ink-3); }
+.uxi .ui-plate__meta b { font-weight: 500; color: var(--ink-2); }
+
+/* collapsed "not counted" line under the cache ledger (TxCollapse: one quiet row, the arrow is the affordance) */
+.uxi-excl { width: 100%; font-size: var(--fs-xs); }
+html:root .uxi-excl .tx-collapse-item__header { min-height: 32px; gap: 8px; font-size: var(--fs-xs); font-weight: 400; color: var(--ink-2); }
+html:root .uxi-excl .tx-collapse-item__content-inner { padding: 0 0 4px; font-size: var(--fs-xs); color: var(--ink-3); }
+.uxi-excl__list { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 4px 0 2px; padding: 0; list-style: none; }
+.uxi-excl__list li { display: flex; max-width: 100%; min-width: 0; }
+html:root .tx-tag.uxi-excl__tag { display: inline-flex; gap: 6px; align-items: baseline; max-width: 100%; min-width: 0; letter-spacing: 0; font-size: var(--fs-xs); }
+html:root .uxi-excl__tag .tx-tag__content { display: flex; align-items: baseline; min-width: 0; overflow: hidden; }
+.uxi-excl__tag span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.uxi-excl__tag b { margin-left: 6px; font-weight: 400; color: var(--ink-3); }
+.uxi-excl__rule { margin: 4px 0 0; }
+
+/* row cards: a card line whose only cell rendered nothing (超上限 = 0 on phones) takes no space */
+.uxi .ui-rcard__ln:has(> .ui-rcard__seg > .uxi-blank:only-child):not(:has(> .ui-rcard__seg + .ui-rcard__seg)) { display: none; }
+
+/* prompt composition rows (cache): spacing, not a rule under every row */
+.uxi-mix { display: grid; gap: 0; margin-top: 10px; }
+.uxi-mix__row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 52px; align-items: center; gap: 0 10px; min-height: 30px; font-size: var(--fs-sm); }
+.uxi-mix__row i { width: 10px; height: 10px; border-radius: 1px; }
+.uxi-mix__row .note { color: var(--ink-3); font-size: var(--fs-xs); margin-left: 6px; }
+.uxi-mix__row .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.uxi-mix__row .s { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-3); font-size: var(--fs-xs); }
+.uxi-money { display: grid; gap: 0; margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--rule); }
+.uxi-money__row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; min-height: 26px; font-size: var(--fs-sm); color: var(--ink-2); }
+.uxi-money__row:last-child { color: var(--ink); font-weight: 600; }
+.uxi-money__row .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.uxi-money__note { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--ink-3); }
+
+/* inline hit meter + value (tables) */
+.uxi-hit { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.uxi-hit .ui-tm { gap: 0; }
+.uxi-hit__v { min-width: 5ch; text-align: right; color: var(--ink); }
+.uxi-hit__v.is-none { color: var(--ink-3); }
+
+/* live stream context: prompt length, flagged when it passes the cache write ceiling */
+.uxi-ctx { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 6px; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.uxi-ctx__tag { color: var(--signal-ink); font-family: var(--font-sans); font-size: var(--fs-xs); }
+
+.uxi-live-meta { display: inline-flex; align-items: center; gap: 8px; }
+.uxi-live-meta .num { font-family: var(--font-mono); }
+
+@media (max-width: 1179px) {
+  .uxi-ledger.is-5 { --cols: 3; }
+}
+@media (max-width: 959px) {
+  .uxi-basis { display: none; }
+}
+@media (max-width: 599px) {
+  .uxi-ledger.is-4, .uxi-ledger.is-5 { --cols: 2; gap: 14px 16px; }
+  .uxi-ledger.is-5 > :last-child { grid-column: 1 / -1; }
+}
