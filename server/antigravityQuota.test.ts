@@ -3,6 +3,7 @@ import './testDataDir.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { extractAntigravityProjectId, fetchAntigravityAccountQuota } from './antigravityQuota.js'
+import { AccountQuotaUpstreamError } from './accountQuota.js'
 
 test('AntiGravity project id is resolved from every credential shape CPA currently accepts', () => {
   assert.equal(extractAntigravityProjectId({ project_id: 'direct-project' }), 'direct-project')
@@ -73,4 +74,27 @@ test('AntiGravity quota also falls back after a transport exception', async () =
   )
   assert.equal(quota.groups.length, 1)
   assert.equal(quotaCalls, 2)
+})
+
+test('AntiGravity 遇到 429/401/403 立刻停手：不换域名重打同一账号，也不再查订阅', async () => {
+  const urls: string[] = []
+  await assert.rejects(
+    fetchAntigravityAccountQuota(
+      { name: 'ag.json', auth_index: 'ag-1', type: 'antigravity', project_id: 'direct-project' },
+      {
+        downloadAuthFile: async () => { throw new Error('不应下载') },
+        apiCall: async (_authIndex, url) => {
+          urls.push(url)
+          return { status_code: 429, body: {} }
+        },
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AccountQuotaUpstreamError)
+      assert.equal(error.status, 429)
+      return true
+    },
+  )
+  assert.equal(urls.length, 1)
+  assert.ok(!urls.some(url => url.includes('loadCodeAssist')))
 })

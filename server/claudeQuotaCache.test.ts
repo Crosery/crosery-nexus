@@ -140,3 +140,63 @@ test('deduplicates concurrent reads for the same endpoint', async () => {
   await Promise.all([first, second])
   assert.equal(calls, 1)
 })
+
+test('每次真正打上游都会计数；冷却中的账号计入 blockedCount', async () => {
+  const now = { value: 1_000 }
+  let fetched = 0
+  const cache = makeCache(now, { onFetch: () => { fetched += 1 } })
+  await cache.read('account-9', { usage: tooMany, profile: async () => ok({}) })
+  await cache.read('account-9', { usage: tooMany, profile: async () => ok({}) })
+  assert.equal(fetched, 2, 'usage + profile 各一次；冷却与 TTL 内不再计数')
+  assert.equal(cache.blockedCount(), 1)
+})
+
+/* ────────────────────────── review-sync-balance ────────────────────────── */
+
+test('SB-15 上游 Retry-After（秒或 HTTP 日期）作为冷却下限，且不被 1h 本地封顶截短', async () => {
+  const { apiCallRetryAfterMs } = await import('./accountQuota.js')
+  assert.equal(apiCallRetryAfterMs({ status_code: 429, header: { 'Retry-After': ['120'] } }), 120_000)
+  assert.equal(apiCallRetryAfterMs({ status_code: 429, headers: { 'retry-after': new Date(90_000).toUTCString() } }, 30_000), 60_000)
+  assert.equal(apiCallRetryAfterMs({ status_code: 429, body: '{}' }), null, 'CPA 不透传响应头时如实返回 null')
+
+  const now = { value: Date.parse('2026-10-02T00:00:00Z') }
+  const cache = makeCache(now)
+  const result = await cache.read('acct', {
+    usage: () => Promise.resolve({ status_code: 429, body: '{}', header: { 'Retry-After': ['7200'] } }),
+    profile: () => ok({ account: {} }),
+  })
+  assert.equal(result.usageBlockedUntil, now.value + 7_200_000)
+})
+
+test('SB-14 Claude 端点冷却可导出/恢复：重启后冷却中的端点不再打上游', async () => {
+  const now = { value: Date.parse('2026-10-02T00:00:00Z') }
+  const first = makeCache(now)
+  await first.read('acct', { usage: tooMany, profile: () => ok({ account: {} }) })
+  const saved = JSON.parse(JSON.stringify(first.exportCooldowns()))
+  assert.deepEqual(Object.keys(saved), ['acct:usage'])
+
+  const restarted = makeCache(now)
+  restarted.importCooldowns(saved)
+  let usageCalls = 0
+  now.value += 5 * 60_000
+  const read = await restarted.read('acct', { usage: () => { usageCalls += 1; return tooMany() }, profile: () => ok({ account: {} }) })
+  assert.equal(usageCalls, 0)
+  assert.match(read.usageError ?? '', /限流/)
+  now.value += 6 * 60_000
+  const again = await restarted.read('acct', { usage: () => { usageCalls += 1; return tooMany() }, profile: () => ok({ account: {} }) })
+  assert.equal(usageCalls, 1)
+  assert.equal(again.usageBlockedUntil, now.value + 20 * 60_000, '失败档位跨重启延续')
+})
+
+test('SB-15 冷却从收到失败时起算：排队等名额 + 请求本身花的时间不能让上游的 Retry-After 提前到期', async () => {
+  const now = { value: Date.parse('2026-10-02T00:00:00Z') }
+  const cache = makeCache(now)
+  const read = await cache.read('acct', {
+    usage: async () => {
+      now.value += 30_000 // 在全局名额前排队 + 请求本身
+      return { status_code: 429, body: '{}', header: { 'Retry-After': ['7200'] } }
+    },
+    profile: () => ok({ account: {} }),
+  })
+  assert.equal(read.usageBlockedUntil, now.value + 7_200_000)
+})

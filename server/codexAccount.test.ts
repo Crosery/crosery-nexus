@@ -40,3 +40,12 @@ test('unparseable payloads report null instead of a fake zero', () => {
   assert.deepEqual(normalizeResetCredits('nonsense'), { availableCount: null, credits: [] })
   assert.deepEqual(normalizeResetCredits(null), { availableCount: null, credits: [] })
 })
+
+test('Codex 额度与重置额度的转发结果：非 2xx 抛带状态码的错误，交给缓存冷却', async () => {
+  const { parseCodexResetCredits, parseCodexUsage } = await import('./codexAccount.js')
+  const { AccountQuotaUpstreamError } = await import('./accountQuota.js')
+  assert.deepEqual(parseCodexUsage({ status_code: 200, body: JSON.stringify({ plan_type: 'pro' }) }), { plan_type: 'pro' })
+  assert.throws(() => parseCodexUsage({ status_code: 429, body: '{}' }), (error: unknown) => error instanceof AccountQuotaUpstreamError && error.status === 429)
+  assert.throws(() => parseCodexResetCredits({ status_code: 403, body: '{}' }), (error: unknown) => error instanceof AccountQuotaUpstreamError && error.status === 403)
+  assert.equal(parseCodexResetCredits({ status_code: 200, body: { available_count: 2, credits: [] } }).availableCount, 2)
+})

@@ -1,3 +1,4 @@
+import { AccountQuotaUpstreamError, apiCallRetryAfterMs } from './accountQuota.js'
 import { apiCall, downloadAuthFile, type ApiCallResult } from './cpa.js'
 
 export const ANTIGRAVITY_QUOTA_URLS = [
@@ -127,25 +128,34 @@ export async function fetchAntigravityAccountQuota(
   }
   if (!projectId) throw new Error('AntiGravity 凭据缺少 project_id')
 
-  const subscription = readSubscription(authIndex, dependencies.apiCall).catch(() => null)
   let lastStatus = 0
+  let retryAfterMs: number | null = null
   for (const url of ANTIGRAVITY_QUOTA_URLS) {
+    let result: ApiCallResult
     try {
-      const result = await dependencies.apiCall(authIndex, url, {
+      result = await dependencies.apiCall(authIndex, url, {
         method: 'POST',
         header: { ...ANTIGRAVITY_HEADERS },
         data: JSON.stringify({ project: projectId }),
       })
-      lastStatus = statusCodeOf(result)
-      if (lastStatus < 200 || lastStatus >= 300) continue
-      const payload = parseBody(result)
-      const groups = Array.isArray(payload?.groups) ? payload.groups.filter(isRecord) : []
-      if (!groups.length) continue
-      return { groups, subscription: await subscription }
     } catch {
       // Google 同时提供 daily、sandbox 与正式 control-plane；单个域名的传输故障
       // 不应让整个账号卡片失效，继续尝试下一个等价只读端点。
+      continue
     }
+    lastStatus = statusCodeOf(result)
+    // 凭据被拒或被限流时，换个等价域名再打同一个账号只会加重封禁风险：直接停手交给缓存冷却。
+    if (lastStatus === 401 || lastStatus === 403 || lastStatus === 429) {
+      retryAfterMs = apiCallRetryAfterMs(result)
+      break
+    }
+    if (lastStatus < 200 || lastStatus >= 300) continue
+    const payload = parseBody(result)
+    const groups = Array.isArray(payload?.groups) ? payload.groups.filter(isRecord) : []
+    if (!groups.length) continue
+    // 订阅档位只在额度读成功后才查：失败路径不再多打一次 loadCodeAssist。
+    const subscription = await readSubscription(authIndex, dependencies.apiCall).catch(() => null)
+    return { groups, subscription }
   }
-  throw new Error(lastStatus ? `AntiGravity 额度接口返回 HTTP ${lastStatus}` : 'AntiGravity 额度接口未返回有效数据')
+  throw new AccountQuotaUpstreamError(lastStatus, lastStatus ? `AntiGravity 额度接口返回 HTTP ${lastStatus}` : 'AntiGravity 额度接口未返回有效数据', retryAfterMs)
 }

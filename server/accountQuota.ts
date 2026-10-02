@@ -35,6 +35,8 @@ export type AccountQuota = {
   } | null
   windows: QuotaWindow[]
   error: string | null
+  /** 当前控制面根本读不了额度（magpie+local 没有 /api-call）：页面应整体提示，而不是逐个账号报错。 */
+  unsupported?: true
 }
 
 /** `default_claude_max_20x` → `Max 20×`，让金标签直接可读 */
@@ -196,7 +198,8 @@ const antigravityFraction = (value: unknown): number | null => {
 
 function normalizeAntigravity(quota: Record<string, any>): AccountQuota {
   const error = typeof quota.error === 'string' ? quota.error : null
-  if (error) return { plan: '', tier: '', resetCredits: null, windows: [], error }
+  // 冷却期间缓存会把上次成功的数据和原因一起给出：有数据就照常展示，再附上原因。
+  if (error && !Array.isArray(quota.groups)) return { plan: '', tier: '', resetCredits: null, windows: [], error }
 
   const subscription = quota.subscription || {}
   const rawPlan = String(subscription.plan || '')
@@ -232,7 +235,7 @@ function normalizeAntigravity(quota: Record<string, any>): AccountQuota {
     })
   })
 
-  return { plan, tier, resetCredits: null, windows, error: null }
+  return { plan, tier, resetCredits: null, windows, error }
 }
 
 /**
@@ -272,8 +275,206 @@ export type ResetCreditsInput = {
 
 export function normalizeAccountQuota(type: string, quota: unknown, resetCredits?: ResetCreditsInput | null): AccountQuota {
   const source = (quota || {}) as Record<string, any>
+  if (source.unsupported === true) {
+    return { plan: '', tier: '', resetCredits: null, windows: [], error: typeof source.error === 'string' ? source.error : '当前控制面不支持读取额度', unsupported: true }
+  }
   if (type === 'claude') return normalizeClaude(source)
   if (type === 'antigravity') return normalizeAntigravity(source)
-  if (typeof source.error === 'string') return { plan: '', tier: '', resetCredits: null, windows: [], error: source.error }
-  return normalizeCodex(source, resetCredits)
+  const error = typeof source.error === 'string' ? source.error : null
+  if (error && !source.rate_limit && !source.plan_type) return { plan: '', tier: '', resetCredits: null, windows: [], error }
+  const normalized = normalizeCodex(source, resetCredits)
+  return error ? { ...normalized, error } : normalized
+}
+
+/* ────────────────────────── 每账号额度缓存（Codex / AntiGravity） ────────────────────────── */
+
+/**
+ * 上游自己给出的等待时间（Retry-After）的合理上限：超过它多半是解析错误或异常值。
+ * 本地指数冷却封顶 maxCooldownMs，但上游给的下限不受那个封顶约束——否则 2h 的限流会被打成每小时多试一次。
+ */
+export const PROVIDER_RETRY_AFTER_CAP_MS = 24 * 60 * 60_000
+
+/**
+ * CPA `/api-call` 的转发结果里如果带了上游响应头（`header` / `headers`，值为字符串或字符串数组），
+ * 取出 Retry-After（秒数或 HTTP 日期）。CPA 不透传响应头时返回 null，冷却照常走本地指数档。
+ */
+export function apiCallRetryAfterMs(result: unknown, now = Date.now()): number | null {
+  if (!result || typeof result !== 'object') return null
+  const record = result as Record<string, unknown>
+  const headers = record.header ?? record.headers
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null
+  for (const [name, raw] of Object.entries(headers as Record<string, unknown>)) {
+    if (name.toLowerCase() !== 'retry-after') continue
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (typeof value !== 'string' && typeof value !== 'number') return null
+    const text = String(value).trim()
+    if (/^\d+$/.test(text)) return Number(text) * 1000
+    const at = Date.parse(text)
+    return Number.isFinite(at) ? Math.max(0, at - now) : null
+  }
+  return null
+}
+
+/** 本地冷却与上游下限合成：本地指数档封顶 localMaxMs；上游 Retry-After 只受 PROVIDER_RETRY_AFTER_CAP_MS 约束。 */
+export function combineCooldown(localMs: number, localMaxMs: number, retryAfterMs: number | null): number {
+  const local = Math.min(localMaxMs, localMs)
+  return retryAfterMs === null ? local : Math.max(local, Math.min(retryAfterMs, PROVIDER_RETRY_AFTER_CAP_MS))
+}
+
+/** 落进同步中心状态文件的冷却（不含任何凭据或额度数据），重启后据此恢复，避免一重启就把冷却中的账号再打一遍。 */
+export type PersistedCooldown = { blockedUntil: number; failures: number; lastError?: string | null; blockedBy?: string }
+
+export function sanitizePersistedCooldowns(raw: unknown, now: number): Record<string, PersistedCooldown> {
+  const result: Record<string, PersistedCooldown> = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return result
+  for (const [key, entry] of Object.entries(raw as Record<string, unknown>).slice(0, 2000)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || key.length > 300) continue
+    const value = entry as Record<string, unknown>
+    const blockedUntil = typeof value.blockedUntil === 'number' && Number.isFinite(value.blockedUntil) ? Math.min(value.blockedUntil, now + PROVIDER_RETRY_AFTER_CAP_MS) : 0
+    const failures = typeof value.failures === 'number' && Number.isInteger(value.failures) && value.failures >= 0 ? Math.min(value.failures, 32) : 0
+    if (blockedUntil <= now && failures === 0) continue
+    result[key] = {
+      blockedUntil: Math.max(0, blockedUntil),
+      failures,
+      ...(typeof value.lastError === 'string' ? { lastError: value.lastError.slice(0, 200) } : {}),
+      ...(typeof value.blockedBy === 'string' ? { blockedBy: value.blockedBy.slice(0, 20) } : {}),
+    }
+  }
+  return result
+}
+
+/** 额度读取失败时带上游状态码，缓存据此区分「被限流」与「一时失败」。 */
+export class AccountQuotaUpstreamError extends Error {
+  constructor(readonly status: number, message: string, readonly retryAfterMs: number | null = null) {
+    super(message)
+    this.name = 'AccountQuotaUpstreamError'
+  }
+}
+
+export type AccountQuotaCacheOptions = {
+  ttlMs: number
+  /** 429 / 401 / 403 的首档冷却，之后按 2 倍递增到 maxCooldownMs。 */
+  rateLimitCooldownMs: number
+  maxCooldownMs: number
+  /** 其它失败（网络、5xx、解析）的首档冷却，同样指数递增。 */
+  failureCooldownMs?: number
+  /** 每个账号的 TTL 抖动比例，避免所有账号在同一刻集体过期再一起打上游。 */
+  jitterPct?: number
+  now?: () => number
+  random?: () => number
+  /** 每次真正打上游前回调（同步中心的 requests24h 计数）。 */
+  onFetch?: () => void
+}
+
+export type AccountQuotaRead<T> = { value: T | null; error: string | null; blockedUntil: number | null }
+
+type QuotaEntry<T> = { value: T | null; fetchedAt: number; expiresAt: number; blockedUntil: number; failures: number; lastError: string | null }
+
+/**
+ * 与 ClaudeQuotaCache 同一套语义，泛化给 Codex 与 AntiGravity：
+ * 成功按账号缓存 TTL；失败进入冷却（429/401/403 用长冷却并指数递增，上游的 Retry-After 作为下限），
+ * 冷却期间不打上游、返回上次成功数据 + 原因；同一账号同时只有一个在途请求。
+ * 这样 /api/monitor 的 stale-while-revalidate 后台刷新最多只碰到「真正到期」的账号，不会整片扇出。
+ */
+export class AccountQuotaCache<T> {
+  private readonly entries = new Map<string, QuotaEntry<T>>()
+  private readonly inflight = new Map<string, Promise<AccountQuotaRead<T>>>()
+  private readonly now: () => number
+  private readonly random: () => number
+
+  constructor(private readonly options: AccountQuotaCacheOptions) {
+    this.now = options.now ?? Date.now
+    this.random = options.random ?? Math.random
+  }
+
+  private ttl(): number {
+    const spread = this.options.ttlMs * ((this.options.jitterPct ?? 10) / 100)
+    return Math.round(this.options.ttlMs + spread * (this.random() * 2 - 1))
+  }
+
+  read(key: string, fetcher: () => Promise<T>): Promise<AccountQuotaRead<T>> {
+    const pending = this.inflight.get(key)
+    if (pending) return pending
+    const operation: Promise<AccountQuotaRead<T>> = this.load(key, fetcher).finally(() => {
+      if (this.inflight.get(key) === operation) this.inflight.delete(key)
+    })
+    this.inflight.set(key, operation)
+    return operation
+  }
+
+  private async load(key: string, fetcher: () => Promise<T>): Promise<AccountQuotaRead<T>> {
+    const now = this.now()
+    const entry = this.entries.get(key)
+    if (entry && entry.fetchedAt > 0 && entry.expiresAt > now) return { value: entry.value, error: null, blockedUntil: null }
+    if (entry && entry.blockedUntil > now) {
+      const reason = `${entry.lastError || '读取失败'}；冷却至 ${new Date(entry.blockedUntil).toISOString()}`
+      return {
+        value: entry.fetchedAt > 0 ? entry.value : null,
+        error: entry.fetchedAt > 0 ? `${reason}，当前显示上次成功数据` : reason,
+        blockedUntil: entry.blockedUntil,
+      }
+    }
+    const current: QuotaEntry<T> = entry ?? { value: null, fetchedAt: 0, expiresAt: 0, blockedUntil: 0, failures: 0, lastError: null }
+    this.entries.set(key, current)
+    try {
+      this.options.onFetch?.()
+      const value = await fetcher()
+      const finishedAt = this.now()
+      Object.assign(current, { value, fetchedAt: finishedAt, expiresAt: finishedAt + this.ttl(), blockedUntil: 0, failures: 0, lastError: null })
+      return { value, error: null, blockedUntil: null }
+    } catch (error) {
+      const finishedAt = this.now()
+      const status = error instanceof AccountQuotaUpstreamError ? error.status : 0
+      const limited = status === 429 || status === 401 || status === 403
+      current.failures += 1
+      const base = limited ? this.options.rateLimitCooldownMs : (this.options.failureCooldownMs ?? 30_000)
+      const retryAfter = error instanceof AccountQuotaUpstreamError ? error.retryAfterMs : null
+      const cooldown = combineCooldown(base * 2 ** Math.min(current.failures - 1, 32), this.options.maxCooldownMs, retryAfter)
+      current.blockedUntil = finishedAt + cooldown
+      current.lastError = error instanceof Error ? error.message : '读取失败'
+      const reason = `${current.lastError}；冷却至 ${new Date(current.blockedUntil).toISOString()}`
+      return {
+        value: current.fetchedAt > 0 ? current.value : null,
+        error: current.fetchedAt > 0 ? `${reason}，当前显示上次成功数据` : reason,
+        blockedUntil: current.blockedUntil,
+      }
+    }
+  }
+
+  /** 正在冷却的账号数（同步中心摘要）。 */
+  blockedCount(now = this.now()): number {
+    let count = 0
+    for (const entry of this.entries.values()) if (entry.blockedUntil > now) count += 1
+    return count
+  }
+
+  /** 仍在冷却、或带着失败档位的条目（只有时间、次数和错误文案）。 */
+  exportCooldowns(now = this.now()): Record<string, PersistedCooldown> {
+    const result: Record<string, PersistedCooldown> = {}
+    for (const [key, entry] of this.entries) {
+      // 冷却结束超过一天的失败档位不再有参考意义，也不让已删除账号的记录永久留在状态文件里。
+      if ((entry.blockedUntil <= now && entry.failures === 0) || entry.blockedUntil <= now - PROVIDER_RETRY_AFTER_CAP_MS) continue
+      result[key] = { blockedUntil: entry.blockedUntil, failures: entry.failures, lastError: entry.lastError }
+    }
+    return result
+  }
+
+  /** 启动时恢复冷却：冷却未到期的账号不会因为重启被立刻再打一次，失败档位也接着递增。 */
+  importCooldowns(raw: unknown, now = this.now()): void {
+    for (const [key, entry] of Object.entries(sanitizePersistedCooldowns(raw, now))) {
+      const existing = this.entries.get(key)
+      if (existing && (existing.fetchedAt > 0 || existing.blockedUntil >= entry.blockedUntil)) continue
+      this.entries.set(key, { value: null, fetchedAt: 0, expiresAt: 0, blockedUntil: entry.blockedUntil, failures: entry.failures, lastError: entry.lastError ?? null })
+    }
+  }
+
+  clear(key?: string): void {
+    if (key === undefined) {
+      this.entries.clear()
+      this.inflight.clear()
+    } else {
+      this.entries.delete(key)
+      this.inflight.delete(key)
+    }
+  }
 }

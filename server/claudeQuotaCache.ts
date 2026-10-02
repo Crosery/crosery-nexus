@@ -1,3 +1,4 @@
+import { apiCallRetryAfterMs, combineCooldown, PROVIDER_RETRY_AFTER_CAP_MS, sanitizePersistedCooldowns, type PersistedCooldown } from './accountQuota.js'
 import type { ApiCallResult } from './cpa.js'
 
 export type ClaudeQuotaEndpoint = 'usage' | 'profile'
@@ -32,10 +33,12 @@ export type ClaudeQuotaCacheOptions = {
   maxRateLimitCooldownMs: number
   transientCooldownMs?: number
   now?: () => number
+  /** 每次真正打上游前回调（同步中心的 requests24h 计数）。 */
+  onFetch?: () => void
 }
 
 export class ClaudeQuotaUpstreamError extends Error {
-  constructor(readonly status: number, readonly endpoint: ClaudeQuotaEndpoint, message: string) {
+  constructor(readonly status: number, readonly endpoint: ClaudeQuotaEndpoint, message: string, readonly retryAfterMs: number | null = null) {
     super(message)
     this.name = 'ClaudeQuotaUpstreamError'
   }
@@ -45,7 +48,7 @@ const parseBody = (response: ApiCallResult, endpoint: ClaudeQuotaEndpoint): unkn
   const status = Number(response.status_code ?? response.statusCode ?? 0)
   const raw = response.body ?? response.body_text
   if (status < 200 || status >= 300) {
-    throw new ClaudeQuotaUpstreamError(status, endpoint, `上游 ${endpoint === 'usage' ? '额度' : '账号资料'} 接口返回 HTTP ${status || '未知'}`)
+    throw new ClaudeQuotaUpstreamError(status, endpoint, `上游 ${endpoint === 'usage' ? '额度' : '账号资料'} 接口返回 HTTP ${status || '未知'}`, apiCallRetryAfterMs(response))
   }
   if (typeof raw === 'string') {
     try { return JSON.parse(raw) } catch { throw new ClaudeQuotaUpstreamError(status, endpoint, '上游返回了无法解析的 JSON') }
@@ -143,6 +146,7 @@ export class ClaudeQuotaCache {
     }
 
     try {
+      this.options.onFetch?.()
       const body = parseBody(await fetcher(), endpoint)
       entry.body = body
       entry.fetchedAt = now
@@ -153,10 +157,13 @@ export class ClaudeQuotaCache {
     } catch (error) {
       const status = error instanceof ClaudeQuotaUpstreamError ? error.status : 0
       entry.failures += 1
+      // 本地指数档封顶 maxRateLimitCooldownMs；上游 Retry-After 是下限，不被这个封顶截短。
+      const retryAfter = error instanceof ClaudeQuotaUpstreamError ? error.retryAfterMs : null
       const cooldown = status === 429
-        ? Math.min(this.options.maxRateLimitCooldownMs, this.options.rateLimitCooldownMs * 2 ** (entry.failures - 1))
-        : this.transientCooldownMs
-      entry.blockedUntil = now + cooldown
+        ? combineCooldown(this.options.rateLimitCooldownMs * 2 ** Math.min(entry.failures - 1, 32), this.options.maxRateLimitCooldownMs, retryAfter)
+        : combineCooldown(this.transientCooldownMs, this.transientCooldownMs, retryAfter)
+      // 从收到失败的时刻起算：fetcher 里有全局名额排队与请求本身，按开始时刻算会让上游的 Retry-After 提前到期。
+      entry.blockedUntil = this.now() + cooldown
       entry.blockedBy = 'rate-limit'
       const reason = error instanceof Error ? error.message : '读取失败'
       const detail = status === 429
@@ -198,6 +205,43 @@ export class ClaudeQuotaCache {
       profileError: profile.error,
       usageBlockedUntil: usage.blockedUntil,
       profileBlockedUntil: profile.blockedUntil,
+    }
+  }
+
+  /** 至少有一个端点在冷却的账号数（同步中心摘要）。 */
+  blockedCount(now = this.now()): number {
+    let count = 0
+    for (const account of this.entries.values()) {
+      if ((account.usage?.blockedUntil ?? 0) > now || (account.profile?.blockedUntil ?? 0) > now) count += 1
+    }
+    return count
+  }
+
+  /** 冷却中或带失败档位的端点，键为 `authIndex:endpoint`（不含额度数据与凭据）。 */
+  exportCooldowns(now = this.now()): Record<string, PersistedCooldown> {
+    const result: Record<string, PersistedCooldown> = {}
+    for (const [authIndex, account] of this.entries) {
+      for (const endpoint of ['usage', 'profile'] as const) {
+        const entry = account[endpoint]
+        if (!entry || (entry.blockedUntil <= now && entry.failures === 0) || entry.blockedUntil <= now - PROVIDER_RETRY_AFTER_CAP_MS) continue
+        result[`${authIndex}:${endpoint}`] = { blockedUntil: entry.blockedUntil, failures: entry.failures, blockedBy: entry.blockedBy }
+      }
+    }
+    return result
+  }
+
+  /** 启动时恢复：冷却未到期的端点不会因重启被立刻再打一次，429 档位接着翻倍。 */
+  importCooldowns(raw: unknown, now = this.now()): void {
+    for (const [key, saved] of Object.entries(sanitizePersistedCooldowns(raw, now))) {
+      const separator = key.lastIndexOf(':')
+      const authIndex = key.slice(0, separator)
+      const endpoint = key.slice(separator + 1)
+      if (separator <= 0 || (endpoint !== 'usage' && endpoint !== 'profile')) continue
+      const entry = this.entry(authIndex, endpoint)
+      if (entry.fetchedAt > 0 || entry.blockedUntil >= saved.blockedUntil) continue
+      entry.blockedUntil = saved.blockedUntil
+      entry.failures = saved.failures
+      entry.blockedBy = saved.blockedBy === 'cpa-hint' ? 'cpa-hint' : saved.blockedBy === 'rate-limit' ? 'rate-limit' : ''
     }
   }
 

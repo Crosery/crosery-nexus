@@ -66,29 +66,6 @@ test('surfaces CPA failures instead of silently accepting enforced access failur
   }
 })
 
-test('uploads one auth file as multipart without changing the credential bytes', async () => {
-  const raw = Buffer.from(JSON.stringify({ type: 'xai', access_token: 'access-secret', refresh_token: 'refresh-secret' }))
-  globalThis.fetch = async (input, init) => {
-    assert.equal(String(input), `${cpaBaseUrl}/v0/management/auth-files`)
-    assert.equal(init?.method, 'POST')
-    assert.ok(init)
-    assert.equal((init.headers as Record<string, string>).Authorization, 'Bearer management-key')
-    assert.equal(init.body instanceof FormData, true)
-    const form = init.body as FormData
-    const file = form.get('file')
-    assert.equal(file instanceof Blob, true)
-    assert.equal((file as File).name, 'xai-one.json')
-    assert.deepEqual(Buffer.from(await (file as Blob).arrayBuffer()), raw)
-    return new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  }
-  try {
-    const { uploadAuthFile } = await loadCPA()
-    await uploadAuthFile('xai-one.json', raw)
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
-
 test('reads only the credential proxy field through the authenticated adapter', async () => {
   globalThis.fetch = async (input, init) => {
     assert.equal(String(input), `${cpaBaseUrl}/v0/management/auth-files/download?name=codex%20one.json`)

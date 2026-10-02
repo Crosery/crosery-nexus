@@ -204,27 +204,6 @@ export async function downloadAuthFile(name: string): Promise<Record<string, unk
   return raw as Record<string, unknown>
 }
 
-export async function uploadAuthFile(name: string, raw: Buffer) {
-  if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
-    const { saveLocalAuthFile } = await import('./magpieControl.js')
-    saveLocalAuthFile(name, raw)
-    return
-  }
-  if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
-  const form = new FormData()
-  form.set('file', new Blob([Uint8Array.from(raw)]), name)
-  const response = await fetch(`${config.cpaBaseUrl}/v0/management/auth-files`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${config.cpaManagementKey}` },
-    body: form,
-    signal: AbortSignal.timeout(config.cpaRequestTimeoutMs),
-  })
-  if (!response.ok) {
-    await response.arrayBuffer().catch(() => undefined)
-    throw new Error(`CPA auth-file upload failed with HTTP ${response.status}`)
-  }
-}
-
 export type CompatModel = { name?: string; alias?: string }
 export type CompatChannel = {
   name?: string
@@ -239,8 +218,37 @@ export async function getCompatChannels(): Promise<CompatChannel[]> {
   return result['openai-compatibility'] || []
 }
 
-export async function putCompatChannels(channels: CompatChannel[]) {
-  return cpaRequest('/openai-compatibility', { method: 'PUT', body: JSON.stringify(channels) })
+/**
+ * 进程内所有 openai-compatibility **整表写入/删除**排成一队。CPA 管理面没有 CAS，
+ * 后台写入者（模型发现）靠「队列里复读 → 比对指纹 → PUT」检测并发改动：
+ * 本进程的其它写入不可能插进这三步之间，外部改动（CPA 面板）也只剩一个往返的窗口。
+ */
+let compatChannelsQueue: Promise<unknown> = Promise.resolve()
+
+function serializeCompatChannels<T>(task: () => Promise<T>): Promise<T> {
+  const next = compatChannelsQueue.then(task, task)
+  compatChannelsQueue = next.catch(() => undefined)
+  return next
+}
+
+/** 渠道表在读取之后被别人改过：调用方应在最新表上重算，而不是覆盖。 */
+export class CompatChannelsConflictError extends Error {
+  constructor() {
+    super('渠道表在读取后被修改，已放弃本次写入')
+    this.name = 'CompatChannelsConflictError'
+  }
+}
+
+export const compatChannelsFingerprint = (channels: CompatChannel[]) => createHash('sha256').update(JSON.stringify(channels)).digest('hex')
+
+/** `expected` = 调用方读到的那份表的指纹；给了就在写入队列里复读比对，不一致抛 CompatChannelsConflictError。 */
+export async function putCompatChannels(channels: CompatChannel[], options: { expected?: string } = {}) {
+  return serializeCompatChannels(async () => {
+    if (options.expected !== undefined && compatChannelsFingerprint(await getCompatChannels()) !== options.expected) {
+      throw new CompatChannelsConflictError()
+    }
+    return cpaRequest('/openai-compatibility', { method: 'PUT', body: JSON.stringify(channels) })
+  })
 }
 
 /**
@@ -285,7 +293,8 @@ export function providerChannelName(entry: ProviderKeyEntry, endpoint: ProviderK
 }
 
 export async function deleteCompatChannel(name: string) {
-  return cpaRequest(`/openai-compatibility?name=${encodeURIComponent(name)}`, { method: 'DELETE' })
+  // 同一写入队列：删除不能落在后台写入者「复读 → PUT」之间，否则整表 PUT 会把刚删的渠道写回来。
+  return serializeCompatChannels(() => cpaRequest(`/openai-compatibility?name=${encodeURIComponent(name)}`, { method: 'DELETE' }))
 }
 
 export async function deleteAuthFile(name: string) {
@@ -338,6 +347,13 @@ export async function getGlobalProxy(options: { required?: boolean } = {}): Prom
   }
 }
 
+/** 写 CPA 全局 proxy-url（代理池「默认出口」）：''/direct 清空（DELETE），其余 PUT `{value}`。 */
+export async function setGlobalProxy(proxyUrl: string) {
+  const value = String(proxyUrl ?? '').trim()
+  if (!value || value === 'direct') return cpaRequest('/proxy-url', { method: 'DELETE' })
+  return cpaRequest('/proxy-url', { method: 'PUT', body: JSON.stringify({ value }) })
+}
+
 export async function getAuthFileModels(name: string): Promise<string[]> {
   try {
     const result = await cpaRequest<{ models?: Array<{ id?: string }> }>(`/auth-files/models?name=${encodeURIComponent(name)}`)
@@ -362,7 +378,15 @@ export async function putExcludedModels(excluded: Record<string, string[]>) {
 
 export const modelId = (model: CompatModel) => String(model.alias || model.name || '').trim()
 
-export type ApiCallResult = { status_code?: number; statusCode?: number; body?: unknown; body_text?: string }
+/** `header`/`headers`：CPA 透传的上游响应头（若有），只用来读 Retry-After。 */
+export type ApiCallResult = {
+  status_code?: number
+  statusCode?: number
+  body?: unknown
+  body_text?: string
+  header?: Record<string, string | string[]>
+  headers?: Record<string, string | string[]>
+}
 
 /** CPA 代为转发上游请求，`$TOKEN$` 由 CPA 替换成该凭据的 OAuth token。 */
 export async function apiCall(
@@ -471,6 +495,25 @@ export type VersionsPayload = {
 }
 
 let cachedCpaVersion: { info: CpaVersionInfo; time: number } | null = null
+/** CPA 版本两次真实读取（get-auth-status + latest-version）。fresh 也不能比这更频繁；失败结果同样缓存。 */
+const CPA_VERSION_TTL_MS = 60_000
+const CPA_VERSION_FORCE_MIN_MS = 15_000
+const CPA_VERSION_FAILURE_TTL_MS = 30_000
+
+/**
+ * 冷读单飞：并发的首次/过期读取共用一次 get-auth-status + latest-version。
+ * 代数：只有比已入缓存那次更新的读取才能写缓存，慢的旧失败不会盖掉新的成功；
+ * reset 之后，reset 之前发出的读取也不能再写回。
+ */
+let cpaVersionInflight: Promise<CpaVersionInfo> | null = null
+let cpaVersionStarted = 0
+let cpaVersionStored = 0
+
+export function resetCpaVersionCache(): void {
+  cachedCpaVersion = null
+  cpaVersionInflight = null
+  cpaVersionStored = cpaVersionStarted
+}
 
 /**
  * 本机是否真的持有 OAuth 凭据（供 upstream 状态里的 `oauthConnected` 用）。
@@ -484,8 +527,9 @@ let cachedCpaVersion: { info: CpaVersionInfo; time: number } | null = null
 async function localOAuthConnected(): Promise<boolean> {
   if (config.magpieControlPlane !== 'local') return false
   try {
-    const { listLocalAuthFiles } = await import('./magpieControl.js')
-    return listLocalAuthFiles().some((file) => !file.disabled)
+    // 2026-10-02：本机账号的唯一来源是 Magpie 内核的登录（/internal/accounts，5s 共享读），不再是 auth-files 目录。
+    const { accountsService } = await import('./accountsRoutes.js')
+    return await accountsService().anyLoginOn()
   } catch {
     return false
   }
@@ -519,12 +563,31 @@ export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
       return { engine: 'magpie', version: 'offline', commit: '', buildDate: '', rtk }
     }
   }
-  if (!force && cachedCpaVersion && Date.now() - cachedCpaVersion.time < 60_000) {
-    return { ...cachedCpaVersion.info, rtk }
+  if (cachedCpaVersion) {
+    const age = Date.now() - cachedCpaVersion.time
+    const ttl = cachedCpaVersion.info.version === 'offline' ? CPA_VERSION_FAILURE_TTL_MS : CPA_VERSION_TTL_MS
+    if (age < (force ? Math.min(ttl, CPA_VERSION_FORCE_MIN_MS) : ttl)) return { ...cachedCpaVersion.info, rtk }
   }
   if (!config.cpaManagementKey) {
     return { version: 'unknown', commit: '', buildDate: '', rtk }
   }
+  if (!cpaVersionInflight) {
+    const generation = ++cpaVersionStarted
+    const request: Promise<CpaVersionInfo> = fetchCpaVersion().then((info) => {
+      if (generation > cpaVersionStored) {
+        cpaVersionStored = generation
+        cachedCpaVersion = { info, time: Date.now() }
+      }
+      return info
+    }).finally(() => {
+      if (cpaVersionInflight === request) cpaVersionInflight = null
+    })
+    cpaVersionInflight = request
+  }
+  return { ...(await cpaVersionInflight), rtk }
+}
+
+async function fetchCpaVersion(): Promise<CpaVersionInfo> {
   try {
     const response = await fetch(`${config.cpaBaseUrl}/v0/management/get-auth-status`, {
       signal: AbortSignal.timeout(config.cpaRequestTimeoutMs),
@@ -552,21 +615,15 @@ export async function getCpaVersion(force = false): Promise<CpaVersionInfo> {
       latestVersion !== cpaVersion
     )
 
-    const info: CpaVersionInfo = {
+    return {
       version: cpaVersion,
       commit,
       buildDate,
       latestVersion,
       hasUpdate,
     }
-    cachedCpaVersion = { info, time: Date.now() }
-    return info
   } catch {
-    return {
-      version: 'offline',
-      commit: '',
-      buildDate: '',
-    }
+    return { version: 'offline', commit: '', buildDate: '' }
   }
 }
 

@@ -1,3 +1,5 @@
+import { maskProxyUserinfo } from './accountProjection.js'
+
 export type CredentialSummary = {
   name: string
   type: string
@@ -20,7 +22,8 @@ export function summarizeCredentialFiles(files: Array<Record<string, unknown>>):
       label: String(file.email || file.account || '') || name.replace(/\.json$/i, ''),
       modelCount: 0,
       models: [],
-      proxyUrl: typeof file.proxy_url === 'string' ? file.proxy_url.trim() : '',
+      // 列表只给显示用（userinfo 打码）；代理编辑读 GET /api/credentials/:name/proxy
+      proxyUrl: maskProxyUserinfo(file.proxy_url),
     }
   }).sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name))
 }

@@ -196,3 +196,85 @@ test('claude exposes no reset credits when the grant is missing, paused or spent
   const spent = normalizeAccountQuota('claude', { usage: { limits: [], cedar_ember: { eligible: true, grants: [{ id: 'g1', resets_left: 0, paused: false }] } } })
   assert.equal(spent.resetCredits, null)
 })
+
+/* ────────────────────────── 每账号额度缓存（Codex / AntiGravity） ────────────────────────── */
+
+const { AccountQuotaCache, AccountQuotaUpstreamError } = await import('./accountQuota.js')
+
+function quotaCache(clock: { now: number }, fetches: { count: number }) {
+  return new AccountQuotaCache<{ v: number }>({
+    ttlMs: 3 * 60_000, rateLimitCooldownMs: 10 * 60_000, maxCooldownMs: 60 * 60_000, failureCooldownMs: 30_000,
+    jitterPct: 0, now: () => clock.now, onFetch: () => { fetches.count += 1 },
+  })
+}
+
+test('额度缓存：TTL 内不重复打上游，过期后才刷新', async () => {
+  const clock = { now: 1_000 }
+  const fetches = { count: 0 }
+  const cache = quotaCache(clock, fetches)
+  let value = 1
+  const fetcher = async () => ({ v: value++ })
+  assert.deepEqual((await cache.read('a', fetcher)).value, { v: 1 })
+  clock.now += 2 * 60_000
+  assert.deepEqual((await cache.read('a', fetcher)).value, { v: 1 })
+  assert.equal(fetches.count, 1)
+  clock.now += 2 * 60_000
+  assert.deepEqual((await cache.read('a', fetcher)).value, { v: 2 })
+  assert.equal(fetches.count, 2)
+})
+
+test('额度缓存：429 进入长冷却并指数递增，冷却期间返回上次成功数据 + 原因', async () => {
+  const clock = { now: 1_000 }
+  const fetches = { count: 0 }
+  const cache = quotaCache(clock, fetches)
+  await cache.read('a', async () => ({ v: 1 }))
+  clock.now += 4 * 60_000
+  const limited = async (): Promise<{ v: number }> => { throw new AccountQuotaUpstreamError(429, '上游返回 HTTP 429') }
+  const first = await cache.read('a', limited)
+  assert.deepEqual(first.value, { v: 1 })
+  assert.match(first.error || '', /HTTP 429.*当前显示上次成功数据/)
+  assert.equal(first.blockedUntil, clock.now + 10 * 60_000)
+
+  clock.now += 5 * 60_000
+  await cache.read('a', limited)
+  assert.equal(fetches.count, 2, '冷却期间不打上游')
+  assert.equal(cache.blockedCount(), 1)
+
+  clock.now += 5 * 60_000
+  const second = await cache.read('a', limited)
+  assert.equal(fetches.count, 3)
+  assert.equal(second.blockedUntil, clock.now + 20 * 60_000, '第二次 429 冷却翻倍')
+})
+
+test('额度缓存：一般失败短冷却；Retry-After 作为冷却下限；同账号并发只打一次', async () => {
+  const clock = { now: 1_000 }
+  const fetches = { count: 0 }
+  const cache = quotaCache(clock, fetches)
+  const failed = await cache.read('a', async () => { throw new Error('socket hang up') })
+  assert.equal(failed.value, null)
+  assert.equal(failed.blockedUntil, clock.now + 30_000)
+
+  const hinted = await cache.read('b', async () => { throw new AccountQuotaUpstreamError(503, 'busy', 15 * 60_000) })
+  assert.equal(hinted.blockedUntil, clock.now + 15 * 60_000)
+
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const pending = [cache.read('c', async () => { await gate; return { v: 9 } }), cache.read('c', async () => ({ v: 10 }))]
+  release()
+  const results = await Promise.all(pending)
+  assert.deepEqual(results.map(result => result.value), [{ v: 9 }, { v: 9 }])
+  assert.equal(fetches.count, 3)
+})
+
+test('冷却中带旧数据的额度体：Codex / AntiGravity 照常展示窗口并附原因', () => {
+  const codex = normalizeAccountQuota('codex', { ...codexQuota, error: '上游返回 HTTP 429；冷却至 …' })
+  assert.ok(codex.windows.length > 0)
+  assert.match(codex.error || '', /429/)
+  assert.equal(normalizeAccountQuota('codex', { error: '读取失败' }).windows.length, 0)
+
+  const antigravity = normalizeAccountQuota('antigravity', {
+    groups: [{ displayName: 'Gemini Models', buckets: [{ remainingFraction: 0.5 }] }], subscription: null, error: '冷却中',
+  })
+  assert.equal(antigravity.windows.length, 1)
+  assert.equal(antigravity.error, '冷却中')
+})

@@ -1,3 +1,6 @@
+import { AccountQuotaUpstreamError, apiCallRetryAfterMs } from './accountQuota.js'
+import type { ApiCallResult } from './cpa.js'
+
 /**
  * Codex 的 wham 接口要求带 `Chatgpt-Account-Id`，这个 id 藏在凭据的 id_token（JWT）载荷里。
  * CPA 的 auth-files 会把 id_token 透出来，但位置不固定（顶层 / metadata / attributes）。
@@ -65,4 +68,25 @@ export function normalizeResetCredits(payload: unknown): { availableCount: numbe
         .filter((credit: ResetCredit) => credit.expiresAt)
     : []
   return { availableCount, credits }
+}
+
+const statusOf = (result: ApiCallResult) => Number(result.status_code ?? result.statusCode ?? 0)
+
+/** wham/usage 的 CPA 转发结果 → 额度体；非 2xx 抛带状态码的错误，交给每账号缓存决定冷却时长。 */
+export function parseCodexUsage(result: ApiCallResult): Record<string, unknown> {
+  const status = statusOf(result)
+  if (status < 200 || status >= 300) throw new AccountQuotaUpstreamError(status, `上游返回 HTTP ${status}`, apiCallRetryAfterMs(result))
+  const body = result.body ?? result.body_text
+  let parsed: unknown = body
+  if (typeof body === 'string') {
+    try { parsed = JSON.parse(body) } catch { throw new AccountQuotaUpstreamError(status, '上游返回了无法解析的 JSON') }
+  }
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+}
+
+/** rate-limit-reset-credits 的转发结果；失败同样带状态码（以前失败直接当成「没有重置额度」，还会每次重打）。 */
+export function parseCodexResetCredits(result: ApiCallResult): ReturnType<typeof normalizeResetCredits> {
+  const status = statusOf(result)
+  if (status && (status < 200 || status >= 300)) throw new AccountQuotaUpstreamError(status, `重置额度接口返回 HTTP ${status}`, apiCallRetryAfterMs(result))
+  return normalizeResetCredits(result.body ?? result.body_text)
 }
