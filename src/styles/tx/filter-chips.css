@@ -1,0 +1,14 @@
+/* TxFilterChips → Segmented: one 1px ctl hairline; the ink fill sits flush inside it (no inset box), wraps instead of scrolling. */
+html:root .tx-bui-filter-chips { flex-wrap: wrap; overflow: visible; margin: 0; padding: 0; gap: 0;
+  border: 1px solid var(--ctl); border-radius: var(--r-1); width: fit-content; max-width: 100%; }
+html:root .tx-bui-filter-chips__indicator { border-radius: 0; background: var(--ink); box-shadow: none;
+  transition: transform var(--dur-3) var(--ease-settle), width var(--dur-3) var(--ease-settle); }
+html:root .tx-bui-filter-chips__chip { height: 26px; padding: 0 10px; border-radius: 0; font-size: var(--fs-sm); font-weight: 400; color: var(--ink-2); z-index: 1; }
+html:root .tx-bui-filter-chips .tx-bui-filter-chips__chip { padding: 0 10px; }
+html:root .tx-bui-filter-chips__chip.is-active { color: var(--paper); background: var(--ink); box-shadow: none; }
+html:root .tx-bui-filter-chips.is-sliding .tx-bui-filter-chips__chip.is-active { background: transparent; }
+html:root .tx-bui-filter-chips__chip:hover:not(.is-active):not(.is-disabled) { background: var(--paper-2); color: var(--ink); }
+html:root .tx-bui-filter-chips__count { padding: 0 0 0 2px; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-3); background: none; }
+html:root .tx-bui-filter-chips__chip.is-active .tx-bui-filter-chips__count { color: color-mix(in srgb, var(--paper) 72%, transparent); background: none; }
+html:root .tx-bui-filter-chips__chip:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+@media (pointer: coarse) { html:root .tx-bui-filter-chips__chip { height: 36px; } }

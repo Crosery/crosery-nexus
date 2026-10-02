@@ -1,0 +1,6 @@
+html:root .tx-tabs { border: 0; border-radius: 0; background: transparent; }
+html:root .tx-tabs__nav { border-bottom-color: var(--rule); }
+html:root .tx-tabs--indicator-line .tx-tabs__pointer { border-radius: 0; }
+html:root .tx-tabs--indicator-line .tx-tabs__pointer-inner::before { display: none; }
+html:root .tx-tabs--indicator-line .tx-tabs__pointer-inner { background: var(--signal); }
+html:root .tx-tab-item { border-radius: 0; margin: 0 2px; }

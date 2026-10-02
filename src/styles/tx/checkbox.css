@@ -1,0 +1,5 @@
+html:root .tx-checkbox__box { border-radius: var(--r-1); border-color: var(--ctl); background: transparent; box-shadow: none; }
+html:root .tx-checkbox.is-checked .tx-checkbox__box,
+html:root .tx-checkbox.is-indeterminate .tx-checkbox__box { background: var(--ink); border-color: var(--ink); animation: none; --tx-checkbox-checkmark-color: var(--paper); }
+html:root .tx-checkbox.is-checked .tx-checkbox__tick { animation: none; }
+html:root .tx-checkbox__label { font-size: var(--fs-base); color: var(--ink-2); }

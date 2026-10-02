@@ -1,0 +1,19 @@
+/* Row-card list (RowTable below 960px, RowCard, GroupedRowTable): ≥56px, hairline separated, tone edges. */
+.ui-rcards { list-style: none; margin: 0; padding: 0; }
+.ui-rcard { display: flex; flex-direction: column; gap: 5px; min-height: 56px; padding: 10px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.ui-rcard:last-child { border-bottom: 0; }
+.ui-rcard.is-clickable { cursor: pointer; }
+.ui-rcard.is-clickable:active { background: var(--paper-2); }
+.ui-rcard.is-attn { box-shadow: inset 2px 0 0 var(--signal); padding-left: 10px; }
+.ui-rcard.is-cool { background: var(--paper-2); color: var(--ink-2); }
+/* text on the cool fill is ink-2 or stronger (ink-3 on paper-2 is 4.66:1 but the row must read as one tone) */
+.ui-rcard.is-cool :is(.ui-rcard__ln, .ui-rcard__lbl, .dim, .muted, .micro, .cell-sub) { color: var(--ink-2); }
+.ui-rcard.is-off { color: var(--ink-3); }
+.ui-rcard__l1 { display: flex; align-items: baseline; gap: 10px; min-width: 0; font-size: var(--fs-row); }
+.ui-rcard__primary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.ui-rcard__meta { flex: none; display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: var(--fs-sm); }
+.ui-rcard__ln { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; font-size: var(--fs-xs); color: var(--ink-3); min-width: 0; }
+.ui-rcard__seg { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.ui-rcard__seg + .ui-rcard__seg::before { content: "·"; margin: 0 6px; color: var(--ink-4); }
+.ui-rcard__lbl { color: var(--ink-3); }
+.ui-rcard__act { margin-left: auto; display: inline-flex; gap: 6px; }

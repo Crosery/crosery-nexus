@@ -1,0 +1,11 @@
+/* TxTabBar (mobile bottom bar): opaque paper, one rule-2 hairline on top, a 2px signal line slides on the top
+   edge (indicator="line"); no blur, no pill, no badge ring. Icons are mask classes from TabBar.vue. */
+html:root .tx-tab-bar { background: var(--paper); -webkit-backdrop-filter: none; backdrop-filter: none; border: 0; border-top: 1px solid var(--rule-2); box-shadow: none; }
+html:root .tx-tab-bar__inner { background: transparent; box-shadow: none; }
+html:root .tx-tab-bar__item { color: var(--ink-3); background: transparent; -webkit-tap-highlight-color: transparent; }
+html:root .tx-tab-bar__item.is-active, html:root .tx-tab-bar__item.tx-tab-bar__item.is-active { color: var(--ink); }
+html:root .tx-tab-bar__item.is-active .tx-tab-bar__label { font-weight: 600; }
+html:root .tx-tab-bar__item:focus-visible { outline: 2px solid var(--signal) !important; outline-offset: -4px !important; }
+html:root .tx-tab-bar__indicator, html:root .tx-tab-bar__indicator.is-line { border-radius: 0; background: var(--signal); box-shadow: none; }
+html:root .tx-tab-bar__indicator.is-line { top: -1px; }
+html:root .tx-tab-bar__badge.tx-tab-bar__badge { box-shadow: none; border-radius: 8px; background: var(--signal); color: var(--on-signal); font: 700 10px/16px var(--font-mono); min-width: 16px; height: 16px; padding: 0 4px; }

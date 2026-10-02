@@ -1,317 +1,101 @@
-/* 页面版式：布局与间距规范，颜色读取 --tx-* 令牌 */
+/* Console v3 page layout (DESIGN.md §2.6 grids, §4 shell). Breakpoints: xl ≥1440 · lg 1180 · md 960 · sm 600 · xs <600. */
 
-/*
- * 页面容器有两个名字：`.page`（6 个页面）与 `.page-stack`（7 个页面）。
- * **它们的盒模型必须一样**——`.page-stack` 以前完全没有 padding/居中，
- * 于是那 7 个页面（统计/缓存/帮助/模型/监控/RTK/请求明细）的内容**紧贴顶栏与屏幕边缘**，
- * 和另外 6 个页面对不上；这正是"紧凑粘连"最刺眼的一处。
- * 这里把盒模型合并成一条，只有内部的 flex 节奏按用途分开。
- */
-.page,
-.page-stack {
+/* Page inset has ONE owner: AppShell's <main class="ui-main"> pads var(--page-x) on both sides (DESIGN §2.6 margins
+   32 / 24 / 20 / 16) and reserves the statusline / tab bar at the bottom. Page containers (.ui-page and the legacy
+   .page / .page-stack) only add the top breathing room and the vertical rhythm, never a second inset. */
+.ui-page {
   width: 100%;
-  max-width: 1360px;
-  margin: 0 auto;
-  padding: 24px 32px 48px;
+  margin: 0;
+  padding: 22px 0 0;
   min-width: 0;
-}
-
-.page {
   display: flex;
   flex-direction: column;
-  /* 与 .page-stack 同一个节奏（28px）。两套容器用不同的区块间距，
-     会让"概览/Key/渠道"比"统计/缓存/RTK"更挤，是同一类问题的残留。 */
-  gap: 28px;
+  gap: 26px;
 }
+/* a page container nested in another page container adds nothing */
+:is(.ui-page, .page, .page-stack) :is(.ui-page, .page, .page-stack) { padding: 0; max-width: none; }
 
-/*
- * 页面主栈（7 个页面在用）。此前**没有定义**，于是每个页面自己写 `.xxx-page { gap: 16px }`，
- * 结果"页头 / 提示 / 内容"之间的距离（16px）比卡片之间（24px）还小——**外层比内层更挤**，
- * 一眼看过去就是用户说的"紧凑粘连"。区块之间的距离必须大于组内距离：这里 28px。
- * 页面自己的 `.xxx-page` 不要再设 gap（scoped 规则会盖过这一条）。
- */
-.page-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-  width: 100%;
-  min-width: 0;
-}
-
-.page-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px 24px;
-  margin-bottom: 4px;
-}
-
-.page-head__text {
-  flex: 1 1 320px;
-  min-width: 0;
-}
-
-/*
- * 页头标题角色（22px/600/30px，TUF 标准）。挂在类上而不是标签上：
- * `PageHeader` 在内嵌场景（A/B 实验台）会把标题降级为 `<h2>`，字号/行高/字重必须保持一致，
- * 否则「同一个视觉角色」会因为语义层级不同而漂移。`.page-head h1` 保留兼容旧写法。
- */
-.page-head h1,
-.page-head .page-head__title {
-  margin: 0;
-  font-size: 22px;
-  line-height: 30px;
-  font-weight: 600;
-  color: var(--tx-text-color-primary);
-}
-
-.page-head p {
-  margin: 4px 0 0;
-  max-width: 72ch;
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--tx-text-color-secondary);
-}
-
-.page-head__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.section-title {
-  margin: 0;
-  font-size: 15px;
-  line-height: 22px;
-  font-weight: 600;
-  color: var(--tx-text-color-primary);
-}
-
-.card-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-}
-
-.card-head .count {
-  color: var(--tx-text-color-secondary);
-  font-size: 13px;
-}
-
-.card-head__actions {
-  margin-left: auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.split {
+/* 12-column grid; children pick a span with .c-N (≥960) and .md-c-N (960–1179 override). Below 960 the grid
+   becomes 6 columns where children span all by default (.sm-c-3 = half); below 600 everything stacks. */
+.ui-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: 16px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 26px var(--gutter);
   align-items: start;
-}
-
-.grid-2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
-}
-
-.grid-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-}
-
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-}
-
-.toolbar__end {
-  margin-left: auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.facts {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
-  gap: 10px 16px;
-  margin: 0;
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.facts dt {
-  color: var(--tx-text-color-secondary);
-}
-
-.facts dd {
-  margin: 0;
   min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--tx-text-color-primary);
+}
+.ui-grid > * { grid-column: 1 / -1; min-width: 0; }
+.ui-grid > .stretch { align-self: stretch; }
+.c-3 { grid-column: span 3 !important; } .c-4 { grid-column: span 4 !important; } .c-5 { grid-column: span 5 !important; }
+.c-6 { grid-column: span 6 !important; } .c-7 { grid-column: span 7 !important; } .c-8 { grid-column: span 8 !important; }
+.c-9 { grid-column: span 9 !important; } .c-12 { grid-column: 1 / -1 !important; }
+@media (max-width: 1179px) {
+  .md-c-4 { grid-column: span 4 !important; } .md-c-5 { grid-column: span 5 !important; } .md-c-6 { grid-column: span 6 !important; }
+  .md-c-7 { grid-column: span 7 !important; } .md-c-8 { grid-column: span 8 !important; } .md-c-12 { grid-column: 1 / -1 !important; }
+}
+@media (max-width: 959px) {
+  .ui-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 22px var(--gutter); }
+  .ui-grid > * { grid-column: 1 / -1 !important; }
+  .ui-grid > .sm-c-3 { grid-column: span 3 !important; }
+}
+@media (max-width: 599px) {
+  .ui-grid { grid-template-columns: minmax(0, 1fr); }
+  .ui-grid > .sm-c-3 { grid-column: 1 / -1 !important; }
 }
 
-.cell-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 0;
-  max-width: 100%;
+@media (max-width: 959px) {
+  .ui-page { padding-top: 14px; gap: 22px; }
 }
 
-.cell-stack > * {
-  max-width: 100%;
-}
+/* toolbar row under a page head: wraps, never scrolls sideways */
+.ui-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.ui-toolbar > .push { margin-left: auto; }
 
-.cell-sub {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--tx-text-color-secondary);
-}
+/* hairline-separated fact list (k / v) */
+.ui-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0 16px; margin: 0; font-size: var(--fs-sm); }
+.ui-facts > dt, .ui-facts > dd { padding: 7px 0; border-bottom: 1px solid var(--rule); margin: 0; min-width: 0; }
+.ui-facts > dt { color: var(--ink-3); white-space: nowrap; }
+.ui-facts > dd { font-family: var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--ink); }
+.ui-facts > dt:nth-last-of-type(1), .ui-facts > dd:last-child { border-bottom: 0; }
 
-.clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+code { padding: 1px 4px; border-radius: var(--r-1); background: var(--paper-2); font-size: 12px; }
+pre, .pre, .code-block {
+  margin: 0; padding: 12px 14px; overflow: auto; max-height: 70vh;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre;
+  color: var(--ink-2); background: var(--paper-2); border-radius: 0;
 }
+pre code, .pre code, .code-block code { padding: 0; background: transparent; font-size: inherit; }
 
-.ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 20px;
-}
-
-.form-grid .wide {
-  grid-column: 1 / -1;
-}
-
-.tx-form.tx-form--label-top .tx-form-item {
-  align-items: stretch;
-}
-
-.tx-form--label-top > .tx-form-item + .tx-form-item {
-  margin-top: 14px;
-}
-
-.fill-width,
-.form-grid .tuff-select,
-.form-grid .tx-input,
-.form-grid .tx-textarea,
-.tx-form--label-top .tx-textarea,
-.tx-form--label-top .fill-width.tuff-select {
-  width: 100%;
-}
-
-/*
- * 表格空单元格（task-34 ①）：Tuffex 只给 `.tx-data-table__cell` 设了
- * `font-size:13px; line-height:1.5`（= 13px/19.5px），而 `.tx-data-table__empty`
- * **没有任何字体规则** → 空表时继承页面/卡片层的 14px + normal。
- * 结果是同一张表「有数据 13px/19.5px、没数据 14px/normal」。
- * 这里补上同一角色，任何页面的空表都与数据单元格一致。
- */
-.tx-data-table__empty {
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.tx-data-table.is-scroll-x .tx-data-table__table {
-  min-width: var(--table-min, 0);
-}
-
-/*
- * 行内 `code` 单一真源（task-34 ③）：之前全站没有任何 `code` 规则，
- * 字号靠继承 → 实测 4 种取值（12.09/18.14、13.02/normal、12/normal、12/22）。
- * 带上 `code.mono` 是必须的：`theme.css` 的 `.mono{font-size:.93em}` 会乘上所在上下文
- * （13px→12.09、14px→13.02），把 code 角色再拆成几种；`code.mono`（0,1,1）稳定压过它。
- */
-code,
-code.mono {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--tx-fill-color-lighter);
-  font-family: var(--console-mono);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-/*
- * 代码块单一真源：`.pre`、裸 `pre`、以及帮助页的 `.code-block` 走同一角色。
- * `.code-block` 用类选择器是为了稳定压过 `theme.css` 的 `.mono { font-size: .93em }`
- * （帮助页的 `<pre class="code-block mono">` 同时带这两个类，源码顺序上 layout.css 在后）。
- * 块内 `code` 继承块的字号，不被行内 code 角色缩小。
- */
-.pre,
-pre,
-.code-block {
-  margin: 0;
-  padding: 12px 16px;
-  overflow: auto;
-  max-height: 70vh;
-  font-family: var(--console-mono);
-  font-size: 12.5px;
-  line-height: 20px;
-  white-space: pre;
-  color: var(--tx-text-color-regular);
-  background: var(--tx-fill-color-lighter);
-  border-radius: var(--tx-border-radius-base);
-}
-
-pre code,
-.pre code,
-.code-block code {
-  padding: 0;
-  background: transparent;
-  font-size: inherit;
-  line-height: inherit;
-}
-
-@media (max-width: 1180px) {
-  .split {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 900px) {
-  /* 顶栏与内容之间必须留出间距：390px 实测过标题直接贴住顶栏下沿。 */
-  .page,
-  .page-stack {
-    padding: 20px 16px 40px;
-  }
-  .grid-2,
-  .form-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .facts {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 2px 0;
-  }
-  .facts dd {
-    margin-bottom: 8px;
-  }
+/* ── legacy page helpers ─────────────────────────────────────────────────────────────────────────────
+   Kept so pages that have not moved to src/ui yet still lay out; the page rebuild deletes these uses. */
+.page, .page-stack { width: 100%; margin: 0; padding: 22px 0 0; min-width: 0; display: flex; flex-direction: column; gap: 26px; }
+.page-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 24px; }
+.page-head__text { flex: 1 1 320px; min-width: 0; }
+.page-head h1, .page-head .page-head__title { margin: 0; font-size: var(--fs-lg); line-height: 1.2; font-weight: 650; }
+.page-head p { margin: 4px 0 0; max-width: 72ch; font-size: var(--fs-sm); color: var(--ink-3); }
+.page-head__actions, .card-head__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.card-head__actions { margin-left: auto; }
+.section-title { margin: 0; font-size: var(--fs-base); line-height: 1.4; font-weight: 600; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.card-head .count { color: var(--ink-3); font-size: var(--fs-sm); }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--gutter); align-items: start; }
+.grid-2, .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px var(--gutter); align-items: start; }
+.form-grid .wide { grid-column: 1 / -1; }
+.grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: var(--gutter); }
+.facts { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px 16px; margin: 0; font-size: var(--fs-sm); }
+.facts dt { color: var(--ink-3); }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cell-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; max-width: 100%; }
+.cell-stack > * { max-width: 100%; }
+.cell-sub { font-size: var(--fs-xs); color: var(--ink-3); }
+.clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.fill-width, .form-grid .tuff-select, .form-grid .tx-input, .form-grid .tx-textarea { width: 100%; }
+.console-ground { background: transparent; }
+.tx-data-table.is-scroll-x .tx-data-table__table { min-width: var(--table-min, 0); }
+@media (max-width: 1179px) { .split { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 959px) {
+  .page, .page-stack { padding-top: 14px; }
+  .grid-2, .form-grid, .facts { grid-template-columns: minmax(0, 1fr); }
 }

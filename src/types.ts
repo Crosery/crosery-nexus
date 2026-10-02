@@ -1,3 +1,5 @@
+import type { ModelKind } from './lib/modelKind.js'
+
 export type Group = { id: string; name: string; color: string; kind: 'compat' | 'oauth'; models: string[] }
 
 export type ApiKeyItem = {
@@ -103,6 +105,8 @@ export type ModelEntry = {
   unpriced?: boolean
   /** 仅出现在目录、网关上不可用 ⇒ false。 */
   availableOnGateway?: boolean
+  /** 按输出分的模型类型（server/modelKind.ts）；旧服务端没有这个字段。 */
+  kind?: ModelKind
 }
 
 export type ModelIndexData = {
@@ -132,7 +136,9 @@ export type CpaVersionInfo = {
   buildDate: string
   latestVersion?: string
   hasUpdate?: boolean
-  upstream?: import('../packages/contracts/magpie-upstream').MagpieUpstreamStatus
+  upstream?: import('../packages/contracts/magpie-upstream.js').MagpieUpstreamStatus
+  /** 「网关 Magpie」合成模型（server/magpieVersion.ts）；只在 magpie 引擎下出现 */
+  gateway?: MagpieGatewayInfo
   rtk?: {
     connected: boolean
     path?: string | null
@@ -160,6 +166,23 @@ export type CpaVersionInfo = {
     }>
     url?: string
   }
+}
+
+/** `GET /api/version` → `cpa.gateway`：运行版本、上游最新、差距、跟随策略、待评审（server/magpieVersion.ts）。 */
+export type MagpieGatewayInfo = {
+  current: { label: string; commit: string | null; release: string | null; releaseNote: string | null; buildTime: string | null; running: boolean }
+  upstream: {
+    status: 'not_checked' | 'unchanged' | 'review_required' | 'error' | 'baseline_mismatch'
+    latestRelease: string | null
+    latestCommit: string | null
+    checkedAt: string | null
+    nextCheckAt: string | null
+    overdue: boolean
+    failed: boolean
+  }
+  gap: { state: 'latest' | 'behind' | 'unknown'; label: string; commitsAtLeast: number | null; note: string | null }
+  policy: { scheduled: boolean; intervalMs: number | null; autoApply: boolean; text: string }
+  review: { pending: boolean; changes: number; schemaCount: number; implementationFileCount: number }
 }
 
 export type ConsoleVersionInfo = {
@@ -306,7 +329,6 @@ export type BootstrapData = {
   retentionDays: number
   quotaTimeZone: string
   gatewayModelAccess: GatewayModelAccess
-  credentialUploadLimits: { maxBytes: number; maxEntries: number; maxEntryBytes: number; maxExpandedBytes: number }
   /** CPA 控制面暂不可用时为 true：Key 与额度仍是本地最新，分组/模型目录沿用上次结果。 */
   degraded?: boolean
   degradedReason?: string
@@ -664,6 +686,44 @@ export type MonitorData = {
 }
 
 
+/** 「自动更新」（`GET/PUT /api/autoupdate`，server/autoupdate.ts）：开关 + 定时任务记下的结果，一句话说清。 */
+export type AutoTone = 'ok' | 'warn' | 'bad' | 'idle'
+export type AutoReason = { code: string; text: string }
+export type AutoSchedulerMode = 'auto' | 'check-only' | 'missing' | 'unsupported'
+export type MagpieAutoView = {
+  available: boolean
+  enabled: boolean
+  scheduler: AutoSchedulerMode
+  window: { start: string; end: string }
+  state: 'cpa' | 'off' | 'no-scheduler' | 'check-only' | 'up-to-date' | 'pending' | 'held' | 'eligible' | 'applied' | 'rolled-back' | 'error' | 'blocked'
+  tone: AutoTone
+  line: string
+  brief: string
+  candidate: string | null
+  release: string | null
+  reasons: AutoReason[]
+  applied: { revision: string; release: string | null; at: string } | null
+  lastApply: { revision: string; at: string; result: string } | null
+  nextWindowAt: string | null
+  checkedAt: string | null
+}
+export type RtkAutoView = {
+  available: boolean
+  enabled: boolean
+  scheduler: AutoSchedulerMode
+  state: 'off' | 'no-scheduler' | 'check-only' | 'missing' | 'homebrew' | 'up-to-date' | 'pending' | 'held' | 'upgraded' | 'error' | 'unknown'
+  tone: AutoTone
+  line: string
+  brief: string
+  local: string | null
+  latest: string | null
+  method: string | null
+  reasons: AutoReason[]
+  lastUpgrade: { from: string | null; to: string; at: string; result: string } | null
+  checkedAt: string | null
+}
+export type AutoupdateView = { magpie: MagpieAutoView; rtk: RtkAutoView }
+
 /** magpie 内核更新状态（`GET /api/magpie/update-status`，task-79）。 */
 export type MagpieUpdateStatus = {
   capability: boolean
@@ -676,4 +736,660 @@ export type MagpieUpdateStatus = {
   lastResult?: string | null
   backupPath?: string | null
   error?: string | null
+  /** 更新脚本能用的发布源类别；null = 没配置，三步一定失败；缺字段 = 旧服务端，不知道 */
+  releaseSource?: 'release' | 'build' | null
+  /** 上游检查器的结果（更新脚本自己没检查过时的回退） */
+  tracker?: { checkedAt: string | null; latestRelease: string | null; latestCommit: string | null } | null
+}
+
+/* ── C1 session & login (CONTRACTS.md) ─────────────────────────────────────────────────────────── */
+
+export type SessionRole = 'admin' | 'key'
+
+export type SessionInfo =
+  | { authenticated: false }
+  | { authenticated: true; role: SessionRole; user?: { name: string }; key?: { name: string; masked: string; ref?: string } }
+
+export type LoginResult = { ok: true; role: SessionRole }
+
+/** 401 / 429 bodies of POST /api/login. */
+export type LoginErrorCode = 'invalid_credentials' | 'key_invalid' | 'key_disabled' | 'rate_limited'
+
+/* ── C2 key-user data (/api/me*) ────────────────────────────────────────────────────────────────── */
+
+export type MeQuotaWindow = {
+  limitUsd: number | null
+  spentUsd: number
+  ratio: number | null
+  resetsAt: string | null
+  exceeded: boolean
+}
+
+export type MeHourPoint = { hour: string; requests: number; errors: number; tokens: number; costUsd: number | null }
+
+export type MeOverview = {
+  key: {
+    name: string
+    masked: string
+    /** opaque per-key id (same as /api/session `key.ref`); absent on a server not yet restarted */
+    ref?: string
+    enabled: boolean
+    blockedReason: string | null
+    /** always [] for key users: channel names are internal topology */
+    groups: string[]
+    /** 0 / null = 不限 */
+    totalConcurrency: number | null
+    createdAt: string
+    lastUsedAt: string | null
+  }
+  quota: { timeZone: string; daily: MeQuotaWindow; weekly: MeQuotaWindow; total: MeQuotaWindow }
+  today: { requests: number; errors: number; tokens: number; costUsd: number | null; unpricedRequests: number; hourly: MeHourPoint[] }
+  generatedAt: string
+  /** channel groups unreadable → `today` is unfiltered */
+  degraded?: 'provider_filter_unavailable'
+}
+
+export type MeUsageTotals = { requests: number; errors: number; tokens: number; costUsd: number | null; unpricedRequests: number }
+
+export type MeUsage = {
+  days: number
+  daily: UsageDailyPoint[]
+  totals: MeUsageTotals
+  models: Array<{ model: string; requests: number; tokens: number; costUsd: number | null; errors: number }>
+  trackingSince: string | null
+}
+
+/**
+ * `/api/me/usage/daily?year=recent|YYYY` — the heatmap's year of days for the session key only (same engine as the
+ * admin `/api/usage-daily`; shape = ui/viz/heatModel HeatSeries).
+ */
+export type MeUsageDaily = {
+  range: { year: 'recent' | number; from: string; to: string; timeZone: string; offsetMinutes: number }
+  history: { retainedFrom: string; firstDay: string | null; retentionDays: number }
+  years: number[]
+  days: Array<{
+    day: string; requests: number; errors: number; tokens: number; costUsd: number | null
+    freshInput: number; output: number; cacheRead: number; cacheWrite: number
+    topModels: Array<{ model: string; tokens: number }>
+  }>
+  totals: { requests: number; errors: number; tokens: number; costUsd: number | null; costEstimated: boolean; unpricedRequests: number }
+  generatedAt: string
+}
+
+export type MeRequestItem = {
+  id: string
+  timestamp: string
+  model: string
+  endpoint: string
+  success: boolean
+  status: number | null
+  latencyMs: number | null
+  ttftMs: number | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number | null
+  costUsd: number | null
+  errorCategory: string | null
+  requestId: string | null
+}
+
+export type MeRequestsPage = { items: MeRequestItem[]; nextBefore: string | null }
+
+export type MeModelPricing = {
+  inputPerM: number
+  outputPerM: number
+  cacheReadPerM: number | null
+  cacheWritePerM: number | null
+  source: 'models.dev' | 'openrouter' | 'gateway' | null
+}
+
+export type MeModel = {
+  id: string
+  name: string | null
+  family: string | null
+  contextWindow: number | null
+  maxOutput: number | null
+  reasoning: boolean | null
+  /** by output (server/modelKind.ts); absent on servers before the field existed */
+  kind?: ModelKind
+  pricing: MeModelPricing | null
+  /** {0,0} when unused; null only when channel groups cannot be read */
+  used7d: { requests: number; tokens: number } | null
+}
+
+export type MeModels = { models: MeModel[]; reason?: null | 'key_blocked' | 'gateway_unavailable'; generatedAt: string }
+
+export type MeConnect = { baseUrl: string; anthropicBaseUrl: string | null; masked: string }
+
+/* ── C3 sync center ─────────────────────────────────────────────────────────────────────────────── */
+
+export type SyncResult = 'ok' | 'partial' | 'error' | 'skipped'
+export type SyncJobState = 'idle' | 'running' | 'backoff' | 'disabled' | 'error' | 'unknown'
+
+export type SyncJob = {
+  id: string
+  label: string
+  kind: 'in-process' | 'external'
+  intervalMs: number | null
+  lastRunAt: string | null
+  lastFinishedAt: string | null
+  nextRunAt: string | null
+  state: SyncJobState
+  lastResult: SyncResult | null
+  lastError: string | null
+  summary: string | null
+  backoffUntil: string | null
+  backoffLevel: number
+  requests24h: number | null
+  history: Array<{ at: string; result: SyncResult; durationMs: number | null }>
+  canRunNow: boolean
+  runCooldownUntil: string | null
+}
+
+export type SyncPolicy = {
+  globalUpstreamConcurrency: number
+  minIntervalPerHostMs: number
+  backoff: { factor: number; baseMs?: number; maxMs: number }
+  jitterPct: number
+}
+
+export type SyncStatus = { policy: SyncPolicy; jobs: SyncJob[]; generatedAt: string }
+
+export type SyncRunAccepted = { accepted: true; jobId: string }
+
+/* ── C4 RTK global switch ───────────────────────────────────────────────────────────────────────── */
+
+export type RtkGlobalStatus = {
+  /** null = mixed / unknown */
+  on: boolean | null
+  plane: RtkPlaneId | null
+  agents: { supported: number; on: number }
+  savings: { pct: number | null; tokens: number | null } | null
+  writable: boolean
+  reason: string | null
+  /** only with reason `rtk_binary_missing`: the manual install command */
+  installHint?: string
+}
+
+export type RtkGlobalApplyResult = {
+  /** every write succeeded and the post-apply re-read equals the target */
+  ok: boolean
+  on: boolean | null
+  plane?: RtkPlaneId | null
+  /** agents the re-read still finds off the target (absent on older servers) */
+  offTarget?: string[]
+  /** the post-apply re-read fell back to another plane (`readPlane`): `on` is null = not verified */
+  readPlane?: RtkPlaneId
+  degraded?: 'verify_plane_unavailable'
+  results: Array<{
+    agent: string
+    ok: boolean
+    error: string | null
+    reason?: string
+    unchanged?: boolean
+    backupId?: string
+    collateral?: RtkCollateralEntry[]
+    /** collateral files the server did not restore: a person has to check them */
+    collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
+  }>
+}
+
+/* ── C6 gateway pulse (header live edge + statusline) ───────────────────────────────────────────── */
+
+export type PulseData = {
+  windowSec: number
+  /** one entry per second, oldest first; `t` = epoch milliseconds of the second's start */
+  samples: Array<{ t: number; rps: number; err: number }>
+  /** requests per minute over the last 5 minutes; null when there is no usage source */
+  rpm: number | null
+  p95Ms: number | null
+  /** success ratio 0–1 over the last 5 minutes; null with no requests */
+  successRate: number | null
+  generatedAt: string
+}
+
+/* ── /api/accounts: Magpie accounts and sign-in (ACCOUNTS-ALIGN; server/accountsRoutes.ts) ─────────── */
+
+/** `cpa`: the page keeps /api/channels + /api/monitor + /api/cpa/oauth/*; `magpie`: everything below. */
+export type AccountsBackend = 'cpa' | 'magpie' | 'magpie-unavailable'
+export type AccountsUnavailableReason = 'kernel_unavailable' | 'kernel_outdated' | 'kernel_timeout' | 'kernel_bad_response' | 'catalog_missing'
+
+export type MagpieAccountQuota = {
+  asOf: string | null
+  /** the last read failed or is cooling down: these are the previous numbers */
+  stale: boolean
+  error: string | null
+  errorCode: 'signed_out' | 'unavailable' | null
+  windows: QuotaWindow[]
+  balance: string | null
+  until: string | null
+  renew: 'auto' | 'off' | null
+  resets: { count: number; until: string | null } | null
+  /** a Codex reset was used; the windows refresh on the next allowed read (≤ 1 per 5 min) */
+  resetPending: boolean
+}
+
+export type MagpieAccount = {
+  /** stable: sha256(agent NUL lower(user)), 16 hex — actions take this, not the email */
+  id: string
+  agent: string
+  /** the vendor account (usually an email): render it through <Pii> */
+  user: string
+  userMasked: string
+  plan: string | null
+  active: boolean
+  on: boolean
+  /** active while other accounts are on: Magpie's 首选 */
+  first: boolean
+  own: boolean
+  needsRelogin: boolean
+  seen: string | null
+  status: 'in_use' | 'first' | 'on' | 'off' | 'relogin'
+  quota: MagpieAccountQuota | null
+  canReset: boolean
+}
+
+export type MagpieAccountProvider = {
+  agent: string
+  name: string
+  icon: string
+  single: boolean
+  accounts: MagpieAccount[]
+  counts: { total: number; on: number; attention: number }
+}
+
+export type AccountsData = {
+  backend: AccountsBackend
+  available: boolean
+  reason: AccountsUnavailableReason | null
+  /** zh line for an unavailable backend */
+  message: string | null
+  revision?: string
+  /** do signed-in accounts serve the gateway? false in the magpie backend this round */
+  routing: boolean
+  routingNote?: string
+  providers: MagpieAccountProvider[]
+  excluded: Array<{ agent: string; name: string; state: 'removed' | 'signed_out'; note: string; quiet: boolean }>
+  signingIn?: Array<{ id: string; agent: string; state: SignInState }>
+  counts: { accounts: number; providers: number; attention: number } | null
+  quotaAsOf?: string | null
+}
+
+export type SignInCompletion = 'poll' | 'relay' | 'paste' | 'cli' | 'local'
+
+export type MagpieCatalogItem = {
+  agent: string
+  name: string
+  shortName: string
+  icon: string
+  vendor: string
+  plans: string
+  own: boolean
+  single: boolean
+  /** Magpie's ban-risk card; the server refuses a risky sign-in without `confirmRisk: true` */
+  risk: { title: string; note: string } | null
+  /** a site to pick first (ZCode) */
+  sites: Array<{ id: string; label: string; host: string }>
+  completion: SignInCompletion
+  deviceCode: boolean
+  pasteCallback: boolean
+  /** runs a vendor CLI or installer on the server: off */
+  gated: boolean
+  signedIn: number
+}
+
+/** The CPA backend's providers (the legacy OAuth routes serve them). */
+export type CpaCatalogItem = { agent: string; name: string; vendor: string; flow: string; pasteCallback: boolean; risk: boolean }
+
+export type AccountsCatalog = {
+  backend: AccountsBackend
+  available: boolean
+  reason: AccountsUnavailableReason | null
+  message?: string
+  revision?: string
+  catalogRevision?: string
+  /** the catalog came from another Magpie revision than the running kernel */
+  stale?: boolean
+  routing?: boolean
+  routingNote?: string
+  /** Magpie's own zh strings (riskTitle, riskConfirm, sitePrompt, waitingTitle, callbackHint, …) */
+  copy: Record<string, string>
+  items: Array<MagpieCatalogItem | CpaCatalogItem>
+}
+
+export type SignInState = 'installing' | 'waiting' | 'done' | 'failed' | 'canceled'
+
+export type SignInView = {
+  id: string
+  agent: string
+  state: SignInState
+  completion: SignInCompletion
+  url: string | null
+  code: string | null
+  installing: string | null
+  pasteCallback: boolean
+  callbackLocked: boolean
+  user: string | null
+  userMasked: string | null
+  plan: string | null
+  using: boolean
+  error: string | null
+  errorCode: string | null
+  detail: string | null
+  /** Kiro's AWS hop: open this next, then paste the address it returns to */
+  next: string | null
+  startedAt: string
+  deadline: string
+}
+
+export type AccountLoginAction = 'on' | 'off' | 'first' | 'forget'
+
+export type MagpieCodexReset = {
+  ok: boolean
+  outcome: 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_redeemed'
+  windows: number
+  message: string
+  /** null: these accounts don't serve the gateway yet, there is no gateway cooldown to clear */
+  cooldownCleared: null
+}
+
+export type AccountsQuotaRefresh = { results: Array<{ agent: string; refreshed: boolean; nextAllowedAt: string | null }> }
+
+/* ─────────────── Proxy pool (/api/proxies, PROXY-SPEC). Every value is masked server-side. ─────────────── */
+
+export type ProxyKind = 'url' | 'mihomo'
+export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'ss' | 'ssr' | 'vmess' | 'vless' | 'trojan' | 'hysteria2' | 'tuic' | 'wireguard'
+export type ProxySourceKind = 'manual' | 'clash' | 'uri' | 'subscription' | 'migrated' | 'preset' | 'pool-import'
+export type ProxyScope = 'anywhere' | 'consumer-host' | 'console-host'
+export type ProxyKernelState = 'unavailable' | 'idle' | 'starting' | 'running' | 'degraded' | 'failed' | 'stopped'
+
+export type ProxyKernelView = {
+  state: ProxyKernelState
+  version?: string | null
+  /** zh, scrubbed */
+  reason?: string | null
+  bindFailed?: string[]
+  /** further kernel-module fields (pid, adopted, crashes, nextRestartAt, …), primitives only */
+  [key: string]: unknown
+}
+
+/** check states: ok, auth-expected (✓) / region-blocked, challenge, blocked, service-error, proxy-auth-failed, proxy-down, upstream, dns, tls, timeout (✗) */
+export type ProxyHealthCell = {
+  state: string
+  ms: number | null
+  at: string
+  hosts: Array<{ host: string; state: string; ms: number | null; status: number | null }>
+}
+
+export type ProxyHealth = {
+  exit: { ip?: string; country?: string; state?: string; ms?: number; at: string } | null
+  services: Record<string, ProxyHealthCell>
+  lastAt?: string
+}
+
+export type ProxyEntryView = {
+  id: string
+  name: string
+  nameAuto: boolean
+  kind: ProxyKind
+  protocol: ProxyProtocol
+  /** `socks5://***@host:port` (url) or `vmess://host:port` (node) */
+  display: string
+  server: string
+  serverPort: number
+  /** local socks5 port of a mihomo entry */
+  port: number | null
+  scope: ProxyScope
+  assignable: boolean
+  unassignableReason: string | null
+  source: ProxySourceKind
+  subscriptionId: string | null
+  /** 订阅中已移除 */
+  stale: boolean
+  /** 外部本机 */
+  external: boolean
+  tags: string[]
+  enabled: boolean
+  validity: 'ok' | 'invalid' | 'unverified'
+  invalidReason: string | null
+  usedBy: { total: number; byProvider: Record<string, number> }
+  health: ProxyHealth | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type ProxySubscriptionView = {
+  id: string
+  name: string
+  /** `https://host/***` */
+  maskedUrl: string
+  intervalH: number
+  lastFetchAt: string | null
+  nextAt: string | null
+  failures: number
+  error: string | null
+  info: { upload?: number; download?: number; total?: number; expire?: number } | null
+  nodeCount: number
+}
+
+export type ProxyPoolData = {
+  backend: 'cpa' | 'magpie'
+  cpaSameHost: boolean
+  kernel: ProxyKernelView
+  ports: { base: number; count: number; last: number; listenerAuth: boolean }
+  /** why the pool file is read-only (unknown version, corrupt), or null */
+  readOnly: string | null
+  summary: { entries: number; enabled: number; mihomo: number; needsKernel: number; inUse: number; accountsLinked: number; invalid: number; subscriptions: number }
+  entries: ProxyEntryView[]
+  subscriptions: ProxySubscriptionView[]
+  migration: { firstRunAt: string | null; firstRunImported: number | null; lastScanAt: string | null; pending: { exits: number; accounts: number; at: string } | null; ignored: number }
+  default: { mode: 'inherit' | 'direct' | 'url' | 'invalid' | 'unknown' | 'unsupported'; entryId: string | null; masked: string | null; at: string | null }
+  signinNote: string
+}
+
+export type ProxyOption = {
+  id: string
+  name: string
+  protocol: ProxyProtocol
+  country: string | null
+  assignable: boolean
+  reason: string | null
+  /** service → check state */
+  health: Record<string, string>
+  usedBy: number
+  tags: string[]
+}
+
+export type ProxyOptionsData = { builtins: Array<{ id: 'inherit' | 'direct'; name: string }>; options: ProxyOption[] }
+
+export type ProxyAccountRow = {
+  /** `cpa:<credential>`, `cpa:global`, `magpie:<agent>[:<user>]` */
+  ref: string
+  kind: 'credential' | 'global' | 'magpie'
+  provider: string
+  name: string
+  label: string
+  disabled: boolean
+  mode: 'inherit' | 'direct' | 'url' | 'invalid' | 'unknown'
+  masked: string | null
+  entryId: string | null
+  entryName: string | null
+  /** CPA mode: when the value was last read (null = live) */
+  observedAt: string | null
+  assignable: boolean
+  restorable: boolean
+}
+
+export type ProxyAccountsData = { backend: 'cpa' | 'magpie'; cpaSameHost: boolean; signinNote: string; accounts: ProxyAccountRow[] }
+
+export type ProxyPreviewRow = {
+  key: string
+  name: string
+  type: string
+  protocol: ProxyProtocol | null
+  kind: ProxyKind | null
+  server: string | null
+  serverPort: number | null
+  external: boolean
+  status: 'new' | 'duplicate' | 'update' | 'unsupported' | 'invalid' | 'info'
+  reason: string | null
+  entryId: string | null
+  duplicateOf: string | null
+  subscriptionKey: string | null
+}
+
+export type ProxyPreviewSubscription = {
+  key: string
+  name: string
+  maskedUrl: string
+  source: 'pasted' | 'provider' | 'export'
+  ok: boolean
+  error: string | null
+  nodeCount: number
+  info: ProxySubscriptionView['info']
+  intervalH: number
+  insecureHttp: boolean
+  existingId: string | null
+}
+
+export type ProxyPreview = {
+  previewId: string
+  expiresAt: string
+  format: 'export' | 'clash' | 'uri' | 'base64' | 'subscription'
+  counts: Record<ProxyPreviewRow['status'], number>
+  byProtocol: Record<string, number>
+  /** mihomo rows that need the kernel to be usable */
+  needsKernel: number
+  kernelAvailable: boolean
+  ignoredSections: string[]
+  notes: string[]
+  rows: ProxyPreviewRow[]
+  subscriptions: ProxyPreviewSubscription[]
+  assignments: number
+}
+
+export type ProxyImportResult = {
+  added: number
+  updated: number
+  skipped: number
+  ids: string[]
+  subscriptions: Array<{ key: string; id: string; added: number; updated: number; removed: number; stale: number }>
+  /** export files: accounts to re-assign (dry-run; send the pending ones to assign) */
+  assignPlan: Array<{ account: string; accountRef: string; entryId: string; status: 'linked' | 'pending' }>
+  entries: ProxyEntryView[]
+}
+
+export type ProxyAssignResult = {
+  target?: string
+  results: Array<{ account: string; status: 'updated' | 'unchanged' | 'failed' | 'restored'; code?: string; error?: string }>
+  updated: number
+  failed: number
+  warnings?: string[]
+}
+
+export type ProxyMigrationExit = {
+  key: string
+  name: string
+  maskedUrl: string
+  action: 'create' | 'link' | 'unchanged' | 'skip'
+  reason: string | null
+  external: boolean
+  source: 'migrated' | 'preset'
+  entryId: string | null
+  accounts: { total: number; byProvider: Record<string, number> }
+  /** non-account references: global / channel / key / magpie */
+  others: string[]
+}
+
+export type ProxyMigrationPreview = {
+  dryRun: true
+  scanId: string | null
+  at: string
+  totals: { accounts: number; inherit: number; direct: number; url: number; invalid: number; exits: number; create: number; link: number; unchanged: number; skip: number }
+  inheritByProvider: Record<string, number>
+  directByProvider: Record<string, number>
+  sources: { credentials: number; readErrors: number; channelError: boolean; presets: number }
+  exits: ProxyMigrationExit[]
+  cooldownMs: number
+}
+
+export type ProxyMigrationApplied = { dryRun: false; summary: string; created: number; linked: number; unlinked: number }
+
+export type ProxyAssignTarget = 'inherit' | 'direct' | string
+
+/* ───── account egress (/accounts): GET /api/proxies/egress, …/egress/account (server/proxyEgress.ts) ───── */
+export type EgressService = 'claude' | 'openai' | 'google'
+export type EgressMode = 'inherit' | 'direct' | 'url' | 'invalid' | 'unknown'
+export type EgressCheck = { state: string; ms: number | null; at: string | null }
+export type EgressEntry = {
+  id: string
+  name: string
+  kind: ProxyKind
+  protocol: ProxyProtocol
+  country: string | null
+  /** the exit probe's own failure (proxy down…), null when it answered or never ran */
+  exitState: string | null
+  checks: Partial<Record<EgressService, EgressCheck>>
+  checkedAt: string | null
+  assignable: boolean
+  reason: string | null
+  usedBy: number
+}
+/** an account's exit as the pool knows it; `masked` = `scheme://***@host:port` for addresses */
+export type EgressAccount = { mode: EgressMode; entryId: string | null; masked: string | null; at: string | null }
+export type EgressData = {
+  backend: 'cpa' | 'magpie'
+  cpaSameHost: boolean
+  kernel: { state: ProxyKernelState }
+  /** whether accounts here can take their own exit (Magpie: the kernel must route them) */
+  accountProxy: { supported: boolean; reason: string | null }
+  /** what 继承 resolves to: CPA's global proxy / the Magpie kernel's (direct) */
+  default: { mode: EgressMode; entryId: string | null }
+  /** Magpie: a service's own proxy, which its accounts without one follow */
+  services: Record<string, EgressAccount>
+  signin: { via: 'cpa-global' | 'direct'; exit: { mode: EgressMode | 'unsupported'; entryId: string | null }; perSignin: false; note: string }
+  entries: EgressEntry[]
+  /** `cpa:<credential>` · `magpie:<agent>:<user lower>` */
+  accounts: Record<string, EgressAccount>
+  /** index-aligned with /api/channels proxyPresets: the pool entry holding the same address, if any */
+  presets: Array<{ label: string; entryId: string | null }>
+}
+/** the authoritative one-account read: never the URL itself */
+export type EgressRead = EgressAccount & { ref: string; entryName: string | null; preset: number | null }
+
+/* ───── 网关功能 (#gateway-features): GET/PUT /api/gateway/settings, server/gatewaySettings.ts ───── */
+export type Localized = { en: string; zh: string }
+export type GatewaySettingItem = {
+  key: string; group: string; control: 'switch' | 'words' | 'rules' | 'model' | 'forced-off'; class: string
+  default: unknown; name: Localized; sub: Localized; subOff?: Localized; placeholder?: Localized
+}
+export type GatewayRedactRule = { kind: string; prefix?: string; regex?: string }
+export type GatewaySettingValues = {
+  redact: boolean; redactPersonal: boolean; redactWords: string[]; redactRules: GatewayRedactRule[]; vision: string; imageGen: string
+}
+export type GatewayModelChoice = {
+  auto: string; effective: string; stale: boolean
+  options: Array<{ id: string; label: string; provider: string; kind: string }>
+}
+export type GatewaySettings = {
+  available: boolean
+  reason: string | null
+  message: string | null
+  revision: string
+  catalog: {
+    groups: Array<{ id: string; title: Localized }>
+    items: GatewaySettingItem[]
+    copy: Record<string, Localized>
+    limits: {
+      rules: { maxRules: number; minPrefix: number; maxPrefix: number; maxRegex: number; maxKind: number; minMatch: number }
+      words: { maxWords: number; minBytes: number; maxBytes: number }
+    }
+  } | null
+  values: GatewaySettingValues | null
+  models: { vision: GatewayModelChoice; imageGen: GatewayModelChoice & { admitted: boolean } } | null
+  telemetry: { off: boolean; forced: boolean } | null
+  applies: string | null
+  upstream: { candidateRevision: string | null; added: string[]; changed: string[]; removed: string[] }
 }

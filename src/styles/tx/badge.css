@@ -1,0 +1,2 @@
+html:root .tx-badge { border-radius: 8px; font-family: var(--font-mono); font-size: 10px; font-weight: 700; }
+html:root .tx-badge--error, html:root .tx-badge--warning { --tx-badge-bg: var(--signal); --tx-badge-text: var(--on-signal); --tx-badge-border: transparent; }

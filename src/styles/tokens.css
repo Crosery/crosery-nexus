@@ -1,0 +1,128 @@
+/* Console v3 · Telemetry Paper tokens.
+   Canonical source: /tmp/console-v3/design-assets/tokens.v3.css (DESIGN.md §2). Values here must match it.
+   Theme is keyed only on html[data-theme]; motion on html[data-motion]; privacy mask on html[data-mask]. */
+
+:root {
+  color-scheme: light;
+
+  --paper: #F2EFE7;
+  --paper-2: #EAE6DB;
+  --paper-3: #E0DBCD;          /* never put ink-3 text on it (4.20:1) */
+  --sheet: #F9F7F2;
+
+  --ink: #191815;
+  --ink-2: #45423B;
+  --ink-3: #69655B;            /* smallest text colour allowed */
+  --ink-4: #8F8A7E;            /* decoration / disabled only, never text */
+
+  --rule: #DAD5C8;
+  --rule-2: #BDB6A6;
+  --ctl: #858073;              /* control boundary ≥3:1 */
+
+  --signal: #EA4800;           /* marks only */
+  --signal-ink: #B23800;       /* signal used as text */
+  --on-signal: #191815;
+  --signal-wash: rgba(234, 72, 0, .09);
+  --signal-glow: rgba(234, 72, 0, .28);
+  --wash: rgba(25, 24, 21, .10);
+
+  --hatch: repeating-linear-gradient(135deg, rgba(25, 24, 21, .06) 0 1px, transparent 1px 6px);
+  --tex-stripe: repeating-linear-gradient(90deg, var(--ink) 0 1.5px, transparent 1.5px 3px);
+  --tex-hatch: repeating-linear-gradient(135deg, var(--ink-2) 0 1px, transparent 1px 4px);
+  --tex-dots: radial-gradient(var(--ink) .8px, transparent 1px) 0 0 / 3px 3px;
+  --grain-opacity: .045;
+  --grain-blend: multiply;
+
+  --k1: #191815;
+  --k2: #524E47;
+  --k3: #878275;
+  /* k4–k6: solid tonal steps (calm-down: no stripes / hatch / dots); identity = 2px gaps + legend + labels */
+  --k4: #A7A295;
+  --k5: #C3BDAF;
+  --k6: #D5CFC1;
+  --heat-0: #E0DBCD;
+  --heat-1: #ADA89B;
+  --heat-2: #858073;
+  --heat-3: #55514A;
+  --heat-4: #191815;
+
+  --shadow-pop: 0 1px 0 rgba(25, 24, 21, .04), 0 18px 40px -18px rgba(25, 24, 21, .32);
+  --shadow-sheet: 0 -1px 0 var(--rule), 0 -24px 60px -24px rgba(25, 24, 21, .30);
+  --shadow-sheet-x: -1px 0 0 var(--rule), -24px 0 60px -24px rgba(25, 24, 21, .30);
+  --scrim: rgba(25, 24, 21, .28);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --fs-micro: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-row: 13px;
+  --fs-md: 15px; --fs-lg: 20px; --fs-xl: 26px; --fs-2xl: 34px; --fs-3xl: 40px;
+  --fs-input: 13px;
+  --lh: 1.45;
+
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+  --row: 40px; --row-dense: 34px; --row-2l: 44px; --row-attn: 48px; --row-lane: 28px;
+  --row-head: 30px; --plate-head: 36px; --provider-head: 46px;
+  --head: 52px; --statusline: 24px; --ticker: 24px; --tabbar: 58px;
+  --tap: 40px;
+  --ctl-h: 30px;               /* inline control height on fine pointers */
+  --btn-h: 32px;
+  --gutter: 24px; --page-x: 32px; --page-max: 1680px;
+
+  --r-0: 0; --r-1: 2px; --r-2: 4px; --tick: 9px;
+
+  --focus: 0 0 0 2px var(--paper), 0 0 0 4px var(--signal);
+
+  --dur-1: 90ms; --dur-2: 160ms; --dur-3: 240ms; --dur-4: 420ms; --dur-5: 900ms;
+  --dur-roll: 760ms; --dur-scan: 720ms; --dur-sheet: 600ms; --dur-wash: 1400ms; --dur-exit: 520ms;
+  --stagger: 26ms; --stagger-cap: 14;
+  --ease-settle: cubic-bezier(.16, 1, .3, 1);
+  --ease-swift: cubic-bezier(.4, 0, .2, 1);
+  --ease-exit: cubic-bezier(.4, 0, 1, 1);
+  --ease-spring: linear(0, 0.0417, 0.1406, 0.2666, 0.3993, 0.5257, 0.6387, 0.7348, 0.8134, 0.8753, 0.9223, 0.9567, 0.9809, 0.997, 1.0069, 1.0124, 1.0148, 1.0151, 1.0141, 1.0124, 1.0105, 1.0085, 1.0066, 1.005, 1);
+
+  --z-head: 40; --z-tabbar: 45; --z-scan: 90;
+}
+
+/* First paint before main.ts runs: the index.html boot script only writes an explicit stored choice,
+   so "follow the system" paints the dark paper from CSS (initTheme then sets data-theme for real). */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]), html:not([data-theme]) body { color-scheme: dark; background: #131311; }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #131311;
+  --paper-2: #1B1A18;
+  --paper-3: #26251F;
+  --sheet: #1E1D1A;
+  --ink: #EDE8DD;
+  --ink-2: #BDB7AA;
+  --ink-3: #959083;
+  --ink-4: #6A665D;
+  --rule: #2A2925;
+  --rule-2: #45433D;
+  --ctl: #78736A;
+  --signal: #FF5B1F;
+  --signal-ink: #FF8A55;
+  --on-signal: #131311;
+  --signal-wash: rgba(255, 91, 31, .11);
+  --signal-glow: rgba(255, 91, 31, .35);
+  --wash: rgba(237, 232, 221, .12);
+  --hatch: repeating-linear-gradient(135deg, rgba(237, 232, 221, .06) 0 1px, transparent 1px 6px);
+  --grain-opacity: .06;
+  --grain-blend: screen;
+  --k1: #EDE8DD; --k2: #A9A396; --k3: #6F6B62; --k4: #5A574F; --k5: #48463F; --k6: #3A3833;
+  --heat-0: #26251F; --heat-1: #4D4B44; --heat-2: #77736A; --heat-3: #AEA99E; --heat-4: #EDE8DD;
+  --shadow-pop: 0 1px 0 rgba(0, 0, 0, .4), 0 18px 44px -16px rgba(0, 0, 0, .7);
+  --shadow-sheet: 0 -1px 0 var(--rule-2), 0 -24px 60px -20px rgba(0, 0, 0, .75);
+  --shadow-sheet-x: -1px 0 0 var(--rule-2), -24px 0 60px -20px rgba(0, 0, 0, .75);
+  --scrim: rgba(0, 0, 0, .55);
+}
+
+@media (max-width: 1179px) { :root { --gutter: 20px; --page-x: 24px; } }
+@media (max-width: 959px) { :root { --gutter: 16px; --page-x: 20px; } }
+@media (max-width: 599px) { :root { --gutter: 12px; --page-x: 16px; } }
+
+@media (pointer: coarse) {
+  /* 16px inputs stop iOS from zooming on focus */
+  :root { --fs-row: 14px; --fs-input: 16px; --ctl-h: 40px; --btn-h: 40px; }
+}

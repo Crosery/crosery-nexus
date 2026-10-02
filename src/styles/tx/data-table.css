@@ -1,0 +1,18 @@
+/* TxDataTable → hairline rows, plain 11px heads (no tracking/uppercase: Chinese heads must not spread out), paper-2 hover; row hairlines resolve to --tx-border-color-lighter (= --rule). */
+html:root .tx-data-table { border-radius: 0; }
+html:root .tx-data-table__table { background: transparent; color: var(--ink); }
+html:root .tx-data-table__th {
+  height: var(--row-head); padding: 0 8px; background: transparent; border-bottom: 1px solid var(--rule-2);
+  font-family: var(--font-sans); font-size: var(--fs-xs); font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--ink-3);
+}
+html:root .tx-data-table__cell { padding: 0 8px; height: var(--row); font-size: var(--fs-sm); border-bottom: 1px solid var(--tx-border-color-lighter); }
+html:root .tx-data-table__sort-button { padding: 0 8px; height: var(--row-head); }
+html:root .tx-data-table__sort svg.is-active { color: var(--ink); }
+html:root .tx-data-table.is-hover tbody tr:hover:not(.tx-data-table__row--detail) { background: var(--paper-2); }
+html:root .tx-data-table__row--detail > .tx-data-table__cell--detail { background: var(--paper-2); padding: 12px 14px 14px; box-shadow: inset 2px 0 0 var(--ink); color: var(--ink); height: auto; }
+html:root .tx-data-table__expand-toggle { border-radius: var(--r-1); }
+html:root .tx-data-table__empty { padding: 10px 0; text-align: left; font-size: var(--fs-sm); color: var(--ink-3); }
+html:root .tx-data-table__th.is-fixed, html:root .tx-data-table__cell.is-fixed { background: var(--surface, var(--paper)); }
+html:root .tx-data-table.has-sticky-header .tx-data-table__th { background: var(--surface, var(--paper)); }
+html:root .tx-data-table__loading { background: transparent; backdrop-filter: none; }
+html:root .tx-data-table.is-scroll-x .tx-data-table__table { min-width: var(--table-min, 0); }

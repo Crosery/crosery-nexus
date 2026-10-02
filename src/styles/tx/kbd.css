@@ -1,0 +1,6 @@
+/* TxKbd: a flat key cap — hairline, 2px bottom edge, no gradient face. */
+html:root .tx-kbd { min-width: 18px; height: 18px; padding: 0 4px; gap: 2px; border-radius: var(--r-1); border: 1px solid var(--rule-2); border-bottom-width: 2px;
+  background: transparent; color: var(--ink-2); font-family: var(--font-mono); font-size: 10px; line-height: 1; box-shadow: none; }
+html:root .tx-kbd--md { height: 22px; min-width: 22px; font-size: 11px; }
+/* StatusLine's compact caps (its own .ui-sl__keys rule is out-specified by the line above) */
+html:root .ui-sl__keys .tx-kbd { height: 15px; border-bottom-width: 1px; }

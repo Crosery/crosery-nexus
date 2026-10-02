@@ -1,0 +1,16 @@
+/* TxSwitch → rectangular 30×16 track, 12px square knob, ink when on, --dur-1. */
+html:root .tuff-switch {
+  --tuff-switch-track-width: 30px; --tuff-switch-track-height: 16px; --tuff-switch-track-radius: 2px; --tuff-switch-thumb-radius: 1px;
+  --tuff-switch-track-color: transparent; --tuff-switch-active-color: var(--ink); --tuff-switch-thumb-color: var(--ink-3);
+}
+html:root .tuff-switch__track { box-shadow: inset 0 0 0 1px var(--ctl); transition: background-color var(--dur-1) var(--ease-swift); }
+html:root .tuff-switch.is-active .tuff-switch__track { box-shadow: inset 0 0 0 1px var(--ink); }
+html:root .tuff-switch__thumb { width: 12px; height: 12px; top: 2px; left: 2px; transition: left var(--dur-1) var(--ease-settle), background-color var(--dur-1); }
+html:root .tuff-switch.is-active .tuff-switch__thumb { left: 16px; filter: none; background: var(--paper); }
+html:root .tuff-switch:hover:not(.is-disabled):not(.is-loading) .tuff-switch__track,
+html:root .tuff-switch.is-active:hover:not(.is-disabled):not(.is-loading) .tuff-switch__track { box-shadow: inset 0 0 0 1px var(--ink); }
+html:root .tuff-switch__label { font-size: var(--fs-base); color: var(--ink-2); }
+html:root .tuff-switch:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+/* `loading` would add a breathing track and a conic-gradient flowing border: never shown (Switch.vue maps loading → disabled) */
+html:root .tuff-switch.is-loading .tuff-switch__track::before, html:root .tuff-switch.is-loading .tuff-switch__track::after { display: none; }
+html:root .tuff-switch.is-disabled { opacity: .6; }

@@ -1,0 +1,97 @@
+/* Console v3 motion recipes (DESIGN.md §3; canonical: design-assets/motion.v3.css).
+   Only transform / opacity / clip-path / background-color animate.
+   html[data-motion="reduce"] is the single reduced-motion switch (OS preference or 设置·动效, see src/lib/motion.ts).
+   html[data-capture] freezes every recipe on its final frame for deterministic screenshots. */
+
+/* 1 · route scanline */
+.ui-scan { position: fixed; left: 0; right: 0; top: 0; height: 1px; z-index: var(--z-scan); pointer-events: none;
+  background: var(--signal); opacity: 0; box-shadow: 0 0 14px 1px var(--signal-glow); }
+.ui-scan::before { content: ""; position: absolute; left: 0; right: 0; bottom: 1px; height: 64px;
+  background: linear-gradient(to top, var(--signal-wash), transparent); }
+.ui-scan.go { animation: ui-scan var(--dur-scan) var(--ease-swift) forwards; }
+@keyframes ui-scan { 0% { transform: translateY(var(--head)); opacity: 0; } 12% { opacity: .9; } 100% { transform: translateY(100vh); opacity: 0; } }
+
+/* 2 · print-in: usePrintIn / Plate set --pd from the block's distance below the header */
+@keyframes ui-print { from { opacity: 0; transform: translateY(6px); clip-path: inset(0 0 100% 0); } 60% { opacity: 1; }
+  to { opacity: 1; transform: none; clip-path: inset(0 0 -2px 0); } }
+[data-print].is-entering { animation: ui-print var(--dur-4) var(--ease-settle) backwards; animation-delay: var(--pd, 40ms); }
+
+/* 3 · row stagger: 26ms per row, capped at 14 rows; --r = row index */
+@keyframes ui-row { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
+.is-entering [data-row] { animation: ui-row 320ms var(--ease-settle) backwards;
+  animation-delay: calc(var(--pd, 40ms) + 80ms + min(var(--r, 0), 14) * var(--stagger)); }
+
+/* 4 · odometer digits: --k = index from the right */
+.ui-roll { display: inline-flex; white-space: pre; line-height: 1; font-variant-numeric: tabular-nums; }
+.ui-roll .rd { display: inline-block; height: 1em; overflow: hidden; }
+.ui-roll .rd > span { display: flex; flex-direction: column; transition: transform var(--dur-roll) var(--ease-settle);
+  transition-delay: calc(var(--k, 0) * 34ms); }
+.ui-roll .rd > span > span { height: 1em; line-height: 1; }
+.ui-roll.is-fading { animation: ui-fade var(--dur-2) var(--ease-swift); }
+
+/* 5 · live-change wash: neutral, never orange */
+@keyframes ui-wash { from { background-color: var(--wash); } to { background-color: transparent; } }
+.ui-washed { animation: ui-wash var(--dur-wash) var(--ease-swift); border-radius: var(--r-1); }
+
+/* 6 · trace / sparkline draw-on (paths carry pathLength="1") */
+@keyframes ui-draw { from { stroke-dashoffset: 1; } 99% { stroke-dashoffset: 0; stroke-dasharray: 1 1; } to { stroke-dashoffset: 0; stroke-dasharray: none; } }
+@keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ui-pop { from { opacity: 0; transform: scale(.2); } to { opacity: 1; transform: none; } }
+.ui-draw { stroke-dasharray: 1 1; stroke-dashoffset: 1; animation: ui-draw var(--dur-5) var(--ease-settle) forwards; animation-delay: var(--d, 200ms); }
+.ui-area { animation: ui-fade 600ms var(--ease-swift) both; animation-delay: calc(var(--d, 200ms) + 300ms); }
+.ui-end { transform-box: fill-box; transform-origin: center; animation: ui-pop 260ms var(--ease-settle) both;
+  animation-delay: calc(var(--d, 200ms) + var(--dur-5) - 120ms); }
+
+/* 7 · tick meter fill (VU count-up), n = lit ticks */
+.ui-meter > b { transition: width var(--dur-roll) steps(var(--n, 20), end); transition-delay: 140ms; }
+
+/* 8 · live pulse: max 6 animated rings per screen (useLiveRing) */
+@keyframes ui-pulse { 0% { transform: scale(.8); opacity: .9; } 70%, 100% { transform: scale(2.6); opacity: 0; } }
+.ui-live::after { content: ""; position: absolute; inset: -1px; border-radius: 50%; border: 1px solid currentColor;
+  animation: ui-pulse 2.4s var(--ease-swift) infinite; }
+.ui-halo::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; background: currentColor; opacity: .14; }
+@keyframes ui-blink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: .25; } }
+.ui-blink { animation: ui-blink 1.2s steps(1) infinite; }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+:root[data-hidden] .ui-live::after, :root[data-hidden] .ui-blink { animation-play-state: paused; }
+
+/* 9 · indicators (nav, tabs, segmented): one element slides; JS sets --x / --w */
+.ui-ind { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--signal); pointer-events: none;
+  width: var(--w, 0); transform: translateX(var(--x, 0));
+  transition: transform var(--dur-3) var(--ease-settle), width var(--dur-3) var(--ease-settle); }
+
+/* 11 · popover / day readout / palette (sheet = Sheet.vue, toast = styles/tx/toast.css) */
+@keyframes ui-pop-open { from { opacity: 0; transform: scale(.97) translateY(-3px); } to { opacity: 1; transform: none; } }
+.ui-pop { animation: ui-pop-open var(--dur-3) var(--ease-settle) both; transform-origin: var(--ox, 50%) var(--oy, 0%); }
+
+/* 13 · skeleton read-head */
+@keyframes ui-readhead { from { transform: translateX(0); } to { transform: translateX(var(--sw, 100%)); } }
+.ui-skel { position: relative; overflow: hidden; }
+.ui-skel i { display: block; height: 8px; background: var(--paper-3); border-radius: 1px; }
+.ui-skel::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 1px; background: var(--ink-4); opacity: .5;
+  animation: ui-readhead 1.6s var(--ease-swift) infinite; }
+
+/* 14 · theme switch: circular wipe from the pressed toggle (src/lib/theme.ts sets --vx/--vy/--vr) */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-new(root) { animation: ui-wipe 560ms var(--ease-settle); }
+@keyframes ui-wipe { from { clip-path: circle(0 at var(--vx, 100%) var(--vy, 0)); } to { clip-path: circle(var(--vr, 150vmax) at var(--vx, 100%) var(--vy, 0)); } }
+
+/* 15 · heatmap selection leader */
+.ui-leader { stroke-dasharray: 1 1; stroke-dashoffset: 1; animation: ui-draw var(--dur-3) var(--ease-settle) forwards; }
+
+/* reduced motion: content complete, nothing travels; sheet/toast fades ≤120ms */
+:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+  animation-duration: .01ms !important; animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0ms !important; }
+:root[data-motion="reduce"] .ui-scan, :root[data-motion="reduce"] .ui-skel::after { display: none; }
+:root[data-motion="reduce"] .ui-live::after { animation: none !important; transform: none; inset: -3px; border: 0; background: currentColor; opacity: .14; }
+:root[data-motion="reduce"] .ui-draw, :root[data-motion="reduce"] .ui-leader { stroke-dashoffset: 0; stroke-dasharray: none; }
+:root[data-motion="reduce"]::view-transition-new(root) { animation: none; }
+
+/* capture mode (?capture=1 or HeadlessChrome) */
+:root[data-capture] *, :root[data-capture] *::before, :root[data-capture] *::after {
+  animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important;
+  transition-duration: 0ms !important; transition-delay: 0ms !important; }
+:root[data-capture] .ui-draw, :root[data-capture] .ui-leader { stroke-dashoffset: 0; stroke-dasharray: none; }
+:root[data-capture] .ui-live::after { animation: none !important; transform: none; inset: -3px; border: 0; background: currentColor; opacity: .14; }
+:root[data-capture] .ui-scan, :root[data-capture] .ui-skel::after { display: none; }

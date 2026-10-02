@@ -1,0 +1,9 @@
+html:root .tx-pagination { gap: 6px; font-size: var(--fs-xs); color: var(--ink-3); }
+html:root .tx-pagination__button { min-width: 28px; height: 28px; border-radius: var(--r-1); border: 0; background: transparent; box-shadow: none;
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }
+html:root .tx-pagination__button:hover:not(.tx-pagination__button--disabled):not(:disabled) { background: var(--paper-2); color: var(--ink); }
+html:root .tx-pagination__button--active { background: var(--paper-3); color: var(--ink); font-weight: 600; }
+html:root .tx-pagination__button:focus-visible { box-shadow: none; }
+html:root .tx-pagination__button--disabled, html:root .tx-pagination__button:disabled { color: var(--ink-4); background: transparent; }
+html:root .tx-pagination__info { font-size: var(--fs-xs); color: var(--ink-3); }
+@media (pointer: coarse) { html:root .tx-pagination__button { min-width: var(--tap); height: var(--tap); } }

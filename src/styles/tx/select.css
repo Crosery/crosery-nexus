@@ -1,0 +1,17 @@
+/* TxSelect: the trigger is ONE box (the readonly TxInput, 1px ctl, no tint); the panel is calm (base-anchor.css),
+   options are fills (card-item.css). A visible label always sits OUTSIDE the box (FilterField). */
+html:root .tuff-select { width: auto; }
+html:root .tuff-select .tx-input { cursor: pointer; }
+html:root .tuff-select .tx-input__inner { cursor: pointer; text-overflow: ellipsis; }
+html:root .tuff-select__arrow { color: var(--ink-3); }
+html:root .tuff-select.is-open .tx-input { border-color: var(--ink); }
+html:root .tuff-select__multi-trigger { border-radius: var(--r-1); border: 1px solid var(--ctl); background: transparent; min-height: var(--ctl-h); box-shadow: none; }
+html:root .tuff-select.is-open .tuff-select__multi-trigger { border-color: var(--ink); box-shadow: none; }
+html:root .tuff-select__tag { border-radius: var(--r-1); background: var(--paper-2); }
+html:root .tuff-select__panel { padding: 4px; }
+html:root .tuff-select-item .tx-card-item__title { font-weight: 400; font-size: var(--fs-base); color: var(--ink-2); }
+html:root .tuff-select-item.is-selected .tx-card-item__title { color: var(--ink); font-weight: 600; }
+/* the panel is at least a readable option ("Anthropic · 39") wide and grows to its longest option
+   (model ids like "cline-deepseek-v4.1-flash · 2,651"), capped to the viewport — the positioner sets an inline
+   width equal to the trigger, hence !important */
+html:root .tx-base-anchor:has(.tuff-select__panel) { min-width: 168px; width: max-content !important; max-width: min(360px, calc(100vw - 24px)); }

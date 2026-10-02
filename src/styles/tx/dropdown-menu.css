@@ -1,0 +1,4 @@
+html:root .tx-dropdown-item { --tx-card-item-padding: 6px 10px; --tx-card-item-radius: 2px; }
+html:root .tx-dropdown-item .tx-card-item__title { font-weight: 400; font-size: var(--fs-base); color: var(--ink); }
+html:root .tx-dropdown-item.is-danger .tx-card-item__title { color: var(--signal-ink); }
+html:root .tx-dropdown-item.is-disabled .tx-card-item__title { color: var(--ink-3); }

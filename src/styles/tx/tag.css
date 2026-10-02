@@ -1,0 +1,7 @@
+/* TxTag writes --tx-tag-bg/-border/-text inline from color/variant: set the final properties here.
+   Neutral meta tag = hairline + mono micro; plain = a quiet fill with no border. */
+html:root .tx-tag {
+  border-radius: var(--r-1); font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: 500; letter-spacing: .04em;
+  background: transparent; border: 1px solid var(--rule-2); color: var(--ink-2); box-shadow: none;
+}
+html:root .tx-tag--plain { background: var(--paper-2); border-color: transparent; }

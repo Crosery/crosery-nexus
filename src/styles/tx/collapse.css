@@ -1,0 +1,7 @@
+/* TxCollapse as a quiet disclosure list: no container box, rows separated by spacing + one hairline. */
+html:root .tx-collapse { --tx-collapse-radius: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+html:root .tx-collapse-item + .tx-collapse-item { border-top: 1px solid var(--rule); }
+html:root .tx-collapse-item__header { padding: 0; min-height: 40px; background: transparent; font-size: var(--fs-base); color: var(--ink); }
+html:root .tx-collapse-item__header:hover, html:root .tx-collapse-item__header--active { background: transparent; }
+html:root .tx-collapse-item__header:focus-visible { box-shadow: none; outline: 2px solid var(--signal); outline-offset: -2px; }
+html:root .tx-collapse-item__content { padding: 0 0 12px; color: var(--ink-2); }

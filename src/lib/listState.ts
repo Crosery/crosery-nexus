@@ -50,10 +50,10 @@ export function useQueryState<T extends QueryDefaults>(defaults: T) {
   const fallback: Record<string, string> = {}
   for (const key of schema) fallback[key] = asString(defaults[key])
 
-  const read = (): Record<string, string> => {
+  const read = (query: typeof route.query = route.query): Record<string, string> => {
     const out: Record<string, string> = {}
     for (const key of schema) {
-      const raw = first(route.query[key])
+      const raw = first(query[key])
       out[key] = raw === '' ? fallback[key] : raw
     }
     return out
@@ -61,13 +61,23 @@ export function useQueryState<T extends QueryDefaults>(defaults: T) {
 
   // 内部按 Record<string, string> 处理；对外的 state 按 schema 键名收窄类型。
   const state: Record<string, string> = reactive(read()) as Record<string, string>
+  /** 本实例上次与 URL 对齐时的值；state 与它不同 = 有尚未写进 URL 的本地改动（防抖中）。 */
+  const synced: Record<string, string> = { ...state }
 
   // URL -> state：深链、前进/后退、外部跳转都能把视图还原。
+  // - URL 上没变的键不回填：同页另一个实例（搜索框与筛选条各一个）防抖写 URL 时，不会把这里刚点的筛选
+  //   或正在输入的文字覆盖回旧值。
+  // - URL 变成了本实例上次写出的值 = 自己的写入落地：之后又敲的字仍在防抖中，保留。
+  // - 其它变化是一次导航（后退、深链、导航栏）：URL 赢，连同防抖中的本地改动一起让位。
   watch(
     () => route.query,
-    () => {
-      const next = read()
+    (query, previous) => {
+      const next = read(query)
+      const before = previous ? read(previous) : null
       for (const key of schema) {
+        if (before && before[key] === next[key]) continue
+        if (next[key] === synced[key]) continue
+        synced[key] = next[key]
         if (state[key] !== next[key]) state[key] = next[key]
       }
     },
@@ -76,6 +86,7 @@ export function useQueryState<T extends QueryDefaults>(defaults: T) {
   let timer: ReturnType<typeof setTimeout> | null = null
   const flush = () => {
     timer = null
+    for (const key of schema) synced[key] = state[key]
     // 保留 schema 之外的 query（例如详情抽屉的 ?request=），只增删自己管的键。
     const query: Record<string, string> = {}
     for (const [key, value] of Object.entries(route.query)) {
@@ -116,6 +127,24 @@ export function useQueryState<T extends QueryDefaults>(defaults: T) {
       Object.assign(state, fallback)
     },
   }
+}
+
+/**
+ * 一个筛选键的 v-model：用户改它时顺带重置别的键（通常是 `page: '1'`）。
+ * URL 回填（后退、深链）直接写 state、不经过这里，所以会保留 URL 里的页码——不要用 watch 筛选键去重置页码。
+ */
+export function resettingField<S extends Record<string, string>, K extends keyof S & string>(
+  scope: { state: S; patch: (partial: Partial<S>) => void },
+  key: K,
+  reset: Partial<S>,
+) {
+  return computed<S[K]>({
+    get: () => scope.state[key],
+    set: (value) => {
+      if (scope.state[key] === value) return
+      scope.patch({ ...reset, [key]: value } as Partial<S>)
+    },
+  })
 }
 
 /** 前端分页：返回当前页数据与总页数，并把越界页码夹回范围内（数据变少时不会停在空页）。 */

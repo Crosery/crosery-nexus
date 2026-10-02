@@ -1,82 +1,104 @@
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import ConsoleShell from './components/ConsoleShell.vue'
-import { api } from './api'
-
-const routes: RouteRecordRaw[] = [
-  {
-    path: '/login',
-    name: 'login',
-    component: () => import('./pages/LoginPage.vue'),
-    meta: { public: true },
-  },
-  {
-    path: '/',
-    component: ConsoleShell,
-    children: [
-      { path: '', redirect: '/dashboard' },
-      { path: 'dashboard', name: 'dashboard', component: () => import('./pages/DashboardPage.vue') },
-      { path: 'keys', name: 'keys', component: () => import('./pages/KeysPage.vue') },
-      { path: 'channels', name: 'channels', component: () => import('./pages/ChannelsPage.vue') },
-      { path: 'oauth', name: 'oauth', component: () => import('./pages/OAuthPage.vue') },
-      // 凭据导入（task-77 恢复）：旧 React 版为 src/pages/CredentialUploadPage.tsx，Vue 重写时整页丢失。
-      // 路由用 `/credentials`（比 /credentials-upload 短，且与 /api/credentials 同词），归入「接入管理」组（见 ConsoleNav）。
-      { path: 'credentials', name: 'credentials', component: () => import('./pages/CredentialUploadPage.vue') },
-      { path: 'models', name: 'models', component: () => import('./pages/ModelsPage.vue') },
-      // RTK 控制面：本机/内核/中转站三层平面，写入策略受服务端开关约束。
-      { path: 'rtk', name: 'rtk', component: () => import('./pages/RtkPage.vue') },
-      { path: 'charts', name: 'charts', component: () => import('./pages/ChartsPage.vue') },
-      { path: 'analytics', name: 'analytics', component: () => import('./pages/AnalyticsPage.vue') },
-      { path: 'usage', name: 'usage', component: () => import('./pages/UsagePage.vue') },
-      { path: 'cache', name: 'cache', component: () => import('./pages/CachePage.vue') },
-      { path: 'monitor', name: 'monitor', component: () => import('./pages/MonitorPage.vue') },
-      { path: 'help', name: 'help', component: () => import('./pages/HelpPage.vue') },
-      // A/B 实验台（本地 QA 用）：新旧交互对照与真实用户偏好留痕，深链 /ab?flow=&v=
-      { path: 'ab', name: 'ab', component: () => import('./pages/AbLabPage.vue') },
-    ],
-  },
-  {
-    path: '/:pathMatch(.*)*',
-    redirect: '/dashboard',
-  },
-]
+import { createRouter, createWebHistory } from 'vue-router'
+import { setAuthHooks } from './api'
+import { routes } from './app/routes'
+import { clearSession, keyGoneNotice, loadSession, onAuthChange, roleHome, safeNext, session, sessionIdentity, setLoginNotice } from './app/session'
+import { notify } from './ui/feedback/toast'
 
 export const router = createRouter({
   history: createWebHistory('/'),
   routes,
-  scrollBehavior: (_to, _from, saved) => saved ?? { top: 0 },
+  scrollBehavior: (to, from, saved) => {
+    if (saved) return saved
+    if (to.hash) return { el: to.hash, top: 64 }
+    // filters and sort live in the query: changing them must not jump to the top
+    if (to.path === from.path) return false
+    return { top: 0 }
+  },
 })
 
-let authState: { checked: boolean; authenticated: boolean } = {
-  checked: false,
-  authenticated: false,
-}
+const ADMIN_ONLY = '此页面仅管理员可见'
 
-export function updateAuthState(authenticated: boolean) {
-  authState.checked = true
-  authState.authenticated = authenticated
-}
+router.beforeEach(async (to) => {
+  const current = await loadSession()
 
-router.beforeEach(async (to, _from, next) => {
   if (to.meta.public) {
-    if (authState.checked && authState.authenticated && to.path === '/login') {
-      return next('/dashboard')
-    }
-    return next()
+    if (to.name === 'login' && current.authenticated) return safeNext(to.query.next) ?? roleHome(current.role)
+    return true
   }
-
-  if (!authState.checked) {
-    try {
-      const res = await api.session()
-      authState.authenticated = Boolean(res?.authenticated)
-    } catch {
-      authState.authenticated = false
-    }
-    authState.checked = true
+  if (!current.authenticated) {
+    const next = to.meta.home ? null : safeNext(to.fullPath)
+    return { name: 'login', query: next ? { next } : {} }
   }
-
-  if (!authState.authenticated) {
-    return next('/login')
+  if (to.meta.home) return roleHome(current.role)
+  if (to.meta.role && to.meta.role !== current.role) {
+    // Cosmetic only: the server answers 403 for the other role's endpoints anyway.
+    if (current.role === 'key') notify(ADMIN_ONLY, { tone: 'note', id: 'cx-role' })
+    return roleHome(current.role)
   }
-
-  next()
+  return true
 })
+
+/*
+ * Global response hooks (DESIGN §5.1): a session that dies mid-use goes to /login?next=…, and a role
+ * mismatch (another tab switched this browser's session to the other role) re-probes and goes home.
+ */
+let leaving = false
+setAuthHooks({
+  onUnauthorized(error) {
+    if (leaving) return
+    const route = router.currentRoute.value
+    clearSession()
+    if (route.meta.public) return
+    leaving = true
+    const keyNotice = keyGoneNotice(error.code)
+    const keyGone = keyNotice !== null
+    const title = (route.meta.title as string | undefined) ?? '上一页'
+    setLoginNotice(keyNotice ?? `会话已过期 · 登录后回到 ${title}`)
+    const next = safeNext(route.fullPath)
+    void router.replace({ name: 'login', query: next && !keyGone ? { next } : {} }).finally(() => {
+      leaving = false
+    })
+  },
+  async onRoleDenied() {
+    if (leaving) return
+    leaving = true
+    try {
+      const current = await loadSession(true)
+      if (!current.authenticated) {
+        await router.replace({ name: 'login' })
+        return
+      }
+      if (current.role === 'key') notify(ADMIN_ONLY, { tone: 'note', id: 'cx-role' })
+      const route = router.currentRoute.value
+      if (route.meta.role !== current.role) await router.replace(roleHome(current.role))
+    } finally {
+      leaving = false
+    }
+  },
+})
+
+/*
+ * Another tab signed in or out (same cookie): re-probe, then leave pages that belong to the old identity.
+ * Same role, different key → KeyShell remounts its page on `sessionIdentity`, so no rows or cursor of the
+ * previous key survive.
+ */
+onAuthChange(async () => {
+  const before = sessionIdentity.value
+  const current = await loadSession(true)
+  if (sessionIdentity.value === before || leaving) return
+  const route = router.currentRoute.value
+  if (!current.authenticated) {
+    if (route.meta.public) return
+    setLoginNotice('已在其他标签页退出')
+    await router.replace({ name: 'login' })
+    return
+  }
+  if (route.meta.public || (route.meta.role && route.meta.role !== current.role)) await router.replace(roleHome(current.role))
+})
+
+/** Login / logout transitions call these so the guard never acts on a stale role. */
+export async function refreshSession() {
+  return loadSession(true)
+}
+
+export { session }

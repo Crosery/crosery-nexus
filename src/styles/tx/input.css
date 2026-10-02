@@ -1,0 +1,12 @@
+/* TxInput / TxSearchInput / TxSelect trigger: 2px radius, 1px ctl boundary, ink on focus (ring drawn by base.css). */
+html:root .tx-input {
+  --fake-opacity: 0;
+  border-radius: var(--r-1); border: 1px solid var(--ctl); background: transparent; box-shadow: none;
+  height: var(--ctl-h); padding: 0 10px;
+}
+html:root .tx-input.is-textarea { height: auto; }
+html:root .tx-input:hover:not(.is-disabled) { border-color: var(--ink-3); }
+html:root .tx-input:focus-within:not(.is-disabled),
+html:root .tx-input.is-focused:not(.is-disabled) { border-color: var(--ink); box-shadow: none; }
+html:root .tx-input__inner { font-size: var(--fs-input); color: var(--ink); }
+html:root .tx-input.is-disabled { background: transparent; border-style: dashed; }

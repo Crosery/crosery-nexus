@@ -1,8 +1,7 @@
 /**
  * 把接口错误翻成用户能看懂的一句话：出了什么事、下一步做什么。
  *
- * 对照参考实现 `geek_main/app/console/src/lib/errors.ts:24-71`。参考实现依赖带 status/code 的 ApiError；
- * 本仓库 `src/api.ts` 只抛 `Error(message)`，所以状态码从「请求失败 500」这类文案里回读，
+ * `src/api/http.ts` 抛带 status/code 的 `ApiError`；其它来源的 `Error` 仍从「请求失败 500」这类文案里回读状态码，
  * 拿不到就给中性兜底，绝不把 `[object Object]` 之类的内部字符串端到用户面前。
  */
 
@@ -24,8 +23,10 @@ const STATUS_TEXT: Record<number, { kind: ErrorView['kind']; title: string; deta
   429: { kind: 'invalid', title: '操作太频繁', detail: '请稍等片刻再试。' },
 }
 
-/** 从 api.ts 的 `请求失败 500` 文案里回读状态码；读不到返回 null。 */
+/** 状态码：优先读 `ApiError.status`（服务端文案里通常不含状态码），否则从 `请求失败 500` 文案回读；读不到返回 null。 */
 export function errorStatus(error: unknown): number | null {
+  const field = (error as { status?: unknown } | null)?.status
+  if (typeof field === 'number' && Number.isInteger(field) && field >= 400 && field < 600) return field
   const message = error instanceof Error ? error.message : String(error ?? '')
   const match = message.match(/(?:失败|error)\s*(\d{3})\b/i) ?? message.match(/\b(4\d{2}|5\d{2})\b/)
   return match ? Number(match[1]) : null
@@ -75,6 +76,17 @@ export function describeError(error: unknown): ErrorView {
     status,
     trace: [`HTTP ${status}`, raw].filter(Boolean).join(' · '),
   }
+}
+
+/**
+ * 一句失败原因：服务端给了具体文案（「渠道“x”已存在」「模型扫描失败。上游返回 HTTP 401」）就用它，
+ * 只有 `请求失败 500` 这种兜底文案或网络错误才退回 describeError 的通用说明。
+ */
+export function errorReason(error: unknown): string {
+  const view = describeError(error)
+  const raw = errorMessage(error)
+  if (view.status === null || !raw || /^请求失败\s*\d{3}$/.test(raw)) return view.detail
+  return raw
 }
 
 export type ErrorAction = { kind: 'retry' | 'reload'; label: string }

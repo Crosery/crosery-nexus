@@ -1,0 +1,142 @@
+/* Tuffex → Telemetry Paper bridge (DESIGN.md §2.4).
+   1. Token mapping. tuffex declares its dark defaults at html[data-theme=dark]:not([data-tx-contrast=normal]) (0,2,1);
+      the block repeats that selector so it ties and wins by load order (tuffex base.css is imported first in main.ts).
+      Set only data-theme (never .contrast).
+   2. Component restyles. With tuffexOnDemandStylePlugin a component's own stylesheet arrives with the route chunk,
+      i.e. AFTER this file, so every override mirrors the tuffex selector and is prefixed with `html:root` (+0,1,1):
+      that beats tuffex's scoped `X[data-v-…]` (one attribute) regardless of load order. */
+
+:root,
+html[data-theme="dark"]:not([data-tx-contrast="normal"]),
+html.dark:not([data-tx-contrast="normal"]) {
+  --tx-color-primary: var(--ink);
+  --tx-color-primary-rgb: 25, 24, 21;
+  --tx-color-primary-light-3: var(--ink-3);
+  --tx-color-primary-light-5: var(--rule-2);
+  --tx-color-primary-light-7: var(--rule);
+  --tx-color-primary-light-8: var(--paper-3);
+  --tx-color-primary-light-9: var(--paper-2);
+  --tx-color-primary-dark-2: var(--ink-2);
+  --tx-color-primary-soft: var(--paper-2);
+  --tx-color-on-primary: var(--paper);
+  --tx-color-success: var(--ink);
+  --tx-color-warning: var(--signal);
+  --tx-color-danger: var(--signal);
+  --tx-color-error: var(--signal);
+  --tx-color-info: var(--ink-2);
+  --tx-color-warning-light-9: var(--signal-wash);
+  --tx-color-danger-light-5: var(--signal);
+  --tx-color-danger-light-7: var(--signal-wash);
+  --tx-color-danger-light-9: var(--signal-wash);
+  --tx-color-error-light-9: var(--signal-wash);
+  --tx-text-color: var(--ink);
+  --tx-text-color-primary: var(--ink);
+  --tx-text-color-regular: var(--ink-2);
+  --tx-text-color-secondary: var(--ink-3);
+  --tx-text-color-tertiary: var(--ink-3);
+  --tx-text-color-placeholder: var(--ink-3);
+  --tx-text-color-disabled: var(--ink-4);
+  --tx-border-color: var(--ctl);
+  --tx-border-color-light: var(--rule-2);
+  --tx-border-color-lighter: var(--rule);
+  --tx-border-color-extra-light: var(--paper-3);
+  --tx-border-color-dark: var(--ink-3);
+  --tx-fill-color: var(--paper-2);
+  --tx-fill-color-light: var(--paper-3);
+  --tx-fill-color-lighter: var(--paper-2);
+  --tx-fill-color-extra-light: var(--paper);
+  --tx-fill-color-dark: var(--rule-2);
+  --tx-fill-color-darker: var(--ctl);
+  --tx-fill-color-blank: var(--sheet);
+  --tx-bg-color: var(--paper);
+  --tx-bg-color-page: var(--paper);
+  --tx-bg-color-overlay: var(--sheet);
+  --tx-surface-raised: var(--sheet);
+  --tx-overlay-color: var(--scrim);
+  --tx-disabled-bg-color: transparent;
+  --tx-disabled-text-color: var(--ink-4);
+  --tx-disabled-border-color: var(--ink-4);
+  --tx-border-radius-base: 2px;
+  --tx-border-radius-small: 2px;
+  --tx-border-radius-round: 4px;
+  --tx-font-family: var(--font-sans);
+  --tx-font-mono: var(--font-mono);
+  --tx-font-size-base: 13px;
+  --tx-font-size-small: 12px;
+  --tx-font-size-large: 15px;
+  --tx-box-shadow: none;
+  --tx-box-shadow-light: none;
+  --tx-box-shadow-lighter: none;
+  --tx-elevation-1: none;
+  --tx-elevation-2: none;
+  --tx-elevation-3: var(--shadow-pop);
+  --tx-elevation-4: var(--shadow-pop);
+  --tx-elevation-5: var(--shadow-pop);
+  --tx-transition-duration: 240ms;
+  --tx-transition-duration-fast: 160ms;
+  --tx-transition-function: cubic-bezier(.16, 1, .3, 1);
+  --tx-ease-out-strong: cubic-bezier(.16, 1, .3, 1);
+  --tx-ease-spring: var(--ease-spring);
+  --tx-focus-ring-color: var(--signal);
+  --tx-focus-ring-shadow: var(--focus);
+  --tx-status-chip-success: var(--ink);
+  --tx-status-chip-warning: var(--signal-ink);
+  --tx-status-chip-danger: var(--signal-ink);
+  --tx-status-chip-info: var(--ink-2);
+  --tx-status-chip-muted: var(--ink-3);
+  --tx-status-chip-on: var(--paper);
+  --tx-skeleton-color: var(--paper-3);
+
+  --tx-bui-ink: var(--ink);
+  --tx-bui-ink-2: var(--ink-2);
+  --tx-bui-ink-3: var(--ink-3);
+  --tx-bui-canvas: var(--paper);
+  --tx-bui-page: var(--paper);
+  --tx-bui-surface: var(--sheet);
+  --tx-bui-field: var(--paper-2);
+  --tx-bui-inset: var(--paper-2);
+  --tx-bui-hover: var(--paper-2);
+  --tx-bui-hover-2: var(--paper-3);
+  --tx-bui-line: var(--rule);
+  --tx-bui-line-strong: var(--ctl);
+  --tx-bui-accent: var(--ink);
+  --tx-bui-accent-ink: var(--paper);
+  --tx-bui-accent-tint: var(--paper-3);
+  --tx-bui-red: var(--signal);
+  --tx-bui-red-tint: var(--signal-wash);
+  --tx-bui-orange: var(--signal);
+  --tx-bui-orange-tint: var(--signal-wash);
+  --tx-bui-green: var(--ink);
+  --tx-bui-green-tint: transparent;
+  --tx-bui-radius-card: 0;
+  --tx-bui-radius-chip: 2px;
+  --tx-bui-radius-control: 2px;
+  --tx-bui-shadow-card: none;
+  --tx-bui-shadow-btn: none;
+  --tx-bui-shadow-hairline: 0 0 0 1px var(--rule);
+  --tx-bui-shadow-inset-field: inset 0 0 0 1px var(--ctl);
+  --tx-bui-shadow-raised: var(--shadow-pop);
+  --tx-bui-shadow-overlay: var(--shadow-pop);
+  --tx-bui-font-mono: var(--font-mono);
+  --tx-bui-tooltip-bg: var(--ink);
+  --tx-bui-tooltip-fg: var(--paper);
+  --tx-bui-tooltip-border: var(--ink);
+  --tx-bui-tooltip-muted: var(--rule-2);
+  --tx-bui-stripe: var(--hatch);
+  --tx-bui-stripe-bg: var(--paper-2);
+
+  --console-focus-ring: var(--signal);
+}
+html[data-theme="dark"]:not([data-tx-contrast="normal"]) { --tx-color-primary-rgb: 237, 232, 221; }
+
+/* charts/style.css (pulled in by TxSparkChart) declares :root palette vars and loads after us: (0,1,1) wins */
+html:root {
+  --tx-chart-categorical-1: var(--k1);
+  --tx-chart-categorical-2: var(--k2);
+  --tx-chart-categorical-3: var(--k3);
+  --tx-chart-categorical-4: var(--ink-2);
+  --tx-chart-categorical-5: var(--ink-3);
+  --tx-chart-categorical-6: var(--ink-4);
+  --tx-chart-semantic-attention: var(--signal);
+  --tx-chart-semantic-warning: var(--signal);
+}

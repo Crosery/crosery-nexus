@@ -1,0 +1,9 @@
+/* TxCard: radius comes from the :radius prop (TxCard writes --tx-card-radius inline, so a stylesheet cannot set
+   the variable) — this file sets the final properties instead. Never glass/refraction, never a hover outline. */
+html:root .tx-card { border-radius: var(--r-1); }
+html:root .tx-card > .tx-card__surface { border-radius: inherit; }
+html:root .tx-card.is-bg-pure { --tx-surface-color: var(--sheet); }
+html:root .tx-card.is-solid, html:root .tx-card.is-dashed { border-color: var(--rule); }
+html:root .tx-card:hover:not(.is-disabled):not(.is-plain) { border-color: var(--rule); }
+html:root .tx-card.is-bg-glass, html:root .tx-card.is-bg-refraction, html:root .tx-card.is-bg-blur, html:root .tx-card.is-bg-mask { background: var(--sheet); }
+html:root .tx-card:is(.is-bg-glass, .is-bg-refraction, .is-bg-blur, .is-bg-mask) > .tx-card__surface { display: none; }

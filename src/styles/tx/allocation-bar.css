@@ -1,0 +1,8 @@
+/* TxAllocationBar as a read-only share bar: solid segments with 2px paper gaps, no sheen, no active ring,
+   no dimmed siblings (it is a radiogroup by default; ShareBar renders it display-only). */
+html:root .tx-bui-allocation-bar__track { height: var(--ab-h, 10px); padding: 0; gap: 2px; border-radius: 1px; background: transparent; box-shadow: none; overflow: visible; }
+html:root .tx-bui-allocation-bar__segment { border-radius: 1px; opacity: 1; box-shadow: none; cursor: default; }
+html:root .tx-bui-allocation-bar__segment.is-active { box-shadow: none; opacity: 1; }
+html:root .tx-bui-allocation-bar__sheen { display: none; }
+html:root .tx-bui-allocation-bar__chip { border-radius: var(--r-1); background: transparent; }
+html:root .tx-bui-allocation-bar__chip.is-active { background: transparent; }

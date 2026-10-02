@@ -1,0 +1,8 @@
+/* TxEmptyState / TxErrorState / TxPermissionState as ONE left-aligned line (StateBlock): no illustration, no
+   padding, no card surface. */
+html:root .tx-empty-state { --tx-empty-state-padding: 0; --tx-empty-state-gap: 10px; padding: 0; gap: 4px 10px; flex-wrap: wrap; align-items: center; color: var(--ink-3); background: transparent; border: 0; }
+html:root .tx-empty-state__content { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; flex: 1 1 12em; }
+html:root .tx-empty-state__title { flex: 0 1 auto; min-width: 0; }
+html:root .tx-empty-state__title { margin: 0; font-size: var(--fs-sm); font-weight: 400; color: inherit; }
+html:root .tx-empty-state__description { margin: 0; font-size: var(--fs-sm); color: var(--ink-2); }
+html:root .tx-empty-state__actions { margin: 0; gap: 8px; }

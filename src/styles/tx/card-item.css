@@ -1,0 +1,17 @@
+/* Option rows (TxCardItem inside TxSelect / TxDropdownMenu): hover and the selected option are a subtle fill,
+   never an outlined box; the keyboard ring is an inset signal line on :focus-visible only. */
+html:root :is(.tuff-select-item, .tx-dropdown-item).tx-card-item {
+  --tx-card-item-padding: 6px 10px; --tx-card-item-radius: 2px;
+  border-color: transparent; background: transparent; box-shadow: none;
+}
+html:root :is(.tuff-select-item, .tx-dropdown-item).tx-card-item--clickable:hover { border-color: transparent; background: var(--paper-2); }
+html:root .tuff-select-item.tx-card-item--active,
+html:root .tuff-select-item.tx-card-item--clickable.tx-card-item--active:hover,
+html:root .tuff-select-item.is-kbd { border-color: transparent; background: var(--paper-3); }
+html:root :is(.tuff-select-item, .tx-dropdown-item).tx-card-item:focus-visible,
+html:root .tx-dropdown-item.tx-dropdown-item:not(.is-disabled):focus-visible {
+  outline: none !important; box-shadow: inset 0 0 0 2px var(--signal);
+}
+html:root .tuff-select__check { color: var(--ink); }
+html:root .tuff-select__search { background: var(--sheet); border-bottom-color: var(--rule); }
+html:root .tuff-select__status { color: var(--ink-3); font-size: var(--fs-sm); }

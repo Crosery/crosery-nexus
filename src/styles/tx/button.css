@@ -1,0 +1,40 @@
+/* TxButton → primary = ink, default = 1px ctl outline, ghost/flat = text, danger = signal outline (DESIGN.md §5.2 form/Buttons).
+   Imported automatically next to every `@talex-touch/tuffex/button` import (see vite.config.ts). */
+html:root .tx-button {
+  --tx-button-radius: 2px; --fake-radius: 2px;
+  --tx-button-border-color: var(--ctl); --tx-button-bg-color-hover: var(--paper-2);
+  min-width: 0; height: var(--btn-h); padding: 0 12px; gap: 6px;
+  color: var(--ink); font-size: var(--fs-sm); font-weight: 500;
+  transition: background-color var(--dur-2) var(--ease-swift), border-color var(--dur-2), transform var(--dur-1);
+}
+html:root .tx-button:active:not(.disabled) { transform: translateY(1px); }
+html:root .tx-button.variant-primary { background: var(--ink); color: var(--paper); --tx-button-border-color: var(--ink); --tx-button-bg-color-hover: var(--ink-2); }
+html:root .tx-button.variant-secondary { color: var(--ink); --tx-button-border-color: var(--ctl); }
+html:root .tx-button.variant-ghost,
+html:root .tx-button.variant-flat { color: var(--ink-2); --tx-button-border-color: transparent; min-width: 0; padding: 0 8px; }
+html:root .tx-button.variant-danger { color: var(--signal-ink); --tx-button-border-color: var(--signal); --tx-button-bg-color-hover: var(--signal-wash); }
+html:root .tx-button.tx-size-sm { height: 28px; min-width: 0; padding: 0 9px; font-size: var(--fs-xs); --tx-button-radius: 2px; }
+html:root .tx-button.tx-size-lg { height: 42px; padding: 0 16px; font-size: 14px; }
+html:root .tx-button.disabled { opacity: 1; color: var(--ink-3); background: transparent; border-style: dashed; --tx-button-border-color: var(--ink-4); }
+@media (pointer: coarse) { html:root .tx-button, html:root .tx-button.tx-size-sm { min-height: var(--tap); } }
+/* tuffex paints a paper-2 "fake background" layer at 75% (!important) ABOVE the button's own fill and runs a
+   v-wave ripple on every click: both off, so primary really is ink and nothing splashes. Same switch for the
+   TxInput / TxSelect trigger tint and tab items. */
+html:root :is(.tx-button, .tx-input, .tx-tab-item, .tx-tab-header) { --fake-opacity: 0; }
+html:root .tx-button > [data-v-wave-container-internal] { display: none !important; }
+html:root .tx-button:hover:not(.disabled) { background-color: var(--tx-button-bg-color-hover); }
+html:root .tx-button.variant-primary:hover:not(.disabled) { background: var(--ink-2); border-color: var(--ink-2); }
+html:root .tx-button.block { width: 100%; }
+/* TxIconButton: 30px quiet square, hover = fill, pressed = ink, focus = the signal ring on :focus-visible only */
+html:root .tx-icon-button {
+  --tx-icon-button-size: 30px; --tx-icon-button-radius: 2px; --tx-icon-button-color: var(--ink-2);
+  --tx-icon-button-bg-hover: var(--paper-2); --tx-icon-button-bg-pressed: var(--paper-2);
+}
+html:root .tx-icon-button--xs { --tx-icon-button-size: 24px; }
+html:root .tx-icon-button--md { --tx-icon-button-size: 32px; }
+html:root .tx-icon-button:hover:not(.is-disabled), html:root .tx-icon-button.is-pressed { color: var(--ink); }
+html:root .tx-icon-button:active:not(.is-disabled) { transform: none; }
+html:root .tx-icon-button:focus-visible { box-shadow: none; }
+html:root .tx-icon-button.is-disabled { opacity: 1; color: var(--ink-4); }
+html:root .tx-icon-button--status-danger { --tx-icon-button-color: var(--signal-ink); }
+@media (pointer: coarse) { html:root .tx-icon-button { --tx-icon-button-size: var(--tap); } }

@@ -1,0 +1,7 @@
+/* TxProgressBar: one solid bar on a paper-3 track, 1px radius; the white glow head, flow and hover effects off. */
+html:root .tx-progress-bar { border-radius: 1px; }
+html:root .tx-progress-bar__track { border-radius: 1px; background: var(--paper-3); box-shadow: none; }
+html:root .tx-progress-bar__fill, html:root .tx-progress-bar__bar { border-radius: 1px; box-shadow: none; }
+/* the wrapper's inline --tx-progress-fill is a light→dark gradient; paint the plain colour instead */
+html:root .tx-progress-bar { background: var(--tx-progress-color, var(--ink)); }
+html:root .tx-progress-bar__glow { display: none; }

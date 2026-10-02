@@ -1,0 +1,15 @@
+/* Anchored panels — TxSelect, TxPopover, TxTooltip, TxDropdownMenu, TxContextMenu all render a TxCard inside
+   .tx-base-anchor. Whatever panel-* props the caller passed (tuffex defaults to refraction + an SVG outline on
+   top of the card border = the rainbow / box-in-box panel), the result is one solid sheet, ONE hairline, a soft
+   drop shadow and a 2px radius. Kit wrappers also pass CALM_PANEL (src/ui/form/anchor.ts) so the JS side
+   (blur/expand animation) stays calm too. */
+html:root .tx-base-anchor__card.tx-card {
+  --tx-surface-color: var(--sheet);
+  background: var(--sheet); border: 1px solid var(--rule-2); border-radius: var(--r-1); box-shadow: none;
+}
+html:root .tx-base-anchor__card > .tx-card__surface { display: none; }
+html:root .tx-base-anchor__outline { display: none; }
+/* the arrow gets an inline `display: block` from the positioner, so only !important hides it on pages that keep show-arrow */
+html:root .tx-base-anchor__arrow { display: none !important; }
+html:root .tx-base-anchor__clip { border-radius: var(--r-1); box-shadow: var(--shadow-pop); }
+html:root .tx-base-anchor__content { -webkit-backdrop-filter: none; backdrop-filter: none; }

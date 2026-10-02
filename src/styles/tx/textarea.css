@@ -1,0 +1,4 @@
+html:root .tx-textarea { border-radius: var(--r-1); border: 1px solid var(--ctl); background: transparent; box-shadow: none; }
+html:root .tx-textarea:hover:not(.is-disabled) { border-color: var(--ink-3); }
+html:root .tx-textarea.is-focused:not(.is-disabled) { border-color: var(--ink); box-shadow: none; }
+html:root .tx-textarea__field { font-size: var(--fs-input); color: var(--ink); }

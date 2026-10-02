@@ -1,0 +1,23 @@
+/* TxToastHost → motion recipe 10: sheet surface, rule-2 border, 2px signal edge only for warning/danger,
+   a 1px ink-4 hairline drains over the toast's lifetime (2600ms default, 5200ms warning; errors stay). */
+html:root .tx-toast-host { --tx-toast-width: 360px; }
+html:root .tx-toast { border-radius: var(--r-1); background: var(--sheet); border: 1px solid var(--rule-2); box-shadow: var(--shadow-pop); }
+html:root .tx-toast--warning, html:root .tx-toast--danger { border-left: 2px solid var(--signal); }
+html:root .tx-toast__title { font-size: var(--fs-base); font-weight: 600; color: var(--ink); }
+html:root .tx-toast__desc { font-size: var(--fs-sm); color: var(--ink-2); }
+html:root .tx-toast__icon { color: var(--ink-2); }
+html:root .tx-toast--warning .tx-toast__icon, html:root .tx-toast--danger .tx-toast__icon { color: var(--signal); }
+html:root .tx-toast::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: var(--ink-4);
+  transform-origin: left; animation: ui-toast-drain 2600ms linear forwards; }
+html:root .tx-toast--warning::after { animation-duration: 5200ms; }
+html:root .tx-toast--danger::after { display: none; }
+html:root .tx-toast:hover::after, html:root .tx-toast:focus-within::after { animation-play-state: paused; }
+@keyframes ui-toast-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (max-width: 959px) {
+  html:root .tx-toast-host[data-position^="bottom-"] { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 8px); }
+}
+@media (min-width: 960px) {
+  html:root .tx-toast-host[data-position^="bottom-"] { bottom: calc(var(--statusline) + 12px); }
+}
+:root[data-motion="reduce"] .tx-toast { transition: opacity 120ms linear !important; }
+html:root .tx-toast { -webkit-backdrop-filter: none; backdrop-filter: none; }

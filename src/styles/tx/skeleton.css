@@ -1,0 +1,3 @@
+/* Static tonal bars: no shimmer gradient. */
+html:root .tx-skeleton { --tx-skeleton-color: var(--paper-3); }
+html:root .tx-skeleton__item { background: var(--paper-3); border-radius: 1px; animation: none; }
