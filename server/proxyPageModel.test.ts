@@ -71,6 +71,11 @@ test('head: summary, kernel words, banner, first-run note, default exit, setting
   assert.deepEqual(kernelLine({ state: 'running', version: 'v1.19.31' }), { state: 'run', label: '运行中 v1.19.31', detail: '', action: null })
   assert.equal(kernelLine({ state: 'unavailable' }).label, '未安装')
   assert.match(kernelLine({ state: 'unavailable' }).detail, /MIHOMO_BIN/)
+  assert.equal(kernelLine({ state: 'unavailable', reason: '未找到 mihomo（设置 MIHOMO_BIN 后重启控制台）' }).label, '未安装')
+  // the relay runs the console as root: mihomo is installed but refused, and the page must say why instead of "install it"
+  assert.deepEqual(kernelLine({ state: 'unavailable', reason: '控制台以 root 运行：拒绝以 root 启动 mihomo' }), {
+    state: 'idle', label: '不可用', detail: '加密节点可保存但不可用 · 控制台以 root 运行：拒绝以 root 启动 mihomo', action: null,
+  })
   assert.equal(kernelLine({ state: 'failed', reason: '内核反复退出' }).action, 'restart')
   assert.equal(kernelLine({ state: 'stopped' }).action, 'start')
   assert.equal(migrationBanner({ ...data.migration, pending: { exits: 4, accounts: 9, at } }), '发现 9 个账号的代理还没进代理池（4 个出口）')

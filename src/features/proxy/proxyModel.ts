@@ -243,7 +243,10 @@ export function kernelLine(kernel: ProxyKernelView, data?: Pick<ProxyPoolData, '
   const reason = typeof kernel.reason === 'string' ? kernel.reason : ''
   switch (kernel.state) {
     case 'unavailable':
-      return { state: 'idle', label: '未安装', detail: '加密节点可保存但不可用 · 设置 MIHOMO_BIN 后重启控制台', action: null }
+      // "not found" is the only reason the binary itself is missing; any other (root service, old version, -v failing) is shown as is
+      return reason && !reason.startsWith('未找到')
+        ? { state: 'idle', label: '不可用', detail: `加密节点可保存但不可用 · ${reason}`, action: null }
+        : { state: 'idle', label: '未安装', detail: '加密节点可保存但不可用 · 设置 MIHOMO_BIN 后重启控制台', action: null }
     case 'idle':
       return { state: 'idle', label: '未启动', detail: data && data.summary.mihomo === 0 ? '没有加密节点，不需要运行' : '有加密节点时自动启动', action: null }
     case 'starting':
