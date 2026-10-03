@@ -1208,7 +1208,8 @@ registerKernelRoutes(app, {
   paths: () => kernelPaths(config.dataDir),
   available: () => process.platform === 'linux' && config.gatewayEngine !== 'magpie',
   cpaRunning: async () => {
-    const info = await getCpaVersion()
+    // fresh-ish (≤15 s): right after the applier swaps CPA the panel should not show the old version for a minute
+    const info = await getCpaVersion(true)
     return info.version && !['offline', 'unknown'].includes(info.version) ? info.version : null
   },
 })

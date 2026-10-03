@@ -638,6 +638,9 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
         failures, nextAttemptAt: ok ? null : iso(now() + RETRY_MS),
       }
       log.push({ kernel: 'cpa', action: 'apply', version: decision.version, result: outcome.result })
+      // what the console shows next is the state after the apply, not the decision that started it
+      const after = outcome.result === 'refused' ? running : await runningCpa(paths, deps)
+      cpa.decision = { ...decideCpa({ now: now(), config, state: cpa, running: after, hold: await readHold(paths.cpa.hold) }), at: iso(now()) }
     }
     await saveState(paths, cpa)
 
@@ -663,6 +666,7 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
         } : {}),
       }
       log.push({ kernel: 'magpie', action: 'apply', revision: standby.revision, result: outcome.result })
+      magpie.decision = { ...decideMagpie({ config, state: magpie }), at: iso(now()) }
     }
     await saveState(paths, magpie)
     return { config, running, cpa: cpa.decision, magpie: magpie.decision, log }

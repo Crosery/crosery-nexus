@@ -162,12 +162,14 @@ test('auto: a drop is verified and staged, waits for the window, installs once t
 
   clock = bj(5, 10)
   const second = await runAuto({ paths: r.paths, deps })
-  assert.equal(second.cpa.why, 'apply')
+  assert.deepEqual(second.log.find(item => item.kernel === 'cpa'), { kernel: 'cpa', action: 'apply', version: NEXT, result: 'applied' })
+  assert.equal(second.cpa.why, 'up-to-date')
   assert.deepEqual(r.world.installs[0], [path.join(r.paths.cpa.staged, NEXT, 'cli-proxy-api'), NEXT])
   const after = await readState(r.paths, 'cpa')
   assert.equal(after.lastApply.result, 'applied')
   assert.deepEqual([after.applied.version, after.applied.previous], [NEXT, RUNNING])
   assert.equal(after.installed.version, NEXT)
+  assert.equal(after.decision.why, 'up-to-date')
 
   clock = bj(5, 20)
   assert.equal((await runAuto({ paths: r.paths, deps })).cpa.why, 'up-to-date')
@@ -211,7 +213,7 @@ test('auto: a rolled-back install spends the attempt; a refused one is retried a
   assert.equal((await runAuto({ paths: q.paths, deps: { run: q.runner, now: () => clock } })).cpa.why, 'backoff')
   clock = bj(5, 45)
   q.world.install = { code: 0 }
-  assert.equal((await runAuto({ paths: q.paths, deps: { run: q.runner, now: () => clock } })).cpa.why, 'apply')
+  assert.equal((await runAuto({ paths: q.paths, deps: { run: q.runner, now: () => clock } })).log.find(item => item.kernel === 'cpa')?.result, 'applied')
   assert.equal((await readState(q.paths, 'cpa')).lastApply.result, 'applied')
   await r.close()
   await q.close()
