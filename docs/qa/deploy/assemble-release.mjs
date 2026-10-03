@@ -135,20 +135,24 @@ const tracked = git('ls-files').split('\n').filter(Boolean)
 
 fs.rmSync(OUT, { recursive: true, force: true })
 fs.mkdirSync(OUT, { recursive: true })
-const copyTree = (srcDir, dstDir, filter = () => true) => {
+// filter sees the path relative to the copy root (`src/ui/data/` is not the top-level `data/`)
+const copyTree = (srcDir, dstDir, filter = () => true, prefix = '') => {
   fs.mkdirSync(dstDir, { recursive: true })
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     const s = path.join(srcDir, entry.name)
     const d = path.join(dstDir, entry.name)
-    if (entry.isDirectory()) { if (filter(entry.name + '/')) copyTree(s, d, filter); continue }
+    const rel = prefix + entry.name
+    if (entry.isDirectory()) { if (filter(rel + '/')) copyTree(s, d, filter, rel + '/'); continue }
     if (!entry.isFile()) continue
-    if (!filter(entry.name)) continue
+    if (!filter(rel)) continue
     fs.copyFileSync(s, d)
     fs.chmodSync(d, 0o644)
   }
 }
 const SKIP_DIRS = new Set(['node_modules', '.git', 'data', '.cache', 'dist-old-20260830-110517', 'dist-old-layout-20260830-111154'])
 copyTree(PROD, OUT, (rel) => {
+  // a snapshot taken from an earlier assembly carries its report; it is never a production file
+  if (path.basename(rel) === '.DS_Store' || rel === 'assembly-report.md') return false
   const top = rel.split('/')[0]
   if (rel.endsWith('/')) return !SKIP_DIRS.has(top) && top !== 'docs-old'
   return true
