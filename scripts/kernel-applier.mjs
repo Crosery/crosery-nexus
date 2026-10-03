@@ -19,7 +19,7 @@
  * <data>/kernels/<kernel>.json, which only this job writes.
  */
 import fs from 'node:fs/promises'
-import { createReadStream } from 'node:fs'
+import { createReadStream, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -691,7 +691,8 @@ async function main() {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// realpath: systemd runs it through /opt/crosery-api-console-current (a symlink); import.meta.url is the resolved file
+if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1 })
 }
 

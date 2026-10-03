@@ -292,3 +292,16 @@ test('magpie standby: staged → smoke → current; a failed smoke leaves curren
   assert.equal(state.decision.why, 'attempted')
   await r.close()
 })
+
+test('cli: runs when started through a symlinked release path (systemd uses /opt/crosery-api-console-current)', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { fileURLToPath } = await import('node:url')
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kac-'))
+  const link = path.join(dir, 'current')
+  await fs.symlink(path.dirname(fileURLToPath(import.meta.url)), link)
+  const out = execFileSync(process.execPath, [path.join(link, 'kernel-applier.mjs'), 'auto', '--dry-run'], {
+    encoding: 'utf8', env: { ...process.env, KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_BINARY: path.join(dir, 'none'), CPA_SERVICE: 'crosery-test-none' },
+  })
+  assert.equal(JSON.parse(out).dryRun, true)
+  await fs.rm(dir, { recursive: true, force: true })
+})

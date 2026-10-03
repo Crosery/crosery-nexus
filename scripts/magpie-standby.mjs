@@ -18,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile, spawn } from 'node:child_process'
 import { createGzip } from 'node:zlib'
-import { createReadStream } from 'node:fs'
+import { createReadStream, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { autoPaths, readJSON, runningRevision, sha256File } from './magpie-autoupdate.mjs'
 import { withUpstreamLock, candidateCheckout } from './magpie-upstream.mjs'
@@ -110,7 +110,8 @@ export async function publish({ dryRun = false, env = process.env, paths = autoP
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// realpath: systemd runs it through /opt/crosery-api-console-current (a symlink); import.meta.url is the resolved file
+if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
   if (process.argv[2] !== 'publish') { console.error('Use publish [--dry-run]'); process.exit(2) }
   publish({ dryRun: process.argv.includes('--dry-run') })
     .then(result => console.log(JSON.stringify(result, null, 2)))

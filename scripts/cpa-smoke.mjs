@@ -12,6 +12,7 @@
  * No network beyond loopback is needed; nothing outside the temp dir is written.
  */
 import fs from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
@@ -170,7 +171,8 @@ export async function smoke({ binary, version, config = path.join(root, 'deploy/
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// realpath: systemd runs it through /opt/crosery-api-console-current (a symlink); import.meta.url is the resolved file
+if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
   const binary = arg('--binary')
   if (!binary) { console.error('--binary <cli-proxy-api> is required'); process.exit(2) }
   const result = await smoke({ binary: path.resolve(binary), version: arg('--version'), ...(arg('--config') ? { config: path.resolve(arg('--config')) } : {}) })
