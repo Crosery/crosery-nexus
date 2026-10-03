@@ -4,6 +4,11 @@ export type ReadOperation = {
   method: 'all' | 'get'
   sql: string
   params?: readonly (string | number | bigint | Uint8Array | null)[]
+  /**
+   * The worker reduces the rows itself and returns `percentileSummary(rows, fields)` (server/percentiles.mjs).
+   * A reader that ignores this returns the raw rows; the caller reduces them in-process the same way.
+   */
+  reduce?: { percentiles: readonly string[] }
 }
 
 const MAX_PARALLEL_WORKERS = 4

@@ -20,6 +20,7 @@
 import type express from 'express'
 import type { ConsoleGroup } from './groups.js'
 import type { ReadOperation } from './sqliteReadWorker.js'
+import { percentileSummary, type PercentileSummaryRow } from './percentiles.mjs'
 import { activeProviderValues, scopedProviderPredicate } from './currentChannels.js'
 import { canonicalModelSql, channelLabel } from './modelIdentity.js'
 import { clientTypeSql } from './clientAgent.js'
@@ -189,40 +190,32 @@ export const nearestRank = (n: number, p: number) => Math.max(1, Math.ceil((p * 
 
 export type Spread = { n: number; p50: number | null; p95: number | null }
 
-type PercentileRow = { dim: 'a' | 'm' | 'p' | 'b'; k: string | number | null; n: number | null; p50: number | null; p95: number | null }
+type PercentileRow = PercentileSummaryRow
+
+const PERCENTILE_FIELDS = ['latency_ms', 'ttft_ms'] as const
 
 /**
- * One pass over the filtered successful requests; four window partitions (all · model · channel · bucket).
- * `(n + 1) / 2` and `(95 * n + 99) / 100` are integer ⌈0.5n⌉ and ⌈0.95n⌉.
+ * One scan of the filtered successful requests; the read worker reduces it to exact nearest-rank P50 / P95 in four
+ * partitions (all · model · channel · bucket) — see server/percentiles.mjs for why this is not a window query.
  */
-export function percentileOperation(groups: ConsoleGroup[], scope: UsageScope, plan: BucketPlan, metric: 'latency_ms' | 'ttft_ms'): ReadOperation {
+export function percentileOperation(groups: ConsoleGroup[], scope: UsageScope, plan: BucketPlan): ReadOperation {
   const filter = scopeFilterSql(groups, scope, 'events')
   const endMs = Math.floor(plan.toMs / HOUR) * HOUR + HOUR
   const channel = usageChannelSql(groups, 'provider')
-  const pick = (r: string, c: string) =>
-    `MAX(${c}) n, MAX(CASE WHEN ${r} = (${c} + 1) / 2 THEN v END) p50, MAX(CASE WHEN ${r} = (95 * ${c} + 99) / 100 THEN v END) p95`
   return {
     method: 'all',
     sql: `
-      WITH base AS MATERIALIZED (
-        SELECT ${bucketSql(plan, 'timestamp_ms')} b, ${canonicalModelSql()} m, ${channel.sql} p, ${metric} v
-        FROM usage_events
-        WHERE timestamp_ms >= ? AND timestamp_ms < ? AND success = 1 AND ${metric} > 0 AND ${filter.sql}
-      ),
-      r AS MATERIALIZED (
-        SELECT b, m, p, v,
-          ROW_NUMBER() OVER (ORDER BY v) ra, COUNT(*) OVER () ca,
-          ROW_NUMBER() OVER (PARTITION BY m ORDER BY v) rm, COUNT(*) OVER (PARTITION BY m) cm,
-          ROW_NUMBER() OVER (PARTITION BY p ORDER BY v) rp, COUNT(*) OVER (PARTITION BY p) cp,
-          ROW_NUMBER() OVER (PARTITION BY b ORDER BY v) rb, COUNT(*) OVER (PARTITION BY b) cb
-        FROM base
-      )
-      SELECT 'a' dim, '' k, ${pick('ra', 'ca')} FROM r
-      UNION ALL SELECT 'm', m, ${pick('rm', 'cm')} FROM r GROUP BY m
-      UNION ALL SELECT 'p', p, ${pick('rp', 'cp')} FROM r GROUP BY p
-      UNION ALL SELECT 'b', b, ${pick('rb', 'cb')} FROM r GROUP BY b`,
+      SELECT ${bucketSql(plan, 'timestamp_ms')} b, ${canonicalModelSql()} m, ${channel.sql} p, latency_ms, ttft_ms
+      FROM usage_events
+      WHERE timestamp_ms >= ? AND timestamp_ms < ? AND success = 1 AND (latency_ms > 0 OR ttft_ms > 0) AND ${filter.sql}`,
     params: [...channel.params, plan.fromMs, endMs, ...filter.params],
+    reduce: { percentiles: PERCENTILE_FIELDS },
   }
+}
+
+/** The worker's reduced answer, or raw rows from a reader that does not reduce (reduced here the same way). */
+function percentilesOf(result: unknown): Record<string, PercentileRow[]> {
+  return Array.isArray(result) ? percentileSummary(result as Array<Record<string, unknown>>, PERCENTILE_FIELDS) : result as Record<string, PercentileRow[]>
 }
 
 /* ── report ─────────────────────────────────────────────────────────────────────────────────────── */
@@ -380,7 +373,7 @@ export async function loadPerformanceReport(reader: Reader, groups: ConsoleGroup
   const filter = scopeFilterSql(groups, scope, 'rollup')
   const channel = usageChannelSql(groups, 'provider')
   const endMs = Math.floor(now / HOUR) * HOUR + HOUR
-  const [counts, latency, ttft] = await reader.run([
+  const [counts, spreads] = await reader.run([
     {
       method: 'all',
       sql: `SELECT (hour_ms / ${HOUR}) * ${HOUR} h, ${canonicalModelSql()} m, ${channel.sql} p,
@@ -390,13 +383,13 @@ export async function loadPerformanceReport(reader: Reader, groups: ConsoleGroup
         GROUP BY h, m, p, s, c, e`,
       params: [...channel.params, plan.fromMs, endMs, ...filter.params],
     },
-    percentileOperation(groups, scope, plan, 'latency_ms'),
-    percentileOperation(groups, scope, plan, 'ttft_ms'),
+    percentileOperation(groups, scope, plan),
   ])
+  const percentiles = percentilesOf(spreads)
   return buildPerformanceReport({
     counts: counts as CountRow[],
-    latency: latency as PercentileRow[],
-    ttft: ttft as PercentileRow[],
+    latency: percentiles.latency_ms ?? [],
+    ttft: percentiles.ttft_ms ?? [],
     groups,
     scope,
     plan,

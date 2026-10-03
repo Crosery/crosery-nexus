@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { parentPort, workerData } from 'node:worker_threads'
+import { percentileSummary } from './percentiles.mjs'
 
 const database = new DatabaseSync(workerData.filename, { readOnly: true })
 database.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -65536; PRAGMA mmap_size = 268435456; PRAGMA temp_store = MEMORY;')
@@ -162,7 +163,7 @@ export function assertParamCount(sql, params) {
 // 主线程的 `parentPort` 是 null，直接调用会抛错。
 if (parentPort) parentPort.on('message', ({ id, operations }) => {
   try {
-    const results = operations.map(({ method, sql, params = [] }) => {
+    const results = operations.map(({ method, sql, params = [], reduce }) => {
       let finalSql = sql
       let finalParams = params
       if (!hasRollup && finalSql.includes('usage_hourly_rollup')) {
@@ -177,6 +178,11 @@ if (parentPort) parentPort.on('message', ({ id, operations }) => {
       // 改写之后再校验：路由路径的参数是 worker 自己映射的，这里能挡住映射错误（task-62 ②）。
       assertParamCount(finalSql, finalParams)
       const statement = database.prepare(finalSql)
+      // reduce in this thread, streaming arrays: a 90-day window as row objects is ~380 MB of heap (arrays stream in ~25 MB)
+      if (reduce?.percentiles) {
+        statement.setReturnArrays(true)
+        return percentileSummary(statement.iterate(...finalParams), reduce.percentiles)
+      }
       return method === 'get' ? statement.get(...finalParams) : statement.all(...finalParams)
     })
     parentPort.postMessage({ id, results })
