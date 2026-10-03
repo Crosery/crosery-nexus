@@ -78,6 +78,8 @@ async function recheck() {
 }
 
 const tally = computed(() => syncTally(sync.data.value?.jobs ?? []))
+/** Magpie engine (this Mac): 网关功能 and RTK have something to manage. Under CPA (the relay) both are hidden. */
+const magpieEngine = computed(() => versions.data.value?.cpa?.engine === 'magpie')
 const rtkW = computed(() => (rtk.data.value ? rtkWords(rtk.data.value) : null))
 /** Magpie word for the head and the index: 最新 / 落后 / 离线 (from the same model the section shows) */
 const gateway = computed(() => versions.data.value?.cpa.gateway ?? null)
@@ -95,7 +97,7 @@ const statusLine = computed(() => {
     const attn = [t.bad ? `失败 ${t.bad}` : '', t.warn ? `注意 ${t.warn}` : '', t.busy ? `运行 ${t.busy}` : ''].filter(Boolean)
     parts.push(t.total ? `${t.total} 个同步任务 · ${attn.length ? attn.join(' · ') : '全部正常'}` : '没有同步任务')
   }
-  if (rtkW.value) parts.push(`RTK ${rtkW.value.state === 'mixed' ? rtkW.value.coverage : rtkW.value.word}`)
+  if (rtkW.value && magpieEngine.value) parts.push(`RTK ${rtkW.value.state === 'mixed' ? rtkW.value.coverage : rtkW.value.word}`)
   if (magpieShort.value) parts.push(`Magpie ${magpieShort.value.value}`)
   if (proxyIndex.value?.status) parts.push(proxyIndex.value.status)
   return parts.join(' · ')
@@ -104,16 +106,18 @@ const statusLine = computed(() => {
 const THEME_WORD = { light: '浅色', dark: '深色', system: '跟随' } as const
 const toc = computed(() => [
   { id: 'sync', label: '同步中心', value: sync.data.value ? (tally.value.bad + tally.value.warn ? `◇ ${tally.value.bad + tally.value.warn}` : `${tally.value.total} 任务`) : '', hot: tally.value.bad + tally.value.warn > 0 },
-  { id: 'magpie', label: '网关 Magpie', value: magpieShort.value?.value ?? '', hot: magpieShort.value?.hot ?? false },
+  { id: 'magpie', label: magpieEngine.value ? '网关 Magpie' : '网关', value: magpieShort.value?.value ?? '', hot: magpieShort.value?.hot ?? false },
   { id: 'gateway-features', label: '网关功能', value: featuresIndex.value?.value ?? '', hot: featuresIndex.value?.hot ?? false },
   { id: 'proxy', label: '代理', value: proxyIndex.value?.value ?? '', hot: proxyIndex.value?.hot ?? false },
   { id: 'rtk', label: 'RTK', value: rtkW.value ? (rtkW.value.state === 'on' ? '开' : rtkW.value.state === 'off' ? '关' : rtkW.value.coverage) : '', hot: false },
   { id: 'prefs', label: '偏好', value: THEME_WORD[theme.pref.value], hot: false },
   { id: 'session', label: '会话', value: session.user?.name ?? 'admin', hot: false },
-])
+].filter((item) => magpieEngine.value || !MAGPIE_ONLY.includes(item.id)))
 
 /* scroll spy: the index marks the last section whose head has passed a line just under the header */
-const SECTIONS = ['sync', 'magpie', 'gateway-features', 'proxy', 'rtk', 'prefs', 'session']
+const ALL_SECTIONS = ['sync', 'magpie', 'gateway-features', 'proxy', 'rtk', 'prefs', 'session']
+const MAGPIE_ONLY = ['gateway-features', 'rtk']
+const sections = () => ALL_SECTIONS.filter((id) => magpieEngine.value || !MAGPIE_ONLY.includes(id))
 /** old anchors that now live inside another section */
 const ALIASES: Record<string, string> = { version: 'magpie' }
 const sectionOf = (hash: string) => {
@@ -128,12 +132,13 @@ function spy() {
   frame = 0
   if (pinned) return
   const line = 140
-  let current = SECTIONS[0]
-  for (const id of SECTIONS) {
+  const list = sections()
+  let current = list[0]
+  for (const id of list) {
     const el = document.getElementById(id)
     if (el && el.getBoundingClientRect().top <= line) current = id
   }
-  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = SECTIONS[SECTIONS.length - 1]
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = list[list.length - 1]
   active.value = current
 }
 const onScroll = () => { if (!frame) frame = requestAnimationFrame(spy) }
@@ -149,7 +154,7 @@ onMounted(async () => {
   window.addEventListener('scroll', onScroll, { passive: true })
   for (const type of USER_SCROLL_EVENTS) window.addEventListener(type, unpin, { passive: true })
   const id = sectionOf(route.hash)
-  if (!SECTIONS.includes(id)) return spy()
+  if (!sections().includes(id)) return spy()
   active.value = id
   pinned = true
   // deep link (#rtk, #session …): the plates above print their data late and push the target down — wait for
@@ -183,7 +188,7 @@ watch(
   () => route.hash,
   async (hash) => {
     const id = sectionOf(hash)
-    if (!SECTIONS.includes(id)) return
+    if (!sections().includes(id)) return
     active.value = id
     pinned = true
     await nextTick()
@@ -253,9 +258,10 @@ async function signOut() {
           @recheck="recheck"
           @auto="toggleAuto('magpie', $event)"
         />
-        <GatewayFeaturesSection class="c-12" @index="featuresIndex = $event" />
+        <GatewayFeaturesSection v-if="magpieEngine" class="c-12" @index="featuresIndex = $event" />
         <ProxySection class="c-12" @index="proxyIndex = $event" />
         <RtkSection
+          v-if="magpieEngine"
           class="c-12"
           :global="rtk.data.value"
           :state="rtk.state.value"

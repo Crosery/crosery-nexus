@@ -74,7 +74,8 @@ const otherVersions = computed(() => {
   if (c) parts.push(['Console', c.version, c.releaseId].filter(Boolean).join(' '))
   const rtk = cpa.value?.rtk
   const latest = upstream.value?.rtkRelease
-  if (rtk) parts.push(`RTK ${rtk.connected ? `本机 ${rtk.version ?? '已连接'}` : '本机未安装'}${latest ? `（最新 ${latest}）` : ''}`)
+  // RTK hooks live on the Magpie host (this Mac); on the relay there is no agent to hook
+  if (rtk && cpa.value?.engine === 'magpie') parts.push(`RTK ${rtk.connected ? `本机 ${rtk.version ?? '已连接'}` : '本机未安装'}${latest ? `（最新 ${latest}）` : ''}`)
   return parts.join(' · ')
 })
 
@@ -113,7 +114,7 @@ async function runUpdate(action: 'check' | 'rehearse' | 'apply') {
 </script>
 
 <template>
-  <Plate id="magpie" title="网关 Magpie" class="set-sec set-mag" :state="state" :error="error" :stale-at="lastAt" :rows="6" @retry="emit('retry')">
+  <Plate id="magpie" :title="cpa?.engine === 'magpie' ? '网关 Magpie' : '网关'" class="set-sec set-mag" :state="state" :error="error" :stale-at="lastAt" :rows="6" @retry="emit('retry')">
     <template #actions>
       <TxButton variant="ghost" size="sm" :loading="checking" :disabled="checking" @click="emit('recheck')">刷新</TxButton>
     </template>
