@@ -62,6 +62,10 @@ test('decideCpa: every reason not to apply, then apply only inside the window', 
   assert.equal(decideCpa({ ...base, state: staged(MAJOR) }).why, 'major')
   assert.equal(decideCpa({ ...base, state: staged(NEXT, { attempts: { [NEXT]: 1 } }) }).why, 'attempted')
   assert.equal(decideCpa({ ...base, state: staged(NEXT, { nextAttemptAt: new Date(bj(5, 30)).toISOString() }) }).why, 'backoff')
+  const today = { action: 'apply', result: 'applied', at: new Date(bj(5, 5)).toISOString(), version: '7.3.16-patched.0' }
+  assert.equal(decideCpa({ ...base, now: bj(6), state: staged(NEXT, { lastApply: today }) }).why, 'daily')
+  assert.equal(decideCpa({ ...base, now: bj(5, 10) + 86_400_000, state: staged(NEXT, { lastApply: today }) }).why, 'apply')
+  assert.equal(decideCpa({ ...base, now: bj(6), state: staged(NEXT, { lastApply: { ...today, result: 'refused' } }) }).why, 'apply')
   const outside = decideCpa({ ...base, now: bj(12), state: staged(NEXT) })
   assert.deepEqual([outside.action, outside.why, outside.nextWindowAt], ['wait', 'window', new Date(bj(5) + 86_400_000).toISOString()])
   const inside = decideCpa({ ...base, state: staged(NEXT) })

@@ -35,6 +35,7 @@ const TAG = /^v\d+\.\d+\.\d+$/
 const KEEP_STAGED = 2
 const KEEP_MAGPIE = 3
 const RETRY_MS = 30 * 60_000
+const DAY_GAP_MS = 20 * 3_600_000
 const MAX_REPORT_BYTES = 64 * 1024
 
 export function applierPaths(env = process.env) {
@@ -231,7 +232,7 @@ const saveState = (paths, state) => writeAtomic(path.join(paths.states, `${state
 
 /**
  * What `auto` does with CPA now. action: none | wait | apply. `why` is the one word the console renders:
- * disabled · no-candidate · up-to-date · held · offline · hold-file · major · attempted · backoff · window · apply.
+ * disabled · no-candidate · up-to-date · held · offline · hold-file · major · attempted · backoff · daily · window · apply.
  */
 export function decideCpa({ now, config, state, running, hold }) {
   const window = windowState(now, config.window)
@@ -253,6 +254,9 @@ export function decideCpa({ now, config, state, running, hold }) {
   if ((state.attempts[staged.version] || 0) >= 1) return { action: 'none', why: 'attempted', ...target, ...base }
   const retryAt = Date.parse(state.nextAttemptAt || '')
   if (Number.isFinite(retryAt) && retryAt > now) return { action: 'none', why: 'backoff', retryAt: state.nextAttemptAt, ...target, ...base }
+  // one replacement per window: a release that lands mid-window after one went in waits for tomorrow's
+  const last = state.lastApply
+  if (last?.action === 'apply' && last.result !== 'refused' && now - Date.parse(last.at || '') < DAY_GAP_MS) return { action: 'wait', why: 'daily', ...target, ...base }
   if (!window.inside) return { action: 'wait', why: 'window', ...target, ...base }
   return { action: 'apply', why: 'apply', ...target, ...base }
 }
@@ -623,6 +627,8 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
     const decision = decideCpa({ now: now(), config, state: cpa, running, hold: await readHold(paths.cpa.hold) })
     cpa.decision = { ...decision, at: iso(now()) }
     if (decision.action === 'apply') {
+      // the install runs minutes (gates, restart, maybe a rollback): the console shows 「正在替换」 meanwhile
+      await saveState(paths, cpa)
       const outcome = await applyCpa({ paths, state: cpa, version: decision.version, deps })
       const at = iso(now())
       const touched = outcome.result !== 'refused'
@@ -654,6 +660,7 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
     const standby = decideMagpie({ config, state: magpie })
     magpie.decision = { ...standby, at: iso(now()) }
     if (standby.action === 'apply') {
+      await saveState(paths, magpie)
       const outcome = await applyMagpie({ paths, state: magpie, revision: standby.revision, deps })
       const at = iso(now())
       magpie = {

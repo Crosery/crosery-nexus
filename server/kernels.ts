@@ -191,7 +191,7 @@ function candidateLine(id: KernelId, builder: Record<string, unknown> | null, st
   if (status === 'built' || status === 'up-to-date') {
     const checks = Array.isArray(candidate?.checks) ? candidate.checks.filter(isObject) : []
     const failed = checks.filter(check => check.ok !== true).length
-    const word = id === 'cpa' ? `go test${checks.length ? ` · 冒烟 ${checks.length - failed}/${checks.length}` : ''} 通过` : 'Mac 上演练并替换通过 · 中转站启动检查'
+    const word = id === 'cpa' ? `go test${checks.length ? ` · 冒烟 ${checks.length - failed}/${checks.length}` : ''} 通过` : 'Mac 上演练通过'
     return { label: label || '—', tone: failed ? 'warn' : 'ok', text: `${word}${staged ? ' · 已暂存到中转站' : ''}` }
   }
   return { label: label || '—', tone: status === 'held' ? 'warn' : 'bad', text: first(list) || BUILDER_WORD[status ?? ''] || '构建机没给结果' }
@@ -211,7 +211,7 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
   const lastReasons = reasons(lastRaw?.reasons)
   const at = lastAt ? zonedClock(Date.parse(lastAt), now, tz) : ''
   const LAST: Record<string, [string, KernelTone]> = {
-    applied: [`${at} 替换到 ${lastTarget}`, 'ok'],
+    applied: [id === 'cpa' ? `${at} 替换到 ${lastTarget}` : `${at} 备用内核换成 ${lastTarget}（启动检查通过）`, 'ok'],
     'up-to-date': [`${at} 已是 ${lastTarget}`, 'ok'],
     'rolled-back': [`${at} 替换 ${lastTarget} 后验收没过，已自动回滚`, 'bad'],
     'rollback-failed': [`${at} 替换 ${lastTarget} 失败，回滚也没成功 · 需要人工处理`, 'bad'],
@@ -232,6 +232,7 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
     case 'up-to-date': return out('up-to-date', 'ok', id === 'cpa' ? `已是最新候选 · 新版本先在构建机演练，通过后在 ${window}替换` : '已是最新 · 新版本先在 Mac 上演练，通过后换上')
     case 'no-candidate': return out('up-to-date', 'idle', id === 'cpa' ? '还没有演练通过的候选' : '还没有备用内核 · 等 Mac 发布第一个')
     case 'window': return out('eligible', 'ok', `${target} 演练通过 · 等 ${window}替换`)
+    case 'daily': return out('eligible', 'ok', `${target} 演练通过 · 这个时段已经换过一次，明天 ${window}再换`)
     case 'apply': return out('applying', 'ok', `${target} 正在替换`)
     case 'held': return out('held', 'warn', `构建机停住：${first(decisionReasons) || '见候选'}`, decisionReasons)
     case 'major': return out('held', 'warn', `${target} 跨大版本 · 配置格式会迁移，第一次人工升级`, decisionReasons)

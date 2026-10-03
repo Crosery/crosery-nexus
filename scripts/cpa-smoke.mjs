@@ -143,6 +143,9 @@ export async function smoke({ binary, version, config = path.join(root, 'deploy/
     proc = start(binary, dir, env)
     let ready = await waitReady(base, proc)
     if (!check('starts on the production-shaped config', ready, ready ? '' : why(proc))) return { ok: false, checks }
+    // the install transaction (cpa-install-binary.sh) only rolls back while config.yaml is untouched: a kernel that
+    // rewrites it just by starting would turn every failed upgrade into a manual repair
+    check('startup leaves config.yaml as it was', (await fs.readFile(path.join(dir, 'config.yaml'), 'utf8')) === fixture)
     const header = (await call(base, '/v0/management/api-keys', { management })).headers?.get('x-cpa-version')
     if (version) check('x-cpa-version header', header === version, header ?? 'missing')
     checks.push(...await surface(base, management, 'loaded', { expectAdded: false }))
