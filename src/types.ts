@@ -1393,3 +1393,13 @@ export type GatewaySettings = {
   applies: string | null
   upstream: { candidateRevision: string | null; added: string[]; changed: string[]; removed: string[] }
 }
+
+/** POST /api/credentials/upload (CPA engine): one row per file in the upload; credential contents never come back. */
+export type CredentialUploadResult = {
+  traceId: string
+  total: number
+  uploaded: number
+  skipped: number
+  failed: number
+  items: Array<{ name: string; label?: string; ok: boolean; skipped?: boolean; code?: string; message?: string }>
+}

@@ -535,7 +535,7 @@ test('FF-05 channel, model and OAuth flows show the server reason, not the gener
   assert.match(create, /probeError\.value = errorReason\(error\)/)
   assert.match(create, /const reason = errorReason\(error\)/)
   assert.match(src('features/models/ModelSheet.vue'), /description: `\$\{errorReason\(error\)\} · \$\{mapping\.model\}`/)
-  assert.equal(src('features/accounts/AddAccountSheet.vue').match(/errorReason\(error\)/g)?.length, 3)
+  assert.equal(src('features/accounts/AddAccountSheet.vue').match(/errorReason\(error\)/g)?.length, 4)
   for (const file of ['features/channels/ChannelsPage.vue', 'features/channels/CreateChannelSheet.vue', 'features/models/ModelSheet.vue', 'features/accounts/AddAccountSheet.vue']) {
     assert.doesNotMatch(src(file), /describeError\(error\)\.(detail|title)/, file)
   }

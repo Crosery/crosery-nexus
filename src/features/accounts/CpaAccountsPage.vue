@@ -390,7 +390,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       </template>
     </Sheet>
 
-    <AddAccountSheet v-model="addOpen" :provider="addProvider" :reauth-email="reauthEmail" :verify="verifyAdded" :egress="egress" @done="onAdded" @egress="egressLive.refresh()" />
+    <AddAccountSheet v-model="addOpen" :provider="addProvider" :reauth-email="reauthEmail" :verify="verifyAdded" :egress="egress" @done="onAdded" @egress="egressLive.refresh()" @imported="refresh()" />
   </div>
 </template>
 

@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser'
 import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/index.js'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback } from './cpa.js'
+import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
@@ -88,6 +88,11 @@ import { loadMonitorQuotaShare } from './monitorQuotaShare.js'
 import { loadModelCatalog, visibleModelIds, refreshSharedPricingIfStale } from './modelCatalog.js'
 import { mergePriceSourceEntries } from './modelIndex.js'
 import { pricingSourceStatus } from './pricing.js'
+import { CredentialUploadError, prepareCredentialUpload } from './credentialUpload.js'
+import { uploadCredentialBatch } from './credentialUploadBatch.js'
+import { mergeCredentialUploadItems } from './credentialUploadMerge.js'
+import { MultipartUploadError, receiveUploadFile } from './multipartUpload.js'
+import { UploadGate, UploadGateBusyError } from './uploadGate.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
 import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
@@ -346,6 +351,78 @@ app.get('/v1/usage/requests', (req, res) => {
   `).all(key.key_hash, cutoffEpochMs(days, 'days'), limit)
   res.setHeader('Cache-Control', 'no-store')
   res.json({ object: 'usage_request_list', days, items })
+})
+
+/*
+ * Bulk credential import (JSON or ZIP of CPA auth files). CPA engine only: under Magpie, accounts sign in from the
+ * accounts page instead. The relay console has used it for xAI batches of ~200 files.
+ */
+const credentialUploadGate = new UploadGate()
+if (config.gatewayEngine === 'cpa') app.post('/api/credentials/upload', async (req, res) => {
+  const traceId = crypto.randomUUID()
+  const startedAt = Date.now()
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const responseBody = await credentialUploadGate.run(async () => {
+      const file = await receiveUploadFile(req, config.credentialUploadMaxBytes)
+      const credentials = await prepareCredentialUpload(file, {
+        maxEntries: config.credentialUploadMaxEntries,
+        maxEntryBytes: config.credentialUploadMaxEntryBytes,
+        maxUncompressedBytes: config.credentialUploadMaxExpandedBytes,
+      })
+      console.info(JSON.stringify({
+        category: '[AUDIT]', event: 'credential_upload.start', trace_id: traceId,
+        stage: 'upload', filename: path.basename(file.filename), entries: credentials.length,
+      }))
+      const existingNames = new Set((await listAuthFiles()).files.map((item) => String(item.name || '')).filter(Boolean))
+      const skippedItems = credentials.filter((credential) => existingNames.has(credential.name))
+      const pendingCredentials = credentials.filter((credential) => !existingNames.has(credential.name))
+      const result = await uploadCredentialBatch(pendingCredentials, {
+        concurrency: config.credentialUploadConcurrency,
+        upload: async (credential) => {
+          try {
+            await uploadAuthFile(credential.name, credential.raw)
+          } catch (error) {
+            console.error(JSON.stringify({
+              category: '[ERROR]', event: 'credential_upload.item_failed', trace_id: traceId,
+              stage: 'cpa_upload', name: credential.name,
+              cause: error instanceof Error ? error.message.replace(/(access|refresh|id)[_-]?token[^ ]*/gi, '$1_token=[redacted]').slice(0, 400) : 'unknown',
+            }))
+            throw error
+          }
+        },
+      })
+      const items = mergeCredentialUploadItems(credentials, result.items, existingNames)
+      if (result.uploaded) invalidateControlPlaneCaches()
+      const total = credentials.length
+      const skipped = skippedItems.length
+      addAudit('upload_credentials', 'xai', JSON.stringify({
+        traceId, filename: path.basename(file.filename), total, uploaded: result.uploaded, skipped, failed: result.failed,
+      }))
+      console.info(JSON.stringify({
+        category: '[AUDIT]', event: 'credential_upload.finish', trace_id: traceId,
+        stage: 'complete', duration_ms: Date.now() - startedAt, outcome: result.failed ? 'partial' : 'ok',
+        total, uploaded: result.uploaded, skipped, failed: result.failed,
+      }))
+      return { status: result.failed ? 207 : 200, body: { traceId, total, uploaded: result.uploaded, skipped, failed: result.failed, items } }
+    })
+    res.status(responseBody.status).json(responseBody.body)
+  } catch (error) {
+    const known = error instanceof CredentialUploadError || error instanceof MultipartUploadError || error instanceof UploadGateBusyError
+    const code = known ? error.code : 'UPLOAD_INTERNAL_ERROR'
+    const stage = error instanceof CredentialUploadError ? error.stage : error instanceof MultipartUploadError ? 'receive' : error instanceof UploadGateBusyError ? 'queue' : 'upload'
+    const message = known ? error.message : '凭据上传失败，请按 trace ID 查询服务日志'
+    const rootCause = error instanceof Error && error.cause instanceof Error ? error.cause.message : ''
+    console.error(JSON.stringify({
+      category: '[ERROR]', event: 'credential_upload.failed', trace_id: traceId,
+      stage, code, duration_ms: Date.now() - startedAt, outcome: 'error',
+      cause: error instanceof Error ? error.message.slice(0, 400) : 'unknown',
+      root_cause: rootCause.slice(0, 400),
+    }))
+    addAudit('upload_credentials_failed', 'xai', JSON.stringify({ traceId, code, stage }))
+    const status = error instanceof UploadGateBusyError ? 409 : known ? 400 : 500
+    res.status(status).json({ error: { code, category: 'UPLOAD', message, stage, traceId, retryable: error instanceof UploadGateBusyError } })
+  }
 })
 
 /**

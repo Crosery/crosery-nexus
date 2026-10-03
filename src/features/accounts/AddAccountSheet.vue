@@ -35,7 +35,7 @@ const props = withDefaults(defineProps<{
   egress: null,
 })
 const open = defineModel<boolean>({ default: false })
-const emit = defineEmits<{ done: [name: string | null]; egress: [] }>()
+const emit = defineEmits<{ done: [name: string | null]; egress: []; imported: [] }>()
 const { on: masked } = useMask()
 const now = useNow()
 
@@ -301,6 +301,33 @@ function onListKey(event: KeyboardEvent) {
   event.preventDefault()
 }
 
+/* 导入凭据文件: CPA auth files (one JSON, or a ZIP of them) go straight to the gateway; same-name files are skipped */
+const fileInput = useTemplateRef<HTMLInputElement>('file')
+const importing = ref(false)
+const imported = ref<{ text: string; tone: 'ok' | 'warn' | 'bad'; failures: string[] } | null>(null)
+async function onFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || importing.value) return
+  importing.value = true
+  imported.value = null
+  try {
+    const result = await api.uploadCredentials(file)
+    const parts = [`${result.total} 个文件`, `新增 ${result.uploaded}`, result.skipped ? `已存在 ${result.skipped}` : '', result.failed ? `失败 ${result.failed}` : ''].filter(Boolean)
+    imported.value = {
+      text: parts.join(' · '),
+      tone: result.failed ? (result.uploaded ? 'warn' : 'bad') : 'ok',
+      failures: result.items.filter((item) => !item.ok).slice(0, 3).map((item) => `${item.name} · ${item.message ?? item.code ?? '失败'}`),
+    }
+    if (result.uploaded) emit('imported')
+  } catch (error) {
+    imported.value = { text: errorReason(error) || '导入失败', tone: 'bad', failures: [] }
+  } finally {
+    importing.value = false
+  }
+}
+
 const riskText = computed(() => {
   const vendor = chosen.value?.vendor.split(' · ')[0] ?? '供应商'
   return `通过网关共享订阅账号可能违反 ${vendor} 的条款，账号有被风控或封禁的风险 · 控制台读额度按账号缓存限频，但转发多少请求取决于各 Key 的用量`
@@ -327,6 +354,20 @@ const riskText = computed(() => {
           <span class="acc-add__svc-f">{{ p.flow === 'device' ? '设备码' : '浏览器登录' }}</span>
           <Icon name="arrow" :size="14" />
         </TxButton>
+      </div>
+      <div v-if="!reauthEmail" role="listitem">
+        <TxButton class="acc-add__svc" variant="ghost" block :disabled="importing" @click="fileInput?.click()">
+          <Icon name="plus" :size="22" />
+          <span class="acc-add__svc-n">导入凭据文件</span>
+          <span class="acc-add__svc-v">CPA 凭据 JSON · 多个打包成 ZIP</span>
+          <span class="acc-add__svc-f">{{ importing ? '导入中···' : '本地文件' }}</span>
+          <Icon name="arrow" :size="14" />
+        </TxButton>
+        <input ref="file" class="acc-add__file" type="file" accept=".json,.zip,application/json,application/zip" @change="onFile">
+      </div>
+      <div v-if="imported" class="acc-add__imported" :role="imported.tone === 'ok' ? 'status' : 'alert'">
+        <p :class="{ sig: imported.tone !== 'ok' }">{{ imported.tone === 'ok' ? '' : '◆ ' }}{{ imported.text }}</p>
+        <p v-for="line in imported.failures" :key="line" class="acc-add__hint">{{ line }}</p>
       </div>
     </div>
 
@@ -465,6 +506,9 @@ html:root .acc-add__svc.tx-button:focus-visible { outline: 2px solid var(--signa
 @keyframes acc-dot { 0%, 66% { opacity: 1; } 67%, 100% { opacity: .2; } }
 :root[data-motion="reduce"] .acc-dots i { animation: none; opacity: 1; }
 .acc-add__note { margin: 24px 0 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.acc-add__file { display: none; }
+.acc-add__imported { display: grid; gap: 4px; padding: 10px 6px 0; }
+.acc-add__imported p { margin: 0; font-size: var(--fs-sm); color: var(--ink); }
 @media (max-width: 599px) {
   .acc-add__svc-v { display: none; }
   .acc-add__svc { min-height: var(--tap); }

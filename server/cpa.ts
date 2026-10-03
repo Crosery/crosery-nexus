@@ -204,6 +204,23 @@ export async function downloadAuthFile(name: string): Promise<Record<string, unk
   return raw as Record<string, unknown>
 }
 
+/** CPA engine only (the route that calls this is not registered under Magpie, whose accounts sign in instead). */
+export async function uploadAuthFile(name: string, raw: Buffer) {
+  if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
+  const form = new FormData()
+  form.set('file', new Blob([Uint8Array.from(raw)]), name)
+  const response = await fetch(`${config.cpaBaseUrl}/v0/management/auth-files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.cpaManagementKey}` },
+    body: form,
+    signal: AbortSignal.timeout(config.cpaRequestTimeoutMs),
+  })
+  if (!response.ok) {
+    await response.arrayBuffer().catch(() => undefined)
+    throw new Error(`CPA auth-file upload failed with HTTP ${response.status}`)
+  }
+}
+
 export type CompatModel = { name?: string; alias?: string }
 export type CompatChannel = {
   name?: string

@@ -7,7 +7,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 /**
- * Console v3 契约 C5：凭据导入与 A/B 实验台已整体下线。
+ * Console v3 契约 C5：Magpie 引擎下凭据导入与 A/B 实验台已下线（CPA 引擎的批量导入见 credentialUploadRoute.test.ts）。
  * 已登录管理员打这两个旧写入口必须落到 `/api` 兜底 404（不是 400/500，也不落盘），
  * bootstrap 不再下发上传限额；同前缀的账号管理路由 `/api/credentials/:name` 仍然在线。
  */

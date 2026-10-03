@@ -1,5 +1,6 @@
 import type {
   AutoupdateView,
+  CredentialUploadResult,
   GatewaySettings,
   GatewaySettingValues,
   MagpieUpdateStatus,
@@ -125,6 +126,19 @@ export const adminApi = {
   submitOAuthCallback: (provider: string, redirectUrl: string, state?: string) =>
     request<{ ok: boolean }>('/api/cpa/oauth/callback', { method: 'POST', body: JSON.stringify({ provider, redirectUrl, state }) }),
   cancelOAuth: (state: string) => request<{ ok: boolean }>('/api/cpa/oauth/cancel', { method: 'POST', body: JSON.stringify({ state }) }),
+  /**
+   * Bulk import of CPA auth files (one JSON, or a ZIP of them); CPA engine only. Multipart, so not `request()`:
+   * its JSON content type would replace the browser's boundary.
+   */
+  uploadCredentials: async (file: File): Promise<CredentialUploadResult> => {
+    const form = new FormData()
+    form.set('file', file, file.name)
+    const response = await fetch('/api/credentials/upload', { method: 'POST', body: form })
+    const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+    if (response.ok) return data as CredentialUploadResult
+    const error = (data.error && typeof data.error === 'object' ? data.error : {}) as { message?: string; code?: string }
+    throw new ApiError(response.status, error.message || `导入失败（HTTP ${response.status}）`, { code: error.code })
+  },
   addApiKey: (provider: string, apiKey: string) =>
     request<{ ok: boolean }>('/api/cpa/credentials/api-key', { method: 'POST', body: JSON.stringify({ provider, apiKey }) }),
   /** 网关功能：Magpie 内核的脱敏 / 识图 / 生图设置（CPA 模式 available:false）。PUT 只带要改的键。 */
