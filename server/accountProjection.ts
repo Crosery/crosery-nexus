@@ -47,12 +47,80 @@ function projectRecent(value: unknown): Array<{ time?: string; success: number; 
   })
 }
 
-function projectQuotaError(quota: unknown): { error?: string; unsupported?: true } | null {
-  if (!quota || typeof quota !== 'object' || Array.isArray(quota)) return null
-  const source = quota as Record<string, unknown>
+const record = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+const finite = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
+const flag = (value: unknown): boolean | undefined => (typeof value === 'boolean' ? value : undefined)
+/** Drops undefined values so a missing upstream field stays missing (pollers test `isinstance(raw, dict)` / `?.`). */
+const defined = (entries: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined))
+
+/** Claude `usage.<window>` (five_hour / seven_day / seven_day_sonnet …): numbers and reset times only. */
+function projectUsageWindows(value: unknown): Record<string, unknown> | undefined {
+  const usage = record(value)
+  if (!usage) return undefined
+  const out: Record<string, unknown> = {}
+  for (const [key, raw] of Object.entries(usage).slice(0, 32)) {
+    const window = record(raw)
+    if (!window || finite(window.utilization) === undefined || !/^[a-z0-9_]{1,64}$/.test(key)) continue
+    out[key] = defined({
+      utilization: finite(window.utilization),
+      resets_at: text(window.resets_at, 64) ?? (window.resets_at === null ? null : undefined),
+      reset_at: text(window.reset_at, 64),
+      limit_window_seconds: finite(window.limit_window_seconds),
+    })
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/** Codex `rate_limit.{primary,secondary}_window`: percentages, window lengths and reset times only. */
+function projectRateLimit(value: unknown): Record<string, unknown> | undefined {
+  const limit = record(value)
+  if (!limit) return undefined
+  const windowOf = (raw: unknown) => {
+    const window = record(raw)
+    if (!window) return undefined
+    return defined({
+      used_percent: finite(window.used_percent),
+      limit_window_seconds: finite(window.limit_window_seconds),
+      reset_after_seconds: finite(window.reset_after_seconds),
+      reset_at: finite(window.reset_at) ?? text(window.reset_at, 64),
+    })
+  }
+  const out = defined({
+    allowed: flag(limit.allowed),
+    limit_reached: flag(limit.limit_reached),
+    primary_window: windowOf(limit.primary_window),
+    secondary_window: windowOf(limit.secondary_window),
+  })
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * The vendor quota body, reduced to what the external pollers read (Claude Code status line
+ * `~/.claude/scripts/claudecode-quota-bar.py`, the Pi footer `quota-monitor.ts`): usage windows, Codex rate-limit
+ * windows, plan names. Error text is sanitized; nothing else of the body passes.
+ */
+function projectVendorQuota(quota: unknown): Record<string, unknown> | null {
+  const source = record(quota)
+  if (!source) return null
   const error = typeof source.error === 'string' && source.error ? sanitizeSyncError(source.error) : undefined
-  if (!error && source.unsupported !== true) return null
-  return { ...(error ? { error } : {}), ...(source.unsupported === true ? { unsupported: true as const } : {}) }
+  const profile = record(source.profile)
+  const account = record(profile?.account)
+  const organization = record(profile?.organization)
+  const projectedProfile = profile ? defined({
+    account: account ? defined({ has_claude_max: flag(account.has_claude_max), has_claude_pro: flag(account.has_claude_pro) }) : undefined,
+    organization: organization ? defined({ organization_type: text(organization.organization_type, 64), rate_limit_tier: text(organization.rate_limit_tier, 64) }) : undefined,
+  }) : undefined
+  const out = defined({
+    usage: projectUsageWindows(source.usage),
+    profile: projectedProfile && Object.keys(projectedProfile).length ? projectedProfile : undefined,
+    rate_limit: projectRateLimit(source.rate_limit),
+    plan_type: text(source.plan_type, 64),
+    error,
+    unsupported: source.unsupported === true ? true : undefined,
+  })
+  return Object.keys(out).length ? out : null
 }
 
 /** normalizeAccountQuota's own structure, rebuilt field by field (its error text can echo a gateway body). */
@@ -90,7 +158,7 @@ function projectNormalizedQuota(value: unknown): Record<string, unknown> | null 
 
 /**
  * One account of GET /api/monitor: the gateway fields the accounts and overview pages read, nothing else.
- * Raw `quota` (the vendor's usage bodies) is reduced to its error; tokens, cookies and keys never pass.
+ * Raw `quota` (the vendor's usage bodies) is reduced to its windows, plan and error; tokens, cookies and keys never pass.
  */
 export function projectMonitorAccount(file: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -106,7 +174,7 @@ export function projectMonitorAccount(file: Record<string, unknown>): Record<str
   if (typeof file.proxy_url === 'string') out.proxy_url = maskProxyUserinfo(file.proxy_url)
   const recent = projectRecent(file.recent_requests)
   if (recent) out.recent_requests = recent
-  const quota = projectQuotaError(file.quota)
+  const quota = projectVendorQuota(file.quota)
   if (quota) out.quota = quota
   if ('normalizedQuota' in file) out.normalizedQuota = projectNormalizedQuota(file.normalizedQuota)
   return out

@@ -33,6 +33,57 @@ test('monitor projection: only allow-listed fields; tokens, cookies, keys and pr
   assert.ok(String((projected.quota as { error: string }).error).startsWith('CPA 401'), 'the error stays readable, minus the credential')
 })
 
+test('monitor projection keeps the quota fields the external pollers read (status line, Pi footer), and nothing secret', () => {
+  const claude = projectMonitorAccount({
+    name: 'claude-a.json', type: 'claude', email: 'a@example.test', disabled: false, status: 'active',
+    quota: {
+      usage: {
+        five_hour: { utilization: 23, resets_at: '2026-10-03T08:00:00Z' },
+        seven_day: { utilization: 61.5, resets_at: '2026-10-07T00:00:00Z' },
+        seven_day_sonnet: { utilization: 4, resets_at: null },
+        seven_day_opus: null,
+        limits: [{ kind: 'five_hour', percent: 23, token: 'fixture-access-0001' }],
+      },
+      profile: {
+        account: { has_claude_max: true, has_claude_pro: false, email_address: 'a@example.test', uuid: 'fixture-id-0003' },
+        organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x', uuid: 'fixture-key-0005' },
+      },
+    },
+  })
+  assert.deepEqual(claude.quota, {
+    usage: {
+      five_hour: { utilization: 23, resets_at: '2026-10-03T08:00:00Z' },
+      seven_day: { utilization: 61.5, resets_at: '2026-10-07T00:00:00Z' },
+      seven_day_sonnet: { utilization: 4, resets_at: null },
+    },
+    profile: { account: { has_claude_max: true, has_claude_pro: false }, organization: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' } },
+  })
+
+  const codex = projectMonitorAccount({
+    ...gatewayRecord,
+    quota: {
+      plan_type: 'plus',
+      rate_limit: {
+        allowed: true, limit_reached: false,
+        primary_window: { used_percent: 12, limit_window_seconds: 18000, reset_after_seconds: 3600, reset_at: 1790990000 },
+        secondary_window: { used_percent: 40, limit_window_seconds: 604800, reset_after_seconds: 86400, reset_at: 1791500000 },
+      },
+      credits: { token: 'fixture-access-0001' },
+    },
+  })
+  assert.deepEqual(codex.quota, {
+    plan_type: 'plus',
+    rate_limit: {
+      allowed: true, limit_reached: false,
+      primary_window: { used_percent: 12, limit_window_seconds: 18000, reset_after_seconds: 3600, reset_at: 1790990000 },
+      secondary_window: { used_percent: 40, limit_window_seconds: 604800, reset_after_seconds: 86400, reset_at: 1791500000 },
+    },
+  })
+  assert.deepEqual(secretFindings([claude, codex], SECRETS), [])
+  // no id_token in any form (the Pi footer falls back to quota.plan_type, which passes)
+  assert.equal(codex.id_token, undefined)
+})
+
 test('proxy and identity masks', () => {
   assert.equal(maskProxyUserinfo('socks5://u:p@10.0.0.1:1080'), 'socks5://***@10.0.0.1:1080')
   assert.equal(maskProxyUserinfo('http://127.0.0.1:7890'), 'http://127.0.0.1:7890')
