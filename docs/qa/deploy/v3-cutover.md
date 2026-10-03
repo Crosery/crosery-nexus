@@ -1,8 +1,8 @@
 # 中转站控制台切换到 v3（cutover runbook）
 
 - **对象**：`cpa-vps` · `crosery-api-console.service` · `console.ai.crosery.com`
-- **状态**：已在 `sj-4837-new` 上按生产路径和 unit 全量演练（2026-10-03）。**生产切换未执行，需要用户明确批准**
-- **回退目标**：`/opt/crosery-api-console-releases/20260928-reset-clears-cooldown`（当前线上 = BASE）
+- **状态**：**已上线**（2026-10-03 01:54:46 EDT，用户批准后执行）。之前已在 `sj-4837-new` 上按生产路径和 unit 全量演练。上线记录见 §6
+- **回退目标**：`/opt/crosery-api-console-releases/20260928-reset-clears-cooldown`（切换前的线上版本，即 BASE）
 - **组装物**：`20261003-console-v3`，源码 `cdb9eb4`，970 条 MANIFEST（`MANIFEST.sha256` 的 sha256 前缀 `58ea8cd731f15306`）
 - 通用步骤（复制 BASE、rsync 叠加、`ln -s` + `mv -T`）沿用 [release-runbook.md](release-runbook.md)。本文只写 v3 的差异和证据。
 
@@ -94,3 +94,18 @@ $SSH 'bash -s 20260928-reset-clears-cooldown' < docs/qa/deploy/v3-switch.sh   # 
   - 切换后观察 `systemctl show crosery-api-console -p MemoryCurrent -p MemoryPeak`（当前 BASE 的 peak 为 1.25 GB，含页缓存）。
 - **[residual risk] dist 构建环境**：dist 由本机 Node v26 构建，生产运行时是 v24.20.0（同 v2 的 WARN）。dist 是纯静态产物；在 Node 24.20.0 下演练全部通过。
 - **[已有行为] 凭据导入只接受 deflate 压缩的 ZIP**：存储方式（不压缩）的 ZIP 会报「压缩包无法读取」，`zipEntries.ts` 与生产相同。线上那 201 个文件的 ZIP 是正常的。
+
+## 6. 上线记录（2026-10-03）
+
+| 步骤 | 结果 |
+| --- | --- |
+| §1 预检 | current → BASE；BASE MANIFEST OK；18787 空闲；生产 MainPID `2043327` 与 4 个子进程已记下 |
+| §2 新目录 | `cp -a` 复制 BASE（203 MB），rsync 叠加；`MANIFEST.sha256` 的 sha256 前缀 `58ea8cd731f15306`，与演练产物一致 |
+| §3 第二实例 | MANIFEST OK（970 条），H1–H6 全 PASS，硬失败 0；之后生产进程树与切换前完全相同，临时目录已清理 |
+| §4 env | 先备份为 `.env.bak-20261003-before-v3`（600 root），再追加 `PUBLIC_GATEWAY_BASE_URL`；变量名只多了这一个 |
+| §5 切换 | 3.18 s 后重新监听；`NRestarts=0`；`app-index=1`、`root-index=0` |
+| §6 验收 | 对外 8 条路由均 200；未登录访问 `/api/model-index`、`/api/monitor`、上传均 401；模型目录返回自己的「缺少 API Key」；nginx 不限速同步 `ok`（14 个 Key）；journal 无 `[ERROR]` 事件 |
+| 外部轮询 | Pi 页脚（undici）01:55:50 与状态栏（Python）01:56:40 都拿到 200；本机状态栏正常显示 Claude 5h / 7d 额度 |
+| 内存 | 切换后约 2 min：anon 约 500 MB，可用 1.38 GB（切换前 BASE anon 约 567 MB） |
+
+回退仍是 §4 的一条命令。`.env` 备份与 BASE 目录都保留，没有删除任何 release 目录。
