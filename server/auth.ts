@@ -271,6 +271,13 @@ export const PUBLIC_PATHS: PublicPathRule[] = [
       + '（index.ts:publicUsageKey），与控制台会话无关，且只返回该 Key 自己的数据。',
   },
   {
+    method: 'GET',
+    pattern: /^\/api\/public\/model-catalog$/,
+    why: 'Agent 模型目录（文档里让 Key 用户先调它）：处理器用 Authorization 里的 API Key 自鉴权，'
+      + 'Key 校验转给网关 /v1/models（与公网网关同一判定，不新增猜 Key 的面），只返回该 Key 可见的模型。'
+      + '中转站旧版即公开、线上有 Key 用户在调。',
+  },
+  {
     pattern: /^\/docs(\/|$)/,
     why: '产品文档页：静态 HTML（dist/docs.html），不含任何用户数据，路由自带 max-age=300。',
   },

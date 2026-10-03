@@ -75,8 +75,9 @@ test('结构性断言：白名单只覆盖必须公开的路径（不误放行 /
   const source = fs.readFileSync(path.join(REPO, 'server/index.ts'), 'utf8')
   const apiRoutes = registeredPaths(source).filter(entry => entry.path.startsWith('/api/') && entry.kind === 'route')
   const publicApi = apiRoutes.filter(entry => isPublicPath(entry.method, entry.path)).map(entry => `${entry.method} ${entry.path}`)
-  assert.deepEqual(publicApi.sort(), ['GET /api/session', 'POST /api/login', 'POST /api/logout'].sort(),
-    `公开的 /api 路由必须恰好是这三个（实际：${publicApi.join(', ')}）`)
+  // GET /api/public/model-catalog 自鉴权（API Key），中转站旧版即公开、线上有 Key 用户在调
+  assert.deepEqual(publicApi.sort(), ['GET /api/session', 'POST /api/login', 'POST /api/logout', 'GET /api/public/model-catalog'].sort(),
+    `公开的 /api 路由必须恰好是这四个（实际：${publicApi.join(', ')}）`)
 })
 
 test('结构性断言：key 会话的可达面只有 /api/me*、/api/session、/api/logout，且 /api/me 下只有只读路由', () => {
@@ -188,6 +189,15 @@ test('端到端：未认证时白名单内可访问、白名单外 401、SPA 深
     const usageBody = await usage.json() as { error?: { message?: string } | string }
     const usageMessage = typeof usageBody.error === 'string' ? usageBody.error : usageBody.error?.message
     assert.match(String(usageMessage), /API Key/, `必须是它自己的鉴权错误，而不是会话守卫的：${JSON.stringify(usageBody)}`)
+
+    // Agent 模型目录同样自鉴权：没 Key / 坏 Key 都是它自己的 401，而不是会话守卫的「请先登录」
+    const catalog = await fetch(`${base}/api/public/model-catalog`)
+    assert.equal(catalog.status, 401)
+    assert.deepEqual(await catalog.json(), { error: '缺少 API Key' })
+    const badKey = await fetch(`${base}/api/public/model-catalog`, { headers: { authorization: 'Bearer sk-not-a-real-key' } })
+    assert.equal(badKey.status, 401)
+    assert.deepEqual(await badKey.json(), { error: 'API Key 无效或网关暂不可用' })
+    assert.equal((await fetch(`${base}/api/public/model-catalog`, { method: 'POST' })).status, 401, '只公开 GET')
 
     // 静态与 SPA：/docs 与深链接仍返回 index.html/docs.html，不能变成 401 页面
     const docs = await fetch(`${base}/docs`)
