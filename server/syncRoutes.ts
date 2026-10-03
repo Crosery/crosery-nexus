@@ -264,8 +264,9 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
     id: 'model-discovery',
     label: '模型目录',
     kind: 'in-process',
-    intervalMs: DISCOVERY_POLICY.channelIntervalMs,
+    intervalMs: config.modelDiscoveryScheduled ? DISCOVERY_POLICY.channelIntervalMs : null,
     tickMs: DISCOVERY_POLICY.tickMs,
+    scheduled: config.modelDiscoveryScheduled,
     initialDelayMs: 60_000,
     manualCooldownMs: 5 * 60_000,
     // 手动运行仍服从每主机/每渠道退避（runDiscovery 在 force 下也跳过退避中的主机），任务级退避从不设置。
@@ -287,7 +288,7 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
         value: result,
       }
     },
-    nextRunAt: (data, now) => nextDiscoveryAt(data as DiscoveryState, now),
+    nextRunAt: (data, now) => (config.modelDiscoveryScheduled ? nextDiscoveryAt(data as DiscoveryState, now) : null),
     overlay: (now) => {
       if (registry.isRunning('model-discovery')) return {}
       const backoff = discoveryBackoff(registry.jobData('model-discovery') as DiscoveryState, now)
@@ -373,7 +374,10 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
     },
   })
 
-  for (const job of createExternalJobs(deps.externalJobs)) registry.register(job)
+  // the external jobs are launchd agents on this Mac; a Linux host (the relay) has none to show
+  if ((deps.externalJobs?.platform ?? process.platform) === 'darwin') {
+    for (const job of createExternalJobs(deps.externalJobs)) registry.register(job)
+  }
 }
 
 /* ────────────────────────── 路由 ────────────────────────── */
@@ -434,7 +438,7 @@ export function installSyncCenter(app: express.Express, deps: SyncCenterDeps, re
     /** 进程启动后调用：排程进程内任务 + 监听共享目录。不运行、不触发任何外部任务；不会改 RTK 开关。 */
     start() {
       registry.start()
-      startModelCatalogWatcher(() => { void registry.run('model-discovery', 'watch').catch(() => undefined) })
+      if (config.modelDiscoveryScheduled) startModelCatalogWatcher(() => { void registry.run('model-discovery', 'watch').catch(() => undefined) })
     },
     /**
      * `POST /api/models/sync` 的兼容入口：与 `POST /api/sync/model-discovery/run` 走同一个准入（手动冷却、记 manualAt），

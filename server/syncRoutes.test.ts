@@ -104,7 +104,7 @@ const center = installSyncCenter(app, {
   onModelsChanged: () => undefined,
   dataPlaneStatus: () => ({ enabled: false, pending: 0, deadLetters: 0, oldestPendingAgeMs: null, lastErrorCode: null, lastAttemptAt: null, lastSuccessAt: null, effectiveBatchSize: 200 }),
   addAudit: (action, target) => { audits.push(`${action}:${target}`) },
-  externalJobs: { catalogFile: path.join(root, 'nope/catalog.json'), upstreamDir: path.join(root, 'nope'), localRtkVersion: async () => null },
+  externalJobs: { catalogFile: path.join(root, 'nope/catalog.json'), upstreamDir: path.join(root, 'nope'), localRtkVersion: async () => null, platform: 'darwin' },
 }, registry)
 assert.equal(typeof center.start, 'function')
 const server = app.listen(0, '127.0.0.1')
@@ -123,6 +123,11 @@ test('GET /api/sync/status 按契约 C3 返回全部任务', async () => {
   for (const job of body.jobs) for (const key of required) assert.ok(key in job, `${String(job.id)} 缺少 ${key}`)
   assert.equal(body.jobs.find(job => job.id === 'data-plane')!.state, 'disabled')
   assert.equal(body.jobs.find(job => job.id === 'kernel-upstream')!.canRunNow, false)
+  // CPA engine: discovery would write live routing, so it never runs on its own — only from the sync center
+  const discovery = body.jobs.find(job => job.id === 'model-discovery')!
+  assert.equal(discovery.intervalMs, null)
+  assert.equal(discovery.nextRunAt, null)
+  assert.equal(discovery.canRunNow, true)
 })
 
 test('POST /api/sync/:id/run：202 → 冷却 429（带 Retry-After）；外部任务 400；未知 404', async () => {

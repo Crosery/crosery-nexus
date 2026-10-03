@@ -77,8 +77,15 @@ if (dataPlaneDashboardReadMode === 'snapshot' && !dataPlaneEnabled) {
   throw new Error('DATA_PLANE_DASHBOARD_READ_MODE=snapshot 要求 DATA_PLANE_ENABLED=true')
 }
 
+const gatewayEngine = choiceSetting('GATEWAY_ENGINE', process.env.GATEWAY_ENGINE, 'cpa', ['cpa', 'magpie'] as const)
+
 export const config = {
-  gatewayEngine: choiceSetting('GATEWAY_ENGINE', process.env.GATEWAY_ENGINE, 'cpa', ['cpa', 'magpie'] as const),
+  gatewayEngine,
+  /**
+   * Model discovery writes newly found models into the channel table; under CPA that table is live routing.
+   * Default: on its timer with the Magpie engine, on demand (sync center) with CPA.
+   */
+  modelDiscoveryScheduled: booleanSetting('MODEL_DISCOVERY_SCHEDULE', process.env.MODEL_DISCOVERY_SCHEDULE, gatewayEngine === 'magpie'),
   magpieControlPlane: choiceSetting('MAGPIE_CONTROL_PLANE', process.env.MAGPIE_CONTROL_PLANE, 'local', ['local', 'cpa'] as const),
   magpiePort: positiveInteger('MAGPIE_PORT', process.env.MAGPIE_PORT, 8790, { min: 1024, max: 65535 }),
   magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
