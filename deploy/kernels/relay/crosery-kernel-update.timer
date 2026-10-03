@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the gateway kernels every 10 minutes (CPA is only replaced inside the quiet window)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

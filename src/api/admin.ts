@@ -2,6 +2,7 @@ import type {
   AutoupdateView,
   CredentialUploadResult,
   GatewaySettings,
+  KernelsView,
   GatewaySettingValues,
   MagpieUpdateStatus,
   ModelSyncResult,
@@ -106,6 +107,14 @@ export const adminApi = {
     get: () => request<AutoupdateView>('/api/autoupdate'),
     set: (patch: { magpie?: { enabled?: boolean; window?: { start: string; end: string } }; rtk?: { enabled?: boolean } }) =>
       request<AutoupdateView>('/api/autoupdate', { method: 'PUT', body: JSON.stringify(patch) }),
+  },
+  /** 「网关内核」（中转站）：只写开关/时段、排队回滚；替换由 crosery-kernel-update 定时任务做（server/kernels.ts）。 */
+  kernels: {
+    get: () => request<KernelsView>('/api/kernels'),
+    set: (patch: { cpa?: { enabled: boolean }; magpie?: { enabled: boolean }; window?: { start: string; end: string } }) =>
+      request<KernelsView>('/api/kernels', { method: 'PUT', body: JSON.stringify(patch) }),
+    rollback: (kernel: 'cpa' | 'magpie') =>
+      request<{ queued: boolean; kernel: string; to: string }>('/api/kernels/rollback', { method: 'POST', body: JSON.stringify({ kernel, confirm: true }) }),
   },
   getRTKStatus: () => rtkRequest<RTKStatusResponse>('/api/rtk/status'),
   getRTKPlanes: () => rtkRequest<{ plane: RtkPlaneId; planes: RtkPlaneProbe[]; fellBack: boolean }>('/api/rtk/planes'),

@@ -1,0 +1,183 @@
+# CPA smoke fixture: every key path the relay's production config.yaml has (2026-10-03, paths only, never values),
+# filled with throwaway values (bounded settings use the code defaults), in the legacy (v7) layout production still uses. scripts/cpa-smoke.mjs copies it to a
+# temp dir, replaces __PORT__ / __AUTH_DIR__, starts the candidate on loopback and checks that a config write keeps
+# every top-level section below. Nothing here is a real key: sk-smoke-* are made up, secret-key is the bcrypt of a
+# throwaway string (management auth in the smoke goes through MANAGEMENT_PASSWORD).
+host: "127.0.0.1"
+port: __PORT__
+auth-dir: "__AUTH_DIR__"
+debug: false
+commercial-mode: false
+logging-to-file: false
+logs-max-total-size-mb: 0
+error-logs-max-files: 10
+usage-statistics-enabled: true
+request-log: false
+request-retry: 1
+max-retry-credentials: 2
+max-retry-interval: 30
+nonstream-keepalive-interval: 0
+disable-cooling: false
+disable-image-generation: false
+force-model-prefix: false
+passthrough-headers: false
+ws-auth: false
+proxy-url: ""
+redis-usage-queue-retention-seconds: 60
+video-result-auth-cache-ttl: "10m"
+# fork: top-level keys production carries that no v7 schema tag declares; they must survive a config write untouched
+claude-cache-ttl-upgrade: false
+api-key-channel-access-required: false
+
+remote-management:
+  allow-remote: false
+  secret-key: "$2a$10$2jL6NzaKkdUFuyalXlfCE.2qzw1Cc3NsGSwGkW8EX7lTKBKWrWsWq"
+  disable-control-panel: true
+  disable-auto-update-panel: true
+  panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+
+tls:
+  enable: false
+  cert: ""
+  key: ""
+
+pprof:
+  enable: false
+  addr: "127.0.0.1:0"
+
+plugins:
+  enabled: false
+  dir: "plugins"
+
+discovery:
+  service-type: "_cliproxyapi._tcp"
+  subtypes: []
+
+api-keys:
+  - "sk-smoke-open"
+  - "sk-smoke-limited"
+  - "sk-smoke-channel"
+
+# fork: per-key model allowlists (the console rebuilds these) and per-key channel allowlists
+api-key-model-access:
+  "sk-smoke-limited":
+    - "smoke-model-a"
+
+api-key-channel-access:
+  "sk-smoke-channel":
+    - "smoke-compat"
+
+claude-api-key: []
+codex-api-key: []
+
+openai-compatibility:
+  - name: "smoke-compat"
+    base-url: "http://127.0.0.1:9/v1"
+    disable-cooling: true
+    api-key-entries:
+      - api-key: "sk-smoke-upstream"
+        proxy-url: "http://127.0.0.1:9"
+    models:
+      - name: "smoke-upstream-a"
+        alias: "smoke-model-a"
+        display-name: "Smoke Model A"
+        max-context-length: 128000
+        input-modalities: ["text"]
+        output-modalities: ["text"]
+        thinking:
+          levels: ["low", "high"]
+      - name: "smoke-upstream-b"
+        alias: "smoke-model-b"
+        display-name: "Smoke Model B"
+        max-context-length: 32000
+        input-modalities: ["text", "image"]
+        output-modalities: ["text"]
+        thinking:
+          levels: ["none"]
+
+oauth-excluded-models:
+  antigravity: ["smoke-excluded-ag"]
+  claude: ["smoke-excluded-claude"]
+  codex: ["smoke-excluded-codex"]
+
+oauth-model-alias:
+  antigravity:
+    - name: "smoke-ag-upstream"
+      alias: "smoke-ag-alias"
+      fork: true
+
+antigravity:
+  sensitive-words: ["smoke-word"]
+
+codex:
+  disable-codex-cloaking: true
+  identity-confuse: false
+  stream-bootstrap-buffering: true
+
+claude-header-defaults:
+  user-agent: "smoke-agent/1.0"
+  package-version: "0.0.1"
+  runtime-version: "v0.0.1"
+  os: "Linux"
+  arch: "x64"
+  timeout: "600"
+
+credential-concurrency:
+  cpa-heartbeat-timeout: 3s
+  cpa-cancel-bound: 5s
+  reclaim-grace: 5s
+  cleanup-interval: 5s
+  release-flush-interval: 250ms
+  release-max-backoff: 2s
+  busy-retry-min: 250ms
+  busy-retry-max: 1s
+  max-limit: 8
+
+credential-in-flight:
+  snapshot-interval: "2s"
+  stale-after: "10s"
+  max-part-bytes: 262144
+  max-part-count: 64
+  max-revision-bytes: 16777216
+  max-aggregate-groups: 100000
+  max-details: 10000
+  max-string-bytes: 256
+  staging-retention: "1m"
+
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: false
+  antigravity-credits: false
+
+routing:
+  strategy: "round-robin"
+  session-affinity: true
+  session-affinity-ttl: "1h"
+
+streaming:
+  keepalive-seconds: 15
+  bootstrap-retries: 1
+
+payload:
+  default:
+    - models:
+        - name: "smoke-model-*"
+          protocol: "openai"
+          from-protocol: "openai"
+          match: []
+          not-match: []
+          exist: []
+          not-exist: []
+      params:
+        "temperature": 0.5
+  override: []
+  filter:
+    - models:
+        - name: "smoke-model-b"
+          protocol: "openai"
+          from-protocol: "openai"
+          match: []
+          not-match: []
+          exist: []
+          not-exist: []
+      params: ["top_k"]

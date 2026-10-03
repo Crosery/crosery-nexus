@@ -555,7 +555,7 @@ export async function runAuto({ dryRun = false, paths = autoPaths(), deps = {} }
   }
 }
 
-/** launchd: magpie + rtk, each guarded so one failing never skips the other. */
+/** launchd: magpie + rtk (+ the relay's standby Magpie when MAGPIE_STANDBY_SSH is set), each guarded so one failing never skips the other. */
 export async function runScheduled() {
   const paths = autoPaths()
   const config = normalizeConfig(await readJSON(paths.config))
@@ -565,7 +565,10 @@ export async function runScheduled() {
     const { runRtkAuto } = await import('./rtk-autoupdate.mjs')
     rtk = await runRtkAuto().catch(error => ({ error: error.message }))
   }
-  return { magpie, rtk }
+  if (!process.env.MAGPIE_STANDBY_SSH) return { magpie, rtk }
+  const { publish } = await import('./magpie-standby.mjs')
+  const standby = await publish({ paths }).catch(error => ({ error: error.message }))
+  return { magpie, rtk, standby }
 }
 
 async function main() {

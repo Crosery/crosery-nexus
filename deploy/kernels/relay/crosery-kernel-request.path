@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the console's queued gateway-kernel requests (rollback)
+After=crosery-api-console.service
+
+[Path]
+PathExistsGlob=/opt/crosery-api-console/data/kernel-requests/*.json
+Unit=crosery-kernel-update.service
+
+[Install]
+WantedBy=multi-user.target

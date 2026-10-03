@@ -12,6 +12,7 @@ import { notify } from '../../ui/feedback/toast'
 import { fmtInt, fmtTime } from '../../ui/fmt'
 import type { DataState } from '../../ui/types'
 import type { MagpieAutoView, MagpieUpdateStatus, VersionsData } from '../../types'
+import KernelsPanel from './KernelsPanel.vue'
 import MagpieUpdatePanel from './MagpieUpdatePanel.vue'
 import { fmtSpan, gapMark, shortRev } from './settingsModel'
 
@@ -194,10 +195,14 @@ async function runUpdate(action: 'check' | 'rehearse' | 'apply') {
       </dd>
     </dl>
 
-    <dl v-else class="set-mag__facts">
-      <dt>网关内核</dt>
-      <dd><span class="num">{{ legacyKernel ?? '—' }}</span></dd>
-    </dl>
+    <KernelsPanel v-else>
+      <template #fallback>
+        <dl class="set-mag__facts">
+          <dt>网关内核</dt>
+          <dd><span class="num">{{ legacyKernel ?? '—' }}</span></dd>
+        </dl>
+      </template>
+    </KernelsPanel>
 
     <p v-if="otherVersions" class="set-mag__other num">{{ otherVersions }}</p>
   </Plate>

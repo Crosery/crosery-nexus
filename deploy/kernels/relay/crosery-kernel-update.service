@@ -1,0 +1,21 @@
+[Unit]
+Description=Crosery gateway kernels: stage builder drops, apply CPA in the quiet window, keep the Magpie standby current
+After=network-online.target cli-proxy-api.service crosery-api-console.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/crosery-api-console-current
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/opt/crosery-node-current/bin/node /opt/crosery-api-console-current/scripts/kernel-applier.mjs auto
+# cpa-install-binary.sh waits up to ~2.5 min for its gates after a restart, twice when it rolls back
+TimeoutStartSec=30min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true

@@ -724,6 +724,28 @@ export type RtkAutoView = {
 }
 export type AutoupdateView = { magpie: MagpieAutoView; rtk: RtkAutoView }
 
+/** 「网关内核」（`GET/PUT /api/kernels`，server/kernels.ts，中转站）：CPA 接流量 + Magpie 备用，各自的上游、候选、自动更新与回滚。 */
+export type KernelWindow = { start: string; end: string; tz: string; label: string }
+export type KernelView = {
+  id: 'cpa' | 'magpie'
+  name: string
+  role: 'serving' | 'standby'
+  roleText: string
+  version: string | null
+  online: boolean | null
+  upstream: { latest: string | null; line: string | null; heldNewer: string | null; checkedAt: string | null } | null
+  candidate: { label: string; tone: AutoTone; text: string } | null
+  enabled: boolean
+  state: string
+  tone: AutoTone
+  line: string
+  reasons: AutoReason[]
+  last: { text: string; tone: AutoTone; at: string } | null
+  rollback: { to: string } | null
+  checkedAt: string | null
+}
+export type KernelsView = { available: boolean; reason: string | null; scheduler: 'installed' | 'missing' | 'stale'; window: KernelWindow; kernels: KernelView[] }
+
 /** magpie 内核更新状态（`GET /api/magpie/update-status`，task-79）。 */
 export type MagpieUpdateStatus = {
   capability: boolean

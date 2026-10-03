@@ -24,6 +24,7 @@ import { registerOverviewRoutes } from './overviewRoutes.js'
 import { registerUsageWorkspaceRoutes } from './usageWorkspaceRoutes.js'
 import { registerMagpieVersionRoutes } from './magpieVersion.js'
 import { registerAutoupdateRoutes } from './autoupdate.js'
+import { kernelPaths, registerKernelRoutes } from './kernels.js'
 import { accountsService, registerAccountsRoutes } from './accountsRoutes.js'
 import { createGatewaySettingsService, registerGatewaySettingsRoutes } from './gatewaySettings.js'
 import { proxyService, registerProxyRoutes } from './proxyRoutes.js'
@@ -1198,6 +1199,17 @@ registerAutoupdateRoutes(app, {
     const { findRTKBinary, readLocalPayload } = await import('./rtkService.js')
     const binary = findRTKBinary()
     return binary ? (await readLocalPayload(binary)).version : null
+  },
+})
+
+/* 「网关内核」（server/kernels.ts，中转站）：CPA 接流量 + Magpie 备用；只写开关、排队回滚，替换由 crosery-kernel-update 定时任务做。 */
+registerKernelRoutes(app, {
+  addAudit,
+  paths: () => kernelPaths(config.dataDir),
+  available: () => process.platform === 'linux' && config.gatewayEngine !== 'magpie',
+  cpaRunning: async () => {
+    const info = await getCpaVersion()
+    return info.version && !['offline', 'unknown'].includes(info.version) ? info.version : null
   },
 })
 
