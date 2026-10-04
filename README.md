@@ -1,9 +1,9 @@
-# CPA Console (CLI Proxy API Management Console)
+# Crosery Nexus (AI Gateway & Management Console)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org/)
 
-**CPA Console** 是一个专为 **CLI Proxy API (CPA)** 生态打造的企业级统一 AI 网关管理控制台与全链路用量监控平台。基于 React 19 + TypeScript + Express + SQLite 构建，提供极低运行时开销、毫秒级报表查询以及生产级安全隔离能力。
+**Crosery Nexus** 是一个专为统一管理主流 AI 供应商、订阅账号池（OAuth / Device Code）、兼容渠道与全局共享模型而打造的高性能网关控制台。基于 Vue 3 + Tuffex + TypeScript + Express + SQLite 构建，提供极低运行时开销、毫秒级报表查询以及生产级安全隔离能力。
 
 ---
 
@@ -75,8 +75,8 @@ flowchart TD
 
 ### 2. 安装依赖
 ```bash
-git clone git@g.ktvsky.com:ai-native/cpa-console.git
-cd cpa-console
+git clone https://github.com/Crosery/crosery-nexus.git
+cd crosery-nexus
 npm install
 ```
 
