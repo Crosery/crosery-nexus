@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
-  applierPaths, classifyInstall, decideCpa, decideMagpie, emptyState, normalizeConfig, parseCpaReport, parseMagpieReport,
+  applierPaths, applyCpa, classifyInstall, configLayout, decideCpa, decideMagpie, emptyState, normalizeConfig, parseCpaReport, parseMagpieReport,
   readState, runAuto, sameMajor, windowState, withLock,
 } from './kernel-applier.mjs'
 
@@ -44,6 +44,28 @@ test('window: wall clock of its own time zone, wraps past midnight, next start',
   assert.equal(windowState(bj(1, 0), night).inside, false)
 })
 
+test('config layout: migrated markers never look legacy; missing or ambiguous files fail closed', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kacl-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'config.yaml')
+  assert.equal(await configLayout(file), null)
+  for (const [body, expected] of [
+    ['api-keys: []\n', 'legacy'],
+    ['# config-version: 8\napi-keys: []\n', 'legacy'],
+    ['config-version: 8\napi-keys: []\n', 'v8'],
+    ['config-version: 8 # migrated\n', 'v8'],
+    ['﻿"config-version": 8\r\n', 'v8'],
+    ["'config-version': 8\n", 'v8'],
+    ['config-version: invalid\n', null],
+    ['config-version: 8\nconfig-version: 7\n', null],
+    ['{config-version: 8, access: {api-keys: []}}\n', null],
+    ['', null],
+  ]) {
+    await fs.writeFile(file, body)
+    assert.equal(await configLayout(file), expected, JSON.stringify(body))
+  }
+})
+
 test('versions: major compare', () => {
   assert.equal(sameMajor(RUNNING, NEXT), true)
   assert.equal(sameMajor(RUNNING, MAJOR), false)
@@ -59,7 +81,7 @@ test('decideCpa: every reason not to apply, then apply only inside the window', 
   assert.equal(decideCpa({ ...base, state: staged('7.3.14-patched.0') }).why, 'up-to-date')
   assert.equal(decideCpa({ ...base, running: null, state: staged(NEXT) }).why, 'offline')
   assert.equal(decideCpa({ ...base, hold: 'Locked on purpose', state: staged(NEXT) }).why, 'hold-file')
-  assert.equal(decideCpa({ ...base, state: staged(MAJOR) }).why, 'major')
+  assert.equal(decideCpa({ ...base, state: staged(MAJOR) }).why, 'apply')
   assert.equal(decideCpa({ ...base, state: staged(NEXT, { attempts: { [NEXT]: 1 } }) }).why, 'attempted')
   assert.equal(decideCpa({ ...base, state: staged(NEXT, { nextAttemptAt: new Date(bj(5, 30)).toISOString() }) }).why, 'backoff')
   const today = { action: 'apply', result: 'applied', at: new Date(bj(5, 5)).toISOString(), version: '7.3.16-patched.0' }
@@ -85,6 +107,8 @@ test('reports: strict shapes; a "built" report needs a candidate', () => {
   const ok = { version: 1, kernel: 'cpa', status: 'built', checkedAt: '2026-10-03T00:00:00Z', upstreamLatest: 'v8.1.0', line: 'v8.0', base: 'v8.0.12',
     heldNewer: { tag: 'v8.1.0', text: '跨 minor' }, candidate: { version: MAJOR, sha256: 'c'.repeat(64), tag: 'v8.0.12', checks: [{ name: 'models', ok: true }] } }
   assert.equal(parseCpaReport(ok).candidate.version, MAJOR)
+  const checks = Array.from({ length: 42 }, (_, i) => ({ name: `smoke-${i}`, ok: i !== 41 }))
+  assert.deepEqual(parseCpaReport({ ...ok, candidate: { ...ok.candidate, checks } }).candidate.checks, checks)
   assert.equal(parseCpaReport({ ...ok, candidate: null }), null)
   assert.equal(parseCpaReport({ ...ok, status: 'rm -rf' }), null)
   assert.equal(parseCpaReport({ ...ok, candidate: { ...ok.candidate, version: '8.0.12; reboot' } }), null)
@@ -120,7 +144,7 @@ test('lock: a live holder makes the second run busy; a dead holder is taken over
 async function relay({ running = RUNNING, install = { code: 0 } } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kar-'))
   const env = { KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_BINARY: path.join(dir, 'cli-proxy-api'),
-    CPA_INSTALL: path.join(dir, 'install.sh'), CPA_HOLD_FILE: path.join(dir, 'hold'), MAGPIE_STANDBY_DIR: path.join(dir, 'magpie') }
+    CPA_INSTALL: path.join(dir, 'install.sh'), CPA_HOLD_FILE: path.join(dir, 'hold'), CPA_CONFIG: path.join(dir, 'config.yaml'), MAGPIE_STANDBY_DIR: path.join(dir, 'magpie') }
   const paths = applierPaths(env)
   await fs.mkdir(paths.cpa.inbox, { recursive: true })
   await fs.mkdir(paths.magpie.inbox, { recursive: true })
@@ -132,7 +156,7 @@ async function relay({ running = RUNNING, install = { code: 0 } } = {}) {
     if (command === 'systemctl') return { code: 0, stdout: world.active ? 'active\n' : 'inactive\n', stderr: '' }
     if (command === paths.cpa.install) {
       world.installs.push(args)
-      const result = typeof world.install === 'function' ? world.install(args) : world.install
+      const result = typeof world.install === 'function' ? await world.install(args) : world.install
       if (result.code === 0) world.running = await versionOf(args[0])
       return { code: result.code, stdout: result.stdout ?? `开始安装 ${RUNNING} -> ${args[1]}（备份 ${path.join(dir, 'backup.bin')}）\n安装成功\n`, stderr: '' }
     }
@@ -223,23 +247,55 @@ test('auto: a rolled-back install spends the attempt; a refused one is retried a
   await q.close()
 })
 
-test('auto: a new major is staged but never installed automatically; the hold file stops everything', async () => {
+test('auto: a new major goes in like any release (in the window, through the install script); the hold file stops everything', async () => {
   const r = await relay()
+  await fs.writeFile(r.paths.cpa.config, 'api-keys: []\n')
   await r.drop(MAJOR)
-  assert.equal((await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })).cpa.why, 'major')
-  await r.drop(NEXT)
-  await fs.writeFile(r.paths.cpa.hold, 'Locked on purpose: local patches\n')
+  for (const hold of ['Locked on purpose: local patches\n', '']) {
+    await fs.writeFile(r.paths.cpa.hold, hold)
+    assert.equal((await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })).cpa.why, 'hold-file')
+    assert.equal(r.world.installs.length, 0)
+  }
+  await fs.rm(r.paths.cpa.hold)
+  await fs.mkdir(r.paths.cpa.hold)
   assert.equal((await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })).cpa.why, 'hold-file')
   assert.equal(r.world.installs.length, 0)
+  assert.equal((await applyCpa({ paths: r.paths, state: await readState(r.paths, 'cpa'), version: MAJOR, deps: { run: r.runner } })).result, 'refused')
+  assert.equal(r.world.installs.length, 0)
+  await fs.rmdir(r.paths.cpa.hold)
+  const out = await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })
+  assert.equal(out.log.find(item => item.kernel === 'cpa')?.result, 'applied')
+  assert.equal(r.world.running, MAJOR)
+  const state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.applied.version, state.applied.previous, state.configLayout], [MAJOR, RUNNING, 'legacy'])
   await r.close()
 })
 
-test('rollback request: same major goes back through the install script; across a major it is refused', async () => {
+test('auto: post-install layout is refreshed before offering a cross-major rollback', async t => {
+  const r = await relay()
+  t.after(r.close)
+  await fs.writeFile(r.paths.cpa.config, 'api-keys: []\n')
+  r.world.install = async () => {
+    await fs.writeFile(r.paths.cpa.config, 'config-version: 8\n')
+    return { code: 0 }
+  }
+  await r.drop(MAJOR)
+  await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })
+  assert.equal((await readState(r.paths, 'cpa')).configLayout, 'v8')
+})
+
+test('rollback request: back through the install script; across a major only while config.yaml is still legacy', async () => {
   const r = await relay()
   await r.drop(NEXT)
   const deps = { run: r.runner, now: () => bj(5, 10) }
   await runAuto({ paths: r.paths, deps })
   await fs.writeFile(path.join(r.dir, 'backup.bin'), RUNNING)
+  await fs.writeFile(r.paths.cpa.hold, '')
+  await fs.writeFile(path.join(r.paths.requests, 'rollback-cpa.json'), JSON.stringify({ confirm: true }))
+  const held = await runAuto({ paths: r.paths, deps })
+  assert.equal(held.log[0].result, 'refused')
+  assert.equal(r.world.installs.length, 1)
+  await fs.rm(r.paths.cpa.hold)
   await fs.writeFile(path.join(r.paths.requests, 'rollback-cpa.json'), JSON.stringify({ confirm: true, at: new Date(bj(5, 15)).toISOString() }))
   await fs.writeFile(path.join(r.paths.requests, 'anything-else.json'), '{}')
   const out = await runAuto({ paths: r.paths, deps: { ...deps, now: () => bj(5, 20) } })
@@ -254,12 +310,26 @@ test('rollback request: same major goes back through the install script; across 
   const m = await relay({ running: RUNNING })
   await fs.mkdir(m.paths.states, { recursive: true })
   await fs.writeFile(path.join(m.paths.states, 'cpa.json'), JSON.stringify({ ...emptyState('cpa'), applied: { version: MAJOR, previous: RUNNING, backup: path.join(m.dir, 'b') } }))
+  await fs.writeFile(path.join(m.dir, 'b'), RUNNING)
   m.world.running = MAJOR
+  await fs.writeFile(m.paths.cpa.config, 'config-version: 8\napi-keys: []\n')
   await fs.writeFile(path.join(m.paths.requests, 'rollback-cpa.json'), JSON.stringify({ confirm: true }))
   const refused = await runAuto({ paths: m.paths, deps: { run: m.runner, now: () => bj(12) } })
   assert.equal(refused.log[0].result, 'refused')
-  assert.match((await readState(m.paths, 'cpa')).lastApply.reasons[0].text, /跨大版本/)
+  assert.match((await readState(m.paths, 'cpa')).lastApply.reasons[0].text, /迁移成新格式（v8）/)
   assert.equal(m.world.installs.length, 0)
+  await fs.rm(m.paths.cpa.config)
+  await fs.writeFile(path.join(m.paths.requests, 'rollback-cpa.json'), JSON.stringify({ confirm: true }))
+  const missing = await runAuto({ paths: m.paths, deps: { run: m.runner, now: () => bj(12, 1) } })
+  assert.equal(missing.log[0].result, 'refused')
+  assert.match((await readState(m.paths, 'cpa')).lastApply.reasons[0].text, /无法确认 config.yaml 仍是旧格式/)
+  assert.equal(m.world.installs.length, 0)
+  await fs.writeFile(m.paths.cpa.config, 'api-keys: []\n')
+  await fs.writeFile(path.join(m.paths.requests, 'rollback-cpa.json'), JSON.stringify({ confirm: true }))
+  const back = await runAuto({ paths: m.paths, deps: { run: m.runner, now: () => bj(12, 5) } })
+  assert.equal(back.log[0].result, 'applied')
+  assert.deepEqual(m.world.installs.at(-1), [path.join(m.dir, 'b'), RUNNING])
+  assert.equal(m.world.running, RUNNING)
   await r.close()
   await m.close()
 })

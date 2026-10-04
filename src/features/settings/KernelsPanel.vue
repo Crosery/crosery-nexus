@@ -100,7 +100,7 @@ async function saveWindow() {
         <dd>
           <template v-if="k.upstream">
             <span class="num">{{ k.upstream.latest ?? '—' }}</span>
-            <span v-if="k.upstream.line" class="dim">跟随 {{ k.upstream.line }}.x</span>
+            <span v-if="k.id === 'cpa'" class="dim">跟随最新正式版</span>
             <span v-if="k.upstream.heldNewer" class="set-krn__warn">◇ {{ k.upstream.heldNewer }} 要人工合并补丁</span>
             <span v-if="k.upstream.checkedAt" class="dim">检查于 {{ fmtTime(k.upstream.checkedAt) }}</span>
           </template>

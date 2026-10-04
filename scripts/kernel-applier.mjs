@@ -11,9 +11,9 @@
  * and the Magpie builder (the owner's Mac, after its own rehearsal) drop a binary + report through their forced-command
  * gates into <lib>/<kernel>/inbox. `auto` runs the console's queued requests, verifies the drops, records what the
  * builders said, then installs:
- * - CPA only inside the quiet window, once per version, never across a major version, never while the hold file is
- *   set, and only through /usr/local/sbin/cpa-install-binary.sh — its console/AGY gates, backup and config-aware
- *   rollback stay the one install transaction;
+ * - CPA (kept at upstream's latest release, majors included) only inside the quiet window, once per version, never
+ *   while the hold file is set, and only through /usr/local/sbin/cpa-install-binary.sh — its console/AGY gates,
+ *   backup and config-aware rollback stay the one install transaction;
  * - Magpie into a new release dir, boots it once in the console's sandbox, checks /internal/health, then flips `current`.
  * The console writes only <data>/kernel-autoupdate.json and <data>/kernel-requests/*.json, and reads
  * <data>/kernels/<kernel>.json, which only this job writes.
@@ -52,6 +52,7 @@ export function applierPaths(env = process.env) {
       binary: env.CPA_BINARY || '/usr/local/bin/cli-proxy-api',
       install: env.CPA_INSTALL || '/usr/local/sbin/cpa-install-binary.sh',
       hold: env.CPA_HOLD_FILE || '/etc/cli-proxy-api/auto-update.hold',
+      config: env.CPA_CONFIG || '/etc/cli-proxy-api/config.yaml',
       service: env.CPA_SERVICE || 'cli-proxy-api',
     },
     magpie: {
@@ -170,7 +171,7 @@ function reasonList(value) {
 
 function checkList(value) {
   if (!Array.isArray(value)) return []
-  return value.filter(isObject).slice(0, 40).map(item => ({ name: String(item.name ?? '').slice(0, 80), ok: item.ok === true, ...(item.detail ? { detail: String(item.detail).slice(0, 200) } : {}) })).filter(item => item.name)
+  return value.filter(isObject).slice(0, 100).map(item => ({ name: String(item.name ?? '').slice(0, 80), ok: item.ok === true, ...(item.detail ? { detail: String(item.detail).slice(0, 200) } : {}) })).filter(item => item.name)
 }
 
 const CPA_BUILDER_STATUS = new Set(['built', 'up-to-date', 'held', 'merge-conflict', 'build-failed', 'smoke-failed', 'fetch-failed', 'upload-failed'])
@@ -232,7 +233,7 @@ const saveState = (paths, state) => writeAtomic(path.join(paths.states, `${state
 
 /**
  * What `auto` does with CPA now. action: none | wait | apply. `why` is the one word the console renders:
- * disabled · no-candidate · up-to-date · held · offline · hold-file · major · attempted · backoff · daily · window · apply.
+ * disabled · no-candidate · up-to-date · held · offline · hold-file · attempted · backoff · daily · window · apply.
  */
 export function decideCpa({ now, config, state, running, hold }) {
   const window = windowState(now, config.window)
@@ -248,9 +249,6 @@ export function decideCpa({ now, config, state, running, hold }) {
   if (!running) return { action: 'none', why: 'offline', ...target, ...base }
   if (staged.version === running || compareVersions(staged.version, running) < 0) return { action: 'none', why: 'up-to-date', ...target, ...base }
   if (hold) return { action: 'none', why: 'hold-file', reasons: [{ code: 'hold', text: `生产机上有补丁锁（auto-update.hold）：${hold.slice(0, 160)}` }], ...target, ...base }
-  if (!sameMajor(staged.version, running)) {
-    return { action: 'none', why: 'major', reasons: [{ code: 'major', text: `${running} → ${staged.version} 跨大版本，配置格式会迁移，第一次要人工升级` }], ...target, ...base }
-  }
   if ((state.attempts[staged.version] || 0) >= 1) return { action: 'none', why: 'attempted', ...target, ...base }
   const retryAt = Date.parse(state.nextAttemptAt || '')
   if (Number.isFinite(retryAt) && retryAt > now) return { action: 'none', why: 'backoff', retryAt: state.nextAttemptAt, ...target, ...base }
@@ -306,8 +304,26 @@ export async function runningCpa(paths, deps = {}) {
   return binaryVersion(paths.cpa.binary, runner)
 }
 
+/** An older major cannot start on migrated config; unfamiliar version markers must never look legacy. */
+export async function configLayout(file) {
+  try {
+    const source = (await fs.readFile(file, 'utf8')).replace(/^﻿/, '')
+    if (!source.trim()) return null
+    const markers = source.split(/\r?\n/).filter(line => !/^\s*#/.test(line) && line.includes('config-version'))
+    if (!markers.length) return 'legacy'
+    const match = markers.length === 1 && /^\s*(?:config-version|"config-version"|'config-version')\s*:\s*(\d+)[ \t]*(?:#.*)?$/.exec(markers[0])
+    return match ? `v${match[1]}` : null
+  } catch {
+    return null
+  }
+}
+
 async function readHold(file) {
-  try { const value = (await fs.readFile(file, 'utf8')).trim(); return value || null } catch { return null }
+  try {
+    return (await fs.readFile(file, 'utf8')).trim() || '已设置（空文件）'
+  } catch (error) {
+    return error.code === 'ENOENT' ? null : '补丁锁无法读取；不替换'
+  }
 }
 
 /* ── inbox → staged ─────────────────────────────────────────────────── */
@@ -415,6 +431,7 @@ export function classifyInstall({ code, stdout }) {
 const TRIM = line => line.replace(/（备份 [^）]*）/, '').slice(0, 200)
 
 export async function applyCpa({ paths, state, version, deps = {} }) {
+  if (await readHold(paths.cpa.hold)) return { result: 'refused', reason: '补丁锁（auto-update.hold）仍生效；不替换', lines: [] }
   const runner = deps.run ?? run
   const binary = path.join(paths.cpa.staged, version, 'cli-proxy-api')
   if (!await exists(binary) || await sha256File(binary) !== state.staged?.sha256) {
@@ -517,13 +534,18 @@ export async function applyMagpie({ paths, state, revision, deps = {} }) {
 
 /**
  * CPA: back to the version the last auto-install replaced, through the same install transaction (gates, backup, rollback).
- * Only while that auto-installed version is the one running, only within one major version (a newer major may have
- * migrated config.yaml; an older binary must not start against it), and only from the backup the install recorded.
+ * Only while that auto-installed version is the one running, only from the backup the install recorded, and across a
+ * major version only while config.yaml is still in the legacy layout (an older binary cannot start on a migrated one).
  */
 export async function rollbackCpa({ paths, state, deps = {} }) {
+  if (await readHold(paths.cpa.hold)) throw new Error('补丁锁（auto-update.hold）仍生效；不回滚')
   const applied = state.applied
   if (!applied?.version || !applied.previous) throw new Error('没有可回滚的自动更新（失败的替换已经自动回滚过）')
-  if (!sameMajor(applied.previous, applied.version)) throw new Error(`${applied.version} 与 ${applied.previous} 跨大版本，配置格式可能已迁移，不能一键回滚，需人工处理`)
+  if (!sameMajor(applied.previous, applied.version)) {
+    const layout = await configLayout(paths.cpa.config)
+    if (layout === null) throw new Error('无法确认 config.yaml 仍是旧格式（读不到或格式不明），不能跨大版本回滚，需人工处理')
+    if (layout !== 'legacy') throw new Error(`config.yaml 已被 ${applied.version} 迁移成新格式（${layout}），${applied.previous} 起不来，需人工处理`)
+  }
   const running = await runningCpa(paths, deps)
   if (running && running !== applied.version) throw new Error(`运行中的是 ${running}，不是自动更新装的 ${applied.version}；不覆盖`)
   if (!applied.backup || !await exists(applied.backup)) throw new Error('替换前的备份不在了')
@@ -624,6 +646,7 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
     log.push(...ingested.notes)
     const running = await runningCpa(paths, deps)
     cpa.installed = running ? { version: running, at: cpa.installed?.version === running ? cpa.installed.at : iso(now()) } : cpa.installed
+    cpa.configLayout = await configLayout(paths.cpa.config)
     const decision = decideCpa({ now: now(), config, state: cpa, running, hold: await readHold(paths.cpa.hold) })
     cpa.decision = { ...decision, at: iso(now()) }
     if (decision.action === 'apply') {
@@ -646,6 +669,7 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
       log.push({ kernel: 'cpa', action: 'apply', version: decision.version, result: outcome.result })
       // what the console shows next is the state after the apply, not the decision that started it
       const after = outcome.result === 'refused' ? running : await runningCpa(paths, deps)
+      cpa.configLayout = await configLayout(paths.cpa.config)
       cpa.decision = { ...decideCpa({ now: now(), config, state: cpa, running: after, hold: await readHold(paths.cpa.hold) }), at: iso(now()) }
     }
     await saveState(paths, cpa)

@@ -88,7 +88,38 @@ if (action === 'prepare') {
       await fs.unlink(socket)
     }
   }
-  const env = Object.fromEntries(['PATH', 'LANG', 'LC_ALL', 'TMPDIR'].filter(key => process.env[key]).map(key => [key, process.env[key]]))
+  const detectSystemProxies = () => {
+    const proxies = {}
+    if (process.platform === 'darwin') {
+      try {
+        const out = execFileSync('scutil', ['--proxy'], { encoding: 'utf8' })
+        if (/HTTPSEnable\s*:\s*1/.test(out)) {
+          const host = out.match(/HTTPProxy\s*:\s*(\S+)/)?.[1]
+          const port = out.match(/HTTPPort\s*:\s*(\d+)/)?.[1]
+          if (host && port) proxies.http_proxy = `http://${host}:${port}`
+        }
+        if (/HTTPSEnable\s*:\s*1/.test(out)) {
+          const host = out.match(/HTTPSProxy\s*:\s*(\S+)/)?.[1]
+          const port = out.match(/HTTPSPort\s*:\s*(\d+)/)?.[1]
+          if (host && port) proxies.https_proxy = `http://${host}:${port}`
+        }
+        if (/SOCKSEnable\s*:\s*1/.test(out)) {
+          const host = out.match(/SOCKSProxy\s*:\s*(\S+)/)?.[1]
+          const port = out.match(/SOCKSPort\s*:\s*(\d+)/)?.[1]
+          if (host && port) proxies.all_proxy = `socks5://${host}:${port}`
+        }
+      } catch {}
+    }
+    return proxies
+  }
+
+  const proxyVars = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'NO_PROXY', 'no_proxy']
+  const env = {
+    ...detectSystemProxies(),
+    ...Object.fromEntries(['PATH', 'LANG', 'LC_ALL', 'TMPDIR', ...proxyVars].filter(key => process.env[key]).map(key => [key, process.env[key]])),
+  }
+  if (!env.no_proxy && !env.NO_PROXY) env.no_proxy = 'localhost,127.0.0.1'
+
   const kernel = spawn(path.join(runtime, 'bin/magpie-kernel'), [], {
     cwd: home, env: { ...env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'),
       MAGPIE_KERNEL_SOCKET: socket, MAGPIE_NO_STATS: '1', DO_NOT_TRACK: '1' }, stdio: 'ignore',

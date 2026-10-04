@@ -1,0 +1,7 @@
+2e57b16e259a81a974ea461a357bebd1699eb3a44ca8e233a3c91c5654432946  0001-feat-config-add-fork-access-and-provider-settings-to.patch
+7b363c360ad9bc3690407fba0aa6f3465dbcd7387073c365b91429ac4dafb37e  0002-feat-management-manage-per-key-access-maps-and-expos.patch
+88c7fb8b0e91ca19c964096ca2f0dc38486f62b8fdf703ff357985d0fec6ce3e  0003-feat-access-enforce-per-key-model-and-channel-allowl.patch
+7f60cc8e941f4e6f00d6932c277f7ef5bf9749b7e87cc6ecb1dae69bedd265aa  0004-feat-registry-enrich-model-metadata-from-models.dev-.patch
+4a8ce61a9a9ccfe5fede7de89566110e679d9d9d8e02e22ff14a43261bfea799  0005-feat-registry-built-in-Claude-Fable-5.1-and-Opus-5.5.patch
+996069b4090eb58e23c20c7aa1ea363a75bc3b45ca09b849426b5d266549d1fa  0006-feat-executor-repair-leaked-thinking-in-OpenAI-compa.patch
+50090ca956b6a0f463dada7a2d78fcf4ff3fc44342bb17ccbd4303aa187d5f33  0007-feat-codex-route-standalone-Alpha-Search-through-a-c.patch

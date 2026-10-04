@@ -47,13 +47,15 @@ export function buildKeyChannelAccessPlan(
   rows: KeyAccessRow[],
   _current: Record<string, string[]>,
   configuredKeys: ReadonlySet<string>,
+  customChannels: string[] = [],
 ): Record<string, string[]> {
   const knownGroups = new Set(groups.map((group) => group.id))
   const plan: Record<string, string[]> = {}
+  const allDefaultChannels = [...new Set([...DEFAULT_OPEN_CHANNELS, ...customChannels])]
 
   for (const row of rows) {
     if (!row.enabled || !configuredKeys.has(row.keyValue)) continue
-    const selected = [...new Set([...row.groups.filter((group) => knownGroups.has(group)), ...DEFAULT_OPEN_CHANNELS])].sort()
+    const selected = [...new Set([...row.groups.filter((group) => knownGroups.has(group)), ...allDefaultChannels])].sort()
     plan[row.keyValue] = selected.length ? selected : ['__console_no_channels_allowed__']
   }
 

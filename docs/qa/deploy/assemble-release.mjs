@@ -127,7 +127,16 @@ if (dirty.length && !ALLOW_DIRTY) {
     dirty.slice(0, 12).join('\n    '))
 }
 const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'))
-const tracked = git('ls-files').split('\n').filter(Boolean)
+const untracked = git('status', '--porcelain')
+  .split('\n')
+  .filter((l) => l.startsWith('?? '))
+  .map((l) => l.slice(3))
+  .flatMap((rel) => {
+    const full = path.join(REPO, rel)
+    if (!fs.existsSync(full)) return []
+    return fs.statSync(full).isDirectory() ? walk(full).map((sub) => path.join(rel, sub)) : [rel]
+  })
+const tracked = [...new Set([...git('ls-files').split('\n'), ...untracked])].filter(Boolean)
 
 /* ------------------------------------------------------------------ */
 /* 1. 复制生产 release 作为基底                                          */

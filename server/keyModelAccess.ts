@@ -1,5 +1,6 @@
 import type { ConsoleGroup } from './groups.js'
 import { modelsForGroups } from './groups.js'
+import { db } from './db.js'
 
 /**
  * CPA 将「没有映射」和「空数组」都解释为不限制。为了表达“这把 Key 当前没有任何
@@ -24,12 +25,26 @@ export const DEFAULT_OPEN_MODELS = ['claude-haiku-4-5-20251001'] as const
  */
 export const DEFAULT_OPEN_MODEL_PREFIXES = ['gpt-image-'] as const
 
+export function getCustomSharedModels(): string[] {
+  try {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'custom_shared_models'").get() as { value: string } | undefined
+    return row ? JSON.parse(row.value) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveCustomSharedModels(models: string[]): void {
+  db.prepare("INSERT INTO app_settings (key, value) VALUES ('custom_shared_models', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(JSON.stringify([...new Set(models)].sort()))
+}
+
 /**
  * 默认开放项只取实时目录里真实存在的模型。网关查不到模型且没有兜底目录时必须如实降级为
  * DENY_ALL（2026-08-20 事故约束），不能靠写死的默认项假装还有模型可用。
  */
-export function defaultOpenModels(groups: ConsoleGroup[]) {
-  const exact = new Set<string>(DEFAULT_OPEN_MODELS)
+export function defaultOpenModels(groups: ConsoleGroup[], custom: string[] = getCustomSharedModels()) {
+  const exact = new Set<string>([...DEFAULT_OPEN_MODELS, ...custom])
   const models = new Set<string>()
   for (const group of groups) {
     for (const model of group.models) {
@@ -65,11 +80,11 @@ export function sameKeyAccess(left: Record<string, string[]>, right: Record<stri
  * 以当前实时分组为唯一真相源重建所有 Key 白名单。
  * 已关闭/已删除渠道不会进入 groups，因此会从 Key 的选择中清掉；若一项都不剩则拒绝全部模型。
  */
-export function buildKeyAccessPlan(groups: ConsoleGroup[], rows: KeyAccessRow[]): KeyAccessPlan {
+export function buildKeyAccessPlan(groups: ConsoleGroup[], rows: KeyAccessRow[], custom: string[] = getCustomSharedModels()): KeyAccessPlan {
   const knownGroups = new Set(groups.map((group) => group.id))
   const access: Record<string, string[]> = {}
   const normalizedGroups = new Map<string, string[]>()
-  const defaults = defaultOpenModels(groups)
+  const defaults = defaultOpenModels(groups, custom)
 
   for (const row of rows) {
     const selected = [...new Set(row.groups.filter((group) => knownGroups.has(group)))].sort()

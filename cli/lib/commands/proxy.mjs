@@ -240,6 +240,7 @@ export default {
   async run(ctx) {
     const [action = 'ls', ...args] = ctx.positionals
     const { ui, values } = ctx
+    const tag = values.tag
 
     if (action === 'ls' || action === 'list') {
       if (args.length) throw new UsageError(`多余的参数：${args.join(' ')}`)

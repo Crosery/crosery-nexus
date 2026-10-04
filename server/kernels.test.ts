@@ -53,7 +53,6 @@ test('CPA view: the line says what the applier decided, in the owner\'s words', 
   assert.match(cpaView(tick({ why: 'up-to-date' }), { config: { ...readKernelConfig('/x'), cpa: { enabled: false } } }).line, /^已关闭/)
   assert.match(cpaView(tick({ why: 'up-to-date' }, { checkedAt: at(NOW - 3_600_000) })).line, /60 分钟没跑了/)
   assert.equal(cpaView(tick({ why: 'window', version: '7.3.21-patched.9' })).line, '7.3.21-patched.9 演练通过 · 等 05:00–07:00（北京时间）替换')
-  assert.match(cpaView(tick({ why: 'major', version: '8.0.12-patched.5' })).line, /跨大版本/)
   assert.match(cpaView(tick({ why: 'hold-file' })).line, /补丁锁/)
   const rolled = cpaView(tick({ why: 'attempted', version: '7.3.21-patched.9' }, {
     lastApply: { version: '7.3.21-patched.9', at: at(bj(5, 10)), action: 'apply', result: 'rolled-back', reasons: [{ code: 'rolled-back', text: '管理API/Console或AGY兼容回归' }] },
@@ -67,7 +66,7 @@ test('CPA view: the line says what the applier decided, in the owner\'s words', 
   assert.equal(backoff.line, '上次没替换成（AGY基线失败，线上未改动） · 05:40 再试')
 })
 
-test('CPA view: upstream, candidate and one-click rollback only within a major', () => {
+test('CPA view: upstream, candidate and one-click rollback (across a major only while config.yaml is legacy)', () => {
   const builder = { status: 'built', checkedAt: at(NOW), upstreamLatest: 'v8.0.12', line: 'v7.3', heldNewer: { tag: 'v8.0.12', text: '跨 major' },
     candidate: { version: '7.3.21-patched.9', sha256: 'a'.repeat(64), checks: [{ name: 'models', ok: true }, { name: 'write', ok: true }] } }
   const view = cpaView(tick({ why: 'up-to-date' }, { builder, staged: { version: '7.3.21-patched.9' },
@@ -75,8 +74,10 @@ test('CPA view: upstream, candidate and one-click rollback only within a major',
   assert.deepEqual(view.upstream, { latest: 'v8.0.12', line: 'v7.3', heldNewer: 'v8.0.12', checkedAt: at(NOW) })
   assert.deepEqual(view.candidate, { label: '7.3.21-patched.9', tone: 'ok', text: 'go test · 冒烟 2/2 通过 · 已暂存到中转站' })
   assert.deepEqual(view.rollback, { to: '7.3.15-patched.498fcc2b' })
-  const across = cpaView(tick({ why: 'up-to-date' }, { applied: { version: '8.0.12-patched.5', previous: RUNNING } }))
-  assert.equal(across.rollback, null)
+  const across = { applied: { version: '8.0.12-patched.5', previous: RUNNING } }
+  assert.deepEqual(cpaView(tick({ why: 'up-to-date' }, { ...across, configLayout: 'legacy' })).rollback, { to: RUNNING })
+  assert.equal(cpaView(tick({ why: 'up-to-date' }, { ...across, configLayout: 'v8' })).rollback, null)
+  assert.equal(cpaView(tick({ why: 'up-to-date' }, across)).rollback, null)
   const conflict = cpaView(tick({ why: 'held' }, { builder: { status: 'merge-conflict', checkedAt: at(NOW), reasons: [{ code: 'merge', text: '合并 v7.3.22 冲突：internal/config/config.go' }] } }))
   assert.equal(conflict.candidate?.tone, 'bad')
   assert.equal(conflict.candidate?.text, '合并 v7.3.22 冲突：internal/config/config.go')

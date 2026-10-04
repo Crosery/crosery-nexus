@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Read-only CPA/Console schema gate with normal audited Console login."""
+import argparse
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+SCHEMA = 1
+
+
+def settings():
+    values = {}
+    # Existing systemd EnvironmentFile; do not source it as executable shell code.
+    for line in Path('/opt/crosery-api-console/.env').read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def collect():
+    checks = {}
+    env = settings()
+    cpa = env.get('CPA_BASE_URL', 'http://127.0.0.1:8317').rstrip('/')
+    console = 'http://127.0.0.1:' + env.get('PORT', '8787')
+    # Never send production credentials to a configured external origin.
+    for base in (cpa, console):
+        parsed = urllib.parse.urlsplit(base)
+        if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1'):
+            raise ValueError('non-local service origin')
+    management = env['CPA_MANAGEMENT_KEY']
+    username = env.get('CONSOLE_USERNAME', 'admin')
+    password = env['CONSOLE_PASSWORD']
+    if not management or not password:
+        raise ValueError('missing credentials')
+    auth = {'Authorization': 'Bearer ' + management}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    login = urllib.request.Request(console + '/api/login',
+        data=json.dumps({'username': username, 'password': password}).encode(),
+        headers={'Content-Type': 'application/json'}, method='POST')
+    with opener.open(login, timeout=25) as response:
+        payload = json.loads(response.read())
+        session = response.headers.get('Set-Cookie', '').split(';', 1)[0]
+        if response.status != 200 or payload.get('ok') is not True or not session.startswith('crosery_console_session='):
+            raise ValueError('login failed')
+    cookie = {'Cookie': session}
+
+    def get(name, url, headers, validator, is_json=True):
+        try:
+            with opener.open(urllib.request.Request(url, headers=headers), timeout=25) as response:
+                body = response.read(16 * 1024 * 1024 + 1)
+                if len(body) > 16 * 1024 * 1024:
+                    raise ValueError('response size')
+                kind = response.headers.get_content_type()
+                if response.status != 200:
+                    raise ValueError('status')
+                if is_json and kind != 'application/json':
+                    raise ValueError('content type')
+                value = json.loads(body) if is_json else body.decode('utf-8')
+                if not validator(value, kind):
+                    raise ValueError('schema')
+                checks[name] = {'ok': True}
+                return value
+        except Exception as error:
+            checks[name] = {'ok': False, 'failure': type(error).__name__}
+            return None
+
+    def arrays(value, *fields):
+        return isinstance(value, dict) and all(isinstance(value.get(k), list) for k in fields)
+
+    get('management.config', cpa + '/v0/management/config', auth,
+        lambda d, _: isinstance(d, dict) and isinstance(d.get('proxy-url'), str)
+        and isinstance(d.get('openai-compatibility'), list))
+    get('management.openai-compatibility', cpa + '/v0/management/openai-compatibility', auth,
+        lambda d, _: arrays(d, 'openai-compatibility') and all(
+            isinstance(x, dict) and isinstance(x.get('name'), str)
+            and isinstance(x.get('base-url'), str) and isinstance(x.get('models'), list)
+            for x in d['openai-compatibility']))
+    get('management.auth-files', cpa + '/v0/management/auth-files', auth,
+        lambda d, _: arrays(d, 'files') and all(
+            isinstance(x, dict) and isinstance(x.get('name'), str) for x in d['files']))
+    get('console.session', console + '/api/session', cookie,
+        lambda d, _: isinstance(d, dict) and d.get('authenticated') is True)
+    get('console.bootstrap', console + '/api/bootstrap', cookie,
+        lambda d, _: arrays(d, 'keys', 'groups', 'models') and d.get('degraded') is False)
+    get('console.channels', console + '/api/channels', cookie,
+        lambda d, _: arrays(d, 'channels', 'credentials', 'proxyPresets') and isinstance(d.get('globalProxy'), str))
+    get('console.model-index', console + '/api/model-index', cookie,
+        lambda d, _: arrays(d, 'models') and all(isinstance(x, dict) and isinstance(x.get('id'), str) for x in d['models']))
+    html = get('console.page', console + '/', {},
+        # console v3 (Vue) mounts on #app; the React console used #root
+        lambda d, kind: kind == 'text/html' and ('id="root"' in d or 'id="app"' in d), False)
+    refs = [] if html is None else re.findall(r'(?:src|href)=["\']([^"\']+\.(?:js|css)(?:\?[^"\']*)?)["\']', html)
+    checks['console.asset-references'] = {'ok': bool(refs) and any('.js' in ref for ref in refs)}
+    for index, ref in enumerate(sorted(set(refs))):
+        url = urllib.parse.urljoin(console + '/', ref)
+        if urllib.parse.urlsplit(url).netloc != urllib.parse.urlsplit(console).netloc:
+            checks['console.asset.' + str(index)] = {'ok': False, 'failure': 'external-origin'}
+            continue
+        css = urllib.parse.urlsplit(url).path.endswith('.css')
+        get('console.asset.' + str(index), url, {},
+            lambda d, kind, css=css: bool(d.strip()) and '<!doctype html' not in d[:100].lower()
+            and kind in (('text/css',) if css else ('application/javascript', 'text/javascript')), False)
+    assets = [v['ok'] for k, v in checks.items() if k.startswith('console.asset.')]
+    for key in list(checks):
+        if key.startswith('console.asset.'):
+            del checks[key]
+    checks['console.assets'] = {'ok': bool(assets) and all(assets)}
+    return {'schema': SCHEMA, 'timestamp': int(time.time()), 'checks': checks}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--baseline', type=Path)
+    args = parser.parse_args()
+    report = collect()
+    failed = [name for name, result in report['checks'].items() if not result['ok']]
+    regressions = []
+    if args.baseline:
+        before = json.loads(args.baseline.read_text())
+        if before.get('schema') != SCHEMA or not before.get('checks'):
+            raise ValueError('invalid baseline')
+        regressions = [name for name, result in before['checks'].items()
+                       if result.get('ok') and not report['checks'].get(name, {}).get('ok')]
+        # A baseline with any existing failure is never authorization to upgrade.
+        if any(not item.get('ok') for item in before['checks'].values()):
+            raise ValueError('baseline already degraded')
+    report.update(ok=not failed and not regressions, failed=failed, regressions=regressions)
+    text = json.dumps(report, sort_keys=True)
+    if args.output:
+        fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(text + '\n')
+    print(text)
+    return 0 if report['ok'] else 1
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(json.dumps({'ok': False, 'failure': type(error).__name__}))
+        raise SystemExit(1)

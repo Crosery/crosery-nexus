@@ -58,27 +58,27 @@ const diff = (a: string[], b: string[]) => {
   return a.filter((value) => !set.has(value))
 }
 
-test('admin 树：页面路由 = 顶栏 8 项 ∪ 用量页签，双向无差集', () => {
+test('admin 树：页面路由 = 顶栏 7 项 ∪ 用量页签，双向无差集', () => {
   const routePaths = adminRoutes.map((r) => r.path).sort()
   const navPaths = [...navTargets(navSource, 'ADMIN_NAV'), ...navTargets(navSource, 'USAGE_TABS')].map((n) => n.to)
   const unique = [...new Set(navPaths)].sort()
   assert.deepEqual(diff(routePaths, unique), [], '有 admin 页面没有导航入口（顶栏或用量页签）')
   assert.deepEqual(diff(unique, routePaths), [], '有导航项指向不存在的 admin 页面')
   assert.deepEqual(routePaths, [
-    '/accounts', '/channels', '/dashboard', '/help', '/keys', '/models', '/settings',
+    '/dashboard', '/help', '/keys', '/models', '/providers', '/settings',
     '/usage', '/usage/cache', '/usage/performance', '/usage/requests',
   ])
 })
 
-test('顶栏 01–08 连续编号（1–8 跳转快捷键按顺序绑定），key 用户 01–04', () => {
+test('顶栏 01–07 连续编号（1–7 跳转快捷键按顺序绑定），key 用户 01–04', () => {
   const admin = navTargets(navSource, 'ADMIN_NAV')
-  assert.deepEqual(admin.map((n) => n.idx), ['01', '02', '03', '04', '05', '06', '07', '08'])
+  assert.deepEqual(admin.map((n) => n.idx), ['01', '02', '03', '04', '05', '06', '07'])
   const key = navTargets(navSource, 'KEY_NAV')
   assert.deepEqual(key.map((n) => n.idx), ['01', '02', '03', '04'])
   // 移动端底栏与「更多」只引用顶栏里存在的 id
   const ids = new Set(admin.map((n) => n.id))
   const tabIds = [...between(navSource, 'export const ADMIN_TAB_IDS', '\n').matchAll(/'([^']+)'/g)].map((m) => m[1])
-  assert.deepEqual(tabIds, ['dashboard', 'accounts', 'keys', 'usage'])
+  assert.deepEqual(tabIds, ['dashboard', 'providers', 'keys', 'usage'])
   const moreIds = [...between(navSource, 'export const ADMIN_MORE_IDS', '\n]').matchAll(/ids: \[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
   assert.deepEqual(diff([...tabIds, ...moreIds], [...ids]), [])
   assert.deepEqual([...ids].filter((id) => !tabIds.includes(id) && !moreIds.includes(id)), [], '每个顶栏页面在手机上也要能到达（底栏或更多）')
@@ -105,8 +105,10 @@ test('角色守卫：两个壳各自声明 meta.role，路由守卫按 meta.role
 test('旧路径重定向与契约逐条相等；被删除的页面不再挂载', () => {
   const redirects = Object.fromEntries([...routesSource.matchAll(/\{ path: '([^']+)', redirect: '([^']+)' \}/g)].map((m) => [m[1], m[2]]))
   assert.deepEqual(redirects, {
-    '/oauth': '/accounts',
-    '/monitor': '/accounts',
+    '/channels': '/providers?tab=channels',
+    '/accounts': '/providers?tab=accounts',
+    '/oauth': '/providers?tab=accounts',
+    '/monitor': '/providers?tab=accounts',
     '/rtk': '/settings',
     '/charts': '/usage/performance',
     '/analytics': '/usage/requests',
@@ -115,9 +117,9 @@ test('旧路径重定向与契约逐条相等；被删除的页面不再挂载',
     '/ab': '/dashboard',
   })
   const pages = new Set(adminRoutes.map((r) => r.path))
-  assert.deepEqual(Object.values(redirects).filter((to) => !pages.has(to)), [], '重定向目标必须是真实页面')
+  assert.deepEqual(Object.values(redirects).map((to) => to.split('?')[0]).filter((to) => !pages.has(to)), [], '重定向目标必须是真实页面')
   const all = [...adminRoutes, ...keyRoutes].map((r) => r.path)
-  for (const removed of ['/credentials', '/ab', '/oauth', '/monitor', '/rtk', '/charts', '/analytics', '/cache']) {
+  for (const removed of ['/credentials', '/ab', '/channels', '/accounts', '/oauth', '/monitor', '/rtk', '/charts', '/analytics', '/cache']) {
     assert.ok(!all.includes(removed), `${removed} 不应再挂页面（只剩重定向）`)
   }
   assert.match(routesSource, /path: '\/:pathMatch\(\.\*\)\*', name: 'unknown', component: Redirecting, meta: \{ home: true \}/)

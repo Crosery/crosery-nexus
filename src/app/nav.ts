@@ -21,20 +21,19 @@ export type AppNavItem = NavItem & { id: string; idx: string; en: string; icon: 
 export const ADMIN_NAV: AppNavItem[] = [
   { id: 'dashboard', idx: '01', label: '概览', en: 'OVERVIEW', group: 'overview', icon: 'grid', to: '/dashboard' },
   { id: 'keys', idx: '02', label: 'Key', en: 'KEYS', group: 'access', icon: 'key', to: '/keys' },
-  { id: 'channels', idx: '03', label: '渠道', en: 'CHANNELS', group: 'access', icon: 'plug', to: '/channels' },
-  { id: 'accounts', idx: '04', label: '账号', en: 'ACCOUNTS', group: 'access', icon: 'user', to: '/accounts' },
-  { id: 'models', idx: '05', label: '模型', en: 'MODELS', group: 'access', icon: 'cube', to: '/models' },
-  { id: 'usage', idx: '06', label: '用量', en: 'USAGE', group: 'usage', icon: 'chart', to: '/usage' },
-  { id: 'settings', idx: '07', label: '设置', en: 'SETTINGS', group: 'system', icon: 'gear', to: '/settings' },
-  { id: 'help', idx: '08', label: '帮助', en: 'HELP', group: 'system', icon: 'help', to: '/help' },
+  { id: 'providers', idx: '03', label: '供应商', en: 'PROVIDERS', group: 'access', icon: 'plug', to: '/providers' },
+  { id: 'models', idx: '04', label: '模型', en: 'MODELS', group: 'access', icon: 'cube', to: '/models' },
+  { id: 'usage', idx: '05', label: '用量', en: 'USAGE', group: 'usage', icon: 'chart', to: '/usage' },
+  { id: 'settings', idx: '06', label: '设置', en: 'SETTINGS', group: 'system', icon: 'gear', to: '/settings' },
+  { id: 'help', idx: '07', label: '帮助', en: 'HELP', group: 'system', icon: 'help', to: '/help' },
 ]
 
-/** Mobile bottom bar (admin): 概览 · 账号 · Key · 用量, then 更多. */
-export const ADMIN_TAB_IDS = ['dashboard', 'accounts', 'keys', 'usage'] as const
+/** Mobile bottom bar (admin): 概览 · 供应商 · Key · 用量, then 更多. */
+export const ADMIN_TAB_IDS = ['dashboard', 'providers', 'keys', 'usage'] as const
 
 /** What the 更多 sheet lists, grouped like the IA. */
 export const ADMIN_MORE_IDS: Array<{ group: NavGroupKey; ids: string[] }> = [
-  { group: 'access', ids: ['channels', 'models'] },
+  { group: 'access', ids: ['models'] },
   { group: 'system', ids: ['settings', 'help'] },
 ]
 

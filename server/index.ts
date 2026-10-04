@@ -55,6 +55,7 @@ const errorStatusOr = (error: unknown, fallback: number): number => {
 import { assertAuthFileName, authFilePath } from './magpieControl.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
+import { DEFAULT_OPEN_MODELS, defaultOpenModels, getCustomSharedModels, saveCustomSharedModels } from './keyModelAccess.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
 import { staticCompression } from './compression.js'
 import { buildNamedAPIKey, deriveKeySlug } from './keyNaming.js'
@@ -1307,6 +1308,52 @@ app.patch('/api/credentials/:name/proxy', async (req, res) => {
   } catch (error) {
     // task-68：凭据不存在是 404（错误自带状态），不再一律 400
     res.status(errorStatusOr(error, 400)).json({ error: error instanceof Error ? error.message : '操作失败', ...reasonField(error) })
+  }
+})
+
+app.get('/api/shared-models', async (_req, res) => {
+  try {
+    const custom = getCustomSharedModels()
+    const groups = await listGroups()
+    const active = defaultOpenModels(groups, custom)
+    res.json({ defaultModels: DEFAULT_OPEN_MODELS, customModels: custom, activeModels: active })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '读取共享模型失败' })
+  }
+})
+
+app.post('/api/shared-models', async (req, res) => {
+  try {
+    const modelId = String(req.body?.modelId || '').trim()
+    if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' })
+    const current = getCustomSharedModels()
+    if (!current.includes(modelId)) {
+      saveCustomSharedModels([...current, modelId])
+      invalidateControlPlaneCaches()
+      reconcileKeyModelAccess().catch(() => undefined)
+      addAudit('add_shared_model', modelId)
+    }
+    const groups = await listGroups()
+    const active = defaultOpenModels(groups, getCustomSharedModels())
+    res.json({ ok: true, activeModels: active })
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : '添加共享模型失败' })
+  }
+})
+
+app.delete('/api/shared-models/:modelId', async (req, res) => {
+  try {
+    const modelId = decodeURIComponent(req.params.modelId).trim()
+    const current = getCustomSharedModels()
+    saveCustomSharedModels(current.filter((m) => m !== modelId))
+    invalidateControlPlaneCaches()
+    reconcileKeyModelAccess().catch(() => undefined)
+    addAudit('remove_shared_model', modelId)
+    const groups = await listGroups()
+    const active = defaultOpenModels(groups, getCustomSharedModels())
+    res.json({ ok: true, activeModels: active })
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : '移除共享模型失败' })
   }
 })
 

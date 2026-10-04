@@ -39,8 +39,7 @@ export const routes: RouteRecordRaw[] = [
       { path: '/', name: 'home', component: Redirecting, meta: { home: true } },
       { path: '/dashboard', name: 'dashboard', component: () => import('../features/overview/OverviewPage.vue'), meta: { title: '概览' } },
       { path: '/keys', name: 'keys', component: () => import('../features/keys/KeysPage.vue'), meta: { title: 'Key' } },
-      { path: '/channels', name: 'channels', component: () => import('../features/channels/ChannelsPage.vue'), meta: { title: '渠道' } },
-      { path: '/accounts', name: 'accounts', component: () => import('../features/accounts/AccountsPage.vue'), meta: { title: '账号' } },
+      { path: '/providers', name: 'providers', component: () => import('../features/providers/ProvidersPage.vue'), meta: { title: '供应商' } },
       { path: '/models', name: 'models', component: () => import('../features/models/ModelsPage.vue'), meta: { title: '模型' } },
       {
         path: '/usage',
@@ -69,8 +68,10 @@ export const routes: RouteRecordRaw[] = [
     ],
   },
   // v2 paths keep working (bookmarks, old links); query and hash are carried over by the router.
-  { path: '/oauth', redirect: '/accounts' },
-  { path: '/monitor', redirect: '/accounts' },
+  { path: '/channels', redirect: '/providers?tab=channels' },
+  { path: '/accounts', redirect: '/providers?tab=accounts' },
+  { path: '/oauth', redirect: '/providers?tab=accounts' },
+  { path: '/monitor', redirect: '/providers?tab=accounts' },
   { path: '/rtk', redirect: '/settings' },
   { path: '/charts', redirect: '/usage/performance' },
   { path: '/analytics', redirect: '/usage/requests' },

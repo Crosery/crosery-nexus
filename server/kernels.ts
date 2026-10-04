@@ -235,7 +235,6 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
     case 'daily': return out('eligible', 'ok', `${target} 演练通过 · 这个时段已经换过一次，明天 ${window}再换`)
     case 'apply': return out('applying', 'ok', `${target} 正在替换`)
     case 'held': return out('held', 'warn', `构建机停住：${first(decisionReasons) || '见候选'}`, decisionReasons)
-    case 'major': return out('held', 'warn', `${target} 跨大版本 · 配置格式会迁移，第一次人工升级`, decisionReasons)
     case 'hold-file': return out('held', 'warn', '生产机的补丁锁（auto-update.hold）还在 · 不替换', decisionReasons)
     case 'offline': return out('blocked', 'warn', 'CPA 不在运行 · 不替换')
     case 'backoff': {
@@ -269,8 +268,8 @@ export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsV
       candidate: candidateLine('cpa', builder, isObject(cpaState.staged) ? cpaState.staged : null),
       enabled: facts.config.cpa.enabled,
       ...autoLine('cpa', facts, cpaState, now),
-      // one click only within a major version: an older major must not start against a config the newer one migrated
-      rollback: applied && previous && versionMajor(previous) === versionMajor(str(applied.version)) ? { to: previous } : null,
+      // across a major only while config.yaml is still legacy: an older major cannot start on a config the newer one migrated
+      rollback: applied && previous && (versionMajor(previous) === versionMajor(str(applied.version)) || cpaState.configLayout === 'legacy') ? { to: previous } : null,
       checkedAt: str(cpaState.checkedAt),
     })
   }

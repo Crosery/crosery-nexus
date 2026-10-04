@@ -1,8 +1,9 @@
 #!/bin/bash
 # CPA 构建流水线 v2（跑在 ibuki-wsl-crosery，用户级 cpa-pipeline.timer 每 30 分钟）
-#   deploy 分支 = 上游 release + 我们的补丁。只在当前 minor 线内自动合并上游的新 patch 版；
-#   更新的 minor/major 不合并，报「要人工合并补丁」（补丁要按新版本移植，见控制台仓库 deploy/kernels/README.md）。
-#   合并 → docker 里 go build + go test → 冒烟（生产形状的假配置：管理接口、Key 级白名单、配置写回不丢字段）
+#   deploy 分支 = 上游 release + 我们的补丁（补丁系列见控制台仓库 deploy/kernels/cpa-patches/）。
+#   CPA 要保持最新：每轮把上游最新的正式 release 合进 deploy（patch、minor、major 都一样）；
+#   合并冲突就停住报「要人工移植补丁」，线上不动。
+#   合并 → docker 里 go build + go test → 冒烟（生产形状的假配置：管理接口、Key 级白名单、启动不改写配置、配置写回不丢字段）
 #   → 上传 + 暂存到中转站。构建机不安装：中转站的 crosery-kernel-update 在安静时段、每个版本一次，
 #   经 cpa-install-binary.sh（兼容门禁、备份、失败回滚）安装。每一轮的结论都报给中转站（cpa-report），控制台「网关」可见。
 set -uo pipefail
@@ -31,25 +32,23 @@ report(){
 
 cd "$SRC" || { log "src 不存在"; exit 1; }
 git rev-parse --verify -q deploy >/dev/null || { log "deploy 分支不存在"; report held "构建机上没有 deploy 分支"; exit 0; }
-git checkout -q deploy
+if ! git checkout -q deploy 2>>"$LOG"; then log "切换 deploy 分支失败"; report held "构建机切不到 deploy 分支；保留未提交改动，不构建"; exit 1; fi
 if ! git fetch -q --tags upstream 2>>"$LOG"; then log "拉取上游失败"; report fetch-failed "构建机拉不到上游 tag"; exit 1; fi
 stable(){ git tag -l "$1" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1; }
-UPSTREAM_LATEST=$(stable 'v*')
+latest=$(stable 'v*')
+[ -n "$latest" ] || { log "找不到上游 tag"; report fetch-failed "上游没有正式 release tag"; exit 1; }
+UPSTREAM_LATEST=$latest
 BASE=$(git describe --tags --abbrev=0 --match 'v*' deploy 2>/dev/null || echo v0.0.0)
 LINE=${BASE%.*}
-latest=$(stable "$LINE.*")
-[ -n "$latest" ] || { log "找不到 $LINE 线的 tag"; report held "上游没有 $LINE 线的 tag"; exit 1; }
-if [ -n "$UPSTREAM_LATEST" ] && [ "$UPSTREAM_LATEST" != "$latest" ]; then
-  HELD_TAG=$UPSTREAM_LATEST; HELD_TEXT="上游 $UPSTREAM_LATEST 不在当前 $LINE 线，补丁要人工移植后才跟"
-fi
 if ! git merge-base --is-ancestor "$latest" deploy; then
   if ! git merge --no-edit "$latest" >>"$LOG" 2>&1; then
-    files=$(git diff --name-only --diff-filter=U | head -5 | tr '\n' ' ')
+    files=$(git diff --name-only --diff-filter=U | head -5 | paste -sd' ' -)
     git merge --abort 2>/dev/null
+    HELD_TAG=$latest; HELD_TEXT="上游 $latest 和我们的补丁冲突，要人工移植补丁后才跟"
     log "合并 $latest 冲突：$files"; report merge-conflict "合并 $latest 时补丁冲突：$files"; exit 1
   fi
   log "已合并上游 $latest 到 deploy"
-  BASE=$latest
+  BASE=$latest; LINE=${BASE%.*}
 fi
 sha=$(git rev-parse --short=8 HEAD); version="${latest#v}-patched.$sha"
 

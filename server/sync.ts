@@ -5,7 +5,7 @@ import { getCPAKeys, getChannelAccess, getModelAccess, hashKey, isUnsupportedMan
 import { resolveGroupForModel } from './groups.js'
 import { isActiveProvider } from './currentChannels.js'
 import { markKeyModelAccess } from './managementCapability.js'
-import { buildKeyAccessPlan, sameKeyAccess } from './keyModelAccess.js'
+import { buildKeyAccessPlan, getCustomSharedModels, sameKeyAccess } from './keyModelAccess.js'
 import { buildKeyChannelAccessPlan, mergeChannelAccess } from './keyChannelAccess.js'
 import { extractKeySlug } from './keyNaming.js'
 import { extractUsageDiagnostics, resolveCacheReadTokens, resolveCacheWriteTokens } from './usageDetails.js'
@@ -137,7 +137,8 @@ async function reconcileKeyAccessOnce() {
     enabled: Boolean(row.enabled),
     groups: (() => { try { return JSON.parse(row.groups_json) as string[] } catch { return [] } })(),
   }))
-  const plan = buildKeyAccessPlan(groups, accessRows)
+  const customShared = getCustomSharedModels()
+  const plan = buildKeyAccessPlan(groups, accessRows, customShared)
 
   const updateGroups = db.prepare('UPDATE api_keys SET groups_json=?, updated_at=? WHERE key_value=?')
   const now = new Date().toISOString()
@@ -154,7 +155,8 @@ async function reconcileKeyAccessOnce() {
 
   // 先收紧渠道池，模型接口故障不能阻止撤销 Mox；渠道能力缺失也不允许静默降级。
   const [currentChannels, configuredKeys] = await Promise.all([getChannelAccess(), getCPAKeys()])
-  const channelPlan = buildKeyChannelAccessPlan(groups, accessRows, currentChannels, new Set(configuredKeys))
+  const customChannels = groups.filter((g) => g.models.some((m) => customShared.includes(m))).map((g) => g.id)
+  const channelPlan = buildKeyChannelAccessPlan(groups, accessRows, currentChannels, new Set(configuredKeys), customChannels)
   const desired = mergeChannelAccess(currentChannels, channelPlan)
   if (!sameKeyAccess(currentChannels, desired)) await putChannelAccess(desired)
 

@@ -92,6 +92,9 @@ export const adminApi = {
     `/api/cache-live?limit=${limit}${model ? `&model=${encodeURIComponent(model)}` : ''}${client ? `&client=${encodeURIComponent(client)}` : ''}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}${provider ? `&provider=${encodeURIComponent(provider)}` : ''}`,
   setModelSourceEnabled: (model: string, channel: string, kind: 'compat' | 'oauth', enabled: boolean) =>
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
+  sharedModels: () => request<{ defaultModels: string[]; customModels: string[]; activeModels: string[] }>('/api/shared-models'),
+  addSharedModel: (modelId: string) => request<{ ok: boolean; activeModels: string[] }>('/api/shared-models', { method: 'POST', body: JSON.stringify({ modelId }) }),
+  removeSharedModel: (modelId: string) => request<{ ok: boolean; activeModels: string[] }>(`/api/shared-models/${encodeURIComponent(modelId)}`, { method: 'DELETE' }),
   /** fresh=true is honoured at most once per 60s per endpoint server-side. */
   version: (fresh = false) => request<VersionsData>(`/api/version${fresh ? '?fresh=1' : ''}`),
   syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
