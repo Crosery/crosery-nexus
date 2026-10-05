@@ -27,7 +27,7 @@
 import type express from 'express'
 import type { ConsoleGroup } from './groups.js'
 import type { ReadOperation } from './sqliteReadWorker.js'
-import { CACHE_WRITE_CEILING, cacheDialectFor } from './cacheStats.js'
+import { CACHE_WRITE_CEILING, OVER_CACHE_CEILING_SQL, cacheDialectFor } from './cacheStats.js'
 import { cacheWritePrice, getModelPricing, ratesFor } from './pricing.js'
 import { canonicalModelSql } from './modelIdentity.js'
 import { clientLabel } from './clientAgent.js'
@@ -42,7 +42,6 @@ const HOUR = 3_600_000
 const DAY = 24 * HOUR
 /** Evidence window for "this model uses the cache" — longer than a 24h/7d view so capability is stable. */
 export const CAPABILITY_EVIDENCE_DAYS = 30
-const NATIVE_ANTHROPIC = ['claude', 'claude-api-key', 'anthropic', 'anthropic-api-key']
 
 export type CacheRollupRow = RollupRow
 type RollupRow = {
@@ -290,10 +289,6 @@ export function buildCacheSummary(input: {
   }
 }
 
-/** Prompt length of one raw event in the cache dialect of its channel (same rule as `normalizeTokens`). */
-const PROMPT_SQL = `(CASE WHEN lower(trim(provider)) IN (${NATIVE_ANTHROPIC.map((p) => `'${p}'`).join(', ')})
-  THEN input_tokens + cached_tokens + cache_write_tokens ELSE MAX(input_tokens, cached_tokens) END)`
-
 /** End of the window: the end of the current hour, so the current hour's rollup row counts and later hours do not. */
 export const windowEndMs = (now: number) => Math.floor(now / HOUR) * HOUR + HOUR
 
@@ -336,6 +331,14 @@ export function cacheEvidenceOperation(groups: ConsoleGroup[], scope: Pick<Usage
   }
 }
 
+/**
+ * Over-ceiling counts read raw events: only the per-request prompt length can answer
+ * "which requests paid full price for a cache write that never landed". The conjunct is
+ * shared verbatim with the `idx_usage_cache_ceiling` partial index (`OVER_CACHE_CEILING_SQL`,
+ * created in db.ts) and the statement keeps `INDEXED BY` because SQLite's planner otherwise
+ * sticks with the timestamp index and pays a full pass over every retained event — measured
+ * 13.4s for a 90-day window at ~1M rows on the relay, 0.03s through the index.
+ */
 export function cacheSummaryOperations(groups: ConsoleGroup[], scope: UsageScope, plan: BucketPlan, now: number): ReadOperation[] {
   const events = scopeFilterSql(groups, scope, 'events')
   const endMs = windowEndMs(now)
@@ -346,8 +349,8 @@ export function cacheSummaryOperations(groups: ConsoleGroup[], scope: UsageScope
     {
       method: 'all',
       sql: `SELECT ${canonicalModelSql()} m, COUNT(*) n
-        FROM usage_events
-        WHERE timestamp_ms >= ? AND timestamp_ms < ? AND success = 1 AND ${events.sql} AND ${PROMPT_SQL} > ${CACHE_WRITE_CEILING}
+        FROM usage_events INDEXED BY idx_usage_cache_ceiling
+        WHERE timestamp_ms >= ? AND timestamp_ms < ? AND ${OVER_CACHE_CEILING_SQL} AND ${events.sql}
         GROUP BY m`,
       params: [plan.fromMs, endMs, ...events.params],
     },

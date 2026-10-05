@@ -127,6 +127,17 @@ export function isOverCacheCeiling(tokens: Pick<NormalizedTokens, 'promptTokens'
   return tokens.promptTokens > CACHE_WRITE_CEILING
 }
 
+/** Native-Anthropic provider spellings whose cached tokens run parallel to input (see `cacheDialectFor`). */
+export const NATIVE_ANTHROPIC_PROVIDERS = ['claude', 'claude-api-key', 'anthropic', 'anthropic-api-key']
+
+export const OVER_CACHE_CEILING_SQL =
+  `success = 1 AND (CASE WHEN lower(trim(provider)) IN (${NATIVE_ANTHROPIC_PROVIDERS.map((p) => `'${p}'`).join(', ')})` +
+  ` THEN input_tokens + cached_tokens + cache_write_tokens ELSE MAX(input_tokens, cached_tokens) END) > ${CACHE_WRITE_CEILING}`
+
+/** Partial index over the <2% of events past the ceiling; one DDL text for db.ts and test fixtures. */
+export const CACHE_CEILING_INDEX_DDL =
+  `CREATE INDEX IF NOT EXISTS idx_usage_cache_ceiling ON usage_events(timestamp_ms) WHERE ${OVER_CACHE_CEILING_SQL}`
+
 export const CONTEXT_BANDS = [
   { key: 'a', label: '<50k', min: 0, max: 50_000 },
   { key: 'b', label: '50-150k', min: 50_000, max: 150_000 },

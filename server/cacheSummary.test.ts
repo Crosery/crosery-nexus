@@ -8,7 +8,7 @@ import express from 'express'
 import type { ConsoleGroup } from './groups.js'
 import { SQLiteReadPool, type ReadOperation } from './sqliteReadWorker.js'
 import { migrateUsageRollup } from './usageRollup.js'
-import { CACHE_WRITE_CEILING } from './cacheStats.js'
+import { CACHE_CEILING_INDEX_DDL, CACHE_WRITE_CEILING } from './cacheStats.js'
 import { parseUsageScope } from './perfReports.js'
 import { loadCacheSummary, priceDeclaresCache, registerCacheSummaryRoutes, savingsFor } from './cacheSummary.js'
 
@@ -30,7 +30,8 @@ const EVENTS_DDL = `
     cached_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL, timestamp_ms INTEGER NOT NULL DEFAULT 0,
     error_category TEXT NOT NULL DEFAULT '', cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     user_agent TEXT NOT NULL DEFAULT '', client_type TEXT NOT NULL DEFAULT '', cost_usd REAL
-  );`
+  );
+  ${CACHE_CEILING_INDEX_DDL}`
 
 type Ev = { at: number; model: string; provider: string; input: number; cached?: number; write?: number; key?: string; client?: string; ok?: boolean }
 

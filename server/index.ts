@@ -157,6 +157,9 @@ const warmDefaultReports = async () => {
       loadUsageKeySummariesReport(usageReader, reporting.groups, days)),
     reportSnapshots.run(reportCacheKey.chartLatency(days, '', reporting.policyHash), REPORT_FRESH_MS, () =>
       loadChartsLatencyReport(latencyReader, reporting.groups, days, '')),
+    // 账号页整页载荷与 /api/monitor 走同一个协调器与同一个任务观测：预热让「TTL 过期的第一打」
+    // 落在后台定时循环里，而不是落在点开账号页的用户身上（冷扇出实测 11s，≈ 上游超时）。
+    monitorCoordinator.run('monitor', () => syncRegistry.observe('account-quota', loadMonitorPayload, summarizeAccountQuota)),
   ])
   if ([...core, ...secondary].some((result) => result.status === 'rejected')) {
     console.warn('[report-warmup] 部分默认报表预热失败，将在首次请求时重试')
