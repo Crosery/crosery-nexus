@@ -33,6 +33,8 @@
 - **`/v1/usage` 在网关/管理面不可用时会降级而不是 500**：响应带 `X-Usage-Degraded` header 与 `degraded{…}` 字段（写明"未按 provider 过滤"）。看到这个标记说明**上游有问题**，不是用户数据的错。
 - **长期运行**：只读采样器 `docs/qa/red-team/evidence/r28/read-only-sampler.mjs` 可挂长期任务（`--port 8791 --label prod`）；判读先看 **FD 长期斜率**，heap 看**每窗口低点基线**而不是瞬时值。
 - **告警可信度**：空窗口下 `rollup-health` 与 `scripts/rollup-rebuild.mjs check` 现在**同判 ok**（曾经一条报 alert 一条报 ok，夜间无流量必然误报）。
+- **restart 会暴露断链的共享 `node_modules`**：各 release 的 `node_modules` 是指向单一实体目录的软链（当前指向 `/opt/crosery-api-console-releases/<base>/node_modules`）。磁盘清理若删掉实体目录，运行中的进程不受影响（代码已加载），但**任何一次 restart 都会 127 `tsx: not found`**。发布前预检：`$NEW/node_modules/.bin/tsx --version`；坏了就在软链目标路径 `npm ci --ignore-scripts` 重装（2026-10-06 实测 55s，470 包）。
+- **叠加式发布要么整树同步、要么严格按 manifest**：只 rsync 少数改动文件进硬链接复制的 release，会把新旧基线混在一棵 server 树里（HEAD 的 `index.ts` 引用旧基线不存在的导出 → 启动期 ESM SyntaxError）。cp -al 目录里覆盖文件安全（tar/rsync 先 unlink，不穿透硬链），但覆盖范围 = 本次 commit 全部 `server/` 源码，别挑。rsync 后记得 `chown -R root:root` + `chmod 644`（macOS 源会带 501:staff 与 600）。
 
 ---
 
