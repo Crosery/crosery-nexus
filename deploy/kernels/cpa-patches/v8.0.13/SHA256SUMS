@@ -5,3 +5,4 @@ ec8bbe3312bb2a14016f5104f215e68deab197c636cde0ad80ff7b701d68911b  0001-feat-conf
 79ae5e15305955d77fac0ad165481b55c5de0d7311e8518143978b627d5a099e  0005-feat-registry-built-in-Claude-Fable-5.1-and-Opus-5.5.patch
 358a4a6b4a8c6ed60b5a6c0cfae0d4dd329476f39b4728fe5d4af8c76966cf08  0006-feat-executor-repair-leaked-thinking-in-OpenAI-compa.patch
 2d690a08ed7b38c89587542cb2154c401d3064c786d7c18c8acbc7a2b6a51d67  0007-feat-codex-route-standalone-Alpha-Search-through-a-c.patch
+037b8ae8658111ca3c62772825f1c5bf3bad3c74128380a3d1ed0e2051e63d60  0008-feat-executor-relay-OpenAI-Responses-natively-for-compat-channels.patch
