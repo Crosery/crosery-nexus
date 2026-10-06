@@ -44,7 +44,16 @@ import {
  * inline quota windows, reset credits, routing switch and the management actions; adding an account runs
  * the existing OAuth / device-code / paste-callback flows in a sheet. `?add=1` (⌘K 添加账号…), `?add=<服务>`
  * and `#oauth` open that sheet.
+ * `embedded`: the pool renders as the Providers page 订阅账号池 section — its own Plate carries the
+ * section title (`plateTitle`), the PageHead and the `.ui-page` rhythm are the host's job. The data loop,
+ * filters, row actions, deep links and the add flow are unchanged; `count` hands the host the account total
+ * so the section tab can count without a second channels/monitor read.
  */
+const props = withDefaults(
+  defineProps<{ embedded?: boolean; plateTitle?: string }>(),
+  { embedded: false, plateTitle: '账号池' },
+)
+const emit = defineEmits<{ (e: 'count', total: number): void }>()
 const route = useRoute()
 const router = useRouter()
 const { isMobile } = useBreakpoint()
@@ -73,6 +82,7 @@ const rows = computed<AccountView[]>(() => {
 })
 const counts = computed(() => countBy(rows.value))
 const quotaShare = computed(() => (payload.value?.monitor?.quotaShare ?? {}) as QuotaShare)
+watch(() => counts.value.all, (n) => emit('count', n), { immediate: true })
 const presets = computed(() => payload.value?.channels?.proxyPresets ?? [])
 
 /* ── account exits: the proxy pool's view (local reads on the server, no CPA / vendor traffic); a server without
@@ -260,8 +270,8 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
 </script>
 
 <template>
-  <div class="ui-page acc">
-    <PageHead title="账号">
+  <div class="ui-page acc" :class="{ 'is-embedded': props.embedded }">
+    <PageHead v-if="!props.embedded" title="账号">
       <template #status>
         <span class="acc-status num"><template v-for="(p, i) in headStatus" :key="i"><template v-if="i"> · </template><span :class="{ sig: p.sig }">{{ p.t }}</span></template></span>
       </template>
@@ -277,12 +287,16 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       <Segmented v-model="mode" class="push" :items="MODE_ITEMS" label="额度显示已用或剩余" />
     </div>
 
-    <Plate title="账号池" flush class="acc-plate" :state="plateState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
+    <Plate :title="props.plateTitle" flush class="acc-plate" :state="plateState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
       <template #meta>
         <span v-if="payload?.monitorError" class="acc-meta-warn">{{ payload.monitor ? `◇ 额度刷新失败 · 显示 ${fmtTime(payload.monitorAt ?? payload.at)} 读到的` : '◇ 额度没读到 · 账号列表照常' }}</span>
         <span v-else-if="payload?.channelsError" class="acc-meta-warn">{{ payload.channels ? `◇ 凭据列表刷新失败 · 显示 ${fmtTime(payload.channelsAt ?? payload.at)} 读到的` : '◇ 凭据列表没读到 · 只显示有额度的账号' }}</span>
         <span v-else-if="quotaFailures" class="acc-meta-warn">◇ 额度读取失败 {{ quotaFailures }}/{{ monitored }}</span>
         <span class="acc-meta-src">额度按账号缓存 3–15m · 不频繁打上游</span>
+      </template>
+      <template v-if="props.embedded" #actions>
+        <LiveMark :state="plateState" :last-at="live.lastAt.value" :interval-ms="INTERVAL" @retry="refresh" />
+        <TxButton variant="subtle" size="small" @click="openAdd()"><Icon name="plus" :size="14" />添加账号</TxButton>
       </template>
 
       <div ref="listEl" class="acc-list" :class="{ 'is-mobile': isMobile }">
@@ -400,6 +414,10 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
 .acc-tools .ui-search { width: 240px; }
 .acc-meta-warn { color: var(--ink-2); }
 .acc-meta-src { color: var(--ink-3); }
+
+/* embedded: the host section owns the page head, so the rhythm tightens and the tools stop pulling up */
+.ui-page.acc.is-embedded { gap: 12px; }
+.ui-page.acc.is-embedded .acc-tools { margin: 0; }
 
 /* the list measures itself: the md layout follows the plate's width, not the viewport */
 .acc-list { container: accounts / inline-size; min-width: 0; }

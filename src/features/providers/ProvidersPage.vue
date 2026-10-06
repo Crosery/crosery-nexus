@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -28,7 +28,6 @@ import type { AccountsCatalog, AccountsData, ChannelItem, ChannelsData, EgressDa
 import type { DataState, RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 import ChannelSheet from '../channels/ChannelSheet.vue'
 import CreateChannelSheet from '../channels/CreateChannelSheet.vue'
-import AddAccountSheet from '../accounts/AddAccountSheet.vue'
 import CatalogSheet from '../accounts/CatalogSheet.vue'
 import EgressSheet from '../accounts/EgressSheet.vue'
 import MagpieAccountRow from '../accounts/MagpieAccountRow.vue'
@@ -36,13 +35,15 @@ import { errorReason } from '../../lib/errors'
 import { classifyChannel, hostOf, modelCounts, type ChannelHealthClass, type ChannelHealthItem } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
 import { groupsOf, type RowAction } from '../accounts/magpieModel'
-import type { VerifyResult } from '../accounts/model'
-
 /**
  * 供应商 (Providers): 统一接入管理「API 渠道」与「订阅账号池」，并管理「全局共享模型」。
  * 顶栏完全对齐用量页面字体与滑块规范；供应商主页分为「API 渠道」与「订阅账号池」两栏展示；
- * 本地环境自适应 Magpie 原生 CatalogSheet 授权，远端自适应 CPA OAuth。
+ * 本地环境自适应 Magpie 原生 CatalogSheet 授权，远端 CPA 把订阅账号池整块交给账号页（embedded）。
  */
+/* CPA 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读），
+   Magpie 控制台不会下载这一块 */
+const CpaAccountsPage = defineAsyncComponent(() => import('../accounts/CpaAccountsPage.vue'))
+
 const route = useRoute()
 const router = useRouter()
 const { width } = useBreakpoint()
@@ -103,7 +104,9 @@ const classes = computed(() => new Map(channelsData.value.map((c) => [c.name, cl
 
 /* Magpie 账号分组列表 */
 const accountGroups = computed(() => groupsOf(accountsData.value))
-const totalAccountsCount = computed(() => accountsData.value?.counts?.accounts ?? 0)
+/* 订阅账号数：Magpie 用 /api/accounts 的 counts；CPA 由嵌入的账号池上报（它已经有 channels+monitor 那一轮读） */
+const cpaAccountsCount = ref(0)
+const totalAccountsCount = computed(() => (isMagpie.value ? (accountsData.value?.counts?.accounts ?? 0) : cpaAccountsCount.value))
 const totalProvidersCount = computed(() => channelsData.value.length + totalAccountsCount.value)
 
 /* ── 全局共享模型清单 ── */
@@ -268,10 +271,6 @@ const magpieCatalogLoading = ref(false)
 const magpieAddOpen = ref(false)
 const magpieTarget = shallowRef<{ agent: string; relogin: boolean; start: boolean } | null>(null)
 
-/* CPA 远端授权抽屉 */
-const cpaAddOpen = ref(false)
-const cpaAddProvider = ref<string | null>(null)
-
 async function loadMagpieCatalog() {
   if (magpieCatalogLoading.value) return
   magpieCatalogLoading.value = true
@@ -309,14 +308,9 @@ function openAddDialog() {
 }
 
 function openAddAccount(agent: string | null = null) {
-  if (isMagpie.value) {
-    magpieTarget.value = agent ? { agent, relogin: false, start: true } : null
-    magpieAddOpen.value = true
-    void loadMagpieCatalog()
-  } else {
-    cpaAddProvider.value = agent
-    cpaAddOpen.value = true
-  }
+  magpieTarget.value = agent ? { agent, relogin: false, start: true } : null
+  magpieAddOpen.value = true
+  void loadMagpieCatalog()
 }
 
 function onMagpieSignedIn(_view: SignInView) {
@@ -482,11 +476,6 @@ async function addSharedModel(modelId: string) {
   } catch {
     notify(`添加共享失败`, { tone: 'bad' })
   }
-}
-
-async function verifyAddedAccount(providerId: string): Promise<VerifyResult> {
-  await accountsLive.refresh()
-  return { ok: true, name: providerId, action: 'added' }
 }
 
 const availableModelCandidates = computed(() => {
@@ -828,7 +817,9 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 
         <!-- 栏目 2：订阅账号池 (OAuth 账号) -->
         <section v-if="sectionFilter === 'all' || sectionFilter === 'accounts'" class="pv-section">
-          <Plate title="订阅账号池" flush>
+          <!-- CPA：账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供 -->
+          <CpaAccountsPage v-if="!isMagpie" embedded plate-title="订阅账号池" @count="cpaAccountsCount = $event" />
+          <Plate v-else title="订阅账号池" flush>
             <template #actions>
               <TxButton variant="subtle" size="small" @click="openAddAccount(null)">
                 <Icon name="plus" /> 添加账号
@@ -924,15 +915,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       @done="onMagpieSignedIn"
       @reload="loadMagpieCatalog"
       @egress="egressLive.refresh()"
-    />
-
-    <!-- 弹窗 3B: CPA 远端模式授权抽屉 -->
-    <AddAccountSheet
-      v-else
-      v-model="cpaAddOpen"
-      :provider="cpaAddProvider"
-      :verify="verifyAddedAccount"
-      @added="refreshAll"
     />
 
     <!-- 弹窗 4: 添加全局共享模型选择器 -->
