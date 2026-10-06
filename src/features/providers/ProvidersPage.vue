@@ -727,14 +727,17 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 
               <template #cell-name="{ row }">
                 <span class="cx-2l">
-                  <button
-                    type="button"
-                    class="ui-link cx-name mono ellip"
-                    :title="`配置 ${row.name}`"
-                    @click.stop="openChannelConfig(row)"
-                  >
-                    {{ row.name }}
-                  </button>
+                  <span class="pv-name-line">
+                    <button
+                      type="button"
+                      class="ui-link cx-name mono ellip"
+                      :title="`配置 ${row.name}`"
+                      @click.stop="openChannelConfig(row)"
+                    >
+                      {{ row.name }}
+                    </button>
+                    <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
+                  </span>
                   <span class="cx-l2 mono ellip" :title="row.url">{{ row.url }}</span>
                 </span>
               </template>
@@ -798,6 +801,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
                   <div class="cx-card__l1">
                     <StatusMark :state="row.statusState" :label="row.statusLabel" bare />
                     <span class="cx-card__name mono ellip">{{ row.name }}</span>
+                    <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
                     <span class="cx-card__st" :class="{ sig: row.statusState === 'bad' || row.statusState === 'warn' }">{{ row.statusLabel }}</span>
                     <span class="cx-card__switch" @click.stop @keydown.stop>
                       <Switch
@@ -1167,6 +1171,19 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
   color: var(--ink);
 }
 .pv-page .cx-name:hover { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--ink-3); }
+.pv-page .pv-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.pv-page .pv-name-line .cx-name { display: inline; }
+.pv-page .pv-proto {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.6;
+  letter-spacing: .04em;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
 .pv-page .cx-link-num { all: unset; cursor: pointer; text-align: right; }
 .pv-page .cx-link-num:hover .cx-strong { text-decoration: underline; }
 .pv-page .sig { color: var(--signal-ink); }
