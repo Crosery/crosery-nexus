@@ -580,7 +580,10 @@ function copyAddress(channel: ChannelItem) {
 
           <template #cell-name="{ row }">
             <span class="cx-2l">
-              <button type="button" class="ui-link cx-name mono ellip" :title="`查看 ${row.name}`" @click.stop="openChannel(row)">{{ row.name }}</button>
+              <span class="cx-name-line">
+                <button type="button" class="ui-link cx-name mono ellip" :title="`查看 ${row.name}`" @click.stop="openChannel(row)">{{ row.name }}</button>
+                <span v-if="row.channel.protocol === 'responses'" class="cx-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
+              </span>
               <span class="cx-l2 mono ellip" :title="row.channel.baseUrl">{{ middleEllipsis(row.host, full ? 44 : 30) }}<template v-if="row.channel.keyCount > 1"> · {{ row.channel.keyCount }} Key</template></span>
             </span>
           </template>
@@ -764,6 +767,13 @@ function copyAddress(channel: ChannelItem) {
   font-size: var(--fs-base); font-weight: 600; color: var(--ink);
 }
 .cx-channels .cx-name:hover { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--ink-3); }
+.cx-channels .cx-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.cx-channels .cx-name-line .cx-name { display: inline; }
+.cx-channels .cx-proto {
+  flex: none; font-size: 10px; line-height: 1.6; letter-spacing: .04em;
+  padding: 0 6px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--ink-2); white-space: nowrap;
+}
 .cx-channels .cx-dist { display: inline-flex; align-items: center; min-height: 20px; }
 .cx-channels .cx-switch, .cx-channels .cx-more { display: inline-flex; align-items: center; }
 .cx-channels .sig { color: var(--signal-ink); }

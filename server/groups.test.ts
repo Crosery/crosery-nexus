@@ -10,6 +10,7 @@ const channels = [
     baseUrl: 'https://ollama.com/v1',
     keyCount: 1,
     enabled: true,
+    protocol: 'openai' as const,
     stale: false,
     models: [
       { id: 'glm-5.2', enabled: true, upstreams: 1 },
@@ -22,6 +23,7 @@ const channels = [
     baseUrl: 'https://api.kimi.com/coding/v1',
     keyCount: 1,
     enabled: true,
+    protocol: 'openai' as const,
     stale: false,
     models: [
       { id: 'kimi-k3', enabled: true, upstreams: 1 },
@@ -50,8 +52,8 @@ test('a model served by two channels belongs to both groups independently', () =
 test('disabled or stale channels and inactive oauth providers are not authorizable groups', () => {
   const groups = buildGroups([
     ...channels,
-    { name: 'paused', baseUrl: '', keyCount: 1, enabled: false, stale: false, models: [{ id: 'paused-model', enabled: true, upstreams: 1 }] },
-    { name: 'gone', baseUrl: '', keyCount: 1, enabled: false, stale: true, models: [{ id: 'gone-model', enabled: true, upstreams: 1 }] },
+    { name: 'paused', baseUrl: '', keyCount: 1, enabled: false, protocol: 'openai', stale: false, models: [{ id: 'paused-model', enabled: true, upstreams: 1 }] },
+    { name: 'gone', baseUrl: '', keyCount: 1, enabled: false, protocol: 'openai', stale: true, models: [{ id: 'gone-model', enabled: true, upstreams: 1 }] },
   ], [...oauth, { provider: 'xai', models: ['grok-4.5'], excluded: [], activeAccounts: 0 }])
   assert.ok(!groups.some((group) => group.id === 'paused'))
   assert.ok(!groups.some((group) => group.id === 'gone'))

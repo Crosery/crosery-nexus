@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { defaultModelAlias, modelDiscoveryUrls, normalizeDiscoveredModels, validateChannelName, validateSelectedModels } from './channelDiscovery.js'
+import { defaultModelAlias, modelDiscoveryUrls, normalizeDiscoveredModels, parseChannelProtocol, validateChannelName, validateSelectedModels } from './channelDiscovery.js'
 
 test('uses /models when base url already ends in /v1', () => {
   assert.deepEqual(modelDiscoveryUrls('openai', 'https://api.minimaxi.com/v1/'), ['https://api.minimaxi.com/v1/models'])
@@ -18,6 +18,23 @@ test('Claude prefers the Anthropic /v1/models path', () => {
     'https://api.example.com/v1/models',
     'https://api.example.com/models',
   ])
+})
+
+test('responses relay discovers through the OpenAI /models paths', () => {
+  // Responses 是 OpenAI 家协议：/models 走 openai 顺序，只有 Bearer 认证语义相同。
+  assert.deepEqual(modelDiscoveryUrls('responses', 'https://aigw.example.com/v1'), ['https://aigw.example.com/v1/models'])
+  assert.deepEqual(modelDiscoveryUrls('responses', 'https://example.com'), [
+    'https://example.com/models',
+    'https://example.com/v1/models',
+  ])
+})
+
+test('parseChannelProtocol accepts responses and falls back to openai', () => {
+  assert.equal(parseChannelProtocol('responses'), 'responses')
+  assert.equal(parseChannelProtocol('claude'), 'claude')
+  assert.equal(parseChannelProtocol('openai'), 'openai')
+  assert.equal(parseChannelProtocol('anthropic'), 'openai')
+  assert.equal(parseChannelProtocol(undefined), 'openai')
 })
 
 test('normalizes OpenAI and Gemini model payloads', () => {

@@ -118,3 +118,22 @@ test('a live channel is never marked stale', () => {
   assert.equal(view.stale, false)
   assert.equal(view.enabled, true)
 })
+
+test('derives the upstream protocol for every channel flavor', () => {
+  const [plain] = mergeChannelView([liveChannel], [], [])
+  assert.equal(plain.protocol, 'openai')
+  const [cpaRelay] = mergeChannelView([{ ...liveChannel, name: 'aigw', 'relay-mode': 'responses' }], [], [])
+  assert.equal(cpaRelay.protocol, 'responses')
+  // Magpie registry 词汇：protocol 键直接落在渠道对象上。
+  const [registryRelay] = mergeChannelView([{ name: 'aigw2', protocol: 'responses', models: [] }], [], [])
+  assert.equal(registryRelay.protocol, 'responses')
+  const [claude] = mergeChannelView([{ name: 'kimi-native', __providerEndpoint: 'claude-api-key', models: [] }], [], [])
+  assert.equal(claude.protocol, 'claude')
+})
+
+test('a relay flag survives the disable/restore snapshot round-trip', () => {
+  const snapshot = { name: 'aigw', enabled: 0, snapshot_json: JSON.stringify({ name: 'aigw', 'relay-mode': 'responses', models: [{ name: 'gpt-6.1-sol' }] }) }
+  const [off] = mergeChannelView([], [snapshot], [])
+  assert.equal(off.enabled, false)
+  assert.equal(off.protocol, 'responses')
+})

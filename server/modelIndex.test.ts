@@ -9,6 +9,7 @@ const channel = (name: string, enabled: boolean, models: Array<[string, boolean,
   baseUrl: `https://${name}.example/v1`,
   keyCount: 1,
   enabled,
+  protocol: 'openai' as const,
   stale: false,
   models: models.map(([id, on, upstreams]) => ({ id, enabled: on, upstreams })),
 })

@@ -65,9 +65,9 @@ export const adminApi = {
     request<T>(`/api/keys/${id}/quota/reset`, { method: 'POST', body: JSON.stringify({ window }) }),
   /** fresh=true 时服务端先丢掉网关快照（每端点每 60s 至多一次），让 CPA 官方面板里的改动立刻可见。 */
   channels: <T>(fresh = false) => request<T>(`/api/channels${fresh ? '?fresh=1' : ''}`),
-  discoverChannelModels: (body: { protocol: 'openai' | 'claude'; baseUrl: string; apiKey: string }) =>
+  discoverChannelModels: (body: { protocol: 'openai' | 'claude' | 'responses'; baseUrl: string; apiKey: string }) =>
     request<{ models: Array<{ id: string; alias: string }>; endpoint: string }>('/api/channels/discover', { method: 'POST', body: JSON.stringify(body) }),
-  createChannel: (body: { name: string; protocol: 'openai' | 'claude'; baseUrl: string; apiKey: string; models: Array<{ id: string; alias: string }> }) =>
+  createChannel: (body: { name: string; protocol: 'openai' | 'claude' | 'responses'; baseUrl: string; apiKey: string; models: Array<{ id: string; alias: string }> }) =>
     request('/api/channels', { method: 'POST', body: JSON.stringify(body) }),
   pruneStaleChannels: () => request<{ removed: string[] }>('/api/channels/prune-stale', { method: 'POST' }),
   setChannelEnabled: (name: string, enabled: boolean) =>

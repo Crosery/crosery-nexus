@@ -1,11 +1,19 @@
 import type { CompatChannel } from './cpa.js'
 import { modelId } from './cpa.js'
 
+export type ChannelProtocolView = 'openai' | 'claude' | 'responses'
+
 export type ChannelView = {
   name: string
   baseUrl: string
   keyCount: number
   enabled: boolean
+  /**
+   * 上游协议：'responses' = 渠道配了 Responses 原生中继（CPA 的 relay-mode /
+   * Magpie registry 的 protocol）；挂在 claude-api-key 等原生端点下的是 'claude'；
+   * 其余兼容渠道是 'openai'。
+   */
+  protocol: ChannelProtocolView
   /**
    * 网关里已经没有、只剩本地快照的渠道。区分两种「停用」：
    * 通过面板停用的可以一键恢复；在 CPA 侧被直接删掉的只是残影，必须能清掉，
@@ -46,6 +54,11 @@ export function mergeChannelView(
     .map((channel) => {
       const name = String(channel.name || '')
       const enabled = liveNames.has(name) && channel.disabled !== true
+      // Responses 中继有两个内核词汇：CPA 的 relay-mode 与 Magpie registry 的 protocol。
+      const relayMode = String(channel['relay-mode'] || '') === 'responses' || String(channel.protocol || '') === 'responses'
+      const protocol: ChannelProtocolView = relayMode ? 'responses'
+        : channel.__providerEndpoint === 'claude-api-key' ? 'claude'
+        : 'openai'
       // 同一 alias 的多条上游折叠成一个开关，否则同名模型会重复出现。
       const upstreamCount = new Map<string, number>()
       for (const model of channel.models || []) {
@@ -61,6 +74,7 @@ export function mergeChannelView(
         baseUrl: String(channel['base-url'] || ''),
         keyCount: (channel['api-key-entries'] || []).length,
         enabled,
+        protocol,
         stale: staleNames.has(name),
         models: [...liveModels, ...offModels].sort((a, b) => a.id.localeCompare(b.id)),
       }

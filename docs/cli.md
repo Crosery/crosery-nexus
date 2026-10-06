@@ -69,7 +69,7 @@ cradmin status                                   总览
 cradmin channels ls | show <渠道>
 cradmin channels models <渠道> [--enable p,…] [--disable p,…] [--only p,…]   模型开关（精确 id 或 * ? 通配）
 cradmin channels enable|disable <渠道>
-cradmin channels add <名称> --base-url <url> --api-key-env <NAME> --models id[=别名],… [--api-key-stdin] [--protocol openai|claude]
+cradmin channels add <名称> --base-url <url> --api-key-env <NAME> --models id[=别名],… [--api-key-stdin] [--protocol openai|claude|responses]
 cradmin channels rm <渠道> | prune
 cradmin models ls [--channel X] [--search s] [--unpriced] [--type chat|image|video|audio|embedding|rerank|other] [--all] | show <模型> | sync
                                                  类型按输出分（看图的对话模型仍是 chat），表格带「类型」列

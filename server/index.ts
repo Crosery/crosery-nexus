@@ -15,6 +15,7 @@ import { loginRoute, logoutRoute, sessionProbe } from './sessionRoutes.js'
 import { createMeRouter } from './meRoutes.js'
 import { registerPulseRoutes } from './pulseRoutes.js'
 import { registerChannelHealthRoutes } from './channelHealth.js'
+import { parseChannelProtocol } from './channelDiscovery.js'
 import { registerModelInsightsRoutes } from './modelInsights.js'
 import { registerKeysViewRoutes } from './keysView.js'
 import { registerConnectRoutes } from './connectRoutes.js'
@@ -929,7 +930,7 @@ app.get('/api/channels', async (req, res) => {
 
 app.post('/api/channels/discover', async (req, res) => {
   try {
-    const protocol = req.body?.protocol === 'claude' ? 'claude' : 'openai'
+    const protocol = parseChannelProtocol(req.body?.protocol)
     const result = await discoverChannelModels(protocol, String(req.body?.baseUrl || ''), String(req.body?.apiKey || ''))
     res.json(result)
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '模型扫描失败' }) }
@@ -937,7 +938,7 @@ app.post('/api/channels/discover', async (req, res) => {
 
 app.post('/api/channels', async (req, res) => {
   try {
-    const protocol = req.body?.protocol === 'claude' ? 'claude' : 'openai'
+    const protocol = parseChannelProtocol(req.body?.protocol)
     const result = await createChannel({
       name: String(req.body?.name || ''),
       protocol,

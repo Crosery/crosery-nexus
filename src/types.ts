@@ -48,6 +48,8 @@ export type ChannelItem = {
   baseUrl: string
   keyCount: number
   enabled: boolean
+  /** 上游协议：'responses' = Responses 原生中继渠道；'claude' = 挂在 Anthropic 端点；其余 'openai'。 */
+  protocol?: 'openai' | 'claude' | 'responses'
   models: ChannelModel[]
 }
 

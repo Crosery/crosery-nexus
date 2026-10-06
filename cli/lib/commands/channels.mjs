@@ -20,7 +20,7 @@ const HELP = `cradmin channels <动作> [参数]
   add <名称> --base-url <url> --api-key-env <NAME> --models id[=别名],…
                              新建 OpenAI 兼容渠道；上游 Key 用环境变量引用（env:NAME）
       --api-key-stdin        改从 stdin 读原始上游 Key（只有远程 CPA 控制面接受明文）
-      --protocol openai|claude
+      --protocol openai|claude|responses
   rm <渠道>                  删除渠道（连停用快照一起删，不可撤销）
   prune                      清理失效渠道（不可撤销）
 
@@ -137,7 +137,7 @@ async function addChannel(ctx, name) {
   if (!name) throw new UsageError('缺少渠道名称', '用法：cradmin channels add <名称> --base-url <url> --api-key-env <NAME> --models …')
   if (!/^[A-Za-z0-9._-]{1,48}$/.test(name)) throw new UsageError('渠道名称只能用字母、数字、. _ -，最长 48 个字符')
   const protocol = values.protocol || 'openai'
-  if (!['openai', 'claude'].includes(protocol)) throw new UsageError('--protocol 只能是 openai 或 claude')
+  if (!['openai', 'claude', 'responses'].includes(protocol)) throw new UsageError('--protocol 只能是 openai、claude 或 responses')
   let baseUrl
   try { baseUrl = new URL(String(values['base-url'] || '')) } catch { throw new UsageError('缺少或无效的 --base-url') }
   if (!['http:', 'https:'].includes(baseUrl.protocol)) throw new UsageError('--base-url 必须是 http(s)')

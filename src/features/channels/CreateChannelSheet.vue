@@ -28,9 +28,10 @@ const emit = defineEmits<{ created: [name: string] }>()
 const { isMobile } = useBreakpoint()
 const uid = useId()
 
-type Protocol = 'openai' | 'claude'
+type Protocol = 'openai' | 'claude' | 'responses'
 const PROTOCOLS: SegmentItem[] = [
   { value: 'openai', label: 'OpenAI 兼容' },
+  { value: 'responses', label: 'Responses' },
   { value: 'claude', label: 'Anthropic' },
 ]
 
@@ -204,7 +205,7 @@ async function create() {
       <div class="cx-new__field">
         <span class="cx-new__label">协议</span>
         <Segmented v-model="protocol" :items="PROTOCOLS" label="上游协议" />
-        <span class="cx-new__hint">{{ protocol === 'claude' ? 'Anthropic /v1/messages · 渠道名由地址决定' : '/v1/chat/completions 兼容端点' }}</span>
+        <span class="cx-new__hint">{{ protocol === 'claude' ? 'Anthropic /v1/messages · 渠道名由地址决定' : protocol === 'responses' ? '/v1/responses 原生中继 · 上游需支持 Responses API' : '/v1/chat/completions 兼容端点' }}</span>
       </div>
 
       <div class="cx-new__field">

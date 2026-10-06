@@ -1,4 +1,8 @@
-export type ChannelProtocol = 'openai' | 'claude'
+export type ChannelProtocol = 'openai' | 'claude' | 'responses'
+
+/** 路由层的入参解析：未知值一律按 openai，但三个合法值必须原样通过（静默强转会吞掉 responses）。 */
+export const parseChannelProtocol = (value: unknown): ChannelProtocol =>
+  value === 'claude' || value === 'responses' ? value : 'openai'
 
 export type DiscoveredModel = {
   id: string
@@ -16,7 +20,8 @@ export function normalizeBaseUrl(value: string) {
 
 /**
  * 兼容用户填 host 根路径、/v1，以及完整 /models 地址。按常见程度依次探测，
- * 上游任一路径返回模型列表即停止。
+ * 上游任一路径返回模型列表即停止。'responses'（OpenAI Responses 中继）的模型列表
+ * 与 Bearer 鉴权都是 OpenAI 形状，只有转发端点不同（内核 relay-mode），所以走 openai 分支。
  */
 export function modelDiscoveryUrls(protocol: ChannelProtocol, rawBaseUrl: string) {
   const base = normalizeBaseUrl(rawBaseUrl)
