@@ -881,16 +881,24 @@ export async function submitOAuthCallback(provider: string, redirectUrl: string,
     effectiveRedirectUrl = `${baseCallback}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`
   }
 
-  await cpaRequest<any>('/oauth-callback', {
-    method: 'POST',
-    body: JSON.stringify({
-      provider: canonical,
-      redirect_url: effectiveRedirectUrl,
-      code: code || undefined,
-      state,
-      error: errorMsg || undefined,
-    }),
-  })
+  try {
+    await cpaRequest<any>('/oauth-callback', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: canonical,
+        redirect_url: effectiveRedirectUrl,
+        code: code || undefined,
+        state,
+        error: errorMsg || undefined,
+      }),
+    })
+  } catch (error) {
+    // CPA 回 404 `unknown or expired state`：粘的是上一次授权的回调，或这次已超时
+    if (error instanceof CPARequestError && error.status === 404 && /state/i.test(error.message)) {
+      throw new Error('这个回调不属于当前授权或已过期 · 重新打开授权页登录后再粘贴')
+    }
+    throw error
+  }
   return { ok: true }
 }
 

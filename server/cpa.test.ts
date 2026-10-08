@@ -203,3 +203,16 @@ test('系统 Key：探测 Key 读时隐藏、写时保留，只钉在自己的�
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('OAuth 回调：CPA 说 state 不认识或已过期时给一句人话，其它失败原样', async () => {
+  let status = 404
+  globalThis.fetch = async () => new Response(status === 404 ? '{"error":"unknown or expired state","status":"error"}' : 'boom', { status })
+  try {
+    const { submitOAuthCallback } = await loadCPA()
+    await assert.rejects(() => submitOAuthCallback('codex', 'http://localhost:1455/auth/callback?code=c&state=s'), { message: '这个回调不属于当前授权或已过期 · 重新打开授权页登录后再粘贴' })
+    status = 500
+    await assert.rejects(() => submitOAuthCallback('codex', 'http://localhost:1455/auth/callback?code=c&state=s'), { message: /^CPA 500/ })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
