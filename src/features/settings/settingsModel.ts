@@ -61,6 +61,7 @@ export function fmtSpan(ms: number | null | undefined): string {
 export const JOB_SOURCE: Record<string, string> = {
   'model-discovery': '渠道 /models 探测',
   pricing: '网关价格 · 共享目录双源',
+  'price-watch': '网关 · models.dev · OpenRouter',
   'cpa-catalog': 'CPA 官方目录 ∪ 补充目录',
   'account-quota': '订阅账号额度 · 页面刷新时',
   'data-plane': 'outbox → 数据面',

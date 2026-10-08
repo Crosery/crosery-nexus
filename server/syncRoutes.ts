@@ -5,15 +5,16 @@ import type express from 'express'
 import { config } from './config.js'
 import { accountQuotaSupport, summarizeAccountQuota } from './accountQuotaReader.js'
 import type { DataPlaneRelayStatus } from './dataPlane.js'
-import { refreshGatewayPricingDetailed, refreshSharedPricingIfStale } from './modelCatalog.js'
+import { gatewayPricingMap, gatewayPricingRequests, refreshGatewayPricingDetailed, refreshSharedPricingIfStale } from './modelCatalog.js'
 import {
-  DISCOVERY_POLICY, discoveryBackoff, nextDiscoveryAt, sanitizeDiscoveryState, sharedCatalogPath, startModelCatalogWatcher, syncUpstreamModels,
+  DISCOVERY_POLICY, discoveryBackoff, nextDiscoveryAt, readSharedCatalog, sanitizeDiscoveryState, sharedCatalogPath, startModelCatalogWatcher, syncUpstreamModels,
   type DiscoveryState, type ModelSyncResult,
 } from './modelSync.js'
 import { pricingSourceStatus } from './pricing.js'
 import { isoOrNull, syncRegistry, type ExternalJobDef, type ExternalSnapshot, type SyncRegistry, type SyncResult } from './syncRegistry.js'
 import { autoRowWords, autoupdatePathsFor, buildMagpieAuto, buildRtkAuto, readAutoupdateFacts } from './autoupdate.js'
 import { CATALOG_INTERVAL_MS, runCpaCatalogSync, sanitizeCatalogData } from './cpaCatalog.js'
+import { PRICE_WATCH_INTERVAL_MS, gatewayPriceRead, priceWatcher, sharedPriceReads } from './priceWatch.js'
 
 /* ────────────────────────── 外部（launchd）任务：只读状态文件 ────────────────────────── */
 
@@ -328,6 +329,27 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
       }
       return { result, summary: parts.join(' · '), error: errors.length ? errors.join('；') : null }
     },
+  })
+
+  registry.register({
+    id: 'price-watch',
+    label: '价格变更',
+    kind: 'in-process',
+    intervalMs: PRICE_WATCH_INTERVAL_MS,
+    initialDelayMs: 3 * 60_000,
+    manualCooldownMs: 5 * 60_000,
+    // 只读本机网关的管理接口和共享产物，不打第三方上游。
+    manualBypassesBackoff: true,
+    run: (context) => priceWatcher.run({
+      now: context.now(),
+      readOfficial: async () => {
+        const failures: string[] = []
+        context.countRequests(gatewayPricingRequests())
+        return gatewayPriceRead(await gatewayPricingMap(failures), failures, context.now())
+      },
+      readShared: () => sharedPriceReads(readSharedCatalog()?.pricing),
+      audit: deps.addAudit,
+    }),
   })
 
   registry.register({

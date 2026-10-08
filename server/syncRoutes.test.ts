@@ -117,7 +117,7 @@ test('GET /api/sync/status 按契约 C3 返回全部任务', async () => {
   assert.equal(response.status, 200)
   const body = await response.json() as { policy: Record<string, unknown>; jobs: Array<Record<string, unknown>>; generatedAt: string }
   assert.deepEqual(Object.keys(body.policy).sort(), ['backoff', 'globalUpstreamConcurrency', 'jitterPct', 'minIntervalPerHostMs'])
-  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'cpa-catalog', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
+  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
   const required = ['id', 'label', 'kind', 'intervalMs', 'lastRunAt', 'lastFinishedAt', 'nextRunAt', 'state', 'lastResult', 'lastError', 'summary',
     'backoffUntil', 'backoffLevel', 'requests24h', 'history', 'canRunNow', 'runCooldownUntil']
   for (const job of body.jobs) for (const key of required) assert.ok(key in job, `${String(job.id)} 缺少 ${key}`)
@@ -261,6 +261,38 @@ test('SB-21 网关价格部分来源失败：刷新报 partial 并列出失败�
     assert.equal(outcome.result, 'partial', '有价格回来但缺一个来源：不能报 ok')
     assert.match(outcome.error ?? '', /gemini/)
     assert.match(outcome.summary ?? '', /缺 1 源/)
+  } finally {
+    globalThis.fetch = original.fetch
+    config.cpaManagementKey = original.key
+    config.cpaBaseUrl = original.base
+    config.gatewayEngine = original.engine
+    if (original.catalog === undefined) delete process.env.CROSERY_SHARED_CATALOG
+    else process.env.CROSERY_SHARED_CATALOG = original.catalog
+  }
+})
+
+test('价格变更任务登记在同步中心：读网关价与共享产物，共享产物缺失时报 partial 并写明原因', async () => {
+  const { config } = await import('./config.js')
+  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl, engine: config.gatewayEngine, catalog: process.env.CROSERY_SHARED_CATALOG }
+  config.gatewayEngine = 'cpa'
+  config.cpaManagementKey = 'fixture-management-key'
+  config.cpaBaseUrl = 'https://cpa.example.test'
+  process.env.CROSERY_SHARED_CATALOG = path.join(root, 'nope/catalog.json')
+  const priced = { id: 'watched-model', cost: { input: 1, output: 2 } }
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    if (url.includes('/model-definitions/')) return new Response(JSON.stringify({ models: [priced] }), { status: 200 })
+    if (url.endsWith('/openai-compatibility')) return new Response(JSON.stringify({ 'openai-compatibility': [] }), { status: 200 })
+    if (url.endsWith('/available-models')) return new Response(JSON.stringify({ models: [priced] }), { status: 200 })
+    throw new Error(`unexpected ${url}`)
+  }) as typeof fetch
+  try {
+    const { outcome } = await registry.run('price-watch', 'manual')
+    assert.equal(outcome.result, 'partial')
+    assert.equal(outcome.summary, '无改价生效 · 价格源 1/3')
+    assert.match(outcome.error ?? '', /models\.dev 读取失败：共享目录没有价格段；OpenRouter 读取失败：共享目录没有价格段/)
+    const view = (await registry.status()).jobs.find(job => job.id === 'price-watch')!
+    assert.deepEqual([view.intervalMs, view.requests24h, view.lastResult], [6 * 60 * 60_000, 7, 'partial'])
   } finally {
     globalThis.fetch = original.fetch
     config.cpaManagementKey = original.key
