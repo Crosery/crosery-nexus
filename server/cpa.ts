@@ -170,9 +170,21 @@ export async function getCPAKeys(): Promise<string[]> {
   return (result['api-keys'] || []).filter((key) => key !== lockout)
 }
 
+// 与 keyChannelAccess.ts 的拒绝标记同一个值：CPA 里没有白名单条目的 Key 不受限，封锁 Key 必须显式拒绝。
+const LOCKOUT_CHANNELS = ['__console_no_channels_allowed__']
+
 export async function replaceCPAKeys(keys: string[]) {
   const list = keys.filter(Boolean)
-  return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(list.length ? list : [cpaLockoutKey()]) })
+  if (list.length) return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(list) })
+  const lockout = cpaLockoutKey()
+  const result = await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([lockout]) })
+  try {
+    // 先有 Key 再写条目：CPA 会丢弃未配置 Key 的白名单条目
+    await putChannelAccess({ ...(await getChannelAccess()), [lockout]: LOCKOUT_CHANNELS })
+  } catch (error) {
+    if (!isUnsupportedManagementEndpoint(error)) throw error
+  }
+  return result
 }
 
 export async function getModelAccess(): Promise<Record<string, string[]>> {

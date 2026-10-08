@@ -94,13 +94,20 @@ test('api-keys 永不写空：删光/停光时写入本机封锁 Key，读回时
   config.dataDir = dir
   const puts: string[][] = []
   let stored: string[] = []
-  globalThis.fetch = async (_input, init) => {
+  let channels: Record<string, string[]> = { 'sk-other': ['codex'] }
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.endsWith('/api-key-channel-access')) {
+      if (init?.method === 'PUT') channels = JSON.parse(String(init.body))
+      return json({ 'api-key-channel-access': channels })
+    }
     if (init?.method === 'PUT') {
       stored = JSON.parse(String(init.body))
       puts.push(stored)
-      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return json({})
     }
-    return new Response(JSON.stringify({ 'api-keys': stored }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    return json({ 'api-keys': stored })
   }
   try {
     const { cpaLockoutKey, getCPAKeys, replaceCPAKeys } = await loadCPA()
@@ -109,6 +116,7 @@ test('api-keys 永不写空：删光/停光时写入本机封锁 Key，读回时
     assert.match(lockout, /^sk-lockout-[0-9a-f]{64}$/)
     assert.deepEqual(puts[0], [lockout], '空列表必须换成封锁 Key')
     assert.equal(fs.statSync(path.join(dir, 'cpa-lockout-key')).mode & 0o777, 0o600)
+    assert.deepEqual(channels, { 'sk-other': ['codex'], [lockout]: ['__console_no_channels_allowed__'] }, '封锁 Key 显式拒绝所有渠道，其它条目原样保留')
     assert.deepEqual(await getCPAKeys(), [], '封锁 Key 不算控制台的 Key')
     await replaceCPAKeys([...(await getCPAKeys()), 'sk-real'])
     assert.deepEqual(puts[1], ['sk-real'], '有真实 Key 时不再带封锁 Key')
