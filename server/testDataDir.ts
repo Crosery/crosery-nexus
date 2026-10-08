@@ -31,6 +31,9 @@ const dir = shared && process.env.DATA_DIR
   : fs.mkdtempSync(path.join(os.tmpdir(), `crosery-test-${process.pid}-`))
 
 if (!shared) process.env.DATA_DIR = dir
+// 共享模型目录默认在 ~/.agents/crosery/catalog.json：不隔离时测试结果取决于开发机上那份真实目录
+// （例如 gpt-image-2.5 被判成 chat）。需要目录的测试自己设置 CROSERY_SHARED_CATALOG。
+process.env.CROSERY_SHARED_CATALOG ||= path.join(dir, 'no-shared-catalog.json')
 
 if (!keep && !shared) {
   process.on('exit', () => {

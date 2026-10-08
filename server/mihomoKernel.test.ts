@@ -274,7 +274,8 @@ test('manual stop holds until start; crashes back off and end in failed', async 
   assert.equal((await kernel.start()).state, 'running')
   assert.equal(starts(dir), 2)
 
-  mode(dir, { crash: true, crashAfterMs: 150 })
+  // 崩溃必须落在「启动已确认」之后才走退避重启；并行跑测试时就绪探测可能超过 150ms，留足余量。
+  mode(dir, { crash: true, crashAfterMs: 600 })
   await kernel.restart()
   await until(() => kernel.status().state === 'failed', 6_000)
   assert.equal(starts(dir), 2 + 3, 'first start + 2 backoff restarts, then failed')
