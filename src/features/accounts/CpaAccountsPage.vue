@@ -24,7 +24,7 @@ import { fmtTime } from '../../ui/fmt'
 import { maskEmail, useMask } from '../../lib/privacy'
 import { setNavCount } from '../../shell/badges'
 import { usePaletteCommands } from '../../shell/palette'
-import type { CommandItem, SegmentItem } from '../../ui/types'
+import type { CommandItem, DataState, SegmentItem } from '../../ui/types'
 import { loadAccounts, type AccountsPayload } from './accountsApi'
 import { proxyApi } from '../../api/proxy'
 import type { EgressData } from '../../types'
@@ -45,9 +45,10 @@ import {
  * the existing OAuth / device-code / paste-callback flows in a sheet. `?add=1` (⌘K 添加账号…), `?add=<服务>`
  * and `#oauth` open that sheet.
  * `embedded`: the pool renders as the Providers page 订阅账号池 section — its own Plate carries the
- * section title (`plateTitle`); the PageHead and the page's one search / status filter (`q`, `show`) are the
- * host's. The data loop, row actions, deep links and the add flow are unchanged. `counts` (null until the first
- * read) hands the host what its chips and section tab need without a second channels/monitor read.
+ * section title (`plateTitle`); the PageHead, the page's one search / status filter (`q`, `show`) and its one
+ * live mark are the host's. The data loop, row actions, deep links and the add flow are unchanged. `counts`
+ * (null until the first read) and `live` hand the host what its chips, stat card and live mark need without a
+ * second channels/monitor read; the exposed `refresh` is the host's retry.
  */
 const props = withDefaults(
   defineProps<{
@@ -62,6 +63,7 @@ const props = withDefaults(
 )
 const emit = defineEmits<{
   (e: 'counts', counts: ReturnType<typeof countBy> | null): void
+  (e: 'live', live: { state: DataState; lastAt: number | null }): void
   (e: 'clear-filters'): void
 }>()
 const route = useRoute()
@@ -93,12 +95,14 @@ const rows = computed<AccountView[]>(() => {
 const counts = computed(() => countBy(rows.value))
 const quotaShare = computed(() => (payload.value?.monitor?.quotaShare ?? {}) as QuotaShare)
 watch(() => (payload.value ? counts.value : null), (c) => emit('counts', c), { immediate: true })
+watch(() => [live.state.value, live.lastAt.value] as const, ([state, lastAt]) => emit('live', { state, lastAt }), { immediate: true })
 const presets = computed(() => payload.value?.channels?.proxyPresets ?? [])
 
 /* ── account exits: the proxy pool's view (local reads on the server, no CPA / vendor traffic); a server without
    the pool routes leaves it null and the page keeps working without exits ── */
 const egressLive = useLive<EgressData>((signal) => proxyApi.egress(signal), { intervalMs: INTERVAL, isEmpty: () => false })
 const egress = computed(() => egressLive.data.value ?? null)
+defineExpose({ refresh: () => Promise.all([refresh(), egressLive.refresh()]).then(() => undefined) })
 
 /* ── filters (URL; embedded: the host's) and the used/left figure (this device) ── */
 const ownQ = ref('')
@@ -173,6 +177,8 @@ const visibleCount = computed(() => groups.value.reduce((n, g) => n + g.accounts
 
 /* ── head status, nav badge, palette ── */
 const plateState = computed(() => live.state.value)
+/* embedded: staleness is the host page's live mark; the plate still shows its own loading / error */
+const bodyState = computed<DataState>(() => (props.embedded && plateState.value === 'stale' ? 'ready' : plateState.value))
 const headStatus = computed(() => {
   const c = counts.value
   if (!payload.value) return []
@@ -303,7 +309,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       <Segmented v-model="mode" class="push" :items="MODE_ITEMS" label="额度显示已用或剩余" />
     </div>
 
-    <Plate :title="props.plateTitle" flush class="acc-plate" :state="plateState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
+    <Plate :title="props.plateTitle" flush class="acc-plate" :state="bodyState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
       <template #meta>
         <span v-if="payload?.monitorError" class="acc-meta-warn">{{ payload.monitor ? `◇ 额度刷新失败 · 显示 ${fmtTime(payload.monitorAt ?? payload.at)} 读到的` : '◇ 额度没读到 · 账号列表照常' }}</span>
         <span v-else-if="payload?.channelsError" class="acc-meta-warn">{{ payload.channels ? `◇ 凭据列表刷新失败 · 显示 ${fmtTime(payload.channelsAt ?? payload.at)} 读到的` : '◇ 凭据列表没读到 · 只显示有额度的账号' }}</span>
@@ -311,7 +317,6 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
         <span class="acc-meta-src">额度按账号缓存 3–15m · 不频繁打上游</span>
       </template>
       <template v-if="props.embedded" #actions>
-        <LiveMark :state="plateState" :last-at="live.lastAt.value" :interval-ms="INTERVAL" @retry="refresh" />
         <Segmented v-if="counts.all" v-model="mode" :items="MODE_ITEMS" label="额度显示已用或剩余" />
         <TxButton variant="subtle" size="small" @click="openAdd()"><Icon name="plus" :size="14" />添加账号</TxButton>
       </template>

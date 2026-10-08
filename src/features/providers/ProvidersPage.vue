@@ -36,17 +36,19 @@ import { classifyChannel, hostOf, modelCounts } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
 import { groupsOf, type RowAction } from '../accounts/magpieModel'
 import {
-  accountShow, channelInStatus, matchesQuery, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems,
-  type AccountCountsLike, type ChannelBucket, type ProviderStatus,
+  accountShow, channelInStatus, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems,
+  type AccountCountsLike, type ChannelBucket, type LiveSource, type ProviderStatus,
 } from './providersModel'
 /**
  * 供应商 (Providers): 统一接入管理「API 渠道」与「订阅账号池」，并管理「全局共享模型」。
- * 整页一个搜索、一个状态筛选，同时管两栏。
+ * 整页一个搜索、一个状态筛选（同时管两栏）、一个刷新时间。
  * 本地环境自适应 Magpie 原生 CatalogSheet 授权，远端 CPA 把订阅账号池整块交给账号页（embedded）。
  */
 /* CPA 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读），
    Magpie 控制台不会下载这一块 */
 const CpaAccountsPage = defineAsyncComponent(() => import('../accounts/CpaAccountsPage.vue'))
+/** the page's live mark speaks for its slowest loop (accounts, exits: 60 s; channels and health poll every 30 s) */
+const PAGE_INTERVAL = 60_000
 
 const route = useRoute()
 const router = useRouter()
@@ -114,8 +116,10 @@ const accountsLive = useLive<AccountsData>((signal) => accountsApi.list(signal),
 const sharedLive = useLive(() => api.sharedModels(), { intervalMs: 30_000 })
 const egressLive = useLive<EgressData>((signal) => proxyApi.egress(signal), { intervalMs: 60_000, isEmpty: () => false })
 
-/* CPA 账号池上报的计数（它挂着就一直上报，切到「API 渠道」时也不卸载） */
+/* CPA 账号池上报的计数、刷新状态与重试入口（它挂着就一直上报，切到「API 渠道」时也不卸载） */
+const cpaPool = useTemplateRef<{ refresh: () => Promise<void> }>('cpaPool')
 const cpaCounts = shallowRef<AccountCountsLike | null>(null)
+const cpaLive = shallowRef<LiveSource | null>(null)
 
 function refreshAll() {
   void channelsLive.refresh()
@@ -123,6 +127,7 @@ function refreshAll() {
   void accountsLive.refresh()
   void sharedLive.refresh()
   void egressLive.refresh()
+  void cpaPool.value?.refresh()
 }
 
 const channelsData = computed(() => channelsLive.data.value?.channels ?? [])
@@ -147,6 +152,17 @@ const magpieCounts = computed<AccountCountsLike | null>(() => {
 const accountCounts = computed(() => (isMagpie.value ? magpieCounts.value : cpaCounts.value))
 const totalAccountsCount = computed(() => accountCounts.value?.all ?? 0)
 const totalProvidersCount = computed(() => channelsData.value.length + totalAccountsCount.value)
+
+/* ── 整页一个刷新时间：渠道、渠道健康与账号池三路数据，取最旧的那次成功读取 ── */
+const accountsSource = computed<LiveSource>(() => {
+  if (isMagpie.value) return { state: accountsLive.state.value, lastAt: accountsLive.lastAt.value }
+  return cpaLive.value ?? { state: 'loading', lastAt: null }
+})
+const live = computed(() => pageLive([
+  { state: channelsLive.state.value, lastAt: channelsLive.lastAt.value },
+  { state: healthLive.state.value, lastAt: healthLive.lastAt.value },
+  accountsSource.value,
+]))
 
 /* ── 全局共享模型清单 ── */
 type SharedModelRow = {
@@ -571,12 +587,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       </nav>
 
       <div class="pv-actions">
-        <LiveMark
-          :state="channelsLive.state.value"
-          :last-at="channelsLive.lastAt.value"
-          :interval-ms="30_000"
-          @retry="refreshAll"
-        />
+        <LiveMark :state="live.state" :last-at="live.lastAt" :interval-ms="PAGE_INTERVAL" @retry="refreshAll" />
       </div>
     </header>
 
@@ -697,7 +708,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       </Plate>
     </template>
 
-    <!-- 4. 全部供应商视图：分「API 渠道」和「订阅账号」两栏展现；切到共享模型时只隐藏，账号池照常上报计数 -->
+    <!-- 4. 全部供应商视图：分「API 渠道」和「订阅账号」两栏展现；切到共享模型时只隐藏，账号池照常上报计数与刷新时间 -->
     <div v-show="currentTab !== 'shared'" class="pv-body">
       <!-- 整页一个搜索、一个状态筛选，同时管两栏；右侧切换看哪一栏 -->
       <div class="ui-toolbar pv-toolbar">
@@ -853,16 +864,18 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
         </Plate>
       </section>
 
-      <!-- 栏目 2：订阅账号池 (OAuth 账号)。v-show：只看渠道时也挂着，计数不断 -->
+      <!-- 栏目 2：订阅账号池 (OAuth 账号)。v-show：只看渠道时也挂着，计数与刷新时间不断 -->
       <section v-show="sectionFilter !== 'channels'" class="pv-section">
         <!-- CPA：账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供；搜索与筛选用本页的 -->
         <CpaAccountsPage
           v-if="!isMagpie"
+          ref="cpaPool"
           embedded
           plate-title="订阅账号池"
           :q="searchQuery"
           :show="accountShow(appliedStatus)"
           @counts="cpaCounts = $event"
+          @live="cpaLive = $event"
           @clear-filters="clearFilters"
         />
         <Plate v-else title="订阅账号池" flush>

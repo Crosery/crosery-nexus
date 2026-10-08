@@ -1,5 +1,5 @@
 /**
- * 供应商页的纯规则：一套状态筛选同时管「API 渠道」与「订阅账号池」。
+ * 供应商页的纯规则：一套状态筛选同时管「API 渠道」与「订阅账号池」，整页一个刷新时间。
  * No Vue, no fetch: unit-tested in server/providersPageModel.test.ts. Account rows themselves are filtered by
  * `matches` in ../accounts/model.ts; this file only says which `show` value a page status stands for.
  */
@@ -116,4 +116,25 @@ export function statusItems(counts: StatusCounts, section: ProviderSection, curr
     .filter((value) => section === 'accounts' || !ACCOUNT_ONLY.has(value))
     .filter((value) => value === 'all' || value === current || counts[value] > 0)
     .map((value) => ({ value, label: LABELS[value], count: counts[value] }))
+}
+
+/* ── one refresh time for the page ── */
+
+/** Same union as useLive's DataState (declared here so the node test never loads Vue). */
+export type LiveState = 'loading' | 'ready' | 'empty' | 'error' | 'forbidden' | 'stale'
+export type LiveSource = { state: LiveState; lastAt: number | null }
+
+/**
+ * The page's single live mark over its data sources: stale (with retry) when any source failed or fell behind,
+ * loading until every source answered once, else ready. `lastAt` is the oldest source's last good read, so the
+ * time shown never claims more freshness than the stalest part of the page has.
+ */
+export function pageLive(sources: readonly LiveSource[]): LiveSource {
+  const states = sources.map((source) => source.state)
+  const state: LiveState = states.some((s) => s === 'error' || s === 'stale' || s === 'forbidden')
+    ? 'stale'
+    : states.some((s) => s === 'loading') ? 'loading' : 'ready'
+  const times = sources.map((source) => source.lastAt)
+  const lastAt = times.length && times.every((t): t is number => typeof t === 'number') ? Math.min(...times) : null
+  return { state, lastAt }
 }

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  accountShow, channelInStatus, matchesQuery, parseStatus, statusCounts, statusForSection, statusItems,
+  accountShow, channelInStatus, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems,
   type AccountCountsLike, type ChannelBucket,
 } from '../src/features/providers/providersModel.js'
 import { buildAccounts, filterGroups, groupAccounts, type CredentialLike } from '../src/features/accounts/model.js'
 
-/** /providers (src/features/providers/providersModel.ts): one search and one status filter for both sections. */
+/** /providers (src/features/providers/providersModel.ts): one filter for both sections, one live mark. */
 
 const counts = (over: Partial<AccountCountsLike> = {}): AccountCountsLike => ({ all: 0, run: 0, cool: 0, pause: 0, bad: 0, warn: 0, hot: 0, reset: 0, ...over })
 
@@ -67,4 +67,12 @@ test('chips count what the section shows; zero chips drop except 全部 and the 
   assert.deepEqual(statusItems(all, 'all', 'all').map((i) => i.value), ['all', 'run', 'cool', 'issue', 'off'], 'account-only chips stay out while channels show')
   assert.deepEqual(statusItems(statusCounts(buckets, pool, 'accounts'), 'accounts', 'reset').map((i) => i.value), ['all', 'run', 'cool', 'issue', 'off', 'hot', 'reset'])
   assert.deepEqual(statusItems(statusCounts(['run'], null, 'all'), 'all', 'all').map((i) => `${i.label} ${i.count}`), ['全部 1', '正常 1'])
+})
+
+test('one live mark: stale when any source failed, loading until all answered, the oldest good read is the time shown', () => {
+  assert.deepEqual(pageLive([{ state: 'ready', lastAt: 2_000 }, { state: 'ready', lastAt: 1_000 }]), { state: 'ready', lastAt: 1_000 })
+  assert.deepEqual(pageLive([{ state: 'ready', lastAt: 2_000 }, { state: 'stale', lastAt: 1_500 }]), { state: 'stale', lastAt: 1_500 })
+  assert.deepEqual(pageLive([{ state: 'ready', lastAt: 2_000 }, { state: 'error', lastAt: null }]), { state: 'stale', lastAt: null })
+  assert.deepEqual(pageLive([{ state: 'ready', lastAt: 2_000 }, { state: 'loading', lastAt: null }]), { state: 'loading', lastAt: null })
+  assert.equal(pageLive([{ state: 'empty', lastAt: 5 }]).state, 'ready')
 })
