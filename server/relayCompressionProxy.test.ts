@@ -62,7 +62,7 @@ test('target must be a loopback HTTP origin', () => {
   for (const ok of ['http://127.0.0.1:8316', 'http://127.0.0.1:8316/', 'http://[::1]:8316', 'http://localhost:8316']) {
     assert.equal(relayTarget(ok).protocol, 'http:', ok)
   }
-  for (const bad of ['https://127.0.0.1:8316', 'http://10.0.0.1:8316', 'http://example.test', 'http://user:pw@127.0.0.1:8316',
+  for (const bad of ['https://127.0.0.1:8316', 'http://198.51.100.1:8316', 'http://example.test', 'http://user:pw@127.0.0.1:8316',
     'http://127.0.0.1:8316/v1', 'http://127.0.0.1:8316/?x=1', 'http://127.0.0.1:8316/#h', 'not a url', '']) {
     assert.throws(() => relayTarget(bad), /RTK_RELAY_TARGET/, bad)
     assert.throws(() => createRelayCompressionProxy({ target: bad, optedIn: () => false, compress: () => 0, saved: () => {}, failed: () => {} }))
@@ -150,6 +150,22 @@ test('only opted-in keys are compressed; others, GETs and non-JSON bodies are fo
     }
     const savedTokens = Math.floor((compressRequestToolOutputs(JSON.parse(payload)).saved) / 4)
     assert.deepEqual(calls, { saved: [savedTokens, savedTokens], failed: [] })
+  } finally { await close(server); await close(upstream.server) }
+})
+
+test('console probe and lockout keys are never looked up, compressed or counted', async () => {
+  const upstream = await recordingUpstream((_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(completeChat))
+  const { server, calls } = relay(upstream.base, { optedIn: () => assert.fail('system keys are not looked up') })
+  const base = await listen(server)
+  try {
+    for (const key of [`sk-probe-claude-${'a'.repeat(64)}`, `sk-probe-${'b'.repeat(64)}`, `sk-lockout-${'c'.repeat(64)}`]) {
+      for (const auth of [{ authorization: `Bearer ${key}` }, { 'x-api-key': key }] as Array<Record<string, string>>) {
+        const response = await fetch(`${base}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: payload })
+        assert.equal(await response.text(), completeChat)
+        assert.equal(upstream.seen.at(-1)!.body.toString(), payload, key)
+      }
+    }
+    assert.deepEqual(calls, { saved: [], failed: [] })
   } finally { await close(server); await close(upstream.server) }
 })
 

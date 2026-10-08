@@ -1,5 +1,6 @@
 import { Agent, createServer, request, ServerResponse, type ClientRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
 import { pipeline } from 'node:stream/promises'
+import { isSystemKey } from './systemKeys.js'
 
 /**
  * RTK relay: a loopback HTTP proxy in front of the context guard. Requests from opted-in keys to the
@@ -182,7 +183,9 @@ export function createRelayCompressionProxy(deps: RelayDependencies) {
     if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') return ''
     const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''))?.[1]?.trim()
     const apiKey = req.headers['x-api-key']
-    return bearer || (typeof apiKey === 'string' ? apiKey.trim() : '')
+    const token = bearer || (typeof apiKey === 'string' ? apiKey.trim() : '')
+    // The console's own probe / lockout keys: never compressed, never looked up, never counted.
+    return isSystemKey(token) ? '' : token
   }
 
   function fail(stage: RelayFailureStage) {

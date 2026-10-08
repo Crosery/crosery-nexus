@@ -2,6 +2,10 @@
 
 可选的本机中转：控制台进程里的一个独立线程，监听 `127.0.0.1:RTK_RELAY_PORT`，把请求原样转给 context guard。只有在 Key 上开启了「RTK 压缩」、且全局开关开着时，才会在转发前压缩请求体里的工具输出（折叠重复行与进度输出、去掉终端颜色）。其余请求逐字节透传：SSE/分块流、websocket 升级、全部请求头（含 Authorization）、状态码，响应不缓冲。
 
+**不依赖 rtk 可执行文件**：压缩是控制台自带的确定性代码（`server/toolCompress.ts`），随控制台版本更新。主机上 rtk 的自动升级只影响各主机上的 rtk CLI（agent 钩子），不改变中转的行为。
+
+控制台自己的探测与封锁 Key（`sk-probe-…`、`sk-lockout-…`）经过中转时一律原样透传，不压缩、不计入节省统计。
+
 ```
 启用前：反向代理 → 8316 context guard → 8317 CPA
 启用后：反向代理 → RTK_RELAY_PORT（控制台中转线程）→ 8316 context guard → 8317 CPA
