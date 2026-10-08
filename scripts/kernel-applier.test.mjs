@@ -124,6 +124,10 @@ test('reports: strict shapes; a "built" report needs a candidate', () => {
   const checks = Array.from({ length: 42 }, (_, i) => ({ name: `smoke-${i}`, ok: i !== 41 }))
   assert.deepEqual(parseCpaReport({ ...ok, candidate: { ...ok.candidate, checks } }).candidate.checks, checks)
   assert.equal(parseCpaReport({ ...ok, candidate: null }), null)
+  assert.equal(parseCpaReport(ok).alarm, null)
+  const alarm = { code: 'acceptance-inconclusive', text: '首次验收连续 6 轮没有结论', count: 6, since: '2026-10-03T00:00:00Z', at: '2026-10-03T02:30:00Z' }
+  assert.deepEqual(parseCpaReport({ ...ok, alarm }).alarm, alarm)
+  assert.equal(parseCpaReport({ ...ok, alarm: { ...alarm, code: 'reject-now' } }).alarm, null, 'only the known alarm, and it is only shown')
   assert.equal(parseCpaReport({ ...ok, status: 'rm -rf' }), null)
   assert.equal(parseCpaReport({ ...ok, candidate: { ...ok.candidate, version: '8.0.12; reboot' } }), null)
   assert.equal(parseCpaReport({ ...ok, status: 'held', candidate: null }).status, 'held')

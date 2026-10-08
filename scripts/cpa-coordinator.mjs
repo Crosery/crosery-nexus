@@ -17,9 +17,14 @@
  * 4. report the round to both hosts (`cpa-report`) with where the candidate stands on preview;
  * 5. RTK: preview accepted a version → forward that record to production (`rtk-promote`).
  *
+ * An inconclusive acceptance (network, proxy, another binary answering; see cpa-acceptance.mjs) is never sent to preview:
+ * the trial stays as it is and the same phase runs again next round. After CPA_ACCEPT_INCONCLUSIVE_ALARM such rounds in a
+ * row (default 6) the round reports an alarm to both consoles and exits non-zero, but still never rejects.
+ *
  * Environment (<root>/pipeline.env on the build machine, not in the repo):
  *   CPA_PIPELINE_PREVIEW / CPA_PIPELINE_PRODUCTION   command prefix that reaches each gate, e.g. `ssh -o BatchMode=yes <alias>`
  *   CPA_ACCEPT_BASE_URL / CPA_ACCEPT_KEY / CPA_ACCEPT_MODELS   preview's public API, a key for it, models to accept
+ *   CPA_ACCEPT_INCONCLUSIVE_ALARM   inconclusive rounds in a row before the alarm (optional, default 6)
  */
 import fs from 'node:fs/promises'
 import { createReadStream, realpathSync } from 'node:fs'
@@ -35,6 +40,7 @@ import { runAcceptance } from './cpa-acceptance.mjs'
 const CPA_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/
 const SHA256 = /^[a-f0-9]{64}$/
 const KEEP_CANDIDATES = 4
+const INCONCLUSIVE_ALARM = 6
 const isObject = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 const iso = ms => new Date(ms).toISOString()
 /** `a` is the same as or newer than `b` (same x.y.z with another patch suffix counts as newer only when it differs) */
@@ -48,10 +54,28 @@ export function coordinatorConfig(env = process.env) {
   }
   const missing = ['CPA_ACCEPT_BASE_URL', 'CPA_ACCEPT_KEY', 'CPA_ACCEPT_MODELS'].filter(name => !String(env[name] ?? '').trim())
   if (missing.length) throw new Error(`${missing.join(', ')} not set: preview acceptance cannot run, nothing could ever be promoted`)
+  const alarm = String(env.CPA_ACCEPT_INCONCLUSIVE_ALARM ?? '').trim()
+  if (alarm && !/^[1-9]\d{0,3}$/.test(alarm)) throw new Error(`CPA_ACCEPT_INCONCLUSIVE_ALARM must be a whole number of rounds (1–9999), not ${alarm}`)
   return {
     preview: prefix('CPA_PIPELINE_PREVIEW'), production: prefix('CPA_PIPELINE_PRODUCTION'),
     accept: { baseUrl: env.CPA_ACCEPT_BASE_URL.trim(), key: env.CPA_ACCEPT_KEY.trim(), models: env.CPA_ACCEPT_MODELS },
+    inconclusiveAlarm: alarm ? Number(alarm) : INCONCLUSIVE_ALARM,
   }
+}
+
+/**
+ * Inconclusive acceptance runs in a row for one candidate and phase (<root>/state/acceptance-pending.json). A verdict
+ * for another candidate or phase starts over; a passed or failed run clears it.
+ */
+export function countInconclusive({ pending, action, result, now, threshold }) {
+  const same = pending && pending.version === action.version && pending.phase === action.phase
+  const count = (same ? pending.count : 0) + 1
+  const next = { version: action.version, phase: action.phase, count, since: same ? pending.since : iso(now), last: iso(now), summary: result.summary ?? null }
+  const alarm = count >= threshold
+    ? { code: 'acceptance-inconclusive', version: action.version, phase: action.phase, count, since: next.since, at: next.last,
+      text: `${action.version} 的${action.phase === 'first' ? '首次' : '浸泡后'}验收连续 ${count} 轮没有结论：${String(result.summary ?? '').slice(0, 160)}（不会因此回滚，要人工看）` }
+    : null
+  return { pending: next, alarm }
 }
 
 /* ── local candidate store (what this machine built and smoke-tested) ── */
@@ -215,15 +239,28 @@ export async function runRound({ root, env = process.env, deps = {} }) {
   // the next build goes to preview only after the accepted one really reached production (its record lives on preview
   // until the next trial is accepted, so a failed delivery is retried next round)
   let promotionFailed = false
+  let alarm = null
+  const pendingFile = path.join(root, 'state/acceptance-pending.json')
+  const pending = await fs.readFile(pendingFile, 'utf8').then(text => JSON.parse(text), () => null)
   for (const action of actions) {
     if (action.kind === 'accept') {
       const result = await accept({ ...config.accept, expectVersion: action.version })
+      const verdict = ['passed', 'failed', 'inconclusive'].includes(result.verdict) ? result.verdict : result.ok ? 'passed' : 'failed'
       const record = { version: 1, kind: 'cpa-acceptance', phase: action.phase, candidate: { version: action.version, sha256: action.sha256 },
-        ranAt: result.ranAt, ok: result.ok, checks: result.checks, summary: result.summary }
+        ranAt: result.ranAt, ok: verdict === 'passed', verdict, checks: result.checks, summary: result.summary }
       await fs.appendFile(path.join(root, 'state/acceptance.jsonl'), `${JSON.stringify(record)}\n`)
+      if (verdict === 'inconclusive') {
+        // says nothing about the binary: preview hears nothing, the trial and its soak clock go on, next round asks again
+        const counted = countInconclusive({ pending, action, result, now: now(), threshold: config.inconclusiveAlarm })
+        await fs.writeFile(pendingFile, `${JSON.stringify(counted.pending)}\n`)
+        log.push(`acceptance ${action.phase} ${action.version}: inconclusive ${counted.pending.count}x (${result.summary}); not sent, retried next round`)
+        if (counted.alarm) { alarm = counted.alarm; errors.push(`alarm: ${counted.alarm.text}`) }
+        continue
+      }
+      await fs.rm(pendingFile, { force: true })
       const sent = await call(config.preview, 'cpa-accept', { input: JSON.stringify(record) })
       if (sent.code !== 0) errors.push(`cpa-accept failed: ${sent.stdout.trim() || sent.stderr.trim()}`.slice(0, 200))
-      log.push(`acceptance ${action.phase} ${action.version}: ${result.ok ? 'passed' : `failed (${result.summary})`}`)
+      log.push(`acceptance ${action.phase} ${action.version}: ${verdict === 'passed' ? 'passed' : `failed (${result.summary})`}`)
     } else if (action.kind === 'promote') {
       const local = store.get(action.version)
       const record = parseState(await call(config.preview, 'cpa-promotion'))
@@ -265,7 +302,7 @@ export async function runRound({ root, env = process.env, deps = {} }) {
   }
   const stage = previewStage({ preview, production, uploaded, now: now() })
   for (const [name, target, host, body] of [['preview', config.preview, preview, previewReport], ['production', config.production, production, report]]) {
-    const sent = await call(target, 'cpa-report', { input: JSON.stringify(hostReport(body, host, stage)) })
+    const sent = await call(target, 'cpa-report', { input: JSON.stringify({ ...hostReport(body, host, stage), alarm }) })
     if (sent.code !== 0) errors.push(`report to ${name} failed`)
   }
 
@@ -280,7 +317,7 @@ export async function runRound({ root, env = process.env, deps = {} }) {
 
   const inFlight = [preview?.trial?.version, preview?.staged?.version, production?.staged?.version].filter(Boolean)
   await pruneStore(root, KEEP_CANDIDATES, inFlight)
-  return { actions, log, errors, stage }
+  return { actions, log, errors, stage, alarm }
 }
 
 async function main() {

@@ -131,6 +131,12 @@ test('CPA view on production: staged with the preview record, then installed; an
   assert.deepEqual(soaking.pipeline, { stage: 'soaking', tone: 'idle', text: `${CAND} 在预发布浸泡，到 20:00 再验收` })
   const failed = cpaView(tick({ why: 'up-to-date' }, { env: 'production', builder: { status: 'built', checkedAt: at(NOW), preview: { version: CAND, stage: 'rejected', reason: '浸泡后验收没过：tool' } } }))
   assert.equal(failed.pipeline?.text, `${CAND} 在预发布没过：浸泡后验收没过：tool`)
+  // the coordinator's alarm: acceptance keeps saying nothing; shown as the latest error, the trial stays as it is
+  const text = `${CAND} 的首次验收连续 6 轮没有结论：连不上网关：ENOTFOUND（不会因此回滚，要人工看）`
+  const alarmed = cpaView(tick({ why: 'up-to-date' }, { env: 'production', builder: { status: 'built', checkedAt: at(NOW), preview: { version: CAND, stage: 'installed' },
+    alarm: { code: 'acceptance-inconclusive', text, count: 6, since: at(NOW - 3 * 3_600_000), at: at(NOW - 60_000) } } }))
+  assert.deepEqual(alarmed.error, { text, at: at(NOW - 60_000) })
+  assert.equal(alarmed.pipeline?.stage, 'preview')
 })
 
 test('CPA view: checks show the last tick and the next; an install says how the real requests went and how fast it was restored', () => {

@@ -215,8 +215,14 @@ export function parseCpaReport(raw) {
     upstreamLatest: TAG.test(String(raw.upstreamLatest)) ? raw.upstreamLatest : null,
     line: /^v\d+\.\d+$/.test(String(raw.line)) ? raw.line : null,
     base: TAG.test(String(raw.base)) ? raw.base : null,
-    heldNewer, candidate, reasons: reasonList(raw.reasons), preview: previewStage(raw.preview),
+    heldNewer, candidate, reasons: reasonList(raw.reasons), preview: previewStage(raw.preview), alarm: alarmOf(raw.alarm),
   }
+}
+
+/** The coordinator's alarm (acceptance inconclusive for many rounds): shown, never acted on. */
+function alarmOf(raw) {
+  if (!isObject(raw) || raw.code !== 'acceptance-inconclusive' || !text(raw.text, 400)) return null
+  return { code: raw.code, text: text(raw.text, 400), count: Number.isInteger(raw.count) ? raw.count : null, since: when(raw.since), at: when(raw.at) }
 }
 
 const PREVIEW_STAGES = new Set(['uploaded', 'installed', 'soaking', 'accepted', 'rejected', 'delivered'])
