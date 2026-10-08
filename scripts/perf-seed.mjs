@@ -2,8 +2,8 @@
  * 报表性能预演用的**造数脚本**（task-59，新增；不改动 Lead 的 `qa-*.mjs`）。
  *
  * 目标：在**临时 DATA_DIR** 里造出与生产**逐数字一致**的规模，用于定位与回归 `cache-trend`
- * 与 p95 子查询的慢点。数字取自 Lead 在生产库的只读实测（见
- * `docs/qa/deploy/prod-db-profile.md` 与红队 `data-scale-rehearsal.md` 附录 A）：
+ * 与 p95 子查询的慢点。数字取自 Lead 在生产库的只读实测（见红队
+ * `docs/qa/red-team/data-scale-rehearsal.md` 附录 A）：
  *
  *   usage_events 全量      957,736
  *   最近 7 天              147,082
