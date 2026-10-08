@@ -1,0 +1,32 @@
+# RTK 自动更新（预发布与正式同一份）。角色来自 /etc/crosery/autoupdate.env（AUTOUPDATE_ROLE=preview|production，不入库）；
+# 没有这个文件就按正式处理：只装预发布验收过、记录未过期的那个版本（scripts/rtk-autoupdate.mjs）。
+# 代码目录是发布脚本切换的 current 符号链接，从不指向某个固定发布目录。状态在 RTK_STATE_DIR，控制台「同步中心」读它。
+[Unit]
+Description=Crosery RTK auto-update (preview trial, production only what preview accepted; sha256-verified, restored on failure)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/crosery-api-console-current/scripts/rtk-autoupdate.mjs
+ConditionPathExists=/opt/crosery-node-current/bin/node
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/crosery-api-console-current
+EnvironmentFile=-/etc/crosery/autoupdate.env
+Environment=NODE_NO_WARNINGS=1
+Environment=RTK_BIN=/usr/local/bin/rtk
+Environment=RTK_STATE_DIR=/opt/crosery-api-console/data/rtk
+ExecStart=/opt/crosery-node-current/bin/node /opt/crosery-api-console-current/scripts/rtk-autoupdate.mjs auto
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin /opt/crosery-api-console/data
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
