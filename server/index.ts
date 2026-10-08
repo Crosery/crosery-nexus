@@ -99,7 +99,7 @@ import { mergeCredentialUploadItems } from './credentialUploadMerge.js'
 import { MultipartUploadError, receiveUploadFile } from './multipartUpload.js'
 import { UploadGate, UploadGateBusyError } from './uploadGate.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
-import { parseRtkCompress, registerRtkRelayRoutes, setKeyRtkCompress, startRtkRelay } from './rtkRelay.js'
+import { parseRtkCompress, registerRtkRelayRoutes, setKeyRtkCompress } from './rtkRelay.js'
 import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
 const app = express()
@@ -226,7 +226,7 @@ registerAccountsRoutes(app, accountsService())
 registerGatewaySettingsRoutes(app, createGatewaySettingsService())
 // 代理池（PROXY-SPEC）：/api/proxies/* 仅管理员（默认拒绝守卫），响应全部脱敏；账号的 proxy_url 仍是唯一事实来源。
 registerProxyRoutes(app, proxyService())
-// RTK 中转压缩（docs/ops/rtk-relay.md）：全局开关与节省统计；监听线程在文件末尾按 RTK_RELAY_PORT 启动。
+// RTK 中转压缩（docs/ops/rtk-relay.md）：全局开关、节省统计与中转进程状态；中转本身是独立进程 server/rtkRelayMain.ts。
 registerRtkRelayRoutes(app)
 
 const parseJson = <T>(value: string, fallback: T): T => {
@@ -1719,7 +1719,6 @@ if (config.gatewayEngine === 'magpie') {
   await startMagpieServer()
 }
 if (config.nativeResponsesEnabled) startNativeResponsesServer()
-if (config.rtkRelayPort) startRtkRelay()
 // nginx 默认 60s 空闲即断开代理连接，25s 心跳保证 SSE 长连接不被切断
 setInterval(heartbeat, 25_000).unref()
 app.listen(config.port, config.host, () => {

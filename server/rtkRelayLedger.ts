@@ -1,5 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+/** Global compression switch in app_settings: missing or 'true' = on, 'false' = off. */
+export const RELAY_ENABLED_SETTING = 'rtk.relay.enabled'
+
 /**
  * RTK relay schema and daily ledger. Additive only: the key opt-in column takes a constant default
  * (SQLite rewrites no rows for that), and the ledger is one row per server-local day.
@@ -26,19 +29,64 @@ export function relayDay(now = new Date()) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
-export function recordRelaySaved(database: DatabaseSync, savedTokens: number, now = new Date()) {
-  if (!Number.isSafeInteger(savedTokens) || savedTokens <= 0) return
-  database.prepare(`
-    INSERT INTO rtk_compression_daily (day, requests, saved_tokens) VALUES (?, 1, ?)
-    ON CONFLICT(day) DO UPDATE SET requests = requests + 1, saved_tokens = saved_tokens + excluded.saved_tokens
-  `).run(relayDay(now), savedTokens)
-}
+/**
+ * The relay process counts in memory and writes one small transaction per flush, so a busy console
+ * database never blocks a request. A failed flush keeps its counts for the next one.
+ */
+export class RelayLedgerBuffer {
+  private pending = new Map<string, RelayTally>()
 
-export function recordRelayFailure(database: DatabaseSync, now = new Date()) {
-  database.prepare(`
-    INSERT INTO rtk_compression_daily (day, errors) VALUES (?, 1)
-    ON CONFLICT(day) DO UPDATE SET errors = errors + 1
-  `).run(relayDay(now))
+  saved(savedTokens: number, now = new Date()) {
+    if (!Number.isSafeInteger(savedTokens) || savedTokens <= 0) return
+    const tally = this.entry(relayDay(now))
+    tally.requests++
+    tally.savedTokens += savedTokens
+  }
+
+  failed(now = new Date()) {
+    this.entry(relayDay(now)).errors++
+  }
+
+  get size() {
+    return this.pending.size
+  }
+
+  /** True when nothing is left to write. */
+  flush(database: DatabaseSync): boolean {
+    if (!this.pending.size) return true
+    const batch = this.pending
+    this.pending = new Map()
+    try {
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        const upsert = database.prepare(`
+          INSERT INTO rtk_compression_daily (day, requests, saved_tokens, errors) VALUES (?, ?, ?, ?)
+          ON CONFLICT(day) DO UPDATE SET requests = requests + excluded.requests,
+            saved_tokens = saved_tokens + excluded.saved_tokens, errors = errors + excluded.errors
+        `)
+        for (const [day, tally] of batch) upsert.run(day, tally.requests, tally.savedTokens, tally.errors)
+        database.exec('COMMIT')
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+      return !this.pending.size
+    } catch {
+      for (const [day, tally] of batch) {
+        const merged = this.entry(day)
+        merged.requests += tally.requests
+        merged.savedTokens += tally.savedTokens
+        merged.errors += tally.errors
+      }
+      return false
+    }
+  }
+
+  private entry(day: string) {
+    let tally = this.pending.get(day)
+    if (!tally) this.pending.set(day, (tally = { savedTokens: 0, requests: 0, errors: 0 }))
+    return tally
+  }
 }
 
 export function relayTallies(database: DatabaseSync, now = new Date()): { today: RelayTally; total: RelayTally } {

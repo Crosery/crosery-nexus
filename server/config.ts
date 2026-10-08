@@ -3,7 +3,7 @@ import path from 'node:path'
 import { MAX_INGEST_BATCH_SIZE } from '../packages/contracts/index.js'
 
 import { parseProxyPresets } from './proxyPresets.js'
-import { relayTarget } from './relayCompressionProxy.js'
+import { parseRelayEnv } from './rtkRelayConfig.js'
 
 export function positiveInteger(name: string, raw: string | undefined, fallback: number, range: { min: number; max: number }) {
   const value = raw === undefined || raw === '' ? fallback : Number(raw)
@@ -90,11 +90,8 @@ if (dataPlaneDashboardReadMode === 'snapshot' && !dataPlaneEnabled) {
   throw new Error('DATA_PLANE_DASHBOARD_READ_MODE=snapshot 要求 DATA_PLANE_ENABLED=true')
 }
 
-const rtkRelayPort = positiveInteger('RTK_RELAY_PORT', process.env.RTK_RELAY_PORT, 0, { min: 0, max: 65535 })
-const rtkRelayTarget = rtkRelayPort ? relayTarget(process.env.RTK_RELAY_TARGET || 'http://127.0.0.1:8316').origin : ''
-if (rtkRelayPort && [Number(process.env.PORT || 8787), Number(new URL(rtkRelayTarget).port || 80)].includes(rtkRelayPort)) {
-  throw new Error('RTK_RELAY_PORT 不能与 PORT 或 RTK_RELAY_TARGET 的端口相同')
-}
+// The relay process (server/rtkRelayMain.ts) applies the same rules; the console fails on the same bad env.
+const { port: rtkRelayPort, target: rtkRelayTarget } = parseRelayEnv(process.env)
 
 const gatewayEngine = choiceSetting('GATEWAY_ENGINE', process.env.GATEWAY_ENGINE, 'cpa', ['cpa', 'magpie'] as const)
 
@@ -112,7 +109,7 @@ export const config = {
   magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
   /** The launcher runs the kernel under a sandbox HOME, so its RTK view lacks this host's agents: opt-in only. */
   rtkKernelPlane: booleanSetting('RTK_KERNEL_PLANE', process.env.RTK_KERNEL_PLANE, false),
-  /** Optional RTK relay listener (127.0.0.1) in front of the context guard; 0 = off. See docs/ops/rtk-relay.md. */
+  /** Port of the separate RTK relay process on this host (0 = none expected). See docs/ops/rtk-relay.md. */
   rtkRelayPort,
   /** Loopback HTTP origin the relay forwards to (the context guard). */
   rtkRelayTarget,

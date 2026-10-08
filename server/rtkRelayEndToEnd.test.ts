@@ -10,8 +10,9 @@ import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
 /**
- * End to end through a real `server/index.ts` child: RTK_RELAY_PORT starts the relay thread, the key API
- * stores the opt-in, /api/rtk/relay switches and reports. Own temporary DATA_DIR, local CPA and guard stubs.
+ * End to end with both processes on one DATA_DIR: the console (`server/index.ts`) stores the key opt-in and the
+ * global switch and reports status; the relay (`server/rtkRelayMain.ts`) compresses, writes the ledger and its
+ * status file. Local CPA and guard stubs, temporary DATA_DIR.
  */
 const REPO = new URL('../', import.meta.url).pathname
 const payload = JSON.stringify({ messages: [{ role: 'tool', content: 'diagnostic repeated line\n'.repeat(500) }] })
@@ -39,8 +40,8 @@ async function until<T>(read: () => Promise<T>, ok: (value: T) => boolean, what:
   }
 }
 
-function console_(env: Record<string, string>, dataDir: string): ChildProcess {
-  return spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
+function start(entry: string, env: Record<string, string>, dataDir: string): ChildProcess {
+  return spawn(process.execPath, ['--import', 'tsx', entry], {
     cwd: REPO,
     env: {
       ...process.env,
@@ -61,7 +62,7 @@ function console_(env: Record<string, string>, dataDir: string): ChildProcess {
 test('an invalid RTK_RELAY_TARGET stops startup instead of relaying elsewhere', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crosery-rtk-e2e-'))
   try {
-    const child = console_({ PORT: String(await freePort()), RTK_RELAY_PORT: String(await freePort()), RTK_RELAY_TARGET: 'http://192.0.2.10:8316' }, dataDir)
+    const child = start('server/index.ts', { PORT: String(await freePort()), RTK_RELAY_PORT: String(await freePort()), RTK_RELAY_TARGET: 'http://192.0.2.10:8316' }, dataDir)
     let stderr = ''
     child.stderr!.on('data', (chunk) => { stderr += chunk })
     const [code] = await once(child, 'exit')
@@ -70,7 +71,7 @@ test('an invalid RTK_RELAY_TARGET stops startup instead of relaying elsewhere', 
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }) }
 })
 
-test('relay listener, key opt-in API, global switch and savings report work through the real console', async (t) => {
+test('console API switches what the relay process compresses and reports what it wrote', async (t) => {
   const cpa = createServer((req, res) => {
     req.resume()
     res.setHeader('content-type', 'application/json')
@@ -89,11 +90,11 @@ test('relay listener, key opt-in API, global switch and savings report work thro
   const port = await freePort()
   const relayPort = await freePort()
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crosery-rtk-e2e-'))
-  const child = console_({
-    PORT: String(port), CPA_BASE_URL: `http://127.0.0.1:${cpaPort}`, MAGPIE_PORT: String(cpaPort),
-    RTK_RELAY_PORT: String(relayPort), RTK_RELAY_TARGET: `http://127.0.0.1:${guardPort}`,
-  }, dataDir)
+  const relayEnv = { PORT: String(port), RTK_RELAY_PORT: String(relayPort), RTK_RELAY_TARGET: `http://127.0.0.1:${guardPort}` }
+  const child = start('server/index.ts', { ...relayEnv, CPA_BASE_URL: `http://127.0.0.1:${cpaPort}`, MAGPIE_PORT: String(cpaPort) }, dataDir)
+  let relay: ChildProcess | undefined
   t.after(async () => {
+    relay?.kill('SIGKILL')
     child.kill('SIGTERM')
     await new Promise((resolve) => setTimeout(resolve, 300))
     if (child.exitCode === null) child.kill('SIGKILL')
@@ -117,6 +118,8 @@ test('relay listener, key opt-in API, global switch and savings report work thro
     VALUES (?,?,'rtk-e2e','',1,'["g1"]',0,'{}',?,?)`).run(id, value, now, now)
   database.close()
 
+  assert.equal((await status()).listener.state, 'down', 'expected by this host env, not running yet')
+  relay = start('server/rtkRelayMain.ts', relayEnv, dataDir)
   const listening = await until(status, (body) => body.listener?.state === 'listening', 'relay listening')
   assert.deepEqual({ enabled: listening.enabled, port: listening.listener.port, optedInKeys: listening.optedInKeys },
     { enabled: true, port: relayPort, optedInKeys: 0 })
@@ -136,12 +139,18 @@ test('relay listener, key opt-in API, global switch and savings report work thro
   assert.equal(((await saved.json()) as { item: { rtkCompress: boolean } }).item.rtkCompress, true)
 
   assert.match(await send(), /\[RTK identical line: 500 times\]/)
-  const counted = await until(status, (body) => body.today?.requests === 1, 'ledger row via the main thread')
-  assert.ok(counted.today.savedTokens > 0)
-  assert.equal(counted.optedInKeys, 1)
 
   assert.equal((await fetch(`${base}/api/rtk/relay`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: 'no' }) })).status, 400)
   const off = await fetch(`${base}/api/rtk/relay`, { method: 'POST', headers: auth, body: JSON.stringify({ enabled: false }) })
   assert.equal(((await off.json()) as { enabled: boolean }).enabled, false)
   assert.equal(await send(), payload, 'global switch off')
+
+  // The relay flushes its ledger every 10 s and on exit; a stop makes the write immediate.
+  relay.kill('SIGTERM')
+  await once(relay, 'exit')
+  const stopped = await status()
+  assert.equal(stopped.listener.state, 'stopped')
+  assert.equal(stopped.today.requests, 1)
+  assert.ok(stopped.today.savedTokens > 0)
+  assert.equal(stopped.optedInKeys, 1)
 })
