@@ -634,7 +634,7 @@ function copyAddress(channel: ChannelItem) {
           </template>
 
           <template #cell-enabled="{ row }">
-            <span class="cx-switch" @click.stop @keydown.stop>
+            <span class="cx-switch" @click.stop @keydown.enter.stop @keydown.space.stop>
               <Switch
                 :model-value="row.channel.enabled"
                 :aria-label="`${row.channel.enabled ? '停用' : '启用'}渠道 ${row.name}`"
@@ -646,7 +646,7 @@ function copyAddress(channel: ChannelItem) {
           </template>
 
           <template #cell-more="{ row }">
-            <span class="cx-more" @click.stop @keydown.stop>
+            <span class="cx-more" @click.stop @keydown.enter.stop @keydown.space.stop>
               <TxDropdownMenu
                 v-bind="CALM_MENU"
                 :model-value="menuFor === row.name"
@@ -671,7 +671,7 @@ function copyAddress(channel: ChannelItem) {
                 <StatusMark :state="row.cls.state" :label="row.cls.label" bare />
                 <span class="cx-card__name mono ellip">{{ row.name }}</span>
                 <span class="cx-card__st" :class="{ sig: row.cls.state === 'bad' || row.cls.state === 'warn' }">{{ row.cls.label }}</span>
-                <span class="cx-card__switch" @click.stop @keydown.stop>
+                <span class="cx-card__switch" @click.stop @keydown.enter.stop @keydown.space.stop>
                   <Switch
                     :model-value="row.channel.enabled"
                     :aria-label="`${row.channel.enabled ? '停用' : '启用'}渠道 ${row.name}`"

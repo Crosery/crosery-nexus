@@ -834,7 +834,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
                   <span class="cx-card__name mono ellip">{{ row.name }}</span>
                   <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
                   <span class="cx-card__st" :class="{ sig: row.statusState === 'bad' || row.statusState === 'warn' }">{{ row.statusLabel }}</span>
-                  <span class="cx-card__switch" @click.stop @keydown.stop>
+                  <span class="cx-card__switch" @click.stop @keydown.enter.stop @keydown.space.stop>
                     <Switch
                       :model-value="row.enabled"
                       :aria-label="`${row.enabled ? '停用' : '启用'} ${row.name}`"

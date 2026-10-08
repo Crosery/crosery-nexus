@@ -457,7 +457,7 @@ usePaletteCommands(() => [
         @empty-action="onEmptyAction"
       >
         <template #cell-pick="{ row }">
-          <TxCheckbox :model-value="picked.has(row.key)" :disabled="batchRunning" :aria-label="`选择 ${row.id}`" @click.stop @keydown.stop @update:model-value="togglePick(row.key)" />
+          <TxCheckbox :model-value="picked.has(row.key)" :disabled="batchRunning" :aria-label="`选择 ${row.id}`" @click.stop @keydown.enter.stop @keydown.space.stop @update:model-value="togglePick(row.key)" />
         </template>
         <template #cell-status="{ row }">
           <span :title="row.note || undefined"><StatusMark :state="row.status" :label="row.statusLabel" /></span>
@@ -498,7 +498,7 @@ usePaletteCommands(() => [
         <template #card="{ row }">
           <div class="mr-card">
             <div class="mr-card__l1">
-              <TxCheckbox v-if="batchMode" :model-value="picked.has(row.key)" :disabled="batchRunning" :aria-label="`选择 ${row.id}`" @click.stop @keydown.stop @update:model-value="togglePick(row.key)" />
+              <TxCheckbox v-if="batchMode" :model-value="picked.has(row.key)" :disabled="batchRunning" :aria-label="`选择 ${row.id}`" @click.stop @keydown.enter.stop @keydown.space.stop @update:model-value="togglePick(row.key)" />
               <ProviderMark :provider="row.vendor === 'other' ? row.key : row.vendor" :size="16" />
               <span class="mr-card__id num">{{ row.id }}</span>
               <TxTag v-if="kindTag(row.kind, kind)" size="sm" variant="outline" class="mr-id__kind" :label="kindTag(row.kind) ?? ''" />
