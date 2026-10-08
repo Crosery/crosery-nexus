@@ -32,3 +32,7 @@ build/
 *.njsproj
 *.sln
 *.sw?
+
+# 发布身份只存在于发布包里（scripts/release.mjs 生成），仓库根目录不放
+/RELEASE.json
+/MANIFEST.sha256

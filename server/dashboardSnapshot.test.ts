@@ -62,7 +62,7 @@ const caughtUpRelay = () => ({ pending: 0, deadLetters: 0 })
 function relayOptions(overrides: Partial<DataPlaneRelayOptions> = {}): DataPlaneRelayOptions {
   return {
     enabled: true,
-    baseUrl: 'http://100.64.0.8:8788',
+    baseUrl: 'http://192.0.2.8:8788',
     token: 'x'.repeat(32),
     timeoutMs: 100,
     batchSize: 1,
@@ -224,7 +224,7 @@ test('returns a stale SQLite L2 snapshot without awaiting a hanging remote refre
   let remoteCalls = 0
   const client = new DataPlaneSnapshotClient(store, {
     enabled: true,
-    baseUrl: 'http://100.64.0.9:8792',
+    baseUrl: 'http://192.0.2.9:8792',
     token: 'x'.repeat(32),
     timeoutMs: 500,
     fetch: (async () => {

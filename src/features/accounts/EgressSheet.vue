@@ -11,7 +11,7 @@ import { maskPii, useMask } from '../../lib/privacy'
 import { proxyApi } from '../../api/proxy'
 import type { EgressData, MagpieAccount } from '../../types'
 import EgressTag from './EgressTag.vue'
-import { checkMark, choiceName, EGRESS_CUSTOM, EGRESS_UNKNOWN, egressBadge, egressChoice, egressOptions, egressWarning, magpieRef, readLabel, serviceOf } from './egressModel'
+import { checkMark, choiceName, EGRESS_CUSTOM, EGRESS_UNKNOWN, egressBadge, egressChoice, egressOptions, egressWarning, magpieRef, readLabel, regionName, serviceOf } from './egressModel'
 import { knowProxy, proxyRead, readProxy } from './proxyStore'
 
 /**
@@ -76,7 +76,7 @@ async function apply() {
     if (failed) throw new Error(failed.error || '出口没改成')
     const saved = await proxyApi.egressAccount(ref_.value, account.agent)
     knowProxy(ref_.value, saved)
-    notify(`✓ 出口已改为 ${readLabel(saved)}`, { id: 'cx-acc-proxy' })
+    notify(`✓ 出口已改为 ${readLabel(saved, props.egress)}`, { id: 'cx-acc-proxy' })
     emit('changed')
     open.value = false
   } catch (error) {
@@ -99,13 +99,13 @@ async function apply() {
             <template v-if="read?.state === 'error'">没读到 · <button type="button" class="ui-link" @click="readProxy(ref_, account.agent)">重读</button></template>
             <template v-else-if="!current">读取中···</template>
             <EgressTag v-else-if="badge" :badge="badge" bare />
-            <template v-else>{{ readLabel(current) }}</template>
+            <template v-else>{{ readLabel(current, egress) }}</template>
           </dd>
         </div>
       </dl>
       <FilterField v-model="choice" class="egs__pick" label="改为" :all-label="null" :options="options" />
       <p v-if="target && service && changed" class="egs__note" :class="{ sig: targetMark.ok === false }">
-        {{ targetMark.title }}<template v-if="target.country"> · 落地 {{ target.country }}</template>
+        {{ targetMark.title }}<template v-if="target.country"> · 落地 {{ regionName(target.country) }}</template>
       </p>
       <p class="egs__note">内核用这个出口为这个账号查用量、刷新登录和转发请求；登录本身不经代理。</p>
     </div>

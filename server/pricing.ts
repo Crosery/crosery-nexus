@@ -27,6 +27,9 @@ export type ModelPricing = PriceEntry & { unit: 'token' }
 export type PriceAt = Date | number | string | undefined
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/
+/** 静态表按天（UTC 零点）生效；价格巡检观测到的改价按发现时刻生效，所以也接受 ISO 时间戳。 */
+const validTime = (value: unknown): value is string =>
+  typeof value === 'string' && (DAY.test(value) || /^\d{4}-\d{2}-\d{2}T/.test(value)) && Number.isFinite(Date.parse(value))
 
 /** 兼容旧的单对象条目：没有 from 的视为自 1970 起一直有效。 */
 function toEntries(value: unknown): PriceEntry[] {
@@ -38,7 +41,7 @@ function toEntries(value: unknown): PriceEntry[] {
       const cacheRead = Number(entry.cacheRead)
       return {
         ...(entry as unknown as PriceEntry),
-        from: typeof entry.from === 'string' && DAY.test(entry.from) ? entry.from : '1970-01-01',
+        from: validTime(entry.from) ? entry.from : '1970-01-01',
         input,
         output: Number(entry.output),
         // 没有缓存折扣信息时按全价计，宁可高估也不把缓存段算成免费
@@ -46,7 +49,7 @@ function toEntries(value: unknown): PriceEntry[] {
       }
     })
     .filter((entry) => Number.isFinite(entry.input) && Number.isFinite(entry.output))
-    .sort((a, b) => a.from.localeCompare(b.from))
+    .sort((a, b) => Date.parse(a.from) - Date.parse(b.from))
 }
 
 const HISTORY = new Map<string, PriceEntry[]>()
@@ -55,6 +58,8 @@ for (const [id, value] of Object.entries((table as { pricing: Record<string, unk
   if (entries.length) HISTORY.set(id, entries)
 }
 const LOWER = new Map<string, string>([...HISTORY.keys()].map((id) => [id.toLowerCase(), id]))
+/** 静态表原样（条目数组从不原地修改）：重放观测改价时以它为底，静态表后来改了也能叠上去。 */
+const STATIC = new Map(HISTORY)
 
 /**
  * 与 `modelIdentity.canonicalModelSql` 同语义：只剥掉第一个 `/` 之前的渠道前缀
@@ -171,18 +176,17 @@ function resolveId(model: string): string | null {
   return exactId(name) ?? approximateId(name)
 }
 
-function dayOf(at: PriceAt): string {
-  if (at === undefined || at === null) return new Date().toISOString().slice(0, 10)
-  if (typeof at === 'string' && DAY.test(at)) return at
-  const ms = at instanceof Date ? at.getTime() : typeof at === 'number' ? at : Date.parse(at)
-  return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)
+/** 日期串按 UTC 零点：与按天生效的静态表同一口径。缺省或无法解析时取当前时刻。 */
+function timeOf(at: PriceAt): number {
+  const ms = at instanceof Date ? at.getTime() : typeof at === 'number' ? at : typeof at === 'string' ? Date.parse(at) : Number.NaN
+  return Number.isFinite(ms) ? ms : Date.now()
 }
 
-/** 取生效日不晚于当天的最后一条；早于首条生效日时用首条（历史用量按最早已知价计）。 */
-function entryAt(entries: PriceEntry[], day: string): PriceEntry {
+/** 取生效时刻不晚于 `at` 的最后一条；早于首条生效时刻时用首条（历史用量按最早已知价计）。 */
+function entryAt(entries: PriceEntry[], at: number): PriceEntry {
   let chosen = entries[0]
   for (const entry of entries) {
-    if (entry.from <= day) chosen = entry
+    if (Date.parse(entry.from) <= at) chosen = entry
     else break
   }
   return chosen
@@ -197,7 +201,76 @@ export function getPriceHistory(model: string): PriceEntry[] {
 export function getModelPricing(model: string, at?: PriceAt): ModelPricing | null {
   const id = resolveId(model)
   if (!id) return null
-  return { ...entryAt(HISTORY.get(id)!, dayOf(at)), unit: 'token' }
+  return { ...entryAt(HISTORY.get(id)!, timeOf(at)), unit: 'token' }
+}
+
+/* ────────────────────────── 观测到的改价（价格巡检） ────────────────────────── */
+
+export type RateComponent = 'input' | 'output' | 'cacheRead' | 'cacheWrite'
+export const RATE_COMPONENTS: readonly RateComponent[] = ['input', 'output', 'cacheRead', 'cacheWrite']
+
+/** 从 `at`（ISO 时刻）起生效的分项新价；没列出的分项、分档、缓存写价沿用当时生效的那段。 */
+export type ObservedPriceChange = { at: string; changes: Partial<Record<RateComponent, number>>; note: string }
+
+/** 一个模型的观测改价全集：`base` 是第一次改价前生效的价，只给静态表里没有的模型当底。 */
+export type ObservedPriceHistory = { base: Omit<PriceEntry, 'from' | 'until' | 'note'>; changes: ObservedPriceChange[] }
+
+/**
+ * 在 `at` 处切出新段：之前的用量入库时已按旧价结算、不会重算；之后的既有分段（例如静态表里的促销截止日）照旧生效。
+ * 只返回新数组，不改入参。
+ */
+function insertObserved(entries: PriceEntry[], change: ObservedPriceChange): PriceEntry[] {
+  const at = Date.parse(change.at)
+  if (!entries.length || !Number.isFinite(at)) return entries
+  const split = entries.findIndex(entry => Date.parse(entry.from) > at)
+  const head = split === -1 ? entries : entries.slice(0, split)
+  const tail = split === -1 ? [] : entries.slice(split)
+  const current = head.at(-1) ?? tail[0]
+  const { from: _from, until, note: _note, ...rates } = current
+  const changes = Object.fromEntries(Object.entries(change.changes).filter(([, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0))
+  const next: PriceEntry = { ...rates, ...changes, from: change.at, ...(until && Date.parse(until) > at ? { until } : {}), note: change.note }
+  const closed = head.length ? [...head.slice(0, -1), { ...current, until: change.at }] : []
+  return [...closed, next, ...tail]
+}
+
+/** 只认精确收录的模型（不借近似版本的价）：观测改价不能落到别的模型头上。 */
+export function pricedIdFor(model: string): string | null {
+  const name = normalizeModelForPricing(model)
+  return name ? exactId(name) : null
+}
+
+/** `pricedIdFor` 得到的 id 在某一时刻生效的那段。 */
+export function entryFor(id: string, at: number): PriceEntry | null {
+  const entries = HISTORY.get(id)
+  return entries?.length ? { ...entryAt(entries, at) } : null
+}
+
+/** 让一次观测到的改价生效；返回改前、改后两段。 */
+export function applyObservedPrice(id: string, change: ObservedPriceChange): { before: PriceEntry; after: PriceEntry } | null {
+  const entries = HISTORY.get(id)
+  const at = Date.parse(change.at)
+  if (!entries?.length || !Number.isFinite(at)) return null
+  const next = insertObserved(entries, change)
+  HISTORY.set(id, next)
+  return { before: { ...entryAt(entries, at) }, after: { ...entryAt(next, at) } }
+}
+
+/**
+ * 重启后重放已生效的观测改价。静态表里有的模型以静态表为底；只有网关价的模型以第一次改价前的价为底——
+ * 网关快照存的是最新价，拿它当底会把改价前那段历史也改成新价。返回重放的模型数。
+ */
+export function restoreObservedPrices(records: Record<string, ObservedPriceHistory>): number {
+  let restored = 0
+  for (const [id, record] of Object.entries(records)) {
+    if (!record.changes.length) continue
+    let entries = STATIC.get(id) ?? [{ ...record.base, from: '1970-01-01' }]
+    for (const change of [...record.changes].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) entries = insertObserved(entries, change)
+    HISTORY.set(id, entries)
+    LOWER.set(id.toLowerCase(), id)
+    restored += 1
+  }
+  if (restored) APPROXIMATE.clear()
+  return restored
 }
 
 export function pricedModelIds(): string[] {

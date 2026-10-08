@@ -24,7 +24,7 @@ import { fmtTime } from '../../ui/fmt'
 import { maskEmail, useMask } from '../../lib/privacy'
 import { setNavCount } from '../../shell/badges'
 import { usePaletteCommands } from '../../shell/palette'
-import type { CommandItem, SegmentItem } from '../../ui/types'
+import type { CommandItem, DataState, SegmentItem } from '../../ui/types'
 import { loadAccounts, type AccountsPayload } from './accountsApi'
 import { proxyApi } from '../../api/proxy'
 import type { EgressData } from '../../types'
@@ -45,15 +45,27 @@ import {
  * the existing OAuth / device-code / paste-callback flows in a sheet. `?add=1` (⌘K 添加账号…), `?add=<服务>`
  * and `#oauth` open that sheet.
  * `embedded`: the pool renders as the Providers page 订阅账号池 section — its own Plate carries the
- * section title (`plateTitle`), the PageHead and the `.ui-page` rhythm are the host's job. The data loop,
- * filters, row actions, deep links and the add flow are unchanged; `count` hands the host the account total
- * so the section tab can count without a second channels/monitor read.
+ * section title (`plateTitle`); the PageHead, the page's one search / status filter (`q`, `show`) and its one
+ * live mark are the host's. The data loop, row actions, deep links and the add flow are unchanged. `counts`
+ * (null until the first read) and `live` hand the host what its chips, stat card and live mark need without a
+ * second channels/monitor read; the exposed `refresh` is the host's retry.
  */
 const props = withDefaults(
-  defineProps<{ embedded?: boolean; plateTitle?: string }>(),
-  { embedded: false, plateTitle: '账号池' },
+  defineProps<{
+    embedded?: boolean
+    plateTitle?: string
+    /** embedded: the host page's search text */
+    q?: string
+    /** embedded: the host page's status filter, as a `matches` show value */
+    show?: string
+  }>(),
+  { embedded: false, plateTitle: '账号池', q: '', show: 'all' },
 )
-const emit = defineEmits<{ (e: 'count', total: number): void }>()
+const emit = defineEmits<{
+  (e: 'counts', counts: ReturnType<typeof countBy> | null): void
+  (e: 'live', live: { state: DataState; lastAt: number | null }): void
+  (e: 'clear-filters'): void
+}>()
 const route = useRoute()
 const router = useRouter()
 const { isMobile } = useBreakpoint()
@@ -82,17 +94,21 @@ const rows = computed<AccountView[]>(() => {
 })
 const counts = computed(() => countBy(rows.value))
 const quotaShare = computed(() => (payload.value?.monitor?.quotaShare ?? {}) as QuotaShare)
-watch(() => counts.value.all, (n) => emit('count', n), { immediate: true })
+watch(() => (payload.value ? counts.value : null), (c) => emit('counts', c), { immediate: true })
+watch(() => [live.state.value, live.lastAt.value] as const, ([state, lastAt]) => emit('live', { state, lastAt }), { immediate: true })
 const presets = computed(() => payload.value?.channels?.proxyPresets ?? [])
 
 /* ── account exits: the proxy pool's view (local reads on the server, no CPA / vendor traffic); a server without
    the pool routes leaves it null and the page keeps working without exits ── */
 const egressLive = useLive<EgressData>((signal) => proxyApi.egress(signal), { intervalMs: INTERVAL, isEmpty: () => false })
 const egress = computed(() => egressLive.data.value ?? null)
+defineExpose({ refresh: () => Promise.all([refresh(), egressLive.refresh()]).then(() => undefined) })
 
-/* ── filters (URL) and the used/left figure (this device) ── */
-const q = ref('')
-const show = ref<string | number | null>('all')
+/* ── filters (URL; embedded: the host's) and the used/left figure (this device) ── */
+const ownQ = ref('')
+const ownShow = ref<string | number | null>('all')
+const q = computed(() => (props.embedded ? props.q : ownQ.value))
+const show = computed(() => (props.embedded ? props.show : String(ownShow.value ?? 'all')))
 const MODE_KEY = 'cx-acc-quota'
 const mode = ref<'used' | 'left'>(readMode())
 function readMode(): 'used' | 'left' {
@@ -110,7 +126,7 @@ watch(mode, (v) => {
 const MODE_ITEMS: SegmentItem[] = [{ value: 'used', label: '已用' }, { value: 'left', label: '剩余' }]
 const showItems = computed<SegmentItem[]>(() => {
   const c = counts.value
-  const current = String(show.value ?? 'all')
+  const current = show.value
   const items: SegmentItem[] = [
     { value: 'all', label: '全部', count: c.all },
     { value: 'run', label: '运行', count: c.run },
@@ -124,10 +140,14 @@ const showItems = computed<SegmentItem[]>(() => {
   // a chip that can only show an empty list is noise: keep 全部 and the one in use, drop the other zeros
   return items.filter((it) => it.value === 'all' || it.value === current || (it.count ?? 0) > 0)
 })
-const filtering = computed(() => String(show.value ?? 'all') !== 'all' || q.value.trim() !== '')
+const filtering = computed(() => show.value !== 'all' || q.value.trim() !== '')
 function clearFilters() {
-  show.value = 'all'
-  q.value = ''
+  if (props.embedded) {
+    emit('clear-filters')
+    return
+  }
+  ownShow.value = 'all'
+  ownQ.value = ''
   void router.replace({ query: { ...route.query, show: undefined, q: undefined } })
 }
 
@@ -135,7 +155,7 @@ function clearFilters() {
 const CORE = ['codex', 'claude', 'antigravity']
 const allGroups = computed(() => groupAccounts(rows.value))
 const groups = computed<ProviderGroup[]>(() => {
-  const list = filterGroups(allGroups.value, String(show.value ?? 'all'), q.value)
+  const list = filterGroups(allGroups.value, show.value, q.value)
   if (filtering.value) return list
   const have = new Set(list.map((g) => g.key))
   const empties: ProviderGroup[] = CORE.filter((id) => !have.has(id)).map((id) => {
@@ -157,6 +177,8 @@ const visibleCount = computed(() => groups.value.reduce((n, g) => n + g.accounts
 
 /* ── head status, nav badge, palette ── */
 const plateState = computed(() => live.state.value)
+/* embedded: staleness is the host page's live mark; the plate still shows its own loading / error */
+const bodyState = computed<DataState>(() => (props.embedded && plateState.value === 'stale' ? 'ready' : plateState.value))
 const headStatus = computed(() => {
   const c = counts.value
   if (!payload.value) return []
@@ -281,13 +303,13 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       </template>
     </PageHead>
 
-    <div v-if="counts.all || filtering" class="ui-toolbar acc-tools">
-      <SearchField v-model="q" query="q" placeholder="邮箱 / 套餐 / 服务" label="搜索账号" />
-      <Segmented v-model="show" query="show" default-value="all" :items="showItems" label="按状态筛选" />
+    <div v-if="!props.embedded && (counts.all || filtering)" class="ui-toolbar acc-tools">
+      <SearchField v-model="ownQ" query="q" placeholder="邮箱 / 套餐 / 服务" label="搜索账号" />
+      <Segmented v-model="ownShow" query="show" default-value="all" :items="showItems" label="按状态筛选" />
       <Segmented v-model="mode" class="push" :items="MODE_ITEMS" label="额度显示已用或剩余" />
     </div>
 
-    <Plate :title="props.plateTitle" flush class="acc-plate" :state="plateState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
+    <Plate :title="props.plateTitle" flush class="acc-plate" :state="bodyState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
       <template #meta>
         <span v-if="payload?.monitorError" class="acc-meta-warn">{{ payload.monitor ? `◇ 额度刷新失败 · 显示 ${fmtTime(payload.monitorAt ?? payload.at)} 读到的` : '◇ 额度没读到 · 账号列表照常' }}</span>
         <span v-else-if="payload?.channelsError" class="acc-meta-warn">{{ payload.channels ? `◇ 凭据列表刷新失败 · 显示 ${fmtTime(payload.channelsAt ?? payload.at)} 读到的` : '◇ 凭据列表没读到 · 只显示有额度的账号' }}</span>
@@ -295,7 +317,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
         <span class="acc-meta-src">额度按账号缓存 3–15m · 不频繁打上游</span>
       </template>
       <template v-if="props.embedded" #actions>
-        <LiveMark :state="plateState" :last-at="live.lastAt.value" :interval-ms="INTERVAL" @retry="refresh" />
+        <Segmented v-if="counts.all" v-model="mode" :items="MODE_ITEMS" label="额度显示已用或剩余" />
         <TxButton variant="subtle" size="small" @click="openAdd()"><Icon name="plus" :size="14" />添加账号</TxButton>
       </template>
 
@@ -415,9 +437,8 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
 .acc-meta-warn { color: var(--ink-2); }
 .acc-meta-src { color: var(--ink-3); }
 
-/* embedded: the host section owns the page head, so the rhythm tightens and the tools stop pulling up */
+/* embedded: the host section owns the page head and the tools, so the rhythm tightens */
 .ui-page.acc.is-embedded { gap: 12px; }
-.ui-page.acc.is-embedded .acc-tools { margin: 0; }
 
 /* the list measures itself: the md layout follows the plate's width, not the viewport */
 .acc-list { container: accounts / inline-size; min-width: 0; }

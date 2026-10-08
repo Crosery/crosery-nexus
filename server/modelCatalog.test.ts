@@ -17,11 +17,11 @@ test('合并网关价快照：本轮没回的老模型必须留在快照里', ()
   assert.equal(merged['gpt-6-astra'].input, 10)
 })
 
-test('合并网关价快照：同一个模型上游改价时以本轮为准', () => {
+test('合并网关价快照：已有模型不跟着上游改价（改价走价格巡检，带生效时刻）', () => {
   const existing = { 'gpt-6-astra': { from: '1970-01-01', input: 10, output: 50, cacheRead: 1 } }
   const merged = mergeGatewayPriceSnapshot(existing, new Map([['gpt-6-astra', priced(8, 40, 0.8)]]))
-  assert.equal(merged['gpt-6-astra'].input, 8)
-  assert.equal(merged['gpt-6-astra'].cacheRead, 0.8)
+  // 快照重启时以 1970 段装回：这里换成新价等于把改价追溯到全部历史
+  assert.deepEqual(merged['gpt-6-astra'], existing['gpt-6-astra'])
 })
 
 test('合并网关价快照：落盘结构里不带 unit、丢掉无效价', () => {

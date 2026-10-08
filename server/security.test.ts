@@ -31,7 +31,7 @@ const {
 test('连续失败达到阈值后触发限流，并给出 Retry-After 秒数', () => {
   let now = 1_000_000
   const limiter = createLoginRateLimiter({ maxFailures: 3, windowMs: 60_000, maxBlockMs: 300_000, now: () => now })
-  const key = '1.2.3.4|admin'
+  const key = '198.51.100.4|admin'
   assert.equal(limiter.check(key).allowed, true, '一开始允许')
   for (let i = 0; i < 3; i += 1) {
     limiter.check(key)
@@ -67,10 +67,10 @@ test('登录成功后计数清零（不会累积到被自己锁住）', () => {
 test('不同来源互相独立（不同 IP、不同用户名都不共享计数）', () => {
   let now = 0
   const limiter = createLoginRateLimiter({ maxFailures: 2, windowMs: 60_000, now: () => now })
-  limiter.recordFailure('1.1.1.1|admin'); limiter.recordFailure('1.1.1.1|admin')
-  assert.equal(limiter.check('1.1.1.1|admin').allowed, false, '这个 IP 被限流')
-  assert.equal(limiter.check('2.2.2.2|admin').allowed, true, '另一个 IP 不受影响')
-  assert.equal(limiter.check('1.1.1.1|other').allowed, true, '同一 IP 的另一个用户名不受影响')
+  limiter.recordFailure('198.51.100.1|admin'); limiter.recordFailure('198.51.100.1|admin')
+  assert.equal(limiter.check('198.51.100.1|admin').allowed, false, '这个 IP 被限流')
+  assert.equal(limiter.check('198.51.100.2|admin').allowed, true, '另一个 IP 不受影响')
+  assert.equal(limiter.check('198.51.100.1|other').allowed, true, '同一 IP 的另一个用户名不受影响')
 })
 
 test('API Key 登录的限流键只看 IP：换 Key 猜不会换桶，且与管理员登录的桶互不串扰', async () => {
@@ -85,11 +85,11 @@ test('API Key 登录的限流键只看 IP：换 Key 猜不会换桶，且与管�
 test('限流器内存有界：过期条目会被清理', () => {
   let now = 0
   const limiter = createLoginRateLimiter({ maxFailures: 5, windowMs: 1_000, now: () => now })
-  for (let i = 0; i < 500; i += 1) limiter.recordFailure(`10.0.0.${i}|admin`)
+  for (let i = 0; i < 500; i += 1) limiter.recordFailure(`198.51.100.${i}|admin`)
   const grown = limiter.size()
   assert.ok(grown > 0)
   now += 60_000
-  limiter.check('10.0.0.0|admin')
+  limiter.check('198.51.100.0|admin')
   assert.ok(limiter.size() < grown, `过期条目应被清理：${grown} → ${limiter.size()}`)
 })
 

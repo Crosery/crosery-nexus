@@ -44,7 +44,7 @@ test('config: dangerous keys and file paths are dropped; wireguard private-key s
   const built = buildMihomoConfig({
     entries: [
       ss('px_a', 27890, { 'interface-name': 'en0', 'routing-mark': 6666, 'dialer-proxy': 'other', certificate: '/etc/passwd', 'plugin-opts': { mode: 'tls', host: 'bing.com', 'private-key': '/x' } }),
-      { id: 'px_w', port: 27891, node: { type: 'wireguard', server: 'wg.example.com', port: 51820, ip: '172.16.0.2', 'private-key': 'WGKEY', 'public-key': 'PUB' } },
+      { id: 'px_w', port: 27891, node: { type: 'wireguard', server: 'wg.example.com', port: 51820, ip: '192.0.2.2', 'private-key': 'WGKEY', 'public-key': 'PUB' } },
     ],
     listenerAuth: null,
     controller,
@@ -131,8 +131,8 @@ test('mihomo errors: extracts msg, maps proxy index to entry, scrubs hosts and s
 })
 
 test('scrubMihomoText masks userinfo, uuids, IPs, domains, file paths and known secrets', () => {
-  const text = scrubMihomoText('dial socks5://u:p@1.2.3.4:1080 uuid 0b5c5b9e-7d3f-4b8e-9c55-8f7e6b3a2d10 to [2001:db8::1]:443 via relay.example.net open /Users/x/data/proxy/mihomo/config.yaml TOKENVALUE', ['TOKENVALUE'])
-  for (const leak of ['u:p', '1.2.3.4', '0b5c5b9e', '2001:db8', 'relay.example.net', '/Users/x', 'TOKENVALUE']) assert.ok(!text.includes(leak), leak)
+  const text = scrubMihomoText('dial socks5://u:p@198.51.100.4:1080 uuid 0b5c5b9e-7d3f-4b8e-9c55-8f7e6b3a2d10 to [2001:db8::1]:443 via relay.example.net open /Users/x/data/proxy/mihomo/config.yaml TOKENVALUE', ['TOKENVALUE'])
+  for (const leak of ['u:p', '198.51.100.4', '0b5c5b9e', '2001:db8', 'relay.example.net', '/Users/x', 'TOKENVALUE']) assert.ok(!text.includes(leak), leak)
   assert.deepEqual(nodeSecrets({ password: 'a', 'reality-opts': { 'public-key': 'b', 'short-id': 123 }, users: [{ uuid: 'c' }] }).sort(), ['123', 'a', 'b', 'c'])
   assert.deepEqual(nodeSecrets({ 'ws-opts': { headers: { Host: 'h.test', Cookie: 'ck' } }, 'http-opts': { headers: { 'X-Key': ['k1'] } } }).sort(), ['ck', 'k1'])
 })

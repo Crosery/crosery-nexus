@@ -14,10 +14,11 @@ import type { ChannelView } from './channelView.js'
  * 这三步任意一环恢复都不够，必须证明整条链在网关短暂查不到模型时仍然稳住。
  */
 const oauthProvidersFrom = (credentials: Awaited<ReturnType<typeof attachCredentialModels>>['credentials']) => {
-  const byProvider = new Map<string, { models: Set<string>; activeAccounts: number }>()
+  const byProvider = new Map<string, { models: Set<string>; activeAccounts: number; accounts: number }>()
   for (const credential of credentials) {
     if (!credential.type) continue
-    const entry = byProvider.get(credential.type) || { models: new Set<string>(), activeAccounts: 0 }
+    const entry = byProvider.get(credential.type) || { models: new Set<string>(), activeAccounts: 0, accounts: 0 }
+    entry.accounts += 1
     if (!credential.disabled) {
       entry.activeAccounts += 1
       for (const model of credential.models) entry.models.add(model)
@@ -25,7 +26,7 @@ const oauthProvidersFrom = (credentials: Awaited<ReturnType<typeof attachCredent
     byProvider.set(credential.type, entry)
   }
   return [...byProvider].map(([provider, entry]) => ({
-    provider, models: [...entry.models], excluded: [], activeAccounts: entry.activeAccounts,
+    provider, models: [...entry.models], excluded: [], activeAccounts: entry.activeAccounts, accounts: entry.accounts,
   }))
 }
 
@@ -63,12 +64,14 @@ test('没有兜底目录时仍如实降级为 DENY_ALL，不假装有模型', as
   assert.deepEqual(plan.access['sk-teacher'], [DENY_ALL_MODEL])
 })
 
-test('凭据真的被停用时，该渠道如实从白名单消失', async () => {
+test('凭据全部停用时，渠道保留为不可用分组，Key 白名单与成员关系不变（2026-10-09 事故）', async () => {
+  const lastKnown = { claude: ['claude-opus-5'], codex: ['gpt-5.6-sol'] }
   const files = [{ name: 'claude-crosery.json', type: 'claude', disabled: true }, AUTH_FILES[1]]
-  const { credentials } = await attachCredentialModels(summarizeCredentialFiles(files), async () => ['gpt-5.6-sol'],
-    { lastKnown: { claude: ['claude-opus-5'], codex: ['gpt-5.6-sol'] } })
-  const groups = buildGroups(NO_COMPAT_CHANNELS, oauthProvidersFrom(credentials))
+  const { credentials } = await attachCredentialModels(summarizeCredentialFiles(files), async () => ['gpt-5.6-sol'], { lastKnown })
+  const groups = buildGroups(NO_COMPAT_CHANNELS, oauthProvidersFrom(credentials), { lastKnown })
   const plan = buildKeyAccessPlan(groups, [KEY_ROW])
 
-  assert.deepEqual(plan.access['sk-teacher'], ['gpt-5.6-sol'])
+  assert.equal(groups.find((group) => group.id === 'claude')?.available, false)
+  assert.deepEqual(plan.normalizedGroups.get('sk-teacher'), ['claude', 'codex'])
+  assert.deepEqual(plan.access['sk-teacher'], ['claude-opus-5', 'gpt-5.6-sol'])
 })

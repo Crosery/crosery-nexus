@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { estimateCost, getModelPricing, getPriceHistory, normalizeModelForPricing, priceRequest } from './pricing.js'
+import { applyObservedPrice, estimateCost, getModelPricing, getPriceHistory, normalizeModelForPricing, priceRequest, pricedIdFor } from './pricing.js'
 
 const rates = (pricing: ReturnType<typeof getModelPricing>) =>
   pricing ? { input: pricing.input, output: pricing.output, cacheRead: pricing.cacheRead, cacheWrite: pricing.cacheWrite } : null
@@ -108,4 +108,29 @@ test('an unlisted version borrows the nearest version of the same model line, ne
   // flash 不能借 max / 正式版的价：骨架不同就保持未定价
   assert.equal(getModelPricing('cline-glm-5.3-flash'), null)
   assert.equal(getModelPricing('qcn-kimi-k2.8-preview'), null)
+})
+
+test('an observed change splits the history at that instant and keeps later static segments', () => {
+  const id = 'gpt-5.6-sol-wm'
+  const at = '2026-10-10T08:00:00.000Z'
+  const result = applyObservedPrice(id, { at, changes: { input: 3.5 }, note: '官方 改价' })
+  assert.deepEqual([result?.before.input, result?.after.input], [4, 3.5])
+  assert.equal(getModelPricing(id, '2026-10-10T07:59:59.999Z')?.input, 4)
+  const after = getModelPricing(id, at)
+  assert.deepEqual(rates(after), { input: 3.5, output: 20, cacheRead: 0.4, cacheWrite: 5 })
+  assert.equal(after?.tiers?.[0].input, 8, 'unchanged components and context tiers carry over')
+  assert.equal(after?.until, '2026-11-21')
+  // the promo still ends on its static date
+  assert.equal(getModelPricing(id, '2026-11-22')?.input, 5)
+  assert.deepEqual(getPriceHistory(id).map(entry => [entry.from, entry.until]), [
+    ['2026-07-09', '2026-08-20'], ['2026-08-21', at], [at, '2026-11-21'], ['2026-11-22', undefined],
+  ])
+  assert.equal(applyObservedPrice('totally-unknown', { at, changes: { input: 1 }, note: 'x' }), null)
+})
+
+test('observed changes only target exactly priced models, never an approximate match', () => {
+  assert.equal(pricedIdFor('claude-fable-5.1'), 'claude-fable-5-1')
+  assert.equal(pricedIdFor('qiji/claude-opus-5'), 'claude-opus-5')
+  assert.equal(pricedIdFor('qcn-glm-5.3'), null)
+  assert.equal(pricedIdFor('deepseek-v4.1-flash(high)'), null)
 })

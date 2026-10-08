@@ -1,6 +1,6 @@
 # Crosery API Console — UI 交互反人类审计（红队 B / vs TUF 参考实现）
 
-对象 `/Users/crosery/work_file/crosery-api-console`（commit `281c30e`，实例 <http://127.0.0.1:8791>）｜参考 TUF（只读）`/Users/crosery/work_file/geek_main/app/console/src`｜审计人 `ux-auditor` / task-2｜仅写入 `docs/qa/red-team/`，未改动产品代码。
+对象 `<repo>`（commit `281c30e`，实例 <http://127.0.0.1:8791>）｜参考 TUF（只读）`geek_main/app/console/src`｜审计人 `ux-auditor` / task-2｜仅写入 `docs/qa/red-team/`，未改动产品代码。
 **先决结论**：活代码是 `index.html → src/main.ts → App.vue + router.ts → pages/*.vue`（`.vue` 树）；`src/` 下并存的整套 `.tsx`/`App.tsx`/`main.tsx` 是**无人引用的 React 死树**，且前端测试**只读死树**（见 D29）——下文「现状」均指 `.vue` 树。
 
 **Top 10（严重度降序，每条一句话 + 证据位置）**

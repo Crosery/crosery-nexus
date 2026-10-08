@@ -1,6 +1,6 @@
 # RTK 控制面打通（task-3 交付）
 
-日期：2026-10-01 · 蓝队 A（blue-rtk） · 仓库：`/Users/crosery/work_file/crosery-api-console`
+日期：2026-10-01 · 蓝队 A（blue-rtk） · 仓库：`<repo>`
 
 分层口径按用户确认的 A/B/C/D 四层执行；本文件中「已验证」= 有命令输出或 `path:line` 可复现，「未验证」= 明确没做。
 
@@ -80,7 +80,7 @@ POST /api/rtk/rollback  body {backup?, confirm:true}                     → sta
 | 中转站 404 | `not_supported / relay_route_missing` |
 | 探测说可用但读失败 | 该平面降级为 `unreachable / <plane>_read_failed` 并继续回退，`error` 字段如实说明 |
 
-**内核沙箱 HOME（已验证，Lead 裁决依据）**：`scripts/magpie-console.mjs:92-93` 用 `HOME=<runtime>/home` 启动内核（即 `~/.agents/crosery/magpie-console/home`），而 `:103` 启动控制台进程时不覆盖 `HOME`（继承真实 `/Users/crosery`）。所以内核的 `library.ReadRTK/SetRTK` 读写的 agent 配置落在沙箱 HOME，**对用户真实 `~/.codex`、`~/.claude` 毫无影响**。据此：内核平面只做探测 + 只读展示，写入默认 **501 `kernel_write_not_supported`**；只有运维显式设置 `RTK_ALLOW_KERNEL_WRITE=1`（再加 `RTK_ALLOW_REMOTE_WRITE=1` + 请求 `confirm:true`）才允许下发。
+**内核沙箱 HOME（已验证，Lead 裁决依据）**：`scripts/magpie-console.mjs:92-93` 用 `HOME=<runtime>/home` 启动内核（即 `~/.agents/crosery/magpie-console/home`），而 `:103` 启动控制台进程时不覆盖 `HOME`（继承真实 `~`）。所以内核的 `library.ReadRTK/SetRTK` 读写的 agent 配置落在沙箱 HOME，**对用户真实 `~/.codex`、`~/.claude` 毫无影响**。据此：内核平面只做探测 + 只读展示，写入默认 **501 `kernel_write_not_supported`**；只有运维显式设置 `RTK_ALLOW_KERNEL_WRITE=1`（再加 `RTK_ALLOW_REMOTE_WRITE=1` + 请求 `confirm:true`）才允许下发。
 
 **内核 seam 现状（已验证）**：运行中的 `~/.agents/crosery/magpie-console/bin/magpie-kernel`（2026-09-30 16:19）里 `grep -a -c "/internal/rtk"` = **0**，`curl --unix-socket … /internal/rtk` → **400 `request id required`**（落到推理 handler 兜底）；`/internal/health` → 200 且 revision `3fe2ff9…`。据此现网 `kernel` 平面为 `not_supported`，UI 文案为「未提供该接口 / 内核未编译 RTK seam」。**本轮不重编内核**（Lead 裁决；`npm run magpie:build` 需要 pinned 干净源码，且会重启 8790 网关）。
 
@@ -196,7 +196,7 @@ GET /api/rtk/planes → plane=local
   kernel: not_supported  kernel_rtk_seam_missing
   relay:  not_supported  relay_route_missing
   local:  available      local_host
-GET /api/rtk/status → connected=true version=0.50.0 path=/Users/crosery/.local/bin/rtk
+GET /api/rtk/status → connected=true version=0.50.0 path=~/.local/bin/rtk
   gain={commands:227,input:210019,saved:75950,pct:36.16}
   localAgents: codex/claude/omp/pi = on，gemini/cursor/copilot/trae/droid/hermes/vibe = off，windsurf/cline/kilocode/antigravity/kimi = supported:false
 POST /api/rtk/install {} → 501 local_install_not_supported（附人工命令）

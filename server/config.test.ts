@@ -47,10 +47,10 @@ test('bounds the reporting read pool for memory-constrained edge hosts', () => {
 })
 
 test('validates the private data plane base URL without embedded credentials', () => {
-  assert.equal(internalHttpBaseUrl('DATA_PLANE_BASE_URL', 'http://100.64.0.8:8788/', true), 'http://100.64.0.8:8788')
+  assert.equal(internalHttpBaseUrl('DATA_PLANE_BASE_URL', 'http://192.0.2.8:8788/', true), 'http://192.0.2.8:8788')
   assert.equal(internalHttpBaseUrl('DATA_PLANE_BASE_URL', undefined, false), '')
   assert.throws(() => internalHttpBaseUrl('DATA_PLANE_BASE_URL', undefined, true), /不能为空/)
-  assert.throws(() => internalHttpBaseUrl('DATA_PLANE_BASE_URL', 'ftp://100.64.0.8', true), /HTTP/)
+  assert.throws(() => internalHttpBaseUrl('DATA_PLANE_BASE_URL', 'ftp://192.0.2.8', true), /HTTP/)
   assert.throws(() => internalHttpBaseUrl('DATA_PLANE_BASE_URL', 'https://user:secret@example.com', true), /不含凭据/)
 })
 
