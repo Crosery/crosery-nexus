@@ -287,7 +287,8 @@ const channelRows = computed<ChannelRow[]>(() => {
 })
 
 /* ── 整页一个搜索（?q=）与上面的状态筛选：同时管 API 渠道表与订阅账号池 ── */
-const searchQuery = ref('')
+// start from the URL: left to SearchField's own sync, a deep link (/channels?q=…) filtered the lists but the box stayed empty
+const searchQuery = ref(typeof route.query.q === 'string' ? route.query.q : '')
 function clearFilters() {
   searchQuery.value = ''
   setStatus('all')
