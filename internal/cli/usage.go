@@ -68,40 +68,54 @@ func cmdUsage(a *App, args []string) error {
 }
 
 func renderUsage(u *api.Usage) {
-	g := ui.G()
 	name := u.Key.Name
 	if name == "" {
 		name = "当前 Key"
 	}
-	since := ""
+	hint := fmt.Sprintf("最近 %d 天", u.Days)
 	if u.TrackingSince != nil {
-		since = "统计自 " + shortTime(*u.TrackingSince)
+		hint += "  统计自 " + shortTime(*u.TrackingSince)
 	}
-	ui.Section("账号用量 · "+name, fmt.Sprintf("最近 %d 天  %s", u.Days, since))
-
-	if u.BlockedReason != nil && *u.BlockedReason != "" {
-		ui.Println("  " + ui.ErrS.Render(g.Fail+" 已被暂停："+*u.BlockedReason))
-	}
-
-	// 额度窗口
-	q := u.Quota
-	if q != nil {
+	ui.Section("账号用量 · "+name, hint)
+	ui.Println(ui.Tree(usageTree(u)))
+	if len(u.Models) == 0 {
 		ui.Println()
+		ui.Note("这段时间还没有请求记录。")
+		return
+	}
+	if len(u.Models) > 15 {
+		ui.Note("另有 %d 个模型未显示，用 --json 查看全部", len(u.Models)-15)
+	}
+	if len(u.UnpricedModels) > 0 {
+		ui.Note("未定价（不计入花费与额度）：%s", strings.Join(u.UnpricedModels, ", "))
+	}
+}
+
+// usageTree：额度（日 / 周 / 累计）→ 合计 → 按模型，层级与命名同控制台 /me 概览与用量页
+// （src/features/me/meModel.ts quotaRows、MeUsagePage.vue「按模型 · 花费」）。
+func usageTree(u *api.Usage) []ui.TreeNode {
+	g := ui.G()
+	var nodes []ui.TreeNode
+	if u.BlockedReason != nil && *u.BlockedReason != "" {
+		nodes = append(nodes, ui.TreeNode{Cells: []string{ui.ErrS.Render(g.Fail + " 已被暂停：" + *u.BlockedReason)}, Kind: "blocked"})
+	}
+
+	if q := u.Quota; q != nil {
+		head := ui.TreeNode{Cells: []string{ui.Bold.Render("额度")}, Kind: "head"}
 		if q.Unlimited {
-			ui.Println("  " + ui.OKS.Render(g.Dot+" 不限额度") + ui.Dim.Render("  以下为已消费金额（按官方单价估算）"))
+			head.Cells = append(head.Cells, ui.OKS.Render(g.Dot+" 不限额度")+ui.Dim.Render("  以下为已消费金额（按官方单价估算）"))
 		}
 		for _, w := range []struct {
 			label string
 			win   *api.QuotaWindow
-		}{{"今日", q.Daily}, {"本周", q.Weekly}, {"累计", q.Total}} {
-			if w.win == nil {
-				continue
+		}{{"日", q.Daily}, {"周", q.Weekly}, {"累计", q.Total}} {
+			if w.win != nil {
+				head.Children = append(head.Children, quotaNode(w.label, w.win))
 			}
-			ui.Println("  " + quotaLine(w.label, w.win, u.QuotaTimeZone))
 		}
+		nodes = append(nodes, head)
 	}
 
-	// 汇总卡片
 	t := u.Totals
 	cacheRatio := 0.0
 	if in := t.NewInputTokens + t.CacheTokens; in > 0 {
@@ -112,14 +126,15 @@ func renderUsage(u *api.Usage) {
 		stat("总 Token", ui.Tokens(t.TotalTokens)),
 		stat("输入", ui.Tokens(t.NewInputTokens)),
 		stat("输出", ui.Tokens(t.OutputTokens)),
-		stat("缓存命中", ui.Tokens(t.CacheTokens)+ui.Dim.Render(fmt.Sprintf(" %.0f%%", cacheRatio*100))),
+		stat("缓存读", ui.Tokens(t.CacheTokens)+ui.Dim.Render(fmt.Sprintf(" %.0f%%", cacheRatio*100))),
 		stat("估算花费", ui.BrandS.Render(ui.USD(t.TotalCostUsd))),
 	}
-	ui.Println()
-	ui.Println(indent(ui.Card(strings.Join(stats, ui.Dim.Render("   "+g.Sep+"   "))), "  "))
+	nodes = append(nodes, ui.TreeNode{Cells: []string{ui.Bold.Render("合计"), strings.Join(stats, ui.Dim.Render(" · "))}, Kind: "head"})
 
-	// 模型排行
 	models := append([]api.ModelUsage(nil), u.Models...)
+	if len(models) == 0 {
+		return nodes
+	}
 	sort.Slice(models, func(i, j int) bool {
 		ci, cj := cost(models[i]), cost(models[j])
 		if ci != cj {
@@ -127,18 +142,16 @@ func renderUsage(u *api.Usage) {
 		}
 		return models[i].TotalTokens > models[j].TotalTokens
 	})
-	if len(models) == 0 {
-		ui.Println()
-		ui.Note("这段时间还没有请求记录。")
-		return
-	}
-	maxCost := 0.0
+	maxCost, priced := 0.0, false
 	for _, m := range models {
-		if c := cost(m); c > maxCost {
-			maxCost = c
-		}
+		maxCost = max(maxCost, cost(m))
+		priced = priced || m.TotalCostUsd != nil
 	}
-	var rows [][]string
+	title := "按模型 · Token"
+	if priced {
+		title = "按模型 · 花费"
+	}
+	head := ui.TreeNode{Cells: []string{ui.Bold.Render(title), ui.Dim.Render(fmt.Sprintf("共 %d 个模型", len(models)))}, Kind: "head"}
 	for i, m := range models {
 		if i >= 15 {
 			break
@@ -151,26 +164,21 @@ func renderUsage(u *api.Usage) {
 		if m.TotalCostUsd != nil {
 			costStr = ui.USD(*m.TotalCostUsd)
 		}
-		rows = append(rows, []string{
-			ui.Truncate(m.Model, 30),
-			ui.Count(m.Requests),
-			ui.Tokens(m.NewInputTokens),
-			ui.Tokens(m.OutputTokens),
-			ui.Tokens(m.CacheTokens),
-			costStr,
-			share,
+		head.Children = append(head.Children, ui.TreeNode{
+			Cells: []string{
+				ui.Truncate(m.Model, 30),
+				ui.Count(m.Requests) + " 次",
+				"输入 " + ui.Tokens(m.NewInputTokens),
+				"输出 " + ui.Tokens(m.OutputTokens),
+				"缓存读 " + ui.Tokens(m.CacheTokens),
+				costStr,
+				share,
+			},
+			Aligns: []ui.Align{ui.Left, ui.Right, ui.Right, ui.Right, ui.Right, ui.Right},
+			Kind:   "model",
 		})
 	}
-	ui.Println()
-	ui.Println("  " + ui.Bold.Render("按模型") + ui.Dim.Render(fmt.Sprintf("  共 %d 个模型，按花费排序", len(models))))
-	ui.Println(indent(ui.Table([]string{"模型", "请求", "输入", "输出", "缓存", "花费", "占比"}, rows,
-		ui.Left, ui.Right, ui.Right, ui.Right, ui.Right, ui.Right, ui.Left), "  "))
-	if len(models) > 15 {
-		ui.Note("另有 %d 个模型未显示，用 --json 查看全部", len(models)-15)
-	}
-	if len(u.UnpricedModels) > 0 {
-		ui.Note("未定价（不计入花费与额度）：%s", strings.Join(u.UnpricedModels, ", "))
-	}
+	return append(nodes, head)
 }
 
 func stat(label, value string) string {
@@ -184,24 +192,28 @@ func cost(m api.ModelUsage) float64 {
 	return *m.TotalCostUsd
 }
 
-func quotaLine(label string, w *api.QuotaWindow, tz string) string {
+// quotaNode 是额度窗口的一行：窗口名 · 进度条 · 比例 · 已用 / 上限 · 重置。
+func quotaNode(label string, w *api.QuotaWindow) ui.TreeNode {
 	reset := ""
 	if w.ResetsAt != nil && *w.ResetsAt != "" {
 		reset = ui.Dim.Render(" · " + untilReset(*w.ResetsAt) + "后重置")
 	} else if label == "累计" {
 		reset = ui.Dim.Render(" · 不自动重置")
 	}
+	aligns := []ui.Align{ui.Left, ui.Left, ui.Right}
 	if w.LimitUsd <= 0 {
-		return ui.Pad(label, 5) + ui.Bar(0, 24) + "  " + ui.Bold.Render(ui.USD(w.SpentUsd)) + ui.Dim.Render(" / 不限") + reset
+		return ui.TreeNode{Cells: []string{label, ui.Bar(0, 24), "", ui.Bold.Render(ui.USD(w.SpentUsd)) + ui.Dim.Render(" / 不限") + reset}, Aligns: aligns, Kind: "quota"}
 	}
 	ratio := w.SpentUsd / w.LimitUsd
-	pct := fmt.Sprintf(" %3.0f%%", ratio*100)
 	status := ""
 	if w.Exceeded {
 		status = " " + ui.ErrS.Render("已超额")
 	}
-	return ui.Pad(label, 5) + ui.Bar(ratio, 24) + pct + "  " +
-		ui.Bold.Render(ui.USD(w.SpentUsd)) + ui.Dim.Render(" / "+ui.USD(w.LimitUsd)) + status + reset
+	return ui.TreeNode{
+		Cells:  []string{label, ui.Bar(ratio, 24), fmt.Sprintf("%.0f%%", ratio*100), ui.Bold.Render(ui.USD(w.SpentUsd)) + ui.Dim.Render(" / "+ui.USD(w.LimitUsd)) + status + reset},
+		Aligns: aligns,
+		Kind:   "quota",
+	}
 }
 
 func untilReset(ts string) string {

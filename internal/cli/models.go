@@ -13,7 +13,7 @@ import (
 
 const modelsHelp = `crapi models [关键字] [参数]
 
-列出当前 API Key 可以调用的全部模型，按渠道分组。
+列出当前 API Key 可以调用的全部模型，按厂商分组（与控制台「模型」页一致）。
 
 参数：
   --channel <名称>  只看某个渠道（owned_by，如 anthropic / openai / antigravity / openrouter）
@@ -67,28 +67,11 @@ func cmdModels(a *App, args []string) error {
 		return enc.Encode(list)
 	}
 
-	groups := groupByChannel(list)
-	ui.Section("可用模型", fmt.Sprintf("%d 个模型 · %d 个渠道", len(list), len(groups)))
-	g := ui.G()
-	for _, grp := range groups {
-		ui.Println()
-		ui.Println("  " + ui.BrandS.Render(g.Dot) + " " + ui.Bold.Render(api.ChannelLabel(grp.channel)) +
-			ui.Dim.Render(fmt.Sprintf("  %s · %d 个", grp.channel, len(grp.models))))
-		var rows [][]string
-		for _, m := range grp.models {
-			rows = append(rows, []string{
-				m.ID,
-				ui.Truncate(m.Name(), 26),
-				ui.Ctx(m.ContextLength),
-				ui.Ctx(m.MaxCompletionTokens),
-				caps(m),
-				price(m),
-			})
-		}
-		ui.Println(indent(ui.Table([]string{"模型 ID", "名称", "上下文", "输出", "能力", "价格 $/M 入/出"}, rows,
-			ui.Left, ui.Left, ui.Right, ui.Right, ui.Left, ui.Right), "  "))
-	}
+	vendors := groupByVendor(list)
+	ui.Section("可用模型", fmt.Sprintf("%d 个模型 · %d 个厂商", len(list), len(vendors)))
+	ui.Println(ui.Tree(modelTree(vendors)))
 	ui.Println()
+	ui.Note("列：模型 ID · 名称 · 上下文 · 最大输出 · 能力 · 价格（每百万 token 输入 / 输出，美元）。")
 	ui.Note("能力：视=识图 推=推理 工=工具调用 搜=联网 图=生图 音=音频。模型列表已按你的 Key 权限过滤。")
 	return nil
 }
@@ -109,15 +92,11 @@ func groupByChannel(list []api.Model) []channelGroup {
 		}
 		groups[idx[ch]].models = append(groups[idx[ch]].models, m)
 	}
-	rank := map[string]int{"anthropic": 0, "openai": 1, "antigravity": 2}
+	// 订阅账号池按控制台的固定顺序在前，其余渠道按模型数从多到少。
 	sort.SliceStable(groups, func(i, j int) bool {
-		ri, iok := rank[groups[i].channel]
-		rj, jok := rank[groups[j].channel]
-		switch {
-		case iok && jok:
+		ri, rj := channelRank(groups[i].channel), channelRank(groups[j].channel)
+		if ri != rj {
 			return ri < rj
-		case iok != jok:
-			return iok
 		}
 		return len(groups[i].models) > len(groups[j].models)
 	})
@@ -154,7 +133,7 @@ func price(m api.Model) string {
 	if m.Cost == nil || (m.Cost.Input == 0 && m.Cost.Output == 0) {
 		return ui.Dim.Render("-")
 	}
-	return fmt.Sprintf("%s / %s", trimNum(m.Cost.Input), trimNum(m.Cost.Output))
+	return fmt.Sprintf("$%s / $%s", trimNum(m.Cost.Input), trimNum(m.Cost.Output))
 }
 
 func trimNum(v float64) string {
@@ -173,7 +152,7 @@ func indent(s, prefix string) string {
 
 const channelsHelp = `crapi channels [--json]
 
-按渠道汇总当前 Key 可用的模型数量与代表模型。`
+按渠道汇总当前 Key 可用的模型：渠道 → 类型 → 代表模型。`
 
 func cmdChannels(a *App, args []string) error {
 	fs := newFlags("channels", channelsHelp)
@@ -200,37 +179,7 @@ func cmdChannels(a *App, args []string) error {
 		return enc.Encode(out)
 	}
 	ui.Section("可用渠道", fmt.Sprintf("%d 个渠道 · %d 个模型", len(groups), len(models)))
-	max := 0
-	for _, g := range groups {
-		if len(g.models) > max {
-			max = len(g.models)
-		}
-	}
-	var rows [][]string
-	for _, g := range groups {
-		kinds := map[api.Kind]int{}
-		for _, m := range g.models {
-			kinds[m.Kind()]++
-		}
-		var kindParts []string
-		for _, k := range []api.Kind{api.KindChat, api.KindImage, api.KindAudio} {
-			if kinds[k] > 0 {
-				kindParts = append(kindParts, fmt.Sprintf("%s %d", map[api.Kind]string{api.KindChat: "对话", api.KindImage: "生图", api.KindAudio: "音频"}[k], kinds[k]))
-			}
-		}
-		sample := ids(g.models)
-		if len(sample) > 3 {
-			sample = append(sample[:3], "…")
-		}
-		rows = append(rows, []string{
-			api.ChannelLabel(g.channel),
-			g.channel,
-			ui.Bar(float64(len(g.models))/float64(max), 12, ui.Accent) + fmt.Sprintf(" %d", len(g.models)),
-			strings.Join(kindParts, " · "),
-			ui.Truncate(strings.Join(sample, ", "), 46),
-		})
-	}
-	ui.Println(indent(ui.Table([]string{"渠道", "标识", "模型数", "类型", "代表模型"}, rows), "  "))
+	ui.Println(ui.Tree(channelTree(groups)))
 	ui.Println()
 	ui.Note("查看某个渠道的全部模型：crapi models --channel <标识>；号池账号状态：crapi pool")
 	return nil

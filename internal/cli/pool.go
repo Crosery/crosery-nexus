@@ -15,8 +15,9 @@ import (
 
 const poolHelp = `crapi pool [--json]
 
-查看 Crosery 号池状态：每个渠道的账号数、可用 / 冷却 / 停用数量，
+查看 Crosery 号池状态：每个渠道的账号数、运行 / 冷却 / 异常 / 暂停数量，
 以及 Claude、Codex 等订阅账号在各额度窗口（5 小时 / 每周）的平均占用与重置时间。
+按渠道分层显示，渠道名与顺序同控制台的订阅账号池。
 数据为脱敏聚合，不含任何账号标识。`
 
 func cmdPool(a *App, args []string) error {
@@ -65,7 +66,20 @@ func cmdPool(a *App, args []string) error {
 }
 
 func renderPool(p *api.Pool) {
-	g := ui.G()
+	total := poolTotal(p)
+	hint := fmt.Sprintf("%d 个渠道 · %d 个账号", len(p.Providers), total.Total)
+	if p.GeneratedAt != "" {
+		hint += " · " + shortTime(p.GeneratedAt)
+	}
+	ui.Section("号池状态", hint)
+	ui.Println(ui.Tree(poolTree(p)))
+	if p.QuotaAsOf != nil && *p.QuotaAsOf != "" {
+		ui.Println()
+		ui.Note("额度窗口数据更新于 %s", shortTime(*p.QuotaAsOf))
+	}
+}
+
+func poolTotal(p *api.Pool) api.PoolAccounts {
 	total := api.PoolAccounts{}
 	for _, pr := range p.Providers {
 		total.Total += pr.Accounts.Total
@@ -74,21 +88,27 @@ func renderPool(p *api.Pool) {
 		total.Disabled += pr.Accounts.Disabled
 		total.Error += pr.Accounts.Error
 	}
-	hint := fmt.Sprintf("%d 个渠道 · %d 个账号", len(p.Providers), total.Total)
-	if p.GeneratedAt != "" {
-		hint += " · " + shortTime(p.GeneratedAt)
-	}
-	ui.Section("号池状态", hint)
-	ui.Println()
-	ui.Println("  " + accountsBar(total, 40) + "  " + accountsLegend(total))
+	return total
+}
+
+// poolTree：全部 → 各渠道（顺序与控制台订阅账号池一致）→ 账号状态、额度窗口、模型。
+func poolTree(p *api.Pool) []ui.TreeNode {
+	g := ui.G()
+	total := poolTotal(p)
+	nodes := []ui.TreeNode{{Cells: []string{ui.Bold.Render("全部"), accountsBar(total, 30), accountsLegend(total)}, Kind: "total"}}
 
 	providers := append([]api.PoolProvider(nil), p.Providers...)
-	sort.SliceStable(providers, func(i, j int) bool { return providers[i].Accounts.Total > providers[j].Accounts.Total })
+	sort.SliceStable(providers, func(i, j int) bool {
+		ri, rj := channelRank(providers[i].Provider), channelRank(providers[j].Provider)
+		if ri != rj {
+			return ri < rj
+		}
+		return providers[i].Accounts.Total > providers[j].Accounts.Total
+	})
 	for _, pr := range providers {
-		ui.Println()
 		label := pr.Label
 		if label == "" {
-			label = api.ChannelLabel(pr.Provider)
+			label = channelName(pr.Provider)
 		}
 		health := ui.OKS.Render(g.Dot + " 正常")
 		switch {
@@ -97,31 +117,27 @@ func renderPool(p *api.Pool) {
 		case float64(pr.Accounts.Active)/float64(pr.Accounts.Total) < 0.5:
 			health = ui.WarnS.Render(g.Dot + " 紧张")
 		}
-		ui.Println("  " + ui.Bold.Render(label) + ui.Dim.Render("  "+pr.Provider) + "  " + health)
-		ui.Println("    " + accountsBar(pr.Accounts, 30) + "  " + accountsLegend(pr.Accounts))
+		node := ui.TreeNode{Cells: append(channelHead(label, pr.Provider), health)}
+		node.Children = append(node.Children, ui.TreeNode{Cells: []string{"账号", accountsBar(pr.Accounts, 24), accountsLegend(pr.Accounts)}, Kind: "meter"})
 		for _, w := range pr.Windows {
-			reset := ""
-			if w.ResetsAt != nil && *w.ResetsAt != "" {
-				reset = ui.Dim.Render(" · " + untilReset(*w.ResetsAt) + "后重置")
-			}
-			n := ""
+			rest := fmt.Sprintf("%3.0f%%", w.UsedPercent)
 			if w.Accounts > 0 {
-				n = ui.Dim.Render(fmt.Sprintf(" · %d 个账号平均", w.Accounts))
+				rest += ui.Dim.Render(fmt.Sprintf(" · %d 个账号平均", w.Accounts))
 			}
-			ui.Println("    " + ui.Pad(w.Label, 8) + ui.Bar(w.UsedPercent/100, 24) +
-				fmt.Sprintf(" %3.0f%%", w.UsedPercent) + n + reset)
+			if w.ResetsAt != nil && *w.ResetsAt != "" {
+				rest += ui.Dim.Render(" · " + untilReset(*w.ResetsAt) + "后重置")
+			}
+			node.Children = append(node.Children, ui.TreeNode{Cells: []string{w.Label, ui.Bar(w.UsedPercent/100, 24), rest}, Kind: "meter"})
 		}
 		if len(pr.Models) > 0 {
-			ui.Println("    " + ui.Dim.Render("模型 ") + ui.Truncate(strings.Join(pr.Models, ", "), 90))
+			node.Children = append(node.Children, ui.TreeNode{Cells: []string{ui.Dim.Render("模型"), ui.Truncate(strings.Join(pr.Models, ", "), 90)}, Kind: "models"})
 		}
+		nodes = append(nodes, node)
 	}
-	if p.QuotaAsOf != nil && *p.QuotaAsOf != "" {
-		ui.Println()
-		ui.Note("额度窗口数据更新于 %s", shortTime(*p.QuotaAsOf))
-	}
+	return nodes
 }
 
-// accountsBar 用分段色条表示「可用 / 冷却 / 异常 / 停用」的比例。
+// accountsBar 用分段色条表示「运行 / 冷却 / 异常 / 暂停」的比例。
 func accountsBar(a api.PoolAccounts, width int) string {
 	if a.Total <= 0 {
 		return ui.Bar(0, width)
@@ -141,7 +157,8 @@ func accountsBar(a api.PoolAccounts, width int) string {
 }
 
 func accountsLegend(a api.PoolAccounts) string {
-	parts := []string{ui.OKS.Render(fmt.Sprintf("可用 %d", a.Active))}
+	// 状态名同控制台订阅账号池（src/features/accounts/model.ts viewOf）
+	parts := []string{ui.OKS.Render(fmt.Sprintf("运行 %d", a.Active))}
 	if a.Cooling > 0 {
 		parts = append(parts, ui.WarnS.Render(fmt.Sprintf("冷却 %d", a.Cooling)))
 	}
@@ -149,22 +166,13 @@ func accountsLegend(a api.PoolAccounts) string {
 		parts = append(parts, ui.ErrS.Render(fmt.Sprintf("异常 %d", a.Error)))
 	}
 	if a.Disabled > 0 {
-		parts = append(parts, ui.Dim.Render(fmt.Sprintf("停用 %d", a.Disabled)))
+		parts = append(parts, ui.Dim.Render(fmt.Sprintf("暂停 %d", a.Disabled)))
 	}
 	return strings.Join(parts, ui.Dim.Render(" · ")) + ui.Dim.Render(fmt.Sprintf(" / 共 %d", a.Total))
 }
 
 // cmdChannelsFrom 在没有号池接口时退化为按渠道展示模型。
 func cmdChannelsFrom(models []api.Model) error {
-	groups := groupByChannel(models)
-	var rows [][]string
-	for _, g := range groups {
-		sample := ids(g.models)
-		if len(sample) > 4 {
-			sample = append(sample[:4], "…")
-		}
-		rows = append(rows, []string{api.ChannelLabel(g.channel), fmt.Sprint(len(g.models)), ui.Truncate(strings.Join(sample, ", "), 56)})
-	}
-	ui.Println(indent(ui.Table([]string{"渠道", "在线模型", "模型"}, rows, ui.Left, ui.Right, ui.Left), "  "))
+	ui.Println(ui.Tree(channelTree(groupByChannel(models))))
 	return nil
 }

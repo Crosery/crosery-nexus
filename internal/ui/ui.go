@@ -40,6 +40,7 @@ type Glyphs struct {
 	BarParts                                            []string // 由细到粗的部分块，ASCII 模式为空
 	Border                                              lipgloss.Border
 	Rule                                                string
+	TreeTee, TreeEnd, TreePipe                          string // 树形输出的分支、末枝与竖线，都是 3 列宽
 }
 
 var unicodeGlyphs = Glyphs{
@@ -48,13 +49,15 @@ var unicodeGlyphs = Glyphs{
 	BarParts: []string{"▏", "▎", "▍", "▌", "▋", "▊", "▉"},
 	Border:   lipgloss.RoundedBorder(),
 	Rule:     "─",
+	TreeTee:  "├─ ", TreeEnd: "└─ ", TreePipe: "│  ",
 }
 
 var asciiGlyphs = Glyphs{
 	OK: "+", Fail: "x", Warn: "!", Info: "i", Arrow: "->", Dot: "*", Bullet: "-", Mark: "*", Sep: "|",
 	BarFull: "#", BarEmpty: ".",
-	Border: lipgloss.ASCIIBorder(),
-	Rule:   "-",
+	Border:  lipgloss.ASCIIBorder(),
+	Rule:    "-",
+	TreeTee: "|- ", TreeEnd: "`- ", TreePipe: "|  ",
 }
 
 // G 返回当前终端使用的字形。
