@@ -753,3 +753,18 @@ test('adopt (preview): the binary installed by hand becomes the trial, is accept
   state = await readState(r.paths, 'cpa')
   assert.deepEqual([state.trial.status, state.installed.version, out.cpa.why], ['rejected', RUNNING, 'attempted'])
 })
+
+test('units: the console loads the host role file after its secrets and before the release drop-in; the repo env files never set role keys', async () => {
+  const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+  const unit = await fs.readFile(path.join(repo, 'deploy/systemd/crosery-api-console.service'), 'utf8')
+  assert.deepEqual(unit.split('\n').filter(line => line.startsWith('EnvironmentFile=')), ['EnvironmentFile=/opt/crosery-api-console/.env', 'EnvironmentFile=-/etc/crosery/autoupdate.env'])
+  // scripts/release.mjs appends deploy/env/<env>.env in a drop-in: loaded last, so it would win; no key overlaps anyway
+  assert.match(await fs.readFile(path.join(repo, 'scripts/release.mjs'), 'utf8'), /EnvironmentFile=-%s\/deploy\/env\/%s\.env/)
+  for (const name of ['preview.env', 'production.env']) {
+    const keys = (await fs.readFile(path.join(repo, 'deploy/env', name), 'utf8')).split('\n').map(line => /^([A-Z_][A-Z0-9_]*)=/.exec(line)?.[1]).filter(Boolean)
+    assert.deepEqual(keys.filter(key => /^(AUTOUPDATE_|CPA_PROBE_|CPA_AUTH_DIR$)/.test(key)), [], name)
+  }
+  for (const file of ['deploy/kernels/relay/crosery-kernel-update.service', 'deploy/systemd/crosery-rtk-autoupdate.service']) {
+    assert.match(await fs.readFile(path.join(repo, file), 'utf8'), /^EnvironmentFile=-\/etc\/crosery\/autoupdate\.env$/m, file)
+  }
+})
