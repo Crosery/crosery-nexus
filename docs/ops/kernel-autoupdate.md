@@ -19,6 +19,8 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
 
 读这个文件的有三个 unit：`crosery-kernel-update`、`crosery-rtk-autoupdate`，以及控制台 `crosery-api-console`（控制台里手动触发的 RTK / CPA 动作按这台机器的角色走）。控制台的加载顺序是 `/opt/crosery-api-console/.env` → `/etc/crosery/autoupdate.env` → 发布脚本 drop-in `10-release-env.conf` 里的 `deploy/env/<env>.env`；同名键以后加载的为准，所以 `deploy/env` 优先。三处目前没有重叠的键（`deploy/env` 不设 `AUTOUPDATE_*`、`CPA_PROBE_*`、`CPA_AUTH_DIR`，有测试守着）。
 
+在 root shell 里手动跑 `kernel-applier.mjs`、`rtk-autoupdate.mjs` 时，环境里没有 `AUTOUPDATE_ROLE` 就自己读这个文件（和 unit 一样；环境里已有的变量优先），不用先 `source`。
+
 ## 2. CPA
 
 ```
@@ -26,8 +28,8 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
   补丁系列（见下）→ deploy 分支 → 合并上游最新正式 release → docker go build + go test → cpa-smoke → 本机候选库
   └ tools/cpa-coordinator.mjs round（每轮最后）
       ├ 预发布空闲 → 上传候选（cpa-upload / cpa-stage / cpa-report）
-      ├ 预发布装上了 → cpa-acceptance 对预发布公网 API 验收一次 → cpa-accept
-      ├ 浸泡满了   → 再验收一次 → cpa-accept
+      ├ 预发布装上了 → cpa-acceptance 对预发布公网 API 验收一次 → 有结论才 cpa-accept
+      ├ 浸泡满了   → 再验收一次 → 有结论才 cpa-accept（没有结论：下一轮再验，不回滚）
       └ 预发布记录为 accepted → 同一个二进制（sha256 对过）+ 预发布的记录 → 正式（cpa-promote）
 预发布 crosery-kernel-update（10 分钟一轮 + 网关投递后立即）
   校验 sha256 与 --version → 不等时段，直接经 cpa-install-binary.sh 安装 → 试运行
@@ -92,7 +94,17 @@ node ~/cpa-pipeline/tools/cpa-coordinator.mjs adopt --root ~/cpa-pipeline --bina
 
 ### 验收（`scripts/cpa-acceptance.mjs`）
 
-对一个公网 API 跑：`/v1/models` 列表、每个模型一次 JSON 回复、一次 SSE（要有增量和 `[DONE]`）、一次工具调用往返。Key 只从环境变量 `CPA_ACCEPT_KEY` 读，输出里会被遮掉。退出码 0 通过、1 不通过、2 用法错。
+对一个公网 API 跑：`/v1/models` 列表、每个模型一次 JSON 回复、一次 SSE（要有增量和 `[DONE]`）、一次工具调用往返。Key 只从环境变量 `CPA_ACCEPT_KEY` 读，输出里会被遮掉。
+
+结果分三种（`verdict`），退出码 0 / 1 / 3（2 是用法错）：
+
+| 结论 | 什么时候 | 协调者怎么做 |
+| --- | --- | --- |
+| `passed` | 全部通过 | 交给预发布（`cpa-accept`） |
+| `failed` | 试运行的二进制应答了、但行为不对：JSON 形状不对、SSE 没有增量或 `[DONE]`、工具往返断了、列出的模型返回 4xx、模型列表为空…… | 交给预发布：回滚、这个版本作废 |
+| `inconclusive` | 说明不了二进制好坏：DNS 失败、连接被拒或被重置、TLS 错误、拿到应答前超时、HTTP 502/503/504、`/v1/models` 返回的不是 JSON、`x-cpa-version` 有但不是试运行的版本（不是在跟它说话）、请求的模型不在 `/v1/models` 里 | **不交给预发布**：试运行和浸泡时间照旧，下一轮同一阶段再验；连续 `CPA_ACCEPT_INCONCLUSIVE_ALARM` 轮（默认 6）后在本轮日志和两边控制台的「最近错误」里报警，仍然不回滚 |
+
+有 `failed` 就是 `failed`（二进制答错了，有没有别的项没有结论都一样）；`/v1/models` 没有结论时后面的项不跑。浸泡后的验收必须真的 `passed`，才会有晋级记录。每次验收（含没有结论的）都追加到构建机的 `state/acceptance.jsonl`。
 
 ```sh
 CPA_ACCEPT_KEY=… node scripts/cpa-acceptance.mjs --base-url <公网地址> --models a,b [--expect-version V]
@@ -116,7 +128,7 @@ CPA_ACCEPT_KEY=… node scripts/cpa-acceptance.mjs --base-url <公网地址> --m
 - **预发布**：从 GitHub releases 列表取最新正式版 → 下载、核对 sha256 → 备份 → 原子替换 → `rtk --version` 和一个小的 `rtk json` 功能检查，不过就换回。之后每次运行都再检查一次；满浸泡时长且一直通过 → `accepted`。中途检查不过 → 换回备份。
 - **构建机**：协调者把预发布的 `accepted` 记录（版本、tag、归档 sha256、asset）转给正式（`rtk-promote`）。
 - **正式**：只装记录里的那个版本；下载的归档 sha256 和 asset 名必须与记录一致，记录要满足同样的浸泡和时效规则。
-- 状态在 `RTK_STATE_DIR/autoupdate-rtk.json`（默认 `/opt/crosery-api-console/data/rtk`）。网络失败按退避重试；校验不过的版本不再自动重试。
+- 状态在 `RTK_STATE_DIR/autoupdate-rtk.json`（默认 `/opt/crosery-api-console/data/rtk`）。网络失败按退避重试，下载被截短（字节数和发布列表里的大小或 content-length 对不上）也算网络失败；只有完整下载、sha256 不对的版本才算校验不过，不再自动重试。预发布试运行期间的检查（`rtk --version`、`rtk json`）都在本机，不走网络。
 - Mac 上没有 `autoupdate.env` 时保持原来的单机行为（读本机上游检查的结果）。
 
 ## 4. 每台机器要装的东西
@@ -159,6 +171,7 @@ CPA_PIPELINE_PRODUCTION="ssh -o BatchMode=yes <正式 SSH 别名>"
 CPA_ACCEPT_BASE_URL=<预发布 API 公网地址>
 CPA_ACCEPT_KEY=<预发布的验收 Key>
 CPA_ACCEPT_MODELS=<逗号分隔的模型>
+#CPA_ACCEPT_INCONCLUSIVE_ALARM=6   # 可选：验收连续几轮没有结论就报警（只报警，不回滚）
 ```
 
 缺任何一项 `run.sh` 直接失败，没有默认值。主机名、地址、端口和 SSH 用户只写在构建机的 `~/.ssh/config`（别名）里，不进仓库。
@@ -176,4 +189,5 @@ CPA_ACCEPT_MODELS=<逗号分隔的模型>
 | 配置在换装期间变了，没有自动换回 | 先确认 config.yaml 的改动，再决定装哪个版本 |
 | 上次没替换成：停止超时是 … 要不超过 10 秒 | 装上 `10-stop-timeout.conf` 并 `systemctl daemon-reload`；线上没动过，30 分钟后自动再试 |
 | 预发布的记录不能用（过期、不一致） | 正式不会装；等下一个候选在预发布重新走完，或查构建机日志 |
+| 验收连续 N 轮没有结论 | 二进制没被回滚，也不会晋级。查预发布 API 的 DNS、证书、反向代理，或 `x-cpa-version` 显示的到底是谁在应答；修好后下一轮自动接着验 |
 | RTK 校验不过 | 这个版本不再自动重试；换新版本或人工核对发布 |
