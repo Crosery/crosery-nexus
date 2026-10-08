@@ -16,8 +16,8 @@ process.env.CPA_MANAGEMENT_KEY = 'fixture-management-key'
 process.env.CROSERY_SHARED_CATALOG = path.join(dataDir, 'no-shared-catalog.json')
 const originalFetch = globalThis.fetch
 const { db } = await import('./db.js')
-const { reconcileKeyModelAccess } = await import('./sync.js')
-const { hashKey } = await import('./cpa.js')
+const { reconcileKeyModelAccess, syncKeysFromCPA, withKeyAccessLock } = await import('./sync.js')
+const { hashKey, pinProbeKeyChannels, registerProbeKeys } = await import('./cpa.js')
 const { invalidateGatewaySnapshot } = await import('./channels.js')
 const { writeAvailabilityFile } = await import('./modelAvailability.js')
 
@@ -32,6 +32,7 @@ const MODELS: Record<string, string[]> = { antigravity: ['gemini-3-pro', 'gemini
 const NAMED_MODELS: Record<string, string[]> = { 'codex-b.json': ['gpt-5.6-sol', 'gpt-retired', 'gpt-image-2'] }
 
 const gateway = {
+  keys: [key],
   files: [] as AuthFile[],
   channelAccess: {} as Record<string, string[]>,
   modelAccess: {} as Record<string, string[]>,
@@ -49,7 +50,10 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'PUT') gateway.modelAccess = JSON.parse(String(init.body))
     return json({ 'api-key-model-access': gateway.modelAccess })
   }
-  if (route === '/api-keys') return json({ 'api-keys': [key] })
+  if (route === '/api-keys') {
+    if (init?.method === 'PUT') gateway.keys = JSON.parse(String(init.body))
+    return json({ 'api-keys': gateway.keys })
+  }
   if (route === '/openai-compatibility') return json({ 'openai-compatibility': [] })
   if (route === '/auth-files') return json({ files: gateway.files })
   if (route === '/auth-files/models') {
@@ -136,6 +140,20 @@ test('整目录订阅的分组跟随可用性：下线模型退出白名单、�
     [[], ['gpt-retired']],
     [['gpt-retired'], []],
   ])
+})
+
+test('探测 Key 与对账共存：不被导入成用户 Key，渠道钉子在对账后仍在，模型白名单里没有它', async () => {
+  const probes = await registerProbeKeys(['codex'])
+  await withKeyAccessLock(() => pinProbeKeyChannels(probes))
+  await syncKeysFromCPA()
+  const rows = db.prepare('SELECT key_value FROM api_keys').all() as Array<{ key_value: string }>
+  assert.deepEqual(rows.map((row) => row.key_value), [key])
+  await reconcileWith([CODEX])
+  assert.deepEqual(gateway.keys, [key, probes.codex])
+  assert.deepEqual(gateway.channelAccess[probes.codex], ['codex'])
+  assert.ok(!(probes.codex in gateway.modelAccess))
+  const audit = JSON.stringify(db.prepare('SELECT * FROM audit_log').all())
+  assert.ok(!audit.includes(probes.codex.slice(9)), '审计里没有探测 Key')
 })
 
 test.after(() => {

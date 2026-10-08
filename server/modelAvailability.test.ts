@@ -283,3 +283,34 @@ test('整轮作废时状态文件不动：网关整轮不可达、读不到目�
   assert.equal(noKeys.writes.length, 0)
   assert.equal(noKeys.probes.length, 0)
 })
+
+test('真实请求：经网关 /v1/chat/completions 发 max_tokens=1 的最小请求，超时与连不上分别归类', async () => {
+  const http = await import('node:http')
+  const seen: Array<{ method?: string; url?: string; auth?: string; body: Record<string, unknown> }> = []
+  const server = http.createServer((req, res) => {
+    let raw = ''
+    req.on('data', (chunk) => { raw += chunk })
+    req.on('end', () => {
+      seen.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: JSON.parse(raw) })
+      if (seen.at(-1)!.body.model === 'slow-model') return
+      res.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: { message: 'model_not_found' } }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+  try {
+    const { probeChatModel } = await import('./modelAvailability.js')
+    const response = await probeChatModel(base, 'fixture-probe-key', 'gpt-retired')
+    assert.deepEqual(response, { kind: 'http', status: 404, body: JSON.stringify({ error: { message: 'model_not_found' } }) })
+    assert.deepEqual(seen[0], {
+      method: 'POST', url: '/v1/chat/completions', auth: 'Bearer fixture-probe-key',
+      body: { model: 'gpt-retired', messages: [{ role: 'user', content: 'ping' }], max_tokens: 1, stream: false },
+    })
+    assert.deepEqual(await probeChatModel(base, 'fixture-probe-key', 'slow-model', 50), { kind: 'timeout' })
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+  const { probeChatModel } = await import('./modelAvailability.js')
+  assert.equal((await probeChatModel(base, 'fixture-probe-key', 'any', 2_000)).kind, 'network')
+})
