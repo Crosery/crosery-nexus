@@ -53,7 +53,7 @@ function fixture() {
       rollup.run(hour, keyHash, opts.provider ?? 'openrouter', opts.model ?? 'openrouter/gemma-4', opts.ok === false ? 0 : 1,
         opts.status ?? (opts.ok === false ? 429 : 200), opts.category ?? (opts.ok === false ? 'rate_limited' : ''), opts.n ?? 1, opts.tokens ?? 100),
     fail: (ms: number, keyHash: string, opts: { provider?: string; model?: string; status?: number; category?: string } = {}) =>
-      event.run(ms, keyHash, opts.provider ?? 'openrouter', opts.model ?? 'openrouter/gemma-4', 0, opts.status ?? 429, opts.category ?? 'rate_limited', 'upstream said no', '10.0.0.1'),
+      event.run(ms, keyHash, opts.provider ?? 'openrouter', opts.model ?? 'openrouter/gemma-4', 0, opts.status ?? 429, opts.category ?? 'rate_limited', 'upstream said no', '192.0.2.1'),
   }
 }
 
@@ -141,7 +141,7 @@ test('keys activity: the payload carries no key values, names, error bodies, IPs
   roll(CURRENT_HOUR, K1, { n: 2 })
   fail(NOW - 1_000, K1)
   const text = JSON.stringify(await loadKeysActivity(reader, groups, NOW))
-  for (const leaked of ['sk-secret-value', 'alpha', 'upstream said no', '10.0.0.1', 'openrouter/']) assert.ok(!text.includes(leaked), `must not contain ${leaked}`)
+  for (const leaked of ['sk-secret-value', 'alpha', 'upstream said no', '192.0.2.1', 'openrouter/']) assert.ok(!text.includes(leaked), `must not contain ${leaked}`)
 })
 
 test('keys activity: the default needs no channel list; 只看当前渠道 with no current channel means no rows (fail-closed)', async () => {

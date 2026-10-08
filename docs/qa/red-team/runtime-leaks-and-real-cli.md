@@ -75,7 +75,7 @@ node … --port 8791 --inspect 9333 --interval 300
 
 ## 4. 任务 B：真实 RTK CLI 端到端（**本轮核心**）
 
-环境：一次性 HOME；`RTK_BIN=/Users/crosery/.local/bin/rtk`（**rtk 0.50.0**）；`spec.initFlags(codex)=['--codex']` ⇒ 控制台执行 `rtk init -g --codex`（关时加 `--uninstall`）。
+环境：一次性 HOME；`RTK_BIN=~/.local/bin/rtk`（**rtk 0.50.0**）；`spec.initFlags(codex)=['--codex']` ⇒ 控制台执行 `rtk init -g --codex`（关时加 `--uninstall`）。
 
 ### 4.1 正常 toggle（真 CLI）
 

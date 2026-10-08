@@ -298,7 +298,7 @@ task-59 里我用来佐证「生产不存在 2.9s」的那次**运行实例**抽
 - **24h 桶数恢复 = 97** ✓；**720h 指纹与改前逐字节相同** ✓（`{"720h 指纹与新默认逐字节相同": true}`）。
 - 契约测试 9/9 通过；`tsc -b` / `lint` / `build` / `npm test` 全绿（657 tests / 656 pass / 0 fail / 1 skipped）。
 
-**生产库只读实测**（`ssh cpa-vps` 打开 `/opt/crosery-api-console/data/console.db` `readOnly: true`，按渠道串行跑两条 SQL 各 2 次取最小；**服务器上未写任何文件**）：
+**生产库只读实测**（`ssh <正式机>` 打开 `/opt/crosery-api-console/data/console.db` `readOnly: true`，按渠道串行跑两条 SQL 各 2 次取最小；**服务器上未写任何文件**）：
 
 | 窗口 | events（新路径）桶数 / 请求 / 耗时 | rollup（旧路径）桶数 / 请求 / 耗时 | 请求数一致性 |
 | --- | --- | --- | --- |

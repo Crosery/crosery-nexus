@@ -28,7 +28,7 @@ function harness(candidates: () => ProxyHealthCandidate[], options: { kernelRunn
       maxActive = Math.max(maxActive, active)
       await new Promise(resolve => setTimeout(resolve, 2))
       active -= 1
-      if (options.fail) throw new Error('boom socks5://u:SECRETPW@1.2.3.4:1080')
+      if (options.fail) throw new Error('boom socks5://u:SECRETPW@198.51.100.4:1080')
       return { status: options.status ?? 401, headers: {}, body: url.includes('cdn-cgi/trace') ? 'ip=198.51.100.9\nloc=JP\n' : '', ms: 3 }
     },
   })
@@ -121,7 +121,7 @@ test('failures are data: partial result, no task-level backoff; inUse errors are
   const view = (await registry.status()).jobs.find(job => job.id === 'proxy-health')!
   assert.equal(view.backoffUntil, null)
 
-  const broken = harness(() => { throw new Error('pool read failed for socks5://u:SECRETPW@10.0.0.1:1080') })
+  const broken = harness(() => { throw new Error('pool read failed for socks5://u:SECRETPW@192.0.2.1:1080') })
   const outcome = await broken.registry.run('proxy-health', 'timer')
   assert.equal(outcome.outcome.result, 'error')
   assert.ok(!String(outcome.outcome.error).includes('SECRETPW'))

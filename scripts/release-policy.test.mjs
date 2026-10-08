@@ -79,7 +79,7 @@ test('env 文件：注释、引号、非法行；密钥样式的键名被识别'
 test('入库 env 文件：密钥、发布目标、IP、外部地址都拒绝，本机回环 URL 放行', () => {
   assert.deepEqual(publicEnvProblems({ CPA_BASE_URL: 'http://127.0.0.1:8317', HEALTH: 'http://localhost:8787/x', DATA_DIR: '/opt/x/data', PORT: '8787' }), [])
   const problems = publicEnvProblems({
-    SESSION_SECRET: 'x', RELEASE_SSH: 'host', DATA_PLANE_BASE_URL: 'http://10.0.0.5:8793', PUBLIC_GATEWAY_BASE_URL: 'https://api.example.com/v1', NOTE: 'peer 192.168.1.2',
+    SESSION_SECRET: 'x', RELEASE_SSH: 'host', DATA_PLANE_BASE_URL: 'http://192.0.2.5:8793', PUBLIC_GATEWAY_BASE_URL: 'https://api.example.com/v1', NOTE: 'peer 198.51.100.2',
   }).join('\n')
   for (const key of ['SESSION_SECRET', 'RELEASE_SSH', 'DATA_PLANE_BASE_URL', 'PUBLIC_GATEWAY_BASE_URL', 'NOTE']) assert.match(problems, new RegExp(key))
 })

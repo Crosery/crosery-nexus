@@ -16,7 +16,7 @@ test('builds keys as sk-purpose-random', () => {
 
 test('extracts semantic names but ignores legacy random-only keys', () => {
   assert.equal(extractKeySlug('sk-feiyu-00112233445566778899aabbccddeeff'), 'feiyu')
-  assert.equal(extractKeySlug('sk-0123456789abcdef0123456789abcdef0123456789abcdef'), '')
+  assert.equal(extractKeySlug(`sk-${'0123456789abcdef'.repeat(3)}`), '')
 })
 
 test('derives a valid key slug from a display name', () => {

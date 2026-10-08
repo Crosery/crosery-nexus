@@ -1,6 +1,6 @@
 # Crosery API Console — 第二轮 UI 对抗验证（红队 B / task-10）
 
-对象 `/Users/crosery/work_file/crosery-api-console`｜基线 **`7593622`（blue-ui task-4）+ `c91b592` + Lead 的 ConfirmHost Escape 补丁**（工作树另有未提交的 `/rtk`、`/ab` 路由，见 §0）｜审计人 `ux-auditor` / task-10｜实例 <http://127.0.0.1:8791>
+对象 `<repo>`｜基线 **`7593622`（blue-ui task-4）+ `c91b592` + Lead 的 ConfirmHost Escape 补丁**（工作树另有未提交的 `/rtk`、`/ab` 路由，见 §0）｜审计人 `ux-auditor` / task-10｜实例 <http://127.0.0.1:8791>
 
 **实测时点**：2026-10-01 08:50–09:04，浏览器锁持有期间独占驱动 ego-browser（TaskSpace `spaceId=10`，已 `finish({keep:[]})`），随后 `rmdir /tmp/cac-browser.lock` 释放。**dist 构建于 08:50:28，且此刻无任何 `src/` 文件比它更新** → 运行实例与当前源码一致（判据：`find src -newermt "$(stat -f '%Sm' dist/index.html)"` 返回空）。
 
@@ -68,7 +68,7 @@
 
 | 位置 | 触发选择器 | 确认框标题 / 正文要点 | 取消后写请求 |
 |---|---|---|---|
-| `/keys` 行内删除 | `[aria-label^="删除 "]` | 「删除密钥」/「"龚翰林"将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。」 | `[]` |
+| `/keys` 行内删除 | `[aria-label^="删除 "]` | 「删除密钥」/「"张三"将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。」 | `[]` |
 | `/keys` 重置今日 | 额度弹窗内 `重置今日用量` | 「重置今日用量」/「"非雨"的今日已用额度（$2.36）将归零，操作不可撤销。」 | `[]` |
 | `/keys` 重置本周 | `重置本周用量` | 「重置本周用量」/「（$292.76）将归零…」 | `[]` |
 | `/keys` 重置总计 | `重置总计用量` | 「重置总计用量」/「累计已用额度（$292.76）将归零。这是密钥因超额停用后唯一的恢复手段，且不可撤销。」 | `[]` |
@@ -80,7 +80,7 @@
 
 ### 1.6 Lead 的 Escape 修复 ✅ **5/5 轮通过**
 - **判据**：真实鼠标点开确认框 → 断言 `document.querySelector('.confirm-actions')` 出现且初始焦点在「取消」→ `keyboard.press("Escape")` → 轮询断言 `.confirm-actions` **从 DOM 移除** → 断言 `document.activeElement.getAttribute('aria-label')` 等于触发按钮的 aria-label。共 5 轮。
-- **实测**：5/5 轮 `confirmInDom:true → false`，移除耗时 200ms（第 1 轮）/ 1200ms（第 2–5 轮），**每轮焦点都回到触发按钮 `删除 龚翰林`**。修复前的"3 轮只有 1 轮能关"未复现。
+- **实测**：5/5 轮 `confirmInDom:true → false`，移除耗时 200ms（第 1 轮）/ 1200ms（第 2–5 轮），**每轮焦点都回到触发按钮 `删除 张三`**。修复前的"3 轮只有 1 轮能关"未复现。
 - **重要测量说明**：我第一版用「可见 `.tx-modal__overlay` 计数」会在离场过渡期间误判（过渡期间 overlay 仍在，`opacity>0.01`，最长约 1.2s），得出假的 0/5。**故本报告的判据改用 DOM 存在性**（`confirmInDom`），这是过渡无关的。
 - **嵌套行为**：额度弹窗 + 其上确认框同时打开时，一次 Escape **只关确认框**（`confirm:false, quotaModal:true`），焦点回到「重置今日用量」；第二次 Escape 才关额度弹窗。符合预期。
 - **语义**：确认框 `role="dialog"` / `aria-modal="true"` / `aria-labelledby="v-0"`；从初始焦点连按 4 次 Tab 依次为 `删除密钥 → Close → 取消 → 删除密钥`，**焦点未逃出弹窗**（焦点陷阱有效）。
@@ -114,8 +114,8 @@
 - **实测**：
   | 步骤 | URL | 输入框 | 行数 |
   |---|---|---|---|
-  | 输入「程耀宇」 | `/keys?q=%E7%A8%8B%E8%80%80%E5%AE%87` | 程耀宇 | 14 → **1** |
-  | **刷新后** | 同上（保持不变） | **程耀宇** | **1** |
+  | 输入「示例用户」 | `/keys?q=%E7%A4%BA%E4%BE%8B%E7%94%A8%E6%88%B7` | 示例用户 | 14 → **1** |
+  | **刷新后** | 同上（保持不变） | **示例用户** | **1** |
   | 清空搜索 | `/keys`（`?q=` **被移除**，不写脏） | 空 | 14 |
 - **写脏检查**：默认值不进 URL（`days=7`/`page=1` 不出现），清空后键被删除——`src/lib/listState.ts:29-37` 的 `buildQuery` 按预期工作。
 - **分页深链**：`/analytics?page=2` 直接打开 → 分页器显示 `Page 2 of 3` 且首行数据确实是第 2 页（与第 1 页首行不同）✓
@@ -157,7 +157,7 @@
 | 确认框初始焦点在「取消」 | ✅ | `document.activeElement.textContent === "取消"`（`ConfirmHost.vue:87` `ref="cancelRef"` + `:46` `focusInModal`） |
 | 确认框焦点陷阱（Tab 不逃出） | ✅ | 4 次 Tab 循环 `删除密钥→Close→取消→删除密钥`，`focusEscaped:false` |
 | 确认框语义 | ✅ | `role="dialog"` / `aria-modal="true"` / `aria-labelledby="v-0"` |
-| 图标按钮 `aria-label`（B 侧） | ✅ | `/keys` 行内 5 个按钮全部 `aria-label` 与 `title` 一致，如 `复制 龚翰林 的完整 API Key` |
+| 图标按钮 `aria-label`（B 侧） | ✅ | `/keys` 行内 5 个按钮全部 `aria-label` 与 `title` 一致，如 `复制 张三 的完整 API Key` |
 | 图标按钮 `aria-label`（`/ab` A 侧） | ❌ **仍缺失** | `.lab-frame` 内 `[aria-label^="配置 "]` = 0，legacy 用 `title="配置额度上限"` → 见 R1 |
 | 空态文案中文化 + 给下一步 | ✅ | `/keys` 搜索无结果 → 「没有匹配的密钥 / 换个关键词或把状态筛选调回「全部密钥」。/ 清除筛选」按钮；页面无 `No data available yet.` |
 | 表头排序语义 `aria-sort` | ❌ **仍缺失** | `/channels` `th[aria-sort]` 计数 = **0**；`th` 无 `role`/`tabindex` → 见 §3 D28 |

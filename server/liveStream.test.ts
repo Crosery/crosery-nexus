@@ -10,7 +10,7 @@ const raw = (partial: Partial<RawUsageInput> & { model: string }): RawUsageInput
   requestId: 'r1',
   timestamp: '2026-08-10T12:00:00Z',
   endpoint: 'POST /v1/messages',
-  keyName: '程耀宇',
+  keyName: '示例用户',
   source: 'crosery',
   success: true,
   latencyMs: 100,
