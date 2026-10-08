@@ -17,6 +17,8 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
 
 构建机不是角色：它构建、上传、跑验收、转交记录，从不安装。
 
+读这个文件的有三个 unit：`crosery-kernel-update`、`crosery-rtk-autoupdate`，以及控制台 `crosery-api-console`（控制台里手动触发的 RTK / CPA 动作按这台机器的角色走）。控制台的加载顺序是 `/opt/crosery-api-console/.env` → `/etc/crosery/autoupdate.env` → 发布脚本 drop-in `10-release-env.conf` 里的 `deploy/env/<env>.env`；同名键以后加载的为准，所以 `deploy/env` 优先。三处目前没有重叠的键（`deploy/env` 不设 `AUTOUPDATE_*`、`CPA_PROBE_*`、`CPA_AUTH_DIR`，有测试守着）。
+
 ## 2. CPA
 
 ```
@@ -33,7 +35,8 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
   任一验收没过 / 连续两次检查不在运行 → 自动换回上一个版本，记下原因，这个版本作废
 正式 crosery-kernel-update
   只暂存与晋级记录一致的二进制 → 记录检查 → 安静时段（默认 05:00–07:00 北京时间）→ cpa-install-binary.sh
-  换上后每类 OAuth 账号并行发一个真实请求 → 25 秒内没全过就换回旧版本（换回在换上后 30 秒内完成）
+  换上后每类 OAuth 账号并行发一个真实请求 → 25 秒内没全过就换回旧版本（换回在换上后 30 秒内完成；
+  前提是 CPA 服务 5 秒内能停下：停止超时超过 10 秒，安装脚本直接拒绝替换）
 ```
 
 ### 补丁系列
@@ -88,7 +91,7 @@ CPA_ACCEPT_KEY=… node scripts/cpa-acceptance.mjs --base-url <公网地址> --m
 `cpa-install-binary.sh` 在换装前（baseline）、换装后（verify）、换回后（restored）各调一次 `kernel-applier.mjs probe`：
 
 - 账号类型来自 CPA 凭据目录里各凭据的 `type`（停用的跳过）。
-- 每类用 `<data>/system-keys.json` 里只绑定那一个服务的探测 Key；没有 Key 的类型记为「跳过」，不算失败。
+- 每类用 `<data>/system-keys.json` 里只绑定那一个服务的探测 Key。文件由控制台写，`probes` 的键是 CPA 的规范渠道名；applier 直接用契约自己的 `readSystemKeys` 读、用 `canonicalChannelName(type)`（去空白、小写、去掉 `openai-compatible-` 前缀）找 Key，比如 `antigravity`、`claude`、`codex`。没有 Key 的类型记为「跳过」，不算失败。
 - 模型来自 `CPA_PROBE_MODELS`（`<服务>=<模型>,…`，写在 `autoupdate.env`），没有就从 `/v1/models` 挑。换装后用和基线相同的模型。
 - 基线就没过：不替换，线上不动，30 分钟后再试，不消耗这个版本的唯一一次机会。
 
@@ -113,8 +116,10 @@ CPA_ACCEPT_KEY=… node scripts/cpa-acceptance.mjs --base-url <公网地址> --m
 | `deploy/kernels/relay/cpa-install-binary.sh` | `/usr/local/sbin/cpa-install-binary.sh`（唯一的安装入口） |
 | `deploy/kernels/relay/cpa-pipeline-gate.sh` | `/usr/local/sbin/cpa-pipeline-gate.sh` |
 | `deploy/kernels/relay/crosery-kernel-update.{service,timer}`、`crosery-kernel-request.path` | `/etc/systemd/system/` |
+| `deploy/kernels/relay/cli-proxy-api.service.d/10-stop-timeout.conf` | `/etc/systemd/system/cli-proxy-api.service.d/`，然后 `systemctl daemon-reload`（`TimeoutStopSec=5`；没有它安装脚本拒绝替换） |
 | `deploy/systemd/crosery-rtk-autoupdate.{service,timer}` | `/etc/systemd/system/` |
 | `/etc/crosery/autoupdate.env` | 见 §1，root 600 |
+| `deploy/systemd/crosery-api-console.service` | `/etc/systemd/system/`（已带 `EnvironmentFile=-/etc/crosery/autoupdate.env`） |
 | `/etc/cli-proxy-api/install.env`（可选） | `CPA_EXTRA_GATES`、`CPA_WATCH_FILES`、`CPA_VERIFY_BUDGET` 等，见脚本开头，root 600 |
 | `<data>/system-keys.json` | 由控制台的系统 Key 功能写入，这里只读 |
 
@@ -157,5 +162,6 @@ CPA_ACCEPT_MODELS=<逗号分隔的模型>
 | --- | --- |
 | 回滚没开始 / 回滚也没成功 · 需要人工处理 | 在那台机器上看 `journalctl -u crosery-kernel-update` 和 `/var/backups/cpa/`，用 `cpa-install-binary.sh <备份> <版本>` 装回 |
 | 配置在换装期间变了，没有自动换回 | 先确认 config.yaml 的改动，再决定装哪个版本 |
+| 上次没替换成：停止超时是 … 要不超过 10 秒 | 装上 `10-stop-timeout.conf` 并 `systemctl daemon-reload`；线上没动过，30 分钟后自动再试 |
 | 预发布的记录不能用（过期、不一致） | 正式不会装；等下一个候选在预发布重新走完，或查构建机日志 |
 | RTK 校验不过 | 这个版本不再自动重试；换新版本或人工核对发布 |
