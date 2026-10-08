@@ -4,6 +4,7 @@ import { request } from '../client.mjs'
 import { credentialProxyItem, credentialToggleItem, getChannels, proxyLabel, publicAccount } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { resolveAccount, validateProxy } from '../resolve.mjs'
+import { accountState, accountsTree } from '../tree.mjs'
 import { time } from '../ui.mjs'
 
 const HELP = `cradmin accounts <动作> [参数]
@@ -11,7 +12,7 @@ const HELP = `cradmin accounts <动作> [参数]
 管理账号池（OAuth 凭据）。<账号> 是精确的凭据名，或在名称/标签里唯一的子串。
 
 动作：
-  ls [--quota]               列出账号（--quota 额外读取额度，可能触发上游额度查询）
+  ls [--quota]               列出账号：provider → 账号，同控制台「订阅账号池」（--quota 额外读取冷却与额度，可能触发上游额度查询）
   show <账号>                账号详情与额度
   pause|resume <账号…>       暂停 / 恢复（可一次给多个）
   proxy <账号> <url|direct|none|inherit>   设置出口代理（none = direct；inherit = 继承全局；支持 http(s)/socks5/socks5h）
@@ -127,15 +128,17 @@ export default {
       case 'list': {
         const payload = await getChannels(ctx)
         const monitor = ctx.values.quota ? await loadMonitor(ctx) : null
-        const rows = (payload.credentials || []).map(credential => publicAccount(credential, ctx.values.quota ? monitorFor(monitor, credential.name) : undefined))
+        const credentials = payload.credentials || []
+        const raw = credentials.map(credential => (ctx.values.quota ? monitorFor(monitor, credential.name) : undefined))
+        const rows = credentials.map((credential, index) => publicAccount(credential, raw[index]))
         return void ctx.output(rows, () => {
           if (!rows.length) return ctx.ui.note('还没有账号：cradmin accounts add <provider>')
-          const headers = ['账号', 'provider', '状态', '模型', '代理', ...(ctx.values.quota ? ['额度'] : [])]
-          ctx.ui.table(headers, rows.map(row => [
-            row.label || row.name, row.provider, stateText(row), String(row.modelCount), proxyLabel(row.proxyUrl),
-            ...(ctx.values.quota ? [quotaSummary(row.quota)] : []),
-          ]), { align: ['left', 'left', 'center', 'right', 'left', 'left'] })
+          ctx.ui.section('订阅账号池', `${rows.length} 个账号`)
+          ctx.ui.tree(accountsTree(rows.map((row, index) => ({
+            row, state: accountState(credentials[index], raw[index], ctx.now()), quota: ctx.values.quota ? quotaSummary(row.quota) : null,
+          })), { proxyLabel }))
           if (monitor?.quotaSupport?.supported === false) ctx.ui.note(`额度：${monitor.quotaSupport.reason || '当前控制面不支持'}`)
+          if (!ctx.values.quota) ctx.ui.note('冷却、失效与额度窗口要读网关监控：cradmin accounts ls --quota')
         })
       }
       case 'show': {

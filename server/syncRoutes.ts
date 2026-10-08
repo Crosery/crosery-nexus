@@ -5,14 +5,17 @@ import type express from 'express'
 import { config } from './config.js'
 import { accountQuotaSupport, summarizeAccountQuota } from './accountQuotaReader.js'
 import type { DataPlaneRelayStatus } from './dataPlane.js'
-import { refreshGatewayPricingDetailed, refreshSharedPricingIfStale } from './modelCatalog.js'
+import { gatewayPricingMap, gatewayPricingRequests, refreshGatewayPricingDetailed, refreshSharedPricingIfStale } from './modelCatalog.js'
 import {
-  DISCOVERY_POLICY, discoveryBackoff, nextDiscoveryAt, sanitizeDiscoveryState, sharedCatalogPath, startModelCatalogWatcher, syncUpstreamModels,
+  DISCOVERY_POLICY, discoveryBackoff, nextDiscoveryAt, readSharedCatalog, sanitizeDiscoveryState, sharedCatalogPath, startModelCatalogWatcher, syncUpstreamModels,
   type DiscoveryState, type ModelSyncResult,
 } from './modelSync.js'
 import { pricingSourceStatus } from './pricing.js'
-import { isoOrNull, syncRegistry, type ExternalJobDef, type ExternalSnapshot, type SyncRegistry, type SyncResult } from './syncRegistry.js'
+import { isoOrNull, syncRegistry, type ExternalJobDef, type ExternalSnapshot, type SyncOutcome, type SyncRegistry, type SyncResult, type SyncRunContext } from './syncRegistry.js'
+import { PROBE_INTERVAL_MS } from './modelAvailability.js'
 import { autoRowWords, autoupdatePathsFor, buildMagpieAuto, buildRtkAuto, readAutoupdateFacts } from './autoupdate.js'
+import { CATALOG_INTERVAL_MS, runCpaCatalogSync, sanitizeCatalogData } from './cpaCatalog.js'
+import { PRICE_WATCH_INTERVAL_MS, gatewayPriceRead, priceWatcher, sharedPriceReads } from './priceWatch.js'
 import { DEFAULT_KERNEL_WINDOW, zonedClock } from './kernels.js'
 
 /* ────────────────────────── 外部（launchd）任务：只读状态文件 ────────────────────────── */
@@ -317,6 +320,11 @@ export type SyncCenterDeps = {
   dataPlaneStatus: () => DataPlaneRelayStatus
   addAudit: (action: string, target: string, detail: string) => void
   externalJobs?: ExternalJobOptions
+  /** 模型可用性探测（server/modelAvailability.ts）；不给就不登记。 */
+  modelAvailability?: {
+    enabled: () => boolean
+    run: (context: SyncRunContext) => Promise<SyncOutcome & { value?: unknown }>
+  }
 }
 
 const iso = isoOrNull
@@ -389,6 +397,64 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
       }
       return { result, summary: parts.join(' · '), error: errors.length ? errors.join('；') : null }
     },
+  })
+
+  if (deps.modelAvailability) {
+    const job = deps.modelAvailability
+    registry.register({
+      id: 'model-availability',
+      label: '模型可用性',
+      kind: 'in-process',
+      intervalMs: PROBE_INTERVAL_MS,
+      // 重启后按状态文件里的下次时间续上；首次启动先等渠道快照和对账稳定
+      initialDelayMs: 3 * 60_000,
+      // 每轮对每个对话模型各发一次请求：手动重跑的冷却放长，避免变成刷上游的按钮
+      manualCooldownMs: 10 * 60_000,
+      enabled: job.enabled,
+      run: (context) => job.run(context),
+    })
+  }
+
+  registry.register({
+    id: 'price-watch',
+    label: '价格变更',
+    kind: 'in-process',
+    intervalMs: PRICE_WATCH_INTERVAL_MS,
+    initialDelayMs: 3 * 60_000,
+    manualCooldownMs: 5 * 60_000,
+    // 只读本机网关的管理接口和共享产物，不打第三方上游。
+    manualBypassesBackoff: true,
+    run: (context) => priceWatcher.run({
+      now: context.now(),
+      readOfficial: async () => {
+        const failures: string[] = []
+        context.countRequests(gatewayPricingRequests())
+        return gatewayPriceRead(await gatewayPricingMap(failures), failures, context.now())
+      },
+      readShared: () => sharedPriceReads(readSharedCatalog()?.pricing),
+      audit: deps.addAudit,
+    }),
+  })
+
+  registry.register({
+    id: 'cpa-catalog',
+    label: 'CPA 模型目录',
+    kind: 'in-process',
+    intervalMs: CATALOG_INTERVAL_MS,
+    initialDelayMs: 2 * 60_000,
+    manualCooldownMs: 5 * 60_000,
+    // 拉的是第三方（GitHub）：出错退避照常生效，手动也不能绕过。
+    enabled: () => Boolean(config.cpaModelsCatalogFile),
+    sanitizeData: (data) => { sanitizeCatalogData(data) },
+    overlay: () => (config.cpaModelsCatalogFile ? {} : { summary: '未设置 CPA_MODELS_CATALOG_FILE' }),
+    run: (context) => runCpaCatalogSync({
+      file: config.cpaModelsCatalogFile,
+      historyFile: path.join(config.dataDir, 'cpa-catalog-history.jsonl'),
+      data: context.data,
+      now: context.now,
+      countRequest: () => context.countRequests(),
+      audit: deps.addAudit,
+    }),
   })
 
   registry.register({

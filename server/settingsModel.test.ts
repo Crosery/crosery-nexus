@@ -184,7 +184,7 @@ test('rtkDailySeries zero-fills days without rtk runs and stays inside the windo
 
 test('splitEmails and contractDiffCount', () => {
   assert.deepEqual(splitEmails('no email here'), [{ text: 'no email here', email: false }])
-  assert.equal(splitEmails('x@y.io and z+1@w.example.com').filter((p) => p.email).length, 2)
+  assert.equal(splitEmails('x@example.com and z+1@w.example.com').filter((p) => p.email).length, 2)
   assert.equal(contractDiffCount(null), 0)
   assert.equal(contractDiffCount({ addedRoutes: ['a', 'b'], removedRoutes: [], changedRoutes: ['c'], addedLoginAgents: [], removedLoginAgents: ['d'] }), 4)
 })

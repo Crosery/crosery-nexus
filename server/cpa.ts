@@ -1,7 +1,8 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.js'
+import { canonicalChannelName, ensureLockoutKey, ensureProbeKeys, isSystemKey, readSystemKeys } from './systemKeys.js'
 
 export type UsageRecord = {
   timestamp?: string
@@ -149,42 +150,86 @@ export const maskKey = (key: string) => `${key.slice(0, 7)}•••••••
 /**
  * CPA 的 api-keys 为空时不注册 Key 鉴权，网关对任何人开放。删光、停光或额度全部封禁时，
  * 改写入一把只存在于本机数据目录的封锁 Key（从不展示、不发放），网关始终要求鉴权。
+ * 系统 Key 的落盘格式与识别规则见 systemKeys.ts。
  */
 export function cpaLockoutKey(): string {
-  const file = join(config.dataDir, 'cpa-lockout-key')
-  try {
-    const existing = readFileSync(file, 'utf8').trim()
-    if (/^sk-lockout-[0-9a-f]{64}$/.test(existing)) return existing
-  } catch {
-    // 首次使用时生成
-  }
-  const key = `sk-lockout-${randomBytes(32).toString('hex')}`
-  mkdirSync(config.dataDir, { recursive: true })
-  writeFileSync(file, `${key}\n`, { mode: 0o600 })
-  return key
+  return ensureLockoutKey(config.dataDir)
+}
+
+async function getRawCPAKeys(): Promise<string[]> {
+  const result = await cpaRequest<{ 'api-keys': string[] }>('/api-keys')
+  return result['api-keys'] || []
 }
 
 export async function getCPAKeys(): Promise<string[]> {
-  const result = await cpaRequest<{ 'api-keys': string[] }>('/api-keys')
-  const lockout = cpaLockoutKey()
-  return (result['api-keys'] || []).filter((key) => key !== lockout)
+  return (await getRawCPAKeys()).filter((key) => !isSystemKey(key))
 }
 
 // 与 keyChannelAccess.ts 的拒绝标记同一个值：CPA 里没有白名单条目的 Key 不受限，封锁 Key 必须显式拒绝。
 const LOCKOUT_CHANNELS = ['__console_no_channels_allowed__']
 
+/**
+ * 进程内所有 api-keys 写入排成一队：探测 Key 的注册是「读 → 补 → PUT」，
+ * 不能夹在用户 Key 的整表 PUT 中间，否则任一方都可能把对方刚写的 Key 覆盖掉。
+ */
+let apiKeysQueue: Promise<unknown> = Promise.resolve()
+
+function serializeApiKeys<T>(task: () => Promise<T>): Promise<T> {
+  const next = apiKeysQueue.then(task, task)
+  apiKeysQueue = next.catch(() => undefined)
+  return next
+}
+
+/** 调用方只传用户 Key；系统 Key（探测 Key、必要时的封锁 Key）由这里补上，api-keys 永不写空。 */
 export async function replaceCPAKeys(keys: string[]) {
-  const list = keys.filter(Boolean)
-  if (list.length) return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(list) })
-  const lockout = cpaLockoutKey()
-  const result = await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([lockout]) })
-  try {
-    // 先有 Key 再写条目：CPA 会丢弃未配置 Key 的白名单条目
-    await putChannelAccess({ ...(await getChannelAccess()), [lockout]: LOCKOUT_CHANNELS })
-  } catch (error) {
-    if (!isUnsupportedManagementEndpoint(error)) throw error
-  }
-  return result
+  return serializeApiKeys(async () => {
+    const list = keys.filter((key) => key && !isSystemKey(key))
+    const probes = [...new Set(Object.values(readSystemKeys(config.dataDir).probes))]
+    if (list.length) return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([...list, ...probes]) })
+    const lockout = cpaLockoutKey()
+    const result = await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([lockout, ...probes]) })
+    try {
+      // 先有 Key 再写条目：CPA 会丢弃未配置 Key 的白名单条目
+      await putChannelAccess({ ...(await getChannelAccess()), [lockout]: LOCKOUT_CHANNELS })
+    } catch (error) {
+      if (!isUnsupportedManagementEndpoint(error)) throw error
+    }
+    return result
+  })
+}
+
+/**
+ * 把探测 Key 补进 api-keys，用户 Key 原样保留。返回服务 → 探测 Key。
+ * 顺手清掉本机文件里没有的系统 Key（rc.4 的旧格式探测 Key、数据目录丢失前的旧 Key）：没人持有它们，留着只是多一把有效凭据。
+ */
+export async function registerProbeKeys(services: string[]): Promise<Record<string, string>> {
+  const wanted = ensureProbeKeys(config.dataDir, services)
+  await serializeApiKeys(async () => {
+    const current = await getRawCPAKeys()
+    const system = readSystemKeys(config.dataDir)
+    const held = new Set([...Object.values(system.probes), ...(system.lockout ? [system.lockout] : [])])
+    const kept = current.filter((key) => !isSystemKey(key) || held.has(key))
+    const next = [...kept, ...[...new Set(Object.values(wanted))].filter((key) => !kept.includes(key))]
+    // api-keys 永不写空；内容没变就不写
+    if (!next.length || (next.length === current.length && next.every((key, index) => key === current[index]))) return
+    await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(next) })
+  })
+  return wanted
+}
+
+/**
+ * 每把探测 Key 只钉在自己那一个服务上：同一个模型名可能挂在多个渠道，不钉住就测不出是哪个渠道坏了。
+ * 合并写入，其它 Key 的条目原样保留。调用方负责先 registerProbeKeys（CPA 会丢弃未配置 Key 的条目）。
+ */
+export async function pinProbeKeyChannels(pins: Record<string, string>) {
+  const current = await getChannelAccess()
+  const desired = { ...current }
+  for (const [service, key] of Object.entries(pins)) desired[key] = [canonicalChannelName(service)]
+  // CPA 存的是规范渠道名，比较时同口径，否则大小写或前缀不同的渠道名每轮都会重写一次
+  const changed = Object.entries(pins).some(([service, key]) =>
+    JSON.stringify((Array.isArray(current[key]) ? current[key] : []).map((name) => canonicalChannelName(String(name)))) !== JSON.stringify([canonicalChannelName(service)]))
+  if (changed) await putChannelAccess(desired)
+  return changed
 }
 
 export async function getModelAccess(): Promise<Record<string, string[]>> {

@@ -40,6 +40,8 @@ export type OAuthProviderModels = {
   /** 未被 oauth-excluded-models 排除的才算启用。 */
   excluded: string[]
   activeAccounts: number
+  /** 含已停用的凭据文件总数；只用来判断 provider 是否仍然存在（见 buildGroups）。 */
+  accounts?: number
 }
 
 /**

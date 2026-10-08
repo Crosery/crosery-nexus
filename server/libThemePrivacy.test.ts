@@ -61,8 +61,8 @@ test('motion: capture mode for ?capture=1 and headless Chrome', () => {
 
 test('privacy: emails keep 2 + last char of the local part, the domain is hidden', () => {
   assert.equal(maskEmail('zhang.wei@example.com'), 'zh••••••i@•••')
-  assert.equal(maskEmail('zhangg@x.io'), 'zh•••g@•••')
-  assert.equal(maskEmail('abc@x.com'), 'a••@•••')
+  assert.equal(maskEmail('zhangg@example.com'), 'zh•••g@•••')
+  assert.equal(maskEmail('abc@example.com'), 'a••@•••')
   assert.equal(maskEmail('plainname'), 'pl••••••e')
   assert.equal(maskName('张三'), '张•')
   assert.equal(maskName('growth-team-batch'), 'g••••••h')

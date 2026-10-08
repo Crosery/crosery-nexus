@@ -133,7 +133,7 @@ export function useAccountActions(refresh: () => Promise<void> | void, egress?: 
         // what the server holds now (masked, with its pool entry): that is what the picker shows
         const saved = await api.proxies.egressAccount(ref, row.type)
         knowProxy(row.name, saved)
-        notify(`✓ 出口已改为 ${readLabel(saved)}`, { id: 'cx-acc-proxy' })
+        notify(`✓ 出口已改为 ${readLabel(saved, context.data)}`, { id: 'cx-acc-proxy' })
         await refresh()
         context.reload()
       } catch (error) {

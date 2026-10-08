@@ -21,6 +21,8 @@
  * - slots: HEALTH_SLOTS equal buckets across the window, oldest first; `n` = rows, `bad` = failures excluding
  *   client cancellations (the strip marks only what the upstream did).
  * - lastRequestAt / lastError: newest row / newest failure in the whole retained history (not windowed).
+ * - gateway: requests / errors over every usage row in the window whatever its provider (subscription accounts, removed
+ *   channels and all), same success rule; two index-only counts in the same read batch, for the page's whole-gateway rate.
  */
 import type express from 'express'
 import { modelDiscoveryUrls } from './channelDiscovery.js'
@@ -80,6 +82,7 @@ export type ChannelHealthPayload = {
   slotMs: number
   recentMs: number
   channels: ChannelHealthItem[]
+  gateway: { requests: number; errors: number }
   generatedAt: string
 }
 
@@ -158,6 +161,16 @@ export async function loadChannelHealth(
     aliasesOf.set(channel.name, own)
   }
   const all = [...owner.keys()]
+  // idx_usage_timestamp_ms / idx_usage_success_timestamp_ms cover both counts: no row is read
+  const gatewayOps: ReadOperation[] = [
+    { method: 'get', sql: 'SELECT COUNT(*) n FROM usage_events WHERE timestamp_ms >= ? AND timestamp_ms < ?', params: [from, to] },
+    { method: 'get', sql: 'SELECT COUNT(*) n FROM usage_events WHERE success = 0 AND timestamp_ms >= ? AND timestamp_ms < ?', params: [from, to] },
+  ]
+  const gatewayOf = (rows: unknown[]) => {
+    const [total, failed] = rows as Array<Record<string, unknown> | undefined>
+    return { requests: num(total?.n), errors: num(failed?.n) }
+  }
+  let gateway = { requests: 0, errors: 0 }
 
   const items = new Map<string, ChannelHealthItem>()
   for (const channel of channels) {
@@ -237,9 +250,11 @@ export async function loadChannelHealth(
           ORDER BY timestamp_ms DESC LIMIT 1`,
         params: [to, ...list],
       })),
+      ...gatewayOps,
     ]
 
     const results = await reader.run(operations)
+    gateway = gatewayOf(results.slice(-gatewayOps.length))
     const [windowRows, recentRows, slotRows, p95Rows] = results as Array<Array<Record<string, unknown>>>
     for (const row of windowRows ?? []) {
       const item = items.get(String(row.c))
@@ -279,6 +294,8 @@ export async function loadChannelHealth(
         }
       }
     })
+  } else {
+    gateway = gatewayOf(await reader.run(gatewayOps))
   }
 
   return {
@@ -288,6 +305,7 @@ export async function loadChannelHealth(
     slotMs,
     recentMs: HEALTH_RECENT_MS,
     channels: [...items.values()],
+    gateway,
     generatedAt: new Date(now).toISOString(),
   }
 }
