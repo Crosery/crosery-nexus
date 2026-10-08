@@ -1,20 +1,26 @@
 #!/bin/bash
-# CPA 构建流水线 v2（跑在 ibuki-wsl-crosery，用户级 cpa-pipeline.timer 每 30 分钟）
+# CPA 构建流水线 v3（构建机，用户级 cpa-pipeline.timer 每 30 分钟）
 #   deploy 分支 = 上游 release + 我们的补丁（补丁系列见控制台仓库 deploy/kernels/cpa-patches/）。
 #   CPA 要保持最新：每轮把上游最新的正式 release 合进 deploy（patch、minor、major 都一样）；
 #   合并冲突就停住报「要人工移植补丁」，线上不动。
-#   合并 → docker 里 go build + go test → 冒烟（生产形状的假配置：管理接口、Key 级白名单、启动不改写配置、配置写回不丢字段）
-#   → 上传 + 暂存到中转站。构建机不安装：中转站的 crosery-kernel-update 在安静时段、每个版本一次，
-#   经 cpa-install-binary.sh（兼容门禁、备份、失败回滚）安装。每一轮的结论都报给中转站（cpa-report），控制台「网关」可见。
+#   合并 → docker 里 go build + go test → 冒烟（生产形状的假配置）→ 存进本机候选库 state/candidates/<版本>/。
+#   每一轮最后都交给 tools/cpa-coordinator.mjs：先上预发布，预发布装上后验收一次、浸泡满时长再验收一次，都过了才把
+#   同一个二进制连同预发布的记录送到正式。构建机从不安装。
+#   两台机器的网关命令与验收参数只在 $ROOT/pipeline.env（不入库）：CPA_PIPELINE_PREVIEW、CPA_PIPELINE_PRODUCTION、
+#   CPA_ACCEPT_BASE_URL、CPA_ACCEPT_KEY、CPA_ACCEPT_MODELS。缺了就直接失败，没有默认值。
 set -uo pipefail
-# CPA_PIPELINE_ROOT / CPA_PIPELINE_VPS only for a rehearsal next to the live pipeline (own dir, own key, another host)
 ROOT=${CPA_PIPELINE_ROOT:-$HOME/cpa-pipeline}; SRC=$ROOT/src; STATE=$ROOT/state; LOG=$ROOT/logs/pipeline.log; TOOLS=$ROOT/tools
-VPS=${CPA_PIPELINE_VPS:-"ssh -o BatchMode=yes -o ConnectTimeout=15 -p 39822 root@10.250.250.81"}
-mkdir -p "$STATE" "$ROOT/logs"
+STORE=$STATE/candidates
+# shellcheck disable=SC1091
+if [ -r "$ROOT/pipeline.env" ]; then set -a; . "$ROOT/pipeline.env"; set +a; fi
+: "${CPA_PIPELINE_PREVIEW:?CPA_PIPELINE_PREVIEW is not set (pipeline.env)}"
+: "${CPA_PIPELINE_PRODUCTION:?CPA_PIPELINE_PRODUCTION is not set (pipeline.env)}"
+mkdir -p "$STATE" "$STORE" "$ROOT/logs"
 log(){ echo "[$(date +%FT%T)] $*" | tee -a "$LOG"; }
 exec 9>"$ROOT/.lock"; flock -n 9 || exit 0
 
-# report <status> [reason-text] — always the last thing a round does; the relay records it for the console
+# report <status> [reason-text] — always the last thing a round does: the coordinator uploads, accepts, promotes and
+# reports the round to both hosts (their consoles show it). Returns the coordinator's status.
 UPSTREAM_LATEST=""; LINE=""; BASE=""; HELD_TAG=""; HELD_TEXT=""; CAND_JSON=null
 report(){
   local status=$1 text=${2:-}
@@ -27,7 +33,7 @@ report(){
       candidate: JSON.parse(cand), reasons: text ? [{ code: status, text: text.slice(0, 280) }] : [] }))
   ' "$status" "$text" "$UPSTREAM_LATEST" "$LINE" "$BASE" "$HELD_TAG" "$HELD_TEXT" "$CAND_JSON" > "$STATE/report.json"
   cp "$STATE/report.json" "$STATE/last.json"
-  $VPS cpa-report < "$STATE/report.json" >>"$LOG" 2>&1 || log "报告没送到中转站"
+  if ! node "$TOOLS/cpa-coordinator.mjs" round --root "$ROOT" >>"$LOG" 2>&1; then log "协调者这一轮有失败（见日志）"; return 1; fi
 }
 
 cd "$SRC" || { log "src 不存在"; exit 1; }
@@ -52,15 +58,15 @@ if ! git merge-base --is-ancestor "$latest" deploy; then
 fi
 sha=$(git rev-parse --short=8 HEAD); version="${latest#v}-patched.$sha"
 
-deployed=$($VPS cpa-version 2>/dev/null | grep -oE "Version: [^,]+" | cut -d" " -f2 || true)
-if [ "$deployed" = "$version" ]; then report up-to-date; exit 0; fi
-# already built and staged on the relay: just say so (keeps 「检查于」 fresh on the console); a lost or rejected drop is rebuilt
-staged=$($VPS cpa-state 2>/dev/null | node -e 'let s = ""; process.stdin.on("data", d => s += d).on("end", () => { try { console.log(JSON.parse(s).staged?.version ?? "") } catch { console.log("") } })')
-if [ "$staged" = "$version" ] && [ "$(cat "$STATE/staged-version" 2>/dev/null)" = "$version" ] && [ -s "$STATE/candidate.json" ]; then
-  CAND_JSON=$(cat "$STATE/candidate.json"); report built; exit 0
+# built and smoke-tested before (the version names the commit): reuse it; a damaged copy is rebuilt
+if [ -s "$STORE/$version/candidate.json" ] && [ -x "$STORE/$version/cli-proxy-api" ]; then
+  want=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).sha256 ?? "") } catch { console.log("") }' "$STORE/$version/candidate.json")
+  if [ -n "$want" ] && [ "$(sha256sum "$STORE/$version/cli-proxy-api" | cut -d' ' -f1)" = "$want" ]; then
+    CAND_JSON=$(cat "$STORE/$version/candidate.json"); report built; exit $?
+  fi
 fi
 
-log "开始构建 $version（线上 ${deployed:-unknown}）"
+log "开始构建 $version"
 rm -rf "$SRC/.pipeline-out"; mkdir -p "$SRC/.pipeline-out"
 if ! docker run --rm -v "$SRC:/src" -w /src \
      -v "$ROOT/cache/gomod:/go/pkg/mod" -v "$ROOT/cache/gobuild:/root/.cache/go-build" \
@@ -86,9 +92,11 @@ CAND_JSON=$(node -e '
   console.log(JSON.stringify({ version, sha256, commit, tag, checks }))
 ' "$version" "$(sha256sum "$BIN" | cut -d' ' -f1)" "$(git rev-parse HEAD)" "$latest" "$STATE/smoke.json")
 
-if ! gzip -c "$BIN" | $VPS cpa-upload >>"$LOG" 2>&1 || ! $VPS "cpa-stage $version" >>"$LOG" 2>&1; then
-  log "上传失败"; report upload-failed "上传到中转站失败"; exit 1
+incoming="$STORE/.incoming-$version"
+rm -rf "$incoming"; mkdir -p "$incoming"
+if ! cp "$BIN" "$incoming/cli-proxy-api" || ! printf '%s\n' "$CAND_JSON" > "$incoming/candidate.json"; then
+  rm -rf "$incoming"; log "写候选库失败"; report build-failed "构建机写不进候选库"; exit 1
 fi
-echo "$CAND_JSON" > "$STATE/candidate.json"; echo "$version" > "$STATE/staged-version"
-log "已暂存 $version 到中转站，等安静时段安装"
+rm -rf "${STORE:?}/$version"; mv "$incoming" "$STORE/$version"
+log "已构建并冒烟 $version，交给协调者（先上预发布）"
 report built
