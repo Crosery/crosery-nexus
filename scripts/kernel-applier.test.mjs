@@ -727,7 +727,9 @@ test('adopt (preview): the binary installed by hand becomes the trial, is accept
   const r = await relay({ role: 'preview', running: NEXT })
   t.after(r.close)
   await fs.writeFile(r.paths.cpa.binary, NEXT)
-  const backup = path.join(r.dir, 'cli-proxy-api.before')
+  // any path: e.g. the copy left next to the binary (<bin dir>/cli-proxy-api.<version>), not only the install script's backups
+  await fs.mkdir(path.join(r.dir, 'bin'))
+  const backup = path.join(r.dir, 'bin', `cli-proxy-api.${RUNNING}`)
   await fs.writeFile(backup, RUNNING)
   const deps = { run: r.runner, now: () => bj(12) }
   const production = { ...r.paths, role: 'production' }

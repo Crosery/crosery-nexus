@@ -50,6 +50,16 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
 - 没有补丁目录时沿用构建机上现有的 deploy 分支。
 - 候选的 `candidate.json` 记下 `series` 和 `patches`（补丁个数）。
 
+### 可复现构建
+
+同一个 deploy HEAD 总是构建出同一个二进制：
+
+- Go 镜像按版本和 digest 钉死：`golang:1.26.5-bookworm@sha256:53eeac89…`（`run.sh` 里是完整 digest）。换镜像站用 `CPA_GO_IMAGE`，但必须带 `@sha256:`，否则 `run.sh` 直接退出。
+- `BUILD_DATE` 取 HEAD 的提交时间（UTC，`%FT%TZ`），不取当前时间。
+- 构建参数固定：`--platform linux/amd64`、`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-buildvcs=false`、`go build -trimpath -ldflags "-s -w -X main.Version=… -X main.Commit=<HEAD8> -X main.BuildDate=…"`。
+- `candidate.json` 的 `build` 记下 `go`（go 版本）、`buildDate`、`image`。
+- 构建机的候选库里已经有同名版本、sha256 也对得上，就直接用它，不再构建。所以先用 `cpa-coordinator.mjs adopt` 收进去的同名二进制会被原样沿用；反过来，构建机先构建了同名版本，`adopt` 会拒绝另一份不同字节的文件。
+
 ### 接入预发布上手工装的二进制
 
 二进制不是构建机这一轮构建的（比如在别处构建、已经手工装上预发布），也可以走同一条晋级路径：
@@ -63,6 +73,8 @@ node ~/cpa-pipeline/tools/cpa-coordinator.mjs adopt --root ~/cpa-pipeline --bina
 ```
 
 之后协调者照常做首次验收、浸泡后验收、送正式。试运行期间构建机自己的新构建排队等着。
+
+`--backup` 可以是任何路径（比如留在二进制旁边的 `cli-proxy-api.<上一个版本>`），applier 会先跑它的 `--version`，必须报 `--previous` 的版本。接入的版本和构建机自己会构建的版本同名时，先在构建机上 `adopt`，再让构建机跑新的一轮。
 
 ### 正式的保护规则
 
