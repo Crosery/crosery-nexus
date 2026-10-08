@@ -932,7 +932,15 @@ export type RtkRelayTally = { savedTokens: number; requests: number; errors: num
 export type RtkRelayStatus = {
   /** global switch; a Key is compressed only when it also opted in */
   enabled: boolean
-  listener: { state: 'off' | 'starting' | 'listening' | 'failed'; port: number; target: string; error: string }
+  /** the relay process (crosery-rtk-relay unit) as its status file reports it; down = expected here but not running */
+  listener: {
+    state: 'off' | 'listening' | 'draining' | 'stopped' | 'failed' | 'down'
+    port: number
+    target: string
+    error: string
+    inFlight: number
+    updatedAt: number | null
+  }
   optedInKeys: number
   /** saved = estimated input tokens removed (UTF-8 bytes / 4); errors = compression skipped, request forwarded as is */
   today: RtkRelayTally

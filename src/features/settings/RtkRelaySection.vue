@@ -12,8 +12,8 @@ import type { RtkRelayStatus, RtkRelayTally } from '../../types'
 import type { StatusKind } from '../../ui/types'
 
 /**
- * RTK 中转 (#rtk-relay, server/rtkRelay.ts): the listener in front of the context guard, the global compression
- * switch and what it saved. Shown for both engines; the listener itself is RTK_RELAY_PORT on the host.
+ * RTK 中转 (#rtk-relay, server/rtkRelay.ts): the relay process in front of the context guard (its own unit,
+ * RTK_RELAY_PORT on the host), the global compression switch and what it saved. Shown for both engines.
  */
 const emit = defineEmits<{ index: [value: { value: string; hot: boolean } | null] }>()
 
@@ -22,8 +22,10 @@ const relay = useLive<RtkRelayStatus>((signal) => api.rtkRelay.get(signal), { in
 
 const LISTENER: Record<RtkRelayStatus['listener']['state'], { state: StatusKind; label: string }> = {
   listening: { state: 'run', label: '监听中' },
-  starting: { state: 'busy', label: '启动中' },
+  draining: { state: 'busy', label: '排空中' },
+  stopped: { state: 'off', label: '已停止' },
   failed: { state: 'bad', label: '启动失败' },
+  down: { state: 'warn', label: '未运行' },
   off: { state: 'off', label: '未启用' },
 }
 const mark = computed(() => (relay.data.value ? LISTENER[relay.data.value.listener.state] : null))
@@ -32,13 +34,16 @@ const listenerLine = computed(() => {
   if (!l) return ''
   if (l.state === 'off') return '未设置 RTK_RELAY_PORT · 请求不经过中转'
   const route = `127.0.0.1:${l.port} → ${l.target.replace(/^http:\/\//, '')}`
-  return l.state === 'failed' ? `${route} · ${l.error || '未知原因'} · 自动重试中` : route
+  if (l.state === 'failed') return `${route} · ${l.error || '未知原因'} · 自动重试中`
+  if (l.state === 'down' || l.state === 'stopped') return `${route} · 中转进程没在运行 · 请求走备用上游`
+  if (l.state === 'draining') return `${route} · 正在收尾 ${fmtInt(l.inFlight)} 个请求 · 新请求走备用上游`
+  return route
 })
 const tally = (t: RtkRelayTally) => `约 ${fmtCompact(t.savedTokens)} tok · ${fmtInt(t.requests)} 次请求${t.errors ? ` · 跳过 ${fmtInt(t.errors)}` : ''}`
 
 watch(relay.data, (d) => {
   if (!d) return emit('index', null)
-  emit('index', { value: LISTENER[d.listener.state].label, hot: d.listener.state === 'failed' })
+  emit('index', { value: LISTENER[d.listener.state].label, hot: d.listener.state === 'failed' || d.listener.state === 'down' })
 }, { immediate: true })
 
 async function setEnabled(enabled: boolean) {
