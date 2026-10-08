@@ -267,3 +267,46 @@ test('SB-21 网关价格部分来源失败：刷新报 partial 并列出失败�
     else process.env.CROSERY_SHARED_CATALOG = original.catalog
   }
 })
+
+test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次运行、结果与告警都进同步中心', async () => {
+  const scratch = new SyncRegistry({ file: null, log: () => undefined })
+  let enabled = true
+  let runs = 0
+  installSyncCenter(express(), {
+    refreshAccountQuota: async () => ({ accounts: [] }),
+    onModelsChanged: () => undefined,
+    dataPlaneStatus: () => ({ enabled: false, pending: 0, deadLetters: 0, oldestPendingAgeMs: null, lastErrorCode: null, lastAttemptAt: null, lastSuccessAt: null, effectiveBatchSize: 200 }),
+    addAudit: () => undefined,
+    externalJobs: { platform: 'linux' },
+    modelAvailability: {
+      enabled: () => enabled,
+      run: async (context) => {
+        runs += 1
+        context.countRequests(3)
+        return { result: 'partial', summary: '2 服务 · 在线 3', error: 'kimi：本轮将使全部 1 个对话模型下线，已保持原状态' }
+      },
+    },
+  }, scratch)
+  const view = async () => (await scratch.status()).jobs.find(job => job.id === 'model-availability')!
+  assert.deepEqual((await scratch.status()).jobs.map(job => job.id), ['model-discovery', 'pricing', 'model-availability', 'account-quota', 'data-plane'])
+  assert.equal((await view()).intervalMs, 30 * 60_000)
+
+  scratch.start()
+  try {
+    assert.ok((await view()).nextRunAt, '排程后有下次运行时间')
+    assert.equal(scratch.requestRun('model-availability').status, 202)
+    for (let tries = 0; tries < 50 && scratch.isRunning('model-availability'); tries += 1) await new Promise(resolve => setTimeout(resolve, 5))
+    const ran = await view()
+    assert.equal(runs, 1)
+    assert.ok(ran.lastRunAt)
+    assert.equal(ran.lastResult, 'partial')
+    assert.match(ran.lastError ?? '', /^kimi：/)
+    assert.equal(ran.requests24h, 3)
+    assert.equal(scratch.requestRun('model-availability').status, 429, '手动重跑有冷却')
+
+    enabled = false
+    assert.equal((await view()).state, 'disabled')
+  } finally {
+    scratch.stop()
+  }
+})

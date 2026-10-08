@@ -1,7 +1,8 @@
 import type { ConsoleGroup } from './groups.js'
 
 /**
- * 当前渠道集合只来自 CPA 实时配置：groups 已排除了停用、残留快照和无活跃账号的 OAuth provider。
+ * 当前渠道集合只来自 CPA 实时配置：groups 已排除了停用和残留快照；账号临时归零的已知 OAuth provider
+ * 仍算当前渠道（available:false，见 buildGroups）。
  * usage_events 里的 provider 是历史事实，不得反过来创造当前渠道。
  */
 export function activeProviderValues(groups: ConsoleGroup[]): string[] {
