@@ -385,7 +385,7 @@ export async function runCpaCatalogSync(options: CpaCatalogOptions): Promise<Syn
   if (blocked.length) return alarm(`保护规则拦截：${blocked.join('；')}`, fetched.url)
 
   const counts = sectionCounts(merged)
-  const total = REQUIRED_SECTIONS.reduce((sum, section) => sum + (counts[section] ?? 0), 0)
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0)
   if (current?.text === text) {
     data.lastOkAt = now
     data.counts = counts
