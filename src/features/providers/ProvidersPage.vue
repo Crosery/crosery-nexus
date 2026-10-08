@@ -1252,4 +1252,10 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
   .pv-searchrow { flex: 1 1 100%; }
   .pv-search { width: auto; flex: 1 1 220px; }
 }
+/* 窄屏：两个页签加实时标记挤不下一行，页签会折成两行、指示条落到第二个页签下。实时标记移到上一行，页签独占一行 */
+@media (max-width: 599px) {
+  .pv-page .usage-ws__head { flex-wrap: wrap; }
+  .pv-page .pv-actions { order: -1; width: 100%; justify-content: flex-end; padding-bottom: 0; }
+  .pv-page .usage-ws__tabs { flex-wrap: nowrap; width: 100%; }
+}
 </style>
