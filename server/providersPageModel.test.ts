@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  accountShow, channelInStatus, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems,
+  accountShow, accountsFigure, channelInStatus, channelsFigure, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems, successFigure,
   type AccountCountsLike, type ChannelBucket,
 } from '../src/features/providers/providersModel.js'
 import { buildAccounts, filterGroups, groupAccounts, type CredentialLike } from '../src/features/accounts/model.js'
 
-/** /providers (src/features/providers/providersModel.ts): one filter for both sections, one live mark. */
+/** /providers (src/features/providers/providersModel.ts): one filter for both sections, one live mark, stat cards from real data. */
 
 const counts = (over: Partial<AccountCountsLike> = {}): AccountCountsLike => ({ all: 0, run: 0, cool: 0, pause: 0, bad: 0, warn: 0, hot: 0, reset: 0, ...over })
 
@@ -75,4 +75,22 @@ test('one live mark: stale when any source failed, loading until all answered, t
   assert.deepEqual(pageLive([{ state: 'ready', lastAt: 2_000 }, { state: 'error', lastAt: null }]), { state: 'stale', lastAt: null })
   assert.deepEqual(pageLive([{ state: 'ready', lastAt: 2_000 }, { state: 'loading', lastAt: null }]), { state: 'loading', lastAt: null })
   assert.equal(pageLive([{ state: 'empty', lastAt: 5 }]).state, 'ready')
+})
+
+test('stat cards: real figures with what they measure; — with a reason when there is nothing to show', () => {
+  assert.deepEqual(channelsFigure(null, 0), { value: null, note: '暂无数据' })
+  assert.deepEqual(channelsFigure([], 0), { value: '0', note: '还没有 API 渠道' })
+  assert.deepEqual(channelsFigure(['run', 'warn', 'off'], 2), { value: '2 / 3', note: '需处理 1 个' })
+  assert.deepEqual(channelsFigure(['run'], 1), { value: '1 / 1', note: '无需处理' })
+
+  assert.deepEqual(accountsFigure(null), { value: null, note: '暂无数据' })
+  assert.deepEqual(accountsFigure(counts()), { value: '0', note: '还没有订阅账号' })
+  assert.deepEqual(accountsFigure(counts({ all: 6, run: 3, cool: 1, bad: 1, pause: 1 })), { value: '3 / 6', note: '冷却 1 · 需处理 1 · 停用 1' })
+  assert.deepEqual(accountsFigure(counts({ all: 2, run: 2 })), { value: '2 / 2', note: '全部运行中' })
+
+  assert.deepEqual(successFigure(null), { value: null, note: '暂无数据' })
+  assert.deepEqual(successFigure({ hours: 24, channels: [] }), { value: null, note: 'API 渠道近 24 小时无请求' })
+  assert.deepEqual(successFigure({ hours: 24, channels: [{ requests: 0, errors: 0 }] }), { value: null, note: 'API 渠道近 24 小时无请求' })
+  // ok / all over every channel, failures include client cancellations (the row column's rule)
+  assert.deepEqual(successFigure({ hours: 24, channels: [{ requests: 900, errors: 9 }, { requests: 100, errors: 7 }] }), { value: '98.4%', note: 'API 渠道 · 1,000 次请求' })
 })

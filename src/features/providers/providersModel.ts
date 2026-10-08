@@ -1,8 +1,9 @@
 /**
- * 供应商页的纯规则：一套状态筛选同时管「API 渠道」与「订阅账号池」，整页一个刷新时间。
+ * 供应商页的纯规则：一套状态筛选同时管「API 渠道」与「订阅账号池」，整页一个刷新时间，指标卡只报从数据算得出的数。
  * No Vue, no fetch: unit-tested in server/providersPageModel.test.ts. Account rows themselves are filtered by
  * `matches` in ../accounts/model.ts; this file only says which `show` value a page status stands for.
  */
+import { fmtInt, fmtPct } from '../../ui/fmt.js'
 
 /* ── one status filter for both sections ── */
 
@@ -137,4 +138,51 @@ export function pageLive(sources: readonly LiveSource[]): LiveSource {
   const times = sources.map((source) => source.lastAt)
   const lastAt = times.length && times.every((t): t is number => typeof t === 'number') ? Math.min(...times) : null
   return { state, lastAt }
+}
+
+/* ── stat cards: what each measures, from data the page already reads ── */
+
+/** `value` null renders as — ; `note` says what the figure is, or why there is none */
+export type StatFigure = { value: string | null; note: string }
+
+const NO_DATA: StatFigure = { value: null, note: '暂无数据' }
+
+/** 已启用 API 渠道 `enabled / total`, from /api/channels and the channel-health classes. */
+export function channelsFigure(buckets: readonly ChannelBucket[] | null, enabled: number): StatFigure {
+  if (!buckets) return NO_DATA
+  if (!buckets.length) return { value: '0', note: '还没有 API 渠道' }
+  const issue = buckets.filter((bucket) => bucket === 'warn').length
+  return { value: `${fmtInt(enabled)} / ${fmtInt(buckets.length)}`, note: issue ? `需处理 ${fmtInt(issue)} 个` : '无需处理' }
+}
+
+/** 运行中的订阅账号 `run / all`, from the pool's own counts (/api/channels credentials + /api/monitor). */
+export function accountsFigure(counts: AccountCountsLike | null): StatFigure {
+  if (!counts) return NO_DATA
+  if (!counts.all) return { value: '0', note: '还没有订阅账号' }
+  const parts = [
+    counts.cool ? `冷却 ${fmtInt(counts.cool)}` : '',
+    counts.bad + counts.warn ? `需处理 ${fmtInt(counts.bad + counts.warn)}` : '',
+    counts.pause ? `停用 ${fmtInt(counts.pause)}` : '',
+  ].filter(Boolean)
+  return { value: `${fmtInt(counts.run)} / ${fmtInt(counts.all)}`, note: parts.length ? parts.join(' · ') : '全部运行中' }
+}
+
+/** The fields of /api/channel-health this page sums. */
+export type HealthLike = { hours: number; channels: ReadonlyArray<{ requests: number; errors: number }> }
+
+/**
+ * Request success rate over the health window, every API channel together: ok / all, client cancellations counted
+ * as failures — the same rule as each row's 成功率 (server/channelHealth.ts). Subscription accounts are not in it.
+ * `null` = the endpoint has not answered or this server has no channel-health route.
+ */
+export function successFigure(health: HealthLike | null): StatFigure {
+  if (!health) return NO_DATA
+  let requests = 0
+  let errors = 0
+  for (const channel of health.channels) {
+    requests += channel.requests
+    errors += channel.errors
+  }
+  if (!requests) return { value: null, note: `API 渠道近 ${health.hours} 小时无请求` }
+  return { value: fmtPct((requests - errors) / requests, 1), note: `API 渠道 · ${fmtInt(requests)} 次请求` }
 }

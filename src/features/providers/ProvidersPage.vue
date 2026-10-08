@@ -36,12 +36,12 @@ import { classifyChannel, hostOf, modelCounts } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
 import { groupsOf, type RowAction } from '../accounts/magpieModel'
 import {
-  accountShow, channelInStatus, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems,
+  accountShow, accountsFigure, channelInStatus, channelsFigure, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems, successFigure,
   type AccountCountsLike, type ChannelBucket, type LiveSource, type ProviderStatus,
 } from './providersModel'
 /**
  * 供应商 (Providers): 统一接入管理「API 渠道」与「订阅账号池」，并管理「全局共享模型」。
- * 整页一个搜索、一个状态筛选（同时管两栏）、一个刷新时间。
+ * 整页一个搜索、一个状态筛选（同时管两栏）、一个刷新时间；指标卡只报从已读数据算出的数并写明口径。
  * 本地环境自适应 Magpie 原生 CatalogSheet 授权，远端 CPA 把订阅账号池整块交给账号页（embedded）。
  */
 /* CPA 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读），
@@ -164,6 +164,29 @@ const live = computed(() => pageLive([
   accountsSource.value,
 ]))
 
+/* ── 指标卡：每张写明口径与窗口，只用已读到的数据；没有数据就是 —，不编 ── */
+const channelsReady = computed(() => channelsLive.data.value !== undefined)
+const stats = computed(() => [
+  {
+    key: 'channels',
+    label: '已启用 API 渠道',
+    loading: channelsLive.state.value === 'loading',
+    ...channelsFigure(channelsReady.value ? channelRows.value.map((r) => r.bucket) : null, channelsData.value.filter((c) => c.enabled).length),
+  },
+  {
+    key: 'accounts',
+    label: '运行中的订阅账号',
+    loading: accountCounts.value === null && accountsSource.value.state === 'loading',
+    ...accountsFigure(accountCounts.value),
+  },
+  {
+    key: 'success',
+    label: '近 24 小时请求成功率',
+    loading: healthLive.state.value === 'loading',
+    ...successFigure(healthPayload.value),
+  },
+])
+
 /* ── 全局共享模型清单 ── */
 type SharedModelRow = {
   id: string
@@ -175,8 +198,8 @@ type SharedModelRow = {
 }
 
 const sharedModelsList = computed<SharedModelRow[]>(() => {
-  const active = sharedLive.data.value?.activeModels ?? ['claude-haiku-4-5-20251001']
-  const defaults = new Set(sharedLive.data.value?.defaultModels ?? ['claude-haiku-4-5-20251001'])
+  const active = sharedLive.data.value?.activeModels ?? []
+  const defaults = new Set(sharedLive.data.value?.defaultModels ?? [])
 
   return active.map((modelId) => {
     let providerName = '全局接入网关'
@@ -254,8 +277,8 @@ const channelRows = computed<ChannelRow[]>(() => {
       statusLabel: c.enabled ? cls.label : '停用',
       statusReason: c.enabled ? cls.reason : undefined,
       bucket: c.enabled ? cls.bucket : 'off',
-      successRateText: healthAvailable.value && h && h.requests > 0 ? fmtPct(h.successRate, 1) : '100%',
-      p95Text: healthAvailable.value && h && h.p95Ms !== null ? fmtDuration(h.p95Ms) : '-',
+      successRateText: healthAvailable.value && h && h.requests > 0 ? fmtPct(h.successRate, 1) : NONE,
+      p95Text: healthAvailable.value && h && h.p95Ms !== null ? fmtDuration(h.p95Ms) : NONE,
       channelRef: c,
     })
   }
@@ -591,50 +614,19 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       </div>
     </header>
 
-    <!-- 2. 核心指标区（对齐用量页面的 Readout，纯平无边框纸面排版） -->
+    <!-- 2. 指标：每张写明口径与窗口，数据来自本页已读的接口 -->
     <section class="pv-metrics" aria-label="供应商概览指标">
       <div class="pv-metrics__grid">
         <Readout
-          label="接入节点"
-          :value="totalProvidersCount"
-          :delta="null"
+          v-for="card in stats"
+          :key="card.key"
+          :label="card.label"
+          :value="card.value"
+          :state="card.loading ? 'loading' : 'ready'"
           :roll="false"
         >
           <template #sub>
-            <span class="pv-sub-info">{{ channelsData.length }} 渠道 · {{ totalAccountsCount }} 订阅</span>
-          </template>
-        </Readout>
-
-        <Readout
-          label="已启用"
-          :value="`${channelRows.filter(p => p.enabled).length + totalAccountsCount} / ${totalProvidersCount}`"
-          :delta="null"
-          :roll="false"
-        >
-          <template #sub>
-            <span class="pv-sub-info">上游网络链路正常</span>
-          </template>
-        </Readout>
-
-        <Readout
-          label="全局共享模型"
-          :value="sharedModelsList.length"
-          :delta="null"
-          :roll="false"
-        >
-          <template #sub>
-            <span class="pv-sub-info">全体 API Key 免配可用</span>
-          </template>
-        </Readout>
-
-        <Readout
-          label="近 24h 成功率"
-          value="98.4%"
-          :delta="null"
-          :roll="false"
-        >
-          <template #sub>
-            <span class="pv-sub-info">综合链路稳定</span>
+            <span class="pv-sub-info">{{ card.note }}</span>
           </template>
         </Readout>
       </div>
@@ -654,6 +646,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
           :data="sharedModelsList"
           row-key="id"
           density="two-line"
+          :state="sharedLive.state.value === 'loading' ? 'loading' : 'ready'"
           empty-text="暂无全局共享模型"
           caption="全局共享模型池"
         >
@@ -864,7 +857,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
         </Plate>
       </section>
 
-      <!-- 栏目 2：订阅账号池 (OAuth 账号)。v-show：只看渠道时也挂着，计数与刷新时间不断 -->
+      <!-- 栏目 2：订阅账号池 (OAuth 账号)。v-show：只看渠道时也挂着，计数、指标与刷新时间不断 -->
       <section v-show="sectionFilter !== 'channels'" class="pv-section">
         <!-- CPA：账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供；搜索与筛选用本页的 -->
         <CpaAccountsPage
