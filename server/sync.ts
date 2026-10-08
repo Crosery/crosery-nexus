@@ -1,7 +1,7 @@
 import { config } from './config.js'
 import { db, transaction } from './db.js'
 import { listGroups } from './channels.js'
-import { getCPAKeys, getChannelAccess, getModelAccess, hashKey, isUnsupportedManagementEndpoint, maskKey, popUsage, putChannelAccess, putModelAccess } from './cpa.js'
+import { getCPAKeys, getChannelAccess, getModelAccess, hashKey, isSystemKey, isUnsupportedManagementEndpoint, maskKey, popUsage, putChannelAccess, putModelAccess } from './cpa.js'
 import { resolveGroupForModel } from './groups.js'
 import { isActiveProvider } from './currentChannels.js'
 import { markKeyModelAccess } from './managementCapability.js'
@@ -118,11 +118,16 @@ export async function syncKeysFromCPA() {
  */
 let accessReconciliation: Promise<unknown> = Promise.resolve()
 
-export function reconcileKeyModelAccess() {
-  // 定时同步与面板保存共用队列；必须排到后再取授权快照，防止旧任务撤销新授权结果。
-  const next = accessReconciliation.then(reconcileKeyAccessOnce)
+/** 渠道白名单的「读 → 合并 → 整表 PUT」都排进这一队（对账、探测 Key 钉渠道），彼此不会覆盖对方刚写的条目。 */
+export function withKeyAccessLock<T>(task: () => Promise<T>): Promise<T> {
+  const next = accessReconciliation.then(task)
   accessReconciliation = next.catch(() => undefined)
   return next
+}
+
+export function reconcileKeyModelAccess() {
+  // 定时同步与面板保存共用队列；必须排到后再取授权快照，防止旧任务撤销新授权结果。
+  return withKeyAccessLock(reconcileKeyAccessOnce)
 }
 
 async function reconcileKeyAccessOnce() {
@@ -196,6 +201,8 @@ export function persistUsageRecords(records: UsageRecord[], groups: ConsoleGroup
   const live: LiveUsageEvent[] = []
   transaction(() => {
     for (const record of records) {
+      // 系统 Key（可用性探测）的流量不是用户用量：不进明细、额度账本、实时流和数据桥
+      if (isSystemKey(record.api_key)) continue
       const keyHash = record.api_key ? hashKey(record.api_key) : null
       const keyRow = keyHash ? (keyNameOf.get(keyHash) as { name?: string } | undefined) : undefined
       const timestamp = record.timestamp || new Date().toISOString()

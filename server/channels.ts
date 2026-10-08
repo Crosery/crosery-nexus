@@ -12,6 +12,7 @@ import { modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, valida
 import { RequestCoordinator } from './requestCoordinator.js'
 import { ReportingGroupStore } from './reportingGroups.js'
 import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
+import { currentAvailability, modelAvailabilityEnabled, withModelAvailability } from './modelAvailability.js'
 
 const now = () => new Date().toISOString()
 const reportingGroupStore = new ReportingGroupStore(db)
@@ -479,9 +480,18 @@ export async function listModelIndex() {
   return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing), channels, credentials }
 }
 
-/** 分组直接由同一份网关快照推导，避免一次页面加载重复扇出控制面接口。 */
-export async function listGroups() {
+/** 渠道目录本身（不经可用性过滤）：可用性探测要靠它把下线模型继续测下去，报表按它归组。 */
+export async function listGroupCatalog() {
   return catalogGroups(await gatewaySnapshot())
+}
+
+/**
+ * 授权用的分组：同一份网关快照推导，避免一次页面加载重复扇出控制面接口；
+ * 被可用性探测判为下线的模型不进 Key 白名单，重新上线后自动回来。
+ */
+export async function listGroups() {
+  const groups = await listGroupCatalog()
+  return modelAvailabilityEnabled() ? withModelAvailability(groups, currentAvailability()) : groups
 }
 
 /**
@@ -490,7 +500,7 @@ export async function listGroups() {
  */
 export async function listGroupsForReporting() {
   const stored = reportingGroupStore.read()
-  if (!stored) return listGroups()
+  if (!stored) return listGroupCatalog()
   void gatewaySnapshot().catch(() => undefined)
   return stored.groups
 }
