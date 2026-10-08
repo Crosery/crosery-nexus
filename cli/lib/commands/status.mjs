@@ -119,7 +119,7 @@ function render(ctx, data) {
   ui.section('API Key')
   if (failed(data.keys)) fail(data.keys)
   else {
-    ui.kv('数量', `启用 ${data.keys.enabled} · 停用 ${data.keys.disabled} · 额度封禁 ${data.keys.quotaBlocked}`)
+    ui.kv('数量', `启用 ${data.keys.enabled} · 停用 ${data.keys.disabled} · 超额停用 ${data.keys.quotaBlocked}`)
     if (data.keys.degraded) ui.warn(`控制面降级：分组来自上次成功的快照${data.keys.degradedReason ? `（${data.keys.degradedReason}）` : ''}`)
     if (data.keys.gatewayModelAccess === 'unavailable') ui.note('网关不执行按 Key 的模型白名单（只按分组生效）')
   }
@@ -128,9 +128,9 @@ function render(ctx, data) {
   if (failed(data.channels)) fail(data.channels)
   else {
     const c = data.channels
-    ui.kv('兼容渠道', `启用 ${c.enabled} · 停用 ${c.disabled} · 失效 ${c.stale} · 模型 ${c.enabledModels}/${c.totalModels} 启用`)
+    ui.kv('兼容渠道', `启用 ${c.enabled} · 停用 ${c.disabled} · 残留 ${c.stale} · 模型 ${c.enabledModels}/${c.totalModels} 启用`)
     for (const provider of data.accounts) {
-      ui.kv(provider.provider, `账号 ${provider.accounts}：正常 ${provider.active} · 暂停 ${provider.paused} · 异常 ${provider.abnormal}`)
+      ui.kv(provider.provider, `账号 ${provider.accounts}：运行 ${provider.active} · 暂停 ${provider.paused} · 异常 ${provider.abnormal}`)
     }
     if (!data.accounts.length) ui.kv('账号池', '没有账号')
   }
@@ -150,8 +150,8 @@ function render(ctx, data) {
   else {
     const ledger = data.usageToday
     ui.kv('请求', `${count(ledger.requests)}（失败 ${count(ledger.errors)}，${percent(ledger.errorRate)}）`)
-    ui.kv('Tokens', tokens(ledger.tokens))
-    ui.kv('费用', `${usd(ledger.costUsd)}${ledger.hasPartialCost ? '（部分模型无价格）' : ''}`)
+    ui.kv('Token', tokens(ledger.tokens))
+    ui.kv('花费', `${usd(ledger.costUsd)}${ledger.hasPartialCost ? '（部分模型无价格）' : ''}`)
     ui.kv('缓存命中', percent(ledger.cacheHitRate))
   }
 }

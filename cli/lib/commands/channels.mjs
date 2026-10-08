@@ -3,7 +3,7 @@ import { CliError, UsageError, listValue } from '../args.mjs'
 import { channelState, channelToggleItem, getChannels, getModelIndex, modelToggleItems, modelsOf, providerModels, providersOf } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { planModelChanges, resolveChannel } from '../resolve.mjs'
-import { channelsTree } from '../tree.mjs'
+import { channelClass, channelType, channelsTree, providerInfo, providerTitle } from '../tree.mjs'
 
 const HELP = `cradmin channels <动作> [参数]
 
@@ -12,7 +12,7 @@ const HELP = `cradmin channels <动作> [参数]
 
 动作：
   ls                         列出全部渠道与账号池（默认）：供应商 → API 渠道 / 订阅账号池，同控制台「供应商」页
-  show <渠道>                渠道详情与模型开关
+  show <渠道>                渠道状态（含原因）、地址与模型开关（同控制台渠道详情）
   models <渠道>              只看模型开关；带下面的参数时改开关
       --enable p,…           启用匹配的模型（精确 id，或带 * ? 的通配）
       --disable p,…          停用匹配的模型
@@ -73,24 +73,40 @@ async function detail(ctx, name) {
   return { resolved, data: { name: resolved.name, kind: 'oauth', state: provider?.active ? '启用' : '无可用账号', accounts: provider?.accounts ?? 0, models } }
 }
 
-function renderDetail(ctx, data, { modelsOnly = false } = {}) {
+/** 同一个模型挂了几条上游（控制台模型行的 ×N）；只有兼容渠道有。 */
+const upstreamsOf = resolved => new Map((resolved.kind === 'compat' ? resolved.channel.models || [] : []).map(model => [model.id, Number(model.upstreams) || 0]))
+
+// 词照控制台渠道详情（src/features/channels/ChannelSheet.vue）；data.state 是 --json 的旧字段，不在这里显示
+function renderDetail(ctx, data, { modelsOnly = false, upstreams = new Map() } = {}) {
   const { ui } = ctx
+  const on = data.models.filter(model => model.enabled).length
   if (!modelsOnly) {
-    ui.kv('渠道', data.name)
-    ui.kv('类型', data.kind === 'compat' ? '兼容渠道' : '账号池')
-    ui.kv('状态', data.state)
     if (data.kind === 'compat') {
-      ui.kv('Base URL', data.baseUrl || '-')
-      ui.kv('上游 Key', `${data.keyCount ?? '-'} 把`)
+      const cls = channelClass({ stale: data.stale, enabled: data.enabled, enabledModels: on })
+      ui.kv('渠道', data.name)
+      ui.kv('类型', channelType(data))
+      ui.kv('状态', ui.paint(cls.tone, cls.label))
+      if (cls.reason) ui.kv('', ui.paint('muted', `${cls.reason}${cls.hint}`))
+      ui.kv('地址', data.baseUrl || '—')
+      ui.kv('Key', `${data.keyCount ?? '—'} 个`)
     } else {
+      const info = providerInfo(data.name)
+      ui.kv('渠道', providerTitle(info, data.name))
+      ui.kv('类型', `订阅账号池 · ${info.vendor}`)
+      ui.kv('状态', ui.paint(data.state === '启用' ? 'ok' : 'warn', data.state))
       ui.kv('账号', `${data.accounts} 个`)
     }
   }
-  const enabled = data.models.filter(model => model.enabled).length
-  ui.section(`${data.name} 的模型`, `启用 ${enabled} / 共 ${data.models.length}`)
-  if (modelsOnly && data.state !== '启用') ui.warn(`渠道当前${data.state}：下面是停用前的快照，调整模型前先 cradmin channels enable ${data.name}`)
-  if (!data.models.length) return ui.note('没有模型')
-  ui.table(['模型', '状态'], data.models.map(model => [model.id, model.enabled ? { text: 'on', tone: 'ok' } : { text: 'off', tone: 'muted' }]), { align: ['left', 'center'] })
+  if (data.kind === 'compat' && !data.enabled && !data.stale) ui.warn(`渠道停用中 · 启用后才能单独开关模型：cradmin channels enable ${data.name}`)
+  ui.section(modelsOnly ? `${data.name} 的模型` : '模型', `${on} / ${data.models.length} 开着`)
+  if (!data.models.length) return ui.note('— 这个渠道没有模型')
+  ui.tree(data.models.map(model => {
+    const n = upstreams.get(model.id) || 0
+    return {
+      kind: 'model',
+      cells: [model.enabled ? { text: '开着', tone: 'ok' } : { text: '人工停用', tone: 'muted' }, model.id, n > 1 ? { text: `×${n}`, tone: 'muted' } : ''],
+    }
+  }))
   ui.note(`改开关：cradmin channels models ${data.name} --enable <模型> / --disable <模型> / --only <模式>`)
 }
 
@@ -101,7 +117,7 @@ async function changeModels(ctx, name) {
   const { resolved, data } = await detail(ctx, name)
   const changes = planModelChanges(data.models, { enable, disable, only })
   if (!changes) {
-    ctx.output(data, () => renderDetail(ctx, data, { modelsOnly: true }))
+    ctx.output(data, () => renderDetail(ctx, data, { modelsOnly: true, upstreams: upstreamsOf(resolved) }))
     return
   }
   if (resolved.kind === 'compat' && !resolved.channel.enabled && changes.length) {
@@ -195,8 +211,8 @@ export default {
       }
       case 'show': {
         if (!name) throw new UsageError('缺少 <渠道>')
-        const { data } = await detail(ctx, name)
-        return void ctx.output(data, () => renderDetail(ctx, data))
+        const { resolved, data } = await detail(ctx, name)
+        return void ctx.output(data, () => renderDetail(ctx, data, { upstreams: upstreamsOf(resolved) }))
       }
       case 'models':
         if (!name) throw new UsageError('缺少 <渠道>')

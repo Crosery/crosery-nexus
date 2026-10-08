@@ -1,6 +1,9 @@
-// 列表命令（channels / accounts / models / keys ls）的树形视图。层级、命名与顺序照 Web 控制台（src/）：
+// 列表、详情与用量的树形视图（channels / accounts / models / keys、usage）。层级、命名与顺序照 Web 控制台（src/）：
 // 控制台改了下面标注出处的规则，这里要跟着改。只组装节点，渲染见 ui.mjs renderTree。
+import { NONE, accountReset, capMoney, fmtCompact, fmtDelta, fmtInt, fmtPct, fmtUsd, keyReset } from './fmt.mjs'
 import { time, truncate, usd } from './ui.mjs'
+
+const finite = value => typeof value === 'number' && Number.isFinite(value)
 
 const lower = value => String(value || '').trim().toLowerCase()
 
@@ -8,14 +11,14 @@ const lower = value => String(value || '').trim().toLowerCase()
 
 /** 订阅账号池 provider 目录，顺序即控制台的分组顺序（src/features/accounts/model.ts PROVIDERS）。 */
 export const PROVIDERS = [
-  { id: 'codex', types: ['codex', 'openai'], name: 'Codex', vendor: 'OpenAI · ChatGPT 订阅' },
-  { id: 'claude', types: ['claude', 'anthropic'], name: 'Claude', vendor: 'Anthropic · Claude 订阅' },
-  { id: 'antigravity', types: ['antigravity', 'google'], name: 'Antigravity', vendor: 'Google · 按模型家族计额' },
-  { id: 'kimi', types: ['kimi'], name: 'Kimi', vendor: 'Moonshot · kimi.com 国内站' },
-  { id: 'kimi-ai', types: ['kimi-ai'], name: 'Kimi 国际站', vendor: 'Moonshot · kimi.ai' },
-  { id: 'xai', types: ['xai', 'grok'], name: 'Grok', vendor: 'xAI · SuperGrok' },
-  { id: 'devin', types: ['devin'], name: 'Devin', vendor: 'Cognition' },
-  { id: 'meta', types: ['meta', 'muse'], name: 'Meta AI', vendor: 'Meta · Muse' },
+  { id: 'codex', types: ['codex', 'openai'], name: 'Codex', vendor: 'OpenAI · ChatGPT 订阅', resettable: true, monitored: true },
+  { id: 'claude', types: ['claude', 'anthropic'], name: 'Claude', vendor: 'Anthropic · Claude 订阅', resettable: true, monitored: true },
+  { id: 'antigravity', types: ['antigravity', 'google'], name: 'Antigravity', vendor: 'Google · 按模型家族计额', resettable: false, monitored: true },
+  { id: 'kimi', types: ['kimi'], name: 'Kimi', vendor: 'Moonshot · kimi.com 国内站', resettable: false, monitored: false },
+  { id: 'kimi-ai', types: ['kimi-ai'], name: 'Kimi 国际站', vendor: 'Moonshot · kimi.ai', resettable: false, monitored: false },
+  { id: 'xai', types: ['xai', 'grok'], name: 'Grok', vendor: 'xAI · SuperGrok', resettable: false, monitored: false },
+  { id: 'devin', types: ['devin'], name: 'Devin', vendor: 'Cognition', resettable: false, monitored: false },
+  { id: 'meta', types: ['meta', 'muse'], name: 'Meta AI', vendor: 'Meta · Muse', resettable: false, monitored: false },
 ]
 
 /** 凭据 type → 控制台的 provider 分组；目录外的 type 首字母大写、归「其它凭据」，排在目录之后。 */
@@ -23,11 +26,11 @@ export function providerInfo(type) {
   const key = lower(type)
   const order = PROVIDERS.findIndex(provider => provider.types.includes(key))
   if (order !== -1) return { ...PROVIDERS[order], order }
-  return { id: key, name: key ? key.charAt(0).toUpperCase() + key.slice(1) : '其它', vendor: '其它凭据', order: PROVIDERS.length }
+  return { id: key, name: key ? key.charAt(0).toUpperCase() + key.slice(1) : '其它', vendor: '其它凭据', resettable: false, monitored: false, order: PROVIDERS.length }
 }
 
 /** 名称后带上命令行要用的 type（只差大小写时不重复）。 */
-const providerTitle = (info, type) => (lower(info.name) === lower(type) ? info.name : `${info.name}（${type}）`)
+export const providerTitle = (info, type) => (lower(info.name) === lower(type) ? info.name : `${info.name}（${type}）`)
 
 const byProvider = (a, b) => a.info.order - b.info.order || a.info.name.localeCompare(b.info.name)
 
@@ -41,15 +44,27 @@ export function channelType(row) {
 
 const models = row => (row.totalModels === null || row.totalModels === undefined ? '模型 -' : `模型 ${row.enabledModels}/${row.totalModels}`)
 
+/**
+ * 兼容渠道的状态词与原因（src/features/channels/channelModel.ts classifyChannel）。只用渠道自身的数据：
+ * 控制台按近期失败率再分的 异常 / 降级 要读健康接口，CLI 不读。
+ */
+export function channelClass({ stale, enabled, enabledModels }) {
+  if (stale) return { label: '残留', tone: 'warn', reason: '网关里已不存在 · 可清理', hint: '：cradmin channels prune', off: false }
+  if (!enabled) return { label: '停用', tone: 'muted', reason: '不参与路由', hint: '', off: true }
+  if (enabledModels === 0) return { label: '降级', tone: 'warn', reason: '没有开着的模型', hint: '', off: false }
+  return { label: '启用', tone: 'ok', reason: null, hint: '', off: false }
+}
+
 /** channels ls：API 渠道（服务端顺序）+ 订阅账号池（控制台 provider 顺序）。行数据就是 --json 的那一份。 */
 export function channelsTree(rows) {
   const compat = rows.filter(row => row.kind === 'compat').map(row => {
-    // 残留 = 网关里已不存在（src/features/channels/channelModel.ts classifyChannel）
-    const state = row.stale ? { text: '残留', tone: 'err' } : row.enabled ? { text: '启用', tone: 'ok' } : { text: '停用', tone: 'warn' }
+    const cls = channelClass(row)
+    // 列表只给不是「停用」的原因（ChannelsPage.vue：bucket !== 'off'）
+    const reason = cls.reason && !cls.off ? `${cls.reason}${cls.hint}` : null
     return {
       kind: 'compat',
-      cells: [row.name, state, channelType(row), models(row), `${row.keys ?? '-'} Key`, { text: row.baseUrl || '-', tone: 'muted' }],
-      children: row.stale ? [{ kind: 'reason', cells: [{ text: '网关里已不存在 · 可清理：cradmin channels prune', tone: 'muted' }] }] : [],
+      cells: [row.name, { text: cls.label, tone: cls.tone }, channelType(row), models(row), `${row.keys ?? '-'} Key`, { text: row.baseUrl || '-', tone: 'muted' }],
+      children: reason ? [{ kind: 'reason', cells: [{ text: reason, tone: 'muted' }] }] : [],
     }
   })
   const oauth = rows.filter(row => row.kind === 'oauth').map(row => ({ row, info: providerInfo(row.name) })).sort(byProvider).map(({ row, info }) => ({
@@ -141,6 +156,37 @@ export function accountsTree(items, { proxyLabel = value => value } = {}) {
       }),
     }
   })
+}
+
+/* ────────── 单个账号的额度（src/features/accounts/AccountDetail.vue、QuotaCell.vue） ────────── */
+
+const HOT_RATIO = 0.9
+
+/** accounts show「全部窗口」：一窗一行，`5 小时额度  88%  ↻ 15:10`。windows 是 publicAccount 的 quota.windows。 */
+export function accountWindowsTree(windows, now = Date.now()) {
+  return windows.map(window => {
+    const used = Number(window.usedPercent) || 0
+    return {
+      kind: 'window',
+      cells: [window.label, { text: `${Math.round(used)}%`, align: 'right', tone: used / 100 >= HOT_RATIO ? 'warn' : null }, window.resetsAt ? `↻ ${accountReset(window.resetsAt, now)}` : ''],
+    }
+  })
+}
+
+/** 没有窗口时那一行字（quotaState none / missing / error / empty）。 */
+export function accountQuotaWords(quota, info) {
+  if (!info.monitored) return '上游不报告这类账号的额度窗口'
+  if (!quota) return '额度这次没读到 · 下次刷新再试'
+  if (quota.error) return `额度读取失败 · ${quota.error}`
+  return '上游没有返回额度窗口'
+}
+
+/** 「重置次数」那一格。 */
+export function accountCreditsWords(quota, info) {
+  const available = Number(quota?.resetCredits?.available) || 0
+  if (available > 0) return `${available} 次`
+  if (!info.resettable) return '该服务没有主动重置'
+  return quota && (quota.windows?.length || !quota.error) ? '没有可用的重置次数' : '重置次数未读到'
 }
 
 /* ────────── 模型目录：厂商 → 模型（src/features/models/modelRows.ts、ModelsPage.vue） ────────── */
@@ -283,4 +329,82 @@ export function keysTree(keys, groups) {
       ],
     }
   })
+}
+
+/* ────────── 单把 Key 的额度（src/features/keys/KeyDetail.vue） ────────── */
+
+export const WINDOW_LABEL = { daily: '日', weekly: '周', total: '累计' }
+
+/** keys show「额度」：日 / 周 / 累计，`92%  $4.60 / $5 · ↻ 00:00`；不限的窗口只写花了多少（累计不限连金额都不写）。 */
+export function keyWindowsTree(key, now = Date.now()) {
+  return ['daily', 'weekly', 'total'].map(window => {
+    const w = key.quotaState?.[window]
+    const isLimited = limited(w)
+    const ratio = ratioOf(w)
+    const amount = !w ? NONE : isLimited ? `${capMoney(w.spentUsd)} / ${capMoney(w.limitUsd)}` : window === 'total' ? '' : capMoney(w.spentUsd)
+    const reset = window !== 'total' ? keyReset(w?.resetsAt, now) : isLimited ? '手动重置' : ''
+    const figure = !isLimited ? '不限' : ratio === null ? NONE : `${Math.round(ratio * 100)}%`
+    return {
+      kind: 'window',
+      cells: [
+        WINDOW_LABEL[window], { text: figure, align: 'right', tone: !isLimited ? 'muted' : ratio >= 1 ? 'err' : ratio >= NEAR_LIMIT ? 'warn' : null },
+        { text: `${amount}${amount && reset ? ' · ' : ''}${reset}`, tone: w?.exceeded ? 'err' : null },
+      ],
+    }
+  })
+}
+
+/* ────────── 用量总览（src/features/usage/tabs/UsageOverviewTab.vue） ────────── */
+
+/** 近 7 天 / 近 24 小时（usage/filters.ts windowLabel）。 */
+export const usageWindowText = days => (days === 1 ? '近 24 小时' : `近 ${days} 天`)
+export const usageVsText = days => (days === 1 ? 'vs 前 24 小时' : `vs 前 ${days} 日`)
+
+const relDelta = (current, previous) => (!finite(current) || !finite(previous) || previous === 0 ? null : (current - previous) / previous)
+const ppDelta = (current, previous) => (finite(current) && finite(previous) ? current - previous : null)
+
+/** 花费那一格：0 是「免费」（有未定价的请求时是 —），≥1000 不带小数（usage/shared/format.ts costText）。 */
+function costText(costUsd, partial) {
+  if (!finite(costUsd)) return NONE
+  if (costUsd === 0) return partial ? NONE : '免费'
+  return fmtUsd(costUsd, { digits: Math.abs(costUsd) >= 1000 ? 0 : undefined })
+}
+
+function costNote(ledger) {
+  if (ledger.hasPartialCost) return `未定价 ${(ledger.unpricedModels || []).length} 个模型 · ${fmtInt(ledger.unpricedRequests ?? 0)} 次不计`
+  if (ledger.costEstimated) return '含按标价估算'
+  return ''
+}
+
+/**
+ * cradmin usage 的汇总六格：请求 · Token · 花费 · 失败率 · 缓存命中 · 活跃 Key。
+ * 有上一个同长窗口时第三列是变化（▲/▼），没有就整列省掉。
+ */
+export function usageLedgerTree(ledger, previous, days) {
+  const l = ledger || {}
+  const p = previous || null
+  const delta = (value, unit = 'pct', bad = false) => (p ? { text: fmtDelta(value, unit), tone: bad ? 'err' : 'muted' } : '')
+  const cost = costText(l.costUsd, l.hasPartialCost)
+  const approx = Boolean(l.costEstimated || l.hasPartialCost) && cost !== NONE
+  const errorDelta = ppDelta(l.errorRate, p?.errorRate)
+  const perDay = value => value / Math.max(1, days)
+  const rows = [
+    ['请求', fmtInt(l.requests), delta(relDelta(l.requests, p?.requests)), l.requests ? `日均 ${fmtInt(perDay(l.requests))}` : ''],
+    ['Token', fmtCompact(l.tokens), delta(relDelta(l.tokens, p?.tokens)), l.requests ? `每次 ${fmtCompact(l.tokens / l.requests)}` : ''],
+    [approx ? '花费 ≈' : '花费', cost, delta(relDelta(l.costUsd, p?.costUsd)), l.costUsd === null && l.requests > 0 ? '未定价' : costNote(l)],
+    // 失败率升了 0.5pp 以上才算坏（Readout threshold）
+    ['失败率', finite(l.errorRate) ? fmtPct(l.errorRate, 2) : NONE, delta(errorDelta, 'pp', errorDelta !== null && errorDelta >= 0.005), `${fmtInt(l.errors ?? 0)} 次失败`],
+    ['缓存命中', finite(l.cacheHitRate) ? fmtPct(l.cacheHitRate) : NONE, delta(ppDelta(l.cacheHitRate, p?.cacheHitRate), 'pp'),
+      !finite(l.cacheHitRate) ? '没有可缓存的请求' : l.cacheIdleModels > 0 ? `不支持缓存 ${l.cacheIdleModels} 个模型 · 不计入` : ''],
+    ['活跃 Key', `${fmtInt(l.activeKeys)} / ${fmtInt(l.totalKeys)}`, delta(p ? l.activeKeys - p.activeKeys : null, 'abs'), `已启用 ${fmtInt(l.enabledKeys)}`],
+  ]
+  return rows.map(([label, value, change, sub]) => ({ kind: 'ledger', cells: [label, { text: value, align: 'right' }, change, { text: sub, tone: 'muted' }] }))
+}
+
+/** 排行里的名字：停用的 Key 带「已停用」，已移除的渠道带「已移除」（同 UsageOverviewTab keyRows / channelRows）。 */
+export function usageRankName(item, kind) {
+  const label = item.label || item.id
+  if (kind === 'keys' && item.enabled === false && !['__deleted__', '__none__'].includes(item.id)) return `${label} · 已停用`
+  if (kind === 'channels' && item.removed) return `${label} · 已移除`
+  return label
 }
