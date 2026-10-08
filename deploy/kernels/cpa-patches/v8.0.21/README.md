@@ -1,7 +1,7 @@
 # CPA 补丁系列（基于上游 v8.0.21）
 
-- 基底：上游 tag `v8.0.21`（54946fa3）。`git am 00*.patch`（0001–0012）后树 = `2f28b592`（移植分支 `deploy-v8.0.21` 的 HEAD = `84c37416`）；0001–0011 时树 = `8a81b380`、HEAD = `474ef85e`；0001–0009 时树 = `1e3297ce`、HEAD = `c55ec374`；0001–0008 时树 = `bda3f007`、HEAD = `0b05400e`。
-- 构建：`deploy/kernels/cpa-builder/build-in-container.sh`，版本串 `8.0.21-patched.<HEAD8>`（`8.0.21-patched.84c37416`）。
+- 基底：上游 tag `v8.0.21`（54946fa3）。`git am 00*.patch`（0001–0012）后树 = `2f28b592`（HEAD = `7929ae0a`：从 tag 起 `git am --committer-date-is-author-date`、提交者 = 补丁作者，可复现；原移植分支留作 `deploy-v8.0.21-port`，HEAD `84c37416`、同一棵树）；0001–0011 时树 = `8a81b380`、HEAD = `474ef85e`；0001–0009 时树 = `1e3297ce`、HEAD = `c55ec374`；0001–0008 时树 = `bda3f007`、HEAD = `0b05400e`。
+- 构建：`deploy/kernels/cpa-builder/build-in-container.sh`，版本串 `8.0.21-patched.<HEAD8>`（`8.0.21-patched.7929ae0a`）。
 - 构建机 deploy 分支 = 这串补丁；之后上游每个 release（含新 major）由 `run.sh` 合进去，冲突时停住，人工移植后把新系列放到 `cpa-patches/<上游 tag>/`。
 - 移植自 `../v8.0.13/`：上游把三个模型目录的拉取/刷新收进 `catalogUpdater`（`models.catalog` 等自定义源 + 热重载），0004 改挂到新入口；上游把 payload 规则挪到发请求前，0008 跟着改；0008 不再夹带误提交的 `server` 二进制。
 
