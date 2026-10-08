@@ -49,15 +49,42 @@ test('a model served by two channels belongs to both groups independently', () =
   assert.ok(groups.find((group) => group.id === 'kimi')?.models.includes('kimi-k2.7-code'))
 })
 
-test('disabled or stale channels and inactive oauth providers are not authorizable groups', () => {
+test('disabled or stale channels are not authorizable groups', () => {
   const groups = buildGroups([
     ...channels,
     { name: 'paused', baseUrl: '', keyCount: 1, enabled: false, protocol: 'openai', stale: false, models: [{ id: 'paused-model', enabled: true, upstreams: 1 }] },
     { name: 'gone', baseUrl: '', keyCount: 1, enabled: false, protocol: 'openai', stale: true, models: [{ id: 'gone-model', enabled: true, upstreams: 1 }] },
-  ], [...oauth, { provider: 'xai', models: ['grok-4.5'], excluded: [], activeAccounts: 0 }])
+  ], oauth)
   assert.ok(!groups.some((group) => group.id === 'paused'))
   assert.ok(!groups.some((group) => group.id === 'gone'))
-  assert.ok(!groups.some((group) => group.id === 'xai'))
+  assert.ok(groups.every((group) => group.available === true))
+})
+
+test('an oauth provider whose accounts drop to zero stays a group with its last known models (2026-10-09)', () => {
+  const lastKnown = { xai: ['grok-4.5', 'grok-code'], codex: ['gpt-5.6-sol'], kimi: ['kimi-k3'] }
+  const groups = buildGroups(channels, [
+    ...oauth,
+    // every xai account disabled: credential files remain, models come back empty
+    { provider: 'xai', models: [], excluded: ['grok-code'], activeAccounts: 0, accounts: 2 },
+  ], { lastKnown, retain: ['codex'] })
+  const xai = groups.find((group) => group.id === 'xai')
+  assert.equal(xai?.available, false)
+  assert.deepEqual(xai?.models, ['grok-4.5'], 'last known catalog, exclusions still apply')
+  // every codex credential deleted (accounts moved elsewhere) but a key still selects it
+  const codex = groups.find((group) => group.id === 'codex')
+  assert.equal(codex?.available, false)
+  assert.deepEqual(codex?.models, ['gpt-5.6-sol'])
+  assert.equal(groups.find((group) => group.id === 'claude')?.available, true)
+})
+
+test('a deleted oauth provider is only kept while retained and known', () => {
+  const groups = buildGroups([], [
+    // only present through oauth-excluded-models: no credential files, not retained
+    { provider: 'iflow', models: [], excluded: ['iflow-x'], activeAccounts: 0, accounts: 0 },
+  ], { lastKnown: { iflow: ['iflow-x', 'iflow-y'], xai: ['grok-4.5'] }, retain: ['ghost', 'mox-aigw'] })
+  assert.deepEqual(groups.map((group) => group.id), [], 'unreferenced, unknown or compat ids never become oauth groups')
+  const retained = buildGroups([], [], { lastKnown: { xai: ['grok-4.5'] }, retain: ['xai'] })
+  assert.deepEqual(retained.map((group) => [group.id, group.kind, group.available, group.models]), [['xai', 'oauth', false, ['grok-4.5']]])
 })
 
 test('disabled models and excluded oauth models stay out of their group', () => {
