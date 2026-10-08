@@ -4,8 +4,7 @@ import { request } from '../client.mjs'
 import { credentialProxyItem, credentialToggleItem, getChannels, proxyLabel, publicAccount } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { resolveAccount, validateProxy } from '../resolve.mjs'
-import { accountState, accountsTree } from '../tree.mjs'
-import { time } from '../ui.mjs'
+import { accountCreditsWords, accountQuotaWords, accountState, accountWindowsTree, accountsTree, providerInfo, providerTitle } from '../tree.mjs'
 
 const HELP = `cradmin accounts <动作> [参数]
 
@@ -13,7 +12,7 @@ const HELP = `cradmin accounts <动作> [参数]
 
 动作：
   ls [--quota]               列出账号：provider → 账号，同控制台「订阅账号池」（--quota 额外读取冷却与额度，可能触发上游额度查询）
-  show <账号>                账号详情与额度
+  show <账号>                账号状态（含原因）、出口、重置次数与全部额度窗口（同控制台账号详情）
   pause|resume <账号…>       暂停 / 恢复（可一次给多个）
   proxy <账号> <url|direct|none|inherit>   设置出口代理（none = direct；inherit = 继承全局；支持 http(s)/socks5/socks5h）
   reset <账号>               重置额度窗口（codex / claude；会消耗一次上游重置额度，并访问外部服务）
@@ -43,8 +42,6 @@ async function loadMonitor(ctx) {
 }
 
 const monitorFor = (monitor, name) => (monitor?.accounts || []).find(account => account.name === name || account.filename === name)
-
-const stateText = account => (account.paused ? { text: '暂停', tone: 'warn' } : account.status && account.status !== 'active' ? { text: account.status, tone: 'err' } : { text: '正常', tone: 'ok' })
 
 const quotaSummary = quota => {
   if (!quota) return '-'
@@ -146,20 +143,25 @@ export default {
         const payload = await getChannels(ctx)
         const credential = resolveAccount(payload.credentials || [], args[0])
         const monitor = await loadMonitor(ctx)
-        const data = publicAccount(credential, monitorFor(monitor, credential.name) || {})
+        const raw = monitorFor(monitor, credential.name)
+        const data = publicAccount(credential, raw || {})
         return void ctx.output(data, () => {
           const { ui } = ctx
+          const info = providerInfo(data.provider)
+          const state = accountState(credential, raw, ctx.now())
           ui.kv('账号', data.label || data.name)
           ui.kv('凭据名', data.name)
-          ui.kv('provider', data.provider)
-          ui.kv('状态', stateText(data).text)
+          ui.kv('服务', providerTitle(info, data.provider))
+          ui.kv('状态', ui.paint(state.tone, state.label))
+          if (state.leader) ui.kv('', ui.paint('muted', state.leader))
           ui.kv('模型', String(data.modelCount))
-          ui.kv('代理', proxyLabel(data.proxyUrl))
+          ui.kv('出口', proxyLabel(data.proxyUrl))
           if (data.quota?.plan || data.quota?.tier) ui.kv('套餐', [data.quota.plan, data.quota.tier].filter(Boolean).join(' · '))
-          if (data.quota?.resetCredits) ui.kv('可重置', `${data.quota.resetCredits.available} 次`)
-          if (data.quota?.windows?.length) {
-            ui.table(['额度窗口', '已用', '重置时间'], data.quota.windows.map(window => [window.label, `${Math.round(window.usedPercent)}%`, time(window.resetsAt)]), { align: ['left', 'right', 'left'] })
-          } else if (data.quota?.error) ui.note(`额度：${data.quota.error}`)
+          ui.kv('重置次数', accountCreditsWords(data.quota, info))
+          ui.section('全部窗口')
+          if (!data.quota?.windows?.length) return ui.note(accountQuotaWords(data.quota, info))
+          ui.tree(accountWindowsTree(data.quota.windows, ctx.now()))
+          if (data.quota.error) ui.note(`◇ 显示的是上次读到的额度 · ${data.quota.error}`)
         })
       }
       case 'pause':

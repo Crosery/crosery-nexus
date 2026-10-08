@@ -95,7 +95,7 @@ cradmin config export [--out f] | apply <文件> [--dry-run] [--yes] [--create-k
 cradmin login [--save] | logout | whoami | doctor | version
 ```
 
-`channels ls` / `accounts ls` / `models ls` / `keys ls` 默认输出树（`├─` / `└─`，`CRADMIN_GLYPHS=ascii` 时 `|-` / `` `- ``），层级与命名同 Web 控制台：供应商 → API 渠道 / 订阅账号池；provider → 账号（运行 / 冷却 / 暂停 / 失效 / 异常，`--quota` 才有冷却与失效）；厂商 → 模型；全部 Key 按额度压力排序。`--json` 不变。
+`channels ls` / `accounts ls` / `models ls` / `keys ls` 默认输出树（`├─` / `└─`，`CRADMIN_GLYPHS=ascii` 时 `|-` / `` `- ``），层级与命名同 Web 控制台：供应商 → API 渠道 / 订阅账号池；provider → 账号（运行 / 冷却 / 暂停 / 失效 / 异常，`--quota` 才有冷却与失效）；厂商 → 模型；全部 Key 按额度压力排序。`channels show` / `accounts show` / `keys show` 与 `usage` 的状态词、原因行和栏目名也照控制台（渠道 启用 / 降级 / 停用 / 残留，Key 启用 / 接近上限 / 超额停用 / 停用，额度窗口 日 / 周 / 累计，用量 请求 / Token / 花费 / 失败率 / 缓存命中 / 活跃 Key）；渠道的 异常 与按失败率的 降级 要读健康数据，CLI 不显示。`--json` 不变。
 
 `<渠道>` 是兼容渠道名或账号池 provider（`codex`、`claude` …）。`<key>` 是唯一显示名称或 id 前缀（≥8 位十六进制）。`<账号>` 是凭据名或名称/标签里唯一的子串。所有读命令支持 `--json`（stdout 只有缩进 2 的 JSON）。
 
