@@ -103,6 +103,9 @@ test('CPA view on preview: the trial in the owner\'s words; a rejection says wha
   const voided = cpaView(tick({ why: 'up-to-date' }, trial({ status: 'rejected', rejected: { ...reject, code: 'replaced', reason: '运行中的已不是它', rollback: 'voided' } })))
   assert.equal(voided.pipeline?.tone, 'warn')
   assert.match(voided.pipeline?.text ?? '', /没有回滚（已被换掉）$/)
+  const adopted = cpaView(tick({ why: 'up-to-date' }, { ...trial({}), lastApply: { version: CAND, at: at(bj(9)), action: 'adopt', result: 'adopted', reasons: [] } }))
+  assert.deepEqual(adopted.last, { text: `09:00 把手工装上的 ${CAND} 接入预发布试运行`, tone: 'ok', at: at(bj(9)) })
+  assert.equal(adopted.error, null)
   assert.match(cpaView(tick({ why: 'trial-active', version: '8.0.23-patched.2', trial: CAND }, trial({}))).line, new RegExp(`^${CAND} 还在试运行 · 8\\.0\\.23-patched\\.2 等它结束`))
 })
 

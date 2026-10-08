@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
-  accountTypes, applierPaths, applyAcceptance, applyCpa, classifyInstall, configAuthDir, configLayout, decideCpa, decideMagpie, emptyState, ingestCpa,
+  accountTypes, adoptCpa, applierPaths, applyAcceptance, applyCpa, classifyInstall, configAuthDir, configLayout, decideCpa, decideMagpie, emptyState, ingestCpa,
   normalizeConfig, parseAcceptance, parseCpaReport, parseMagpieReport, parseProbeModels, parsePromotion, pickProbeModel, probeCommand, promotionProblems,
   promotionRecord, readProbeKeys, readState, runAuto, runProbes, sameMajor, startTrial, trialTick, windowState, withLock,
 } from './kernel-applier.mjs'
@@ -718,4 +718,38 @@ test('probe command: writes the phase record the applier reads; verify reuses th
   const written = await fs.readFile(path.join(out, 'probe-verify.json'), 'utf8')
   assert.equal(written.includes('sk-probe'), false)
   await assert.rejects(probeCommand({ paths, out, phase: 'whenever', budgetS: '5' }), /--phase/)
+})
+
+test('adopt (preview): the binary installed by hand becomes the trial, is accepted like a build, and rolls back to the given backup', async t => {
+  const r = await relay({ role: 'preview', running: NEXT })
+  t.after(r.close)
+  await fs.writeFile(r.paths.cpa.binary, NEXT)
+  const backup = path.join(r.dir, 'cli-proxy-api.before')
+  await fs.writeFile(backup, RUNNING)
+  const deps = { run: r.runner, now: () => bj(12) }
+  const production = { ...r.paths, role: 'production' }
+  await assert.rejects(adoptCpa({ paths: production, version: NEXT, sha256: sha(NEXT), deps }), /preview only/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: 'f'.repeat(64), deps }), /sha256/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: '7.3.21-patched.0', sha256: sha(NEXT), deps }), /preview runs 7\.3\.20/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), previous: '7.3.14-patched.0', backup, deps }), /reports 7\.3\.15/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), previous: RUNNING, deps }), /go together/)
+
+  const adopted = await adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), previous: RUNNING, backup, deps })
+  assert.equal(adopted.result, 'adopted')
+  let state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.trial.status, state.trial.version, state.trial.sha256, state.trial.previous, state.attempts[NEXT]], ['installed', NEXT, sha(NEXT), RUNNING, 1])
+  assert.deepEqual([state.lastApply.action, state.lastApply.result], ['adopt', 'adopted'])
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), deps }), /still on trial/)
+  // a tick changes nothing: nothing is reinstalled and the trial waits for the coordinator's acceptance
+  const tick = await runAuto({ paths: r.paths, deps })
+  assert.equal(r.world.installs.length, 0)
+  assert.equal(tick.cpa.why, 'up-to-date')
+  assert.equal((await readState(r.paths, 'cpa')).trial.status, 'installed')
+  // a failed acceptance restores the backup through the install transaction
+  await r.accept(NEXT, 'first', false)
+  const out = await runAuto({ paths: r.paths, deps: { ...deps, now: () => bj(13) } })
+  assert.deepEqual(out.log.find(item => item.action === 'reject'), { kernel: 'cpa', action: 'reject', version: NEXT, result: 'rolled-back', reason: 'acceptance' })
+  assert.deepEqual(r.world.installs.at(-1), [backup, RUNNING])
+  state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.trial.status, state.installed.version, out.cpa.why], ['rejected', RUNNING, 'attempted'])
 })

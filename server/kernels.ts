@@ -251,6 +251,7 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
   } : {
     applied: [id === 'cpa' ? [`${at} 替换到 ${lastTarget}`, probed].filter(Boolean).join(' · ') : `${at} 备用内核换成 ${lastTarget}（启动检查通过）`, 'ok'],
     'up-to-date': [`${at} 已是 ${lastTarget}`, 'ok'],
+    adopted: [`${at} 把手工装上的 ${lastTarget} 接入预发布试运行`, 'ok'],
     'rolled-back': [`${at} 替换 ${lastTarget} 后验收没过，${restoreSeconds !== null ? `${restoreSeconds} 秒内换回旧版本` : '已自动回滚'}${probed ? ` · ${probed}` : ''}`, 'bad'],
     'rollback-failed': [`${at} 替换 ${lastTarget} 失败，回滚也没成功 · 需要人工处理`, 'bad'],
     refused: [`${at} ${lastRaw?.action === 'rollback' ? '回滚' : '替换'}没开始：${first(lastReasons) || '安装脚本拒绝'}`, 'warn'],

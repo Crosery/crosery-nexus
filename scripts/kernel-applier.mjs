@@ -6,6 +6,8 @@
  *   node scripts/kernel-applier.mjs status                     config + state + what `auto` would do now (read-only)
  *   node scripts/kernel-applier.mjs auto [--dry-run]           crosery-kernel-update.service (timer, path unit, gates)
  *   node scripts/kernel-applier.mjs rollback --kernel cpa|magpie --confirm
+ *   node scripts/kernel-applier.mjs adopt --version <v> --sha256 <hex> [--previous <v> --backup <file>]
+ *                                                              preview: the binary installed by hand becomes the trial
  *   node scripts/kernel-applier.mjs probe --out <dir> --phase baseline|verify|restored --budget <s>
  *                                                              the install script's hook: one real request per OAuth type
  *
@@ -975,6 +977,42 @@ async function rejectTrial({ paths, cpa, reject, deps, now }) {
   }
 }
 
+/**
+ * Preview, by hand: the binary preview already runs (installed outside the pipeline) becomes the trial, and is then
+ * accepted, soaked and promoted like any build. It must be exactly the binary named (version and sha256). With the
+ * previous version and its backup a rejection rolls back to it; without them a rejection needs a person.
+ */
+export async function adoptCpa({ paths, version, sha256, previous = null, backup = null, deps = {} }) {
+  const now = deps.now ?? Date.now
+  if ((paths.role ?? 'production') !== 'preview') throw new Error('adopt runs on preview only (AUTOUPDATE_ROLE=preview)')
+  if (!CPA_VERSION.test(String(version)) || !SHA256.test(String(sha256))) throw new Error('--version <CPA version> --sha256 <64 hex>')
+  if (Boolean(previous) !== Boolean(backup)) throw new Error('--previous and --backup go together')
+  if (previous && !CPA_VERSION.test(previous)) throw new Error('--previous must be a CPA version')
+  const cpa = await readState(paths, 'cpa')
+  if (cpa.trial && TRIAL_ACTIVE.has(cpa.trial.status)) throw new Error(`${cpa.trial.version} is still on trial; adopt after it ends`)
+  const running = await runningCpa(paths, deps)
+  if (running !== version) throw new Error(`preview runs ${running ?? 'nothing'}, not ${version}`)
+  const actual = await sha256File(paths.cpa.binary)
+  if (actual !== sha256) throw new Error(`${paths.cpa.binary} has sha256 ${actual.slice(0, 12)}…, not ${sha256.slice(0, 12)}…`)
+  if (backup) {
+    if (!await exists(backup)) throw new Error(`backup ${backup} does not exist`)
+    const was = await binaryVersion(backup, deps.run ?? run)
+    if (was !== previous) throw new Error(`backup ${backup} reports ${was ?? 'no version'}, not ${previous}`)
+  }
+  const at = iso(now())
+  const next = {
+    ...cpa, env: 'preview',
+    staged: { version, sha256, tag: cpa.staged?.version === version ? cpa.staged.tag ?? null : null, at },
+    installed: { version, at },
+    applied: previous ? { version, previous, backup, at } : null,
+    attempts: { ...cpa.attempts, [version]: Math.max(1, cpa.attempts[version] || 0) },
+    trial: startTrial({ version, sha256, previous, backup, at, policy: paths.policy ?? promotionPolicy({}) }),
+    lastApply: { version, from: previous, at, action: 'adopt', result: 'adopted', backup, reasons: [] },
+  }
+  await saveState(paths, next)
+  return { result: 'adopted', trial: next.trial }
+}
+
 export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {} } = {}) {
   const now = deps.now ?? Date.now
   const config = normalizeConfig(await readJSON(paths.config))
@@ -1098,6 +1136,9 @@ async function main() {
     const outcome = await withLock(paths.lock, () => rollbackKernel({ paths, kernel, deps: {}, now: Date.now }))
     console.log(json(outcome))
     if (!['applied', 'rolled-back-manually'].includes(outcome.result)) process.exitCode = 1
+  } else if (action === 'adopt') {
+    const outcome = await withLock(paths.lock, () => adoptCpa({ paths, version: arg('--version'), sha256: arg('--sha256'), previous: arg('--previous') ?? null, backup: arg('--backup') ?? null }))
+    console.log(json(outcome))
   } else if (action === 'probe') {
     // called by cpa-install-binary.sh while `auto` holds the applier lock: no lock here
     const out = arg('--out')
@@ -1106,7 +1147,7 @@ async function main() {
     console.log(probeSummary(record))
     if (!record.ok) process.exitCode = 1
   } else {
-    throw new Error('Use status, auto [--dry-run], rollback --kernel cpa|magpie --confirm, or probe --out <dir> --phase <phase> --budget <s>')
+    throw new Error('Use status, auto [--dry-run], rollback --kernel cpa|magpie --confirm, adopt --version <v> --sha256 <hex> [--previous <v> --backup <file>], or probe --out <dir> --phase <phase> --budget <s>')
   }
 }
 

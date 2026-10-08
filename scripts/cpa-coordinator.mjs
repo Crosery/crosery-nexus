@@ -4,6 +4,8 @@
  * preview first, production only with preview's record. It never installs; each host's applier does.
  *
  *   node cpa-coordinator.mjs round --root <pipeline root>
+ *   node cpa-coordinator.mjs adopt --root <pipeline root> --binary <file> --version <v> --sha256 <hex>
+ *       a binary built elsewhere that preview adopted by hand (kernel-applier.mjs adopt) goes into the store
  *
  * Reads <root>/state/report.json (this round's builder result) and the local candidate store
  * <root>/state/candidates/<version>/{cli-proxy-api,candidate.json}, asks both gates for their state, then per round:
@@ -81,6 +83,31 @@ export async function pruneStore(root, keep = KEEP_CANDIDATES, protect = []) {
   for (const { name } of stats.sort((a, b) => b.at - a.at).slice(keep)) {
     if (!protect.includes(name)) await fs.rm(path.join(dir, name), { recursive: true, force: true })
   }
+}
+
+/**
+ * A binary built elsewhere (and adopted on preview by hand: `kernel-applier.mjs adopt`) goes into the store, so the
+ * coordinator can deliver exactly it once preview accepted it. Never replaces another build of the same version.
+ */
+export async function adoptCandidate({ root, binary, version, sha256 }) {
+  if (!CPA_VERSION.test(String(version)) || !SHA256.test(String(sha256))) throw new Error('--version <CPA version> --sha256 <64 hex>')
+  const actual = await sha256File(binary)
+  if (actual !== sha256) throw new Error(`${binary} has sha256 ${actual.slice(0, 12)}…, not ${sha256.slice(0, 12)}…`)
+  const store = await readStore(root)
+  if (store.has(version)) {
+    if (store.get(version).sha256 === sha256) return { result: 'present', version }
+    throw new Error(`the store already has another build of ${version}; not replaced`)
+  }
+  const dir = path.join(root, 'state/candidates')
+  const incoming = path.join(dir, `.incoming-${version}`)
+  await fs.rm(incoming, { recursive: true, force: true })
+  await fs.mkdir(incoming, { recursive: true })
+  await fs.copyFile(binary, path.join(incoming, 'cli-proxy-api'))
+  await fs.chmod(path.join(incoming, 'cli-proxy-api'), 0o755)
+  const base = /^\d+\.\d+\.\d+/.exec(version)[0]
+  await fs.writeFile(path.join(incoming, 'candidate.json'), `${JSON.stringify({ version, sha256, commit: null, tag: `v${base}`, checks: [], adopted: true })}\n`)
+  await fs.rename(incoming, path.join(dir, version))
+  return { result: 'stored', version }
 }
 
 /* ── the plan (pure) ─────────────────────────────────────────────────── */
@@ -257,9 +284,14 @@ export async function runRound({ root, env = process.env, deps = {} }) {
 }
 
 async function main() {
-  const at = process.argv.indexOf('--root')
-  if (process.argv[2] !== 'round' || at < 0 || !process.argv[at + 1]) throw new Error('Use: cpa-coordinator.mjs round --root <pipeline root>')
-  const result = await runRound({ root: path.resolve(process.argv[at + 1]) })
+  const arg = name => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1] }
+  const root = arg('--root')
+  if (process.argv[2] === 'adopt' && root && arg('--binary')) {
+    console.log(JSON.stringify(await adoptCandidate({ root: path.resolve(root), binary: path.resolve(arg('--binary')), version: arg('--version'), sha256: arg('--sha256') })))
+    return
+  }
+  if (process.argv[2] !== 'round' || !root) throw new Error('Use: cpa-coordinator.mjs round --root <pipeline root> | adopt --root <root> --binary <file> --version <v> --sha256 <hex>')
+  const result = await runRound({ root: path.resolve(root) })
   for (const line of result.log) console.log(line)
   for (const line of result.errors) console.error(line)
   if (result.errors.length) process.exitCode = 1

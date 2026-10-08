@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { coordinatorConfig, hostReport, planRound, previewStage, rtkForward, runRound } from './cpa-coordinator.mjs'
+import { adoptCandidate, coordinatorConfig, hostReport, planRound, previewStage, readStore, rtkForward, runRound } from './cpa-coordinator.mjs'
 
 const V = '8.0.21-patched.aaaaaaaa'
 const W = '8.0.22-patched.bbbbbbbb'
@@ -143,4 +143,29 @@ test('round: promotion sends the very binary preview accepted plus its record; a
   const refused = await runRound({ root, env: ENV, deps: { gate: tampered.gate, now: () => NOW } })
   assert.match(refused.errors.join(), /does not match the sha256 preview accepted/)
   assert.equal(tampered.calls.production.includes('cpa-upload'), false)
+})
+
+test('adopt: a binary built elsewhere goes into the store once, is accepted on preview and delivered unchanged; another build of that version is refused', async t => {
+  const root = await pipelineRoot(t, built(W), { [W]: W })
+  const file = path.join(root, 'adopted.bin')
+  await fs.writeFile(file, V)
+  await assert.rejects(adoptCandidate({ root, binary: file, version: V, sha256: sha('other') }), /not/)
+  assert.deepEqual(await adoptCandidate({ root, binary: file, version: V, sha256: sha(V) }), { result: 'stored', version: V })
+  assert.deepEqual(await adoptCandidate({ root, binary: file, version: V, sha256: sha(V) }), { result: 'present', version: V })
+  await fs.writeFile(file, 'another build')
+  await assert.rejects(adoptCandidate({ root, binary: file, version: V, sha256: sha('another build') }), /another build of/)
+  const stored = (await readStore(root)).get(V)
+  assert.deepEqual([stored.sha256, stored.adopted, stored.tag], [sha(V), true, 'v8.0.21'])
+  // preview adopted it: the first acceptance runs against it, the builder's own build waits for the slot
+  const states = { preview: { installed: { version: V }, trial: trial('installed') }, production: { installed: { version: OLD } } }
+  const round = gates(states)
+  const out = await runRound({ root, env: ENV, deps: { gate: round.gate, now: () => NOW, accept: async () => ({ ok: true, ranAt: new Date(NOW).toISOString(), checks: [], summary: 'ok' }) } })
+  assert.deepEqual(out.actions.map(action => action.kind), ['accept'])
+  assert.equal(round.calls.preview.includes('cpa-upload'), false)
+  // accepted: exactly the adopted bytes go to production
+  const record = { version: 1, kind: 'cpa-promotion', candidate: { version: V, sha256: sha(V) } }
+  const deliver = gates({ preview: { installed: { version: V }, trial: trial('accepted') }, production: { installed: { version: OLD } }, promotion: record })
+  const delivered = await runRound({ root, env: ENV, deps: { gate: deliver.gate, now: () => NOW } })
+  assert.deepEqual(delivered.errors, [])
+  assert.equal(deliver.received.production['cpa-upload'], V)
 })
