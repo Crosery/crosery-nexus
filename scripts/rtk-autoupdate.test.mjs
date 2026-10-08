@@ -277,6 +277,7 @@ test('preview: latest from the releases list (no upstream check), trial with che
     assert.equal(upgraded.why, 'upgraded', JSON.stringify(upgraded))
     let state = JSON.parse(await fs.readFile(f.paths.state, 'utf8'))
     assert.deepEqual([state.role, state.trial.status, state.trial.version, state.trial.sha256, state.trial.checks.length], ['preview', 'soaking', '0.2.0', f.sum, 1])
+    assert.equal(state.trial.soakUntil, new Date(Date.UTC(2026, 9, 9, 3) + 24 * HOUR).toISOString(), 'the console shows when the soak ends')
     clock += 6 * HOUR
     // a newer release meanwhile does not interrupt the trial
     const cache = JSON.parse(await fs.readFile(f.paths.cache, 'utf8'))

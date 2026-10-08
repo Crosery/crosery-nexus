@@ -463,7 +463,7 @@ export async function upgradeRtk({ mode = 'plan', acceptBreaking = false, paths 
         const accepted = { ...trial, checks, status: 'accepted', acceptedAt: iso(now) }
         return finish({ action: 'none', why: 'accepted', result: 'accepted', ...base, target: trial.tag }, { state: { trial: accepted, accepted } })
       }
-      return finish({ action: 'none', why: 'soaking', result: 'soaking', soakUntil, ...base, target: trial.tag }, { state: { trial: { ...trial, checks } } })
+      return finish({ action: 'none', why: 'soaking', result: 'soaking', soakUntil, ...base, target: trial.tag }, { state: { trial: { ...trial, checks, soakUntil } } })
     }
   }
 
@@ -573,7 +573,7 @@ export async function upgradeRtk({ mode = 'plan', acceptBreaking = false, paths 
     const lastUpgrade = { from: install.version, to: prepared.version, at: iso(now), backup: swapped.backup, result: swapped.ok ? 'upgraded' : swapped.rolledBack ? 'rolled-back' : 'rollback-failed', sha256: prepared.sha256, verifiedBy: prepared.verifiedBy, ...(promotion ? { promotedAt: promotion.acceptedAt } : {}) }
     if (swapped.ok) {
       const trial = role === 'preview'
-        ? { version: prepared.version, tag: target, sha256: prepared.sha256, asset: prepared.asset, installedAt: iso(now), checks: [{ ...swapped.check, at: iso(now) }], status: 'soaking', acceptedAt: null, rejected: null }
+        ? { version: prepared.version, tag: target, sha256: prepared.sha256, asset: prepared.asset, installedAt: iso(now), soakUntil: iso(now + policy.soakMs), checks: [{ ...swapped.check, at: iso(now) }], status: 'soaking', acceptedAt: null, rejected: null }
         : undefined
       return finish({ action: 'upgrade', why: 'upgraded', result: 'upgraded', ...facts, local: prepared.version, target, plan },
         { state: { lastUpgrade, failures: 0, nextAttemptAt: null, ...(trial ? { trial } : {}) } })
