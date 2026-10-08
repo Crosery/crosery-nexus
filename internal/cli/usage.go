@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -245,6 +246,7 @@ func shortTime(ts string) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
+// renderRequests 的列与控制台「最近请求」表一致（MeRequestTable.vue）：时间 · 模型 · 状态 · Token · 缓存读 · 首字 · 耗时。
 func renderRequests(items []api.RequestItem) {
 	ui.Println()
 	ui.Println("  " + ui.Bold.Render("最近请求") + ui.Dim.Render(fmt.Sprintf("  %d 条", len(items))))
@@ -252,6 +254,10 @@ func renderRequests(items []api.RequestItem) {
 		ui.Note("没有请求记录")
 		return
 	}
+	ui.Println(indent(requestsTable(items), "  "))
+}
+
+func requestsTable(items []api.RequestItem) string {
 	g := ui.G()
 	var rows [][]string
 	for _, it := range items {
@@ -259,16 +265,44 @@ func renderRequests(items []api.RequestItem) {
 		if it.Success == 0 {
 			st = ui.ErrS.Render(g.Fail + fmt.Sprintf(" %d", it.StatusCode))
 		}
+		total := it.TotalTokens
+		if total <= 0 {
+			total = it.InputTokens + it.OutputTokens
+		}
+		cached := "—"
+		if it.CachedTokens > 0 {
+			cached = ui.Tokens(it.CachedTokens)
+		}
+		ttft := "—"
+		if it.TTFTMs > 0 {
+			ttft = duration(it.TTFTMs)
+		}
 		rows = append(rows, []string{
 			shortTime(it.Timestamp)[5:],
 			ui.Truncate(it.Model, 26),
-			strings.TrimPrefix(it.Endpoint, "POST "),
 			st,
-			fmt.Sprintf("%.1fs", it.LatencyMs/1000),
-			ui.Tokens(it.InputTokens) + "/" + ui.Tokens(it.OutputTokens),
-			ui.Tokens(it.CachedTokens),
+			ui.Tokens(total),
+			cached,
+			ttft,
+			duration(it.LatencyMs),
 		})
 	}
-	ui.Println(indent(ui.Table([]string{"时间", "模型", "接口", "状态", "耗时", "入/出", "缓存"}, rows,
-		ui.Left, ui.Left, ui.Left, ui.Left, ui.Right, ui.Right, ui.Right), "  "))
+	return ui.Table([]string{"时间", "模型", "状态", "Token", "缓存读", "首字", "耗时"}, rows,
+		ui.Left, ui.Left, ui.Left, ui.Right, ui.Right, ui.Right, ui.Right)
+}
+
+// duration 同控制台 fmtDuration：849ms · 1.82s · 83.7s · 412s。
+func duration(ms float64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", int(math.Round(ms)))
+	}
+	s := ms / 1000
+	switch {
+	case s < 10:
+		return fmt.Sprintf("%.2fs", s)
+	case s < 100:
+		return fmt.Sprintf("%.1fs", s)
+	default:
+		return fmt.Sprintf("%ds", int(math.Round(s)))
+	}
 }

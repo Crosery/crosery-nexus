@@ -89,53 +89,6 @@ func groupByVendor(list []api.Model) []vendorGroup {
 	return groups
 }
 
-// consoleChannel 把 /v1/models 的 owned_by 换成控制台的渠道 id（PROVIDERS 的 types 别名）。
-func consoleChannel(ownedBy string) string {
-	id := strings.ToLower(strings.TrimSpace(ownedBy))
-	switch id {
-	case "anthropic":
-		return "claude"
-	case "openai":
-		return "codex"
-	case "grok":
-		return "xai"
-	case "muse":
-		return "meta"
-	}
-	return id
-}
-
-var consoleChannelNames = map[string]string{
-	"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity", "xai": "Grok",
-	"kimi": "Kimi", "kimi-ai": "Kimi 国际站", "devin": "Devin", "meta": "Meta AI",
-	"minimax": "MiniMax", "openai-compatible-minimax": "MiniMax",
-	"mox-aigw": "Mox 中转", "openai-compatible-mox-aigw": "Mox 中转",
-}
-
-var consoleChannelOrder = []string{"codex", "claude", "antigravity", "kimi", "kimi-ai", "xai", "devin", "meta"}
-
-// channelName 是控制台里的渠道名；没有专门名字的渠道原样显示 id。
-func channelName(ownedBy string) string {
-	id := consoleChannel(ownedBy)
-	if id == "" {
-		return "未知渠道"
-	}
-	if name, ok := consoleChannelNames[id]; ok {
-		return name
-	}
-	return strings.TrimSpace(ownedBy)
-}
-
-func channelRank(ownedBy string) int {
-	id := consoleChannel(ownedBy)
-	for i, v := range consoleChannelOrder {
-		if v == id {
-			return i
-		}
-	}
-	return len(consoleChannelOrder)
-}
-
 // channelHead 是渠道一行的「名称 + 标识」：标识与名称只差大小写时不重复显示。
 func channelHead(label, id string) []string {
 	if strings.EqualFold(label, id) {
@@ -169,7 +122,7 @@ func modelTree(groups []vendorGroup) []ui.TreeNode {
 func channelTree(groups []channelGroup) []ui.TreeNode {
 	var nodes []ui.TreeNode
 	for _, grp := range groups {
-		node := ui.TreeNode{Cells: append(channelHead(channelName(grp.channel), grp.channel), ui.Dim.Render(fmt.Sprintf("%d 个模型", len(grp.models))))}
+		node := ui.TreeNode{Cells: append(channelHead(api.ChannelLabel(grp.channel), grp.channel), ui.Dim.Render(fmt.Sprintf("%d 个模型", len(grp.models))))}
 		for _, k := range []api.Kind{api.KindChat, api.KindImage, api.KindAudio} {
 			var of []api.Model
 			for _, m := range grp.models {

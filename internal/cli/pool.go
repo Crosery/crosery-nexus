@@ -99,7 +99,7 @@ func poolTree(p *api.Pool) []ui.TreeNode {
 
 	providers := append([]api.PoolProvider(nil), p.Providers...)
 	sort.SliceStable(providers, func(i, j int) bool {
-		ri, rj := channelRank(providers[i].Provider), channelRank(providers[j].Provider)
+		ri, rj := api.ChannelRank(providers[i].Provider), api.ChannelRank(providers[j].Provider)
 		if ri != rj {
 			return ri < rj
 		}
@@ -108,7 +108,7 @@ func poolTree(p *api.Pool) []ui.TreeNode {
 	for _, pr := range providers {
 		label := pr.Label
 		if label == "" {
-			label = channelName(pr.Provider)
+			label = api.ChannelLabel(pr.Provider)
 		}
 		health := ui.OKS.Render(g.Dot + " 正常")
 		switch {

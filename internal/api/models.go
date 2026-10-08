@@ -223,29 +223,49 @@ func VendorIs(v string) func(Model) bool {
 	return func(m Model) bool { return m.Vendor() == v && m.Kind() == KindChat }
 }
 
-// ChannelLabel 把 owned_by 渠道名翻译成展示名。
-func ChannelLabel(ownedBy string) string {
-	switch strings.ToLower(ownedBy) {
-	case "anthropic", "claude":
-		return "Claude 官方号池"
-	case "openai", "codex":
-		return "OpenAI / Codex 号池"
-	case "antigravity":
-		return "Antigravity（Gemini / Claude）"
-	case "openrouter":
-		return "OpenRouter 免费池"
-	case "qoder-cn", "qoder":
-		return "Qoder CN"
-	case "commandcode":
-		return "CommandCode"
-	case "cline-pass", "cline":
-		return "Cline Pass"
-	case "gemini", "google":
-		return "Gemini"
-	case "xai", "grok":
-		return "xAI Grok"
-	case "":
-		return "未标注"
+// ChannelID 把 /v1/models 的 owned_by 换成控制台的渠道 id（控制台 PROVIDERS 的 types 别名）。
+func ChannelID(ownedBy string) string {
+	id := strings.ToLower(strings.TrimSpace(ownedBy))
+	switch id {
+	case "anthropic":
+		return "claude"
+	case "openai":
+		return "codex"
+	case "grok":
+		return "xai"
+	case "muse":
+		return "meta"
 	}
-	return ownedBy
+	return id
+}
+
+// 控制台的渠道名（src/channelLabels.ts + 订阅账号池 PROVIDERS 的 name）；控制台改名，这里跟着改。
+var channelLabels = map[string]string{
+	"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity", "xai": "Grok",
+	"kimi": "Kimi", "kimi-ai": "Kimi 国际站", "devin": "Devin", "meta": "Meta AI",
+	"minimax": "MiniMax", "openai-compatible-minimax": "MiniMax",
+	"mox-aigw": "Mox 中转", "openai-compatible-mox-aigw": "Mox 中转",
+}
+
+// 订阅账号池在控制台里的顺序。
+var channelOrder = []string{"codex", "claude", "antigravity", "kimi", "kimi-ai", "xai", "devin", "meta"}
+
+// ChannelLabel 是 owned_by 在控制台里的渠道名；没有专门名字的渠道原样显示 id。
+func ChannelLabel(ownedBy string) string {
+	id := ChannelID(ownedBy)
+	if id == "" {
+		return "未知渠道"
+	}
+	if name, ok := channelLabels[id]; ok {
+		return name
+	}
+	return strings.TrimSpace(ownedBy)
+}
+
+// ChannelRank 是渠道的排序位置：订阅账号池按控制台顺序在前，其余并列在后。
+func ChannelRank(ownedBy string) int {
+	if i := slices.Index(channelOrder, ChannelID(ownedBy)); i >= 0 {
+		return i
+	}
+	return len(channelOrder)
 }

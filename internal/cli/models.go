@@ -94,7 +94,7 @@ func groupByChannel(list []api.Model) []channelGroup {
 	}
 	// 订阅账号池按控制台的固定顺序在前，其余渠道按模型数从多到少。
 	sort.SliceStable(groups, func(i, j int) bool {
-		ri, rj := channelRank(groups[i].channel), channelRank(groups[j].channel)
+		ri, rj := api.ChannelRank(groups[i].channel), api.ChannelRank(groups[j].channel)
 		if ri != rj {
 			return ri < rj
 		}

@@ -52,6 +52,8 @@ const usageFixture = `{"days":7,"key":{"name":"demo-key"},"quotaTimeZone":"Asia/
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
 
+const requestsFixture = `{"items":[{"timestamp":"2026-10-09T01:30:00Z","model":"gpt-6-astra","endpoint":"POST /v1/responses","success":1,"statusCode":200,"latencyMs":1820,"inputTokens":1200,"outputTokens":300}]}`
+
 func plain(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 func fixtureModels(t *testing.T) []api.Model {
@@ -112,19 +114,6 @@ func TestVendorOf(t *testing.T) {
 	for id, want := range cases {
 		if _, got := vendorOf(id); got != want {
 			t.Errorf("vendorOf(%q) = %q，期望 %q", id, got, want)
-		}
-	}
-}
-
-func TestChannelName(t *testing.T) {
-	cases := map[string]string{
-		"anthropic": "Claude", "claude": "Claude", "openai": "Codex", "codex": "Codex",
-		"antigravity": "Antigravity", "grok": "Grok", "kimi-ai": "Kimi 国际站",
-		"mox-aigw": "Mox 中转", "example-relay": "example-relay", "": "未知渠道",
-	}
-	for id, want := range cases {
-		if got := channelName(id); got != want {
-			t.Errorf("channelName(%q) = %q，期望 %q", id, got, want)
 		}
 	}
 }
@@ -217,7 +206,7 @@ func TestTrees(t *testing.T) {
 
 // 命令级：经 HTTP 拉夹具 → 分组 → 树形输出，确认默认输出是树、号池接口缺失时退化为渠道树。
 func TestCommandsPrintTrees(t *testing.T) {
-	srv := fixtureServer(t, map[string]string{"/v1/models": modelsFixture, "/v1/usage": usageFixture})
+	srv := fixtureServer(t, map[string]string{"/v1/models": modelsFixture, "/v1/usage": usageFixture, "/v1/usage/requests": requestsFixture})
 	t.Setenv("CRAPI_KEY", "")
 	t.Setenv("CRAPI_BASE_URL", srv.URL)
 	t.Setenv("CRAPI_CONSOLE_URL", srv.URL)
@@ -237,6 +226,7 @@ func TestCommandsPrintTrees(t *testing.T) {
 		{"channels", func() error { return cmdChannels(a, nil) }, []string{"◆ 可用渠道  4 个渠道 · 9 个模型", "├─ Codex", "└─ example-relay"}},
 		{"pool 无号池接口", func() error { return cmdPool(a, nil) }, []string{"控制台暂未开放号池接口", "├─ Codex", "   └─ 对话  3"}},
 		{"usage", func() error { return cmdUsage(a, nil) }, []string{"◆ 账号用量 · demo-key  最近 7 天", "├─ 额度", "└─ 按模型 · 花费  共 3 个模型", "未定价（不计入花费与额度）：house-model-1"}},
+		{"usage --requests", func() error { return cmdUsage(a, []string{"--requests"}) }, []string{"最近请求  1 条", "│ 时间        │ 模型        │ 状态  │ Token │ 缓存读 │ 首字 │  耗时 │", "│ gpt-6-astra │ ✓ 200 │"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
