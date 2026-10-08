@@ -20,4 +20,9 @@
 | 0011 | 修复 /v0 连续写入在内存里被热重载回滚：每次写 config.yaml 记一个进程内写序号，热重载读文件前记下序号，读完后若已有新写入则丢弃这次重载（管理端 `SetConfig` 同样拒收）；重载哈希取实际加载的字节，重载串行执行 |
 | 0012 | Codex live / realtime（`/v1/live`、`/v1/live/:call_id`、`/v1/realtime*` 的建呼叫、WebSocket、sideband、hangup、client secret）按 Key 模型白名单和渠道白名单拦截：检查实际运行的 Codex 模型（未指定时为默认 `gpt-live-1-codex`，`gpt-realtime` 系别名同样归到它）和 `codex` 渠道（含 `__console_no_channels_allowed__`），不允许直接 403 `model_not_allowed` / `channel_not_allowed`，不选凭据、不连上游；client secret 按签发它的 Key 判断。受限 Key 要用 live 需把 `gpt-live-1-codex` 加进模型白名单 |
 
-配置格式：v8 照旧读旧布局，不改写文件；控制台用 /v0 写回也保持旧布局。只有走 v8 自己的管理接口（/v8/management 或上游面板）写一次，config.yaml 才迁移成 `config-version: 8`，之后 v7 起不来。applier 每轮记录 `configLayout`，跨大版本的一键回滚只在仍是旧布局时提供。上游新增的顶层 `models:`（`catalog` / `codex-catalog` / `devin-catalog`）两种布局都认，没配时 /v0 写回不会加出这一节。
+配置格式：v8 照旧读旧布局，启动不改写文件；控制台用 /v0 写回也保持旧布局，例外见下。走 v8 自己的管理接口（/v8/management 或上游面板）写一次，config.yaml 就迁移成 `config-version: 8`，之后 v7 起不来。applier 每轮记录 `configLayout`，跨大版本的一键回滚只在仍是旧布局时提供。
+
+顶层 `models:`（`catalog` / `codex-catalog` / `devin-catalog`，上游新增）两种布局都认，没配时 /v0 写回不会加出这一节；但它是 v8 专有根，**旧布局里一旦有 `models:`，下一次 /v0 写（如控制台 PUT api-keys）就把整个文件迁移成 v8 布局**（`IsV8ConfigLayout`）。启动本身不改文件。迁移后 fork 字段照常生效（`access.api-key-model-access` / `access.api-key-channel-access`、compat 的 `relay-mode`），只有两个没有代码读取的 fork 根（`claude-cache-ttl-upgrade`、`api-key-channel-access-required`）被注释掉。
+
+回滚到正式的 `8.0.13-patched.7b53aee6` 是安全的（本地验证，2026-10-09）：它读迁移后的文件，启动不改文件。api-keys、两张白名单、openai-compatibility 渠道、各 Key 的 /v1/models 以及模型/渠道拦截，都与它读正式旧布局时一致。7b53aee6 不含 0008，本来就不认 `relay-mode`，这个值留在文件里，回到 v8.0.21 后照常生效。8.0.13 对 `models:` 只是忽略，不报错也不用自定义目录；但它自己做一次 /v0 写会把 `models:` 整节删掉，再升回 v8.0.21 时要重新加 `models.catalog`。
+
