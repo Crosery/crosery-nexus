@@ -52,8 +52,8 @@ export type ProbeVerdict = { outcome: 'ok' | 'countable' | 'neutral'; reason: st
 const QUOTA_TEXT = /rate[ _-]?limit|too many requests|quota|insufficient[ _-]?(?:balance|quota|credit|funds)|credit|billing|balance|usage limit|resource[ _-]?exhausted|overloaded|capacity/i
 /** 网关挑不到账号、账号冷却、鉴权失败：账号的问题，不是模型的问题。 */
 const ACCOUNT_TEXT = /auth_not_found|no auth available|cooling down|cooldown|unauthori[sz]ed|forbidden|permission|invalid[ _-]?api[ _-]?key|authentication/i
-/** 探测请求本身的参数被拒（个别上游对 max_tokens 有下限）：换成下线就是把探测的毛病算到模型头上。 */
-const PROBE_SHAPE_TEXT = /max_(?:output_|completion_)?tokens/i
+/** 探测请求本身的参数被拒（个别上游对 max_tokens 有下限、思考预算要小于输出上限）：换成下线就是把探测的毛病算到模型头上。 */
+const PROBE_SHAPE_TEXT = /max[\s_-]?(?:output[\s_-]?|completion[\s_-]?)?tokens|thinking[\s_.-]?budget|budget[\s_]tokens/i
 const COUNTABLE_STATUS = new Set([400, 404, 422, 500, 501])
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -331,7 +331,8 @@ export async function runModelAvailabilityRound(
 
   // 读不到目录或注册不了探测 Key 都直接抛出：本轮作废，状态文件不动
   const catalog = await deps.listCatalog()
-  const live = catalog.filter((group) => group.available !== false)
+  // 目录暂时为空的服务和账号归零的一样原样保留：不能因为一次空目录把已下线的模型忘掉、重新放行
+  const live = catalog.filter((group) => group.available !== false && group.models.length > 0)
   const keys = live.length ? await deps.ensureProbeKeys(live.map((group) => group.id)) : {}
 
   const tasks = live.flatMap((group) => group.models.filter((model) => kindOf(model) === 'chat').map((model) => ({ service: group.id, model })))
@@ -354,7 +355,8 @@ export async function runModelAvailabilityRound(
       return { model, chat: Boolean(verdict), verdict }
     }),
   }))
-  const kept = catalog.filter((group) => group.available === false).map((group) => group.id)
+  const liveIds = new Set(live.map((group) => group.id))
+  const kept = catalog.filter((group) => !liveIds.has(group.id)).map((group) => group.id)
   const applied = applyProbeRound(read(), { probed, kept }, context.now())
   write(applied.file)
 
@@ -381,7 +383,7 @@ export async function runModelAvailabilityRound(
     counts.unprobed ? `未探测 ${counts.unprobed}` : '',
     down ? `本轮 −${down}` : '',
     up ? `本轮 +${up}` : '',
-    kept.length ? `账号归零 ${kept.length}` : '',
+    kept.length ? `${kept.length} 服务暂不探测` : '',
     applied.alarms.length ? `告警 ${applied.alarms.length}` : '',
   ].filter(Boolean).join(' · ')
   const value: RoundReport = { services: live.length, probes: tasks.length, transitions: applied.transitions, alarms: applied.alarms }

@@ -39,6 +39,8 @@ test('判定：限流/额度/余额、上游 401/403、账号冷却、超时与�
     [500, { error: { code: 'auth_not_found', message: 'no auth available' } }],
     [404, { error: { message: 'All credentials for model gpt-x are cooling down' } }],
     [400, { error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model" } }],
+    [400, { error: { message: 'Thinking budget must be smaller than maxOutputTokens' } }],
+    [400, { error: { message: 'max_tokens must be greater than thinking.budget_tokens' } }],
     [200, { error: { message: 'Rate limit reached for requests' } }],
   ] as const
   for (const [status, body] of neutralBodies) assert.equal(classifyProbe(http(status, body)).outcome, 'neutral', JSON.stringify(body))
@@ -207,9 +209,21 @@ test('整轮：只探测在线服务的对话模型，每个服务用自己的�
   const stored = h.state().stored!
   assert.equal(stored.services.codex['gpt-image-2'].state, 'unprobed')
   assert.ok(!('antigravity' in stored.services), '账号归零的服务不探测')
-  assert.match(outcome.summary ?? '', /2 服务 · 在线 2 · 未探测 1 · 账号归零 1/)
+  assert.match(outcome.summary ?? '', /2 服务 · 在线 2 · 未探测 1 · 1 服务暂不探测/)
   assert.deepEqual(h.audits, [], '首轮没有状态变化，不写审计')
   assert.equal(h.state().reconciles, 0)
+})
+
+test('整轮：目录暂时为空的服务原样保留，已下线的模型不会因此被忘掉', async () => {
+  let empty = false
+  const h = harness({
+    listCatalog: async () => [group('codex', empty ? [] : ['gpt-5.6-sol', 'gpt-retired'])],
+    responses: (_key, model) => (model === 'gpt-retired' ? http(404, { error: { message: 'model_not_found' } }) : http(200, reply)),
+  })
+  for (let index = 0; index < 3; index += 1) await runModelAvailabilityRound(h.deps, h.context)
+  empty = true
+  await runModelAvailabilityRound(h.deps, h.context)
+  assert.equal(h.state().stored!.services.codex['gpt-retired'].state, 'offline')
 })
 
 test('整轮：模型再多同时在途也只有 2 个探测', async () => {
