@@ -32,12 +32,16 @@ import CatalogSheet from '../accounts/CatalogSheet.vue'
 import EgressSheet from '../accounts/EgressSheet.vue'
 import MagpieAccountRow from '../accounts/MagpieAccountRow.vue'
 import { errorReason } from '../../lib/errors'
-import { classifyChannel, hostOf, modelCounts, type ChannelHealthClass, type ChannelHealthItem } from '../channels/channelModel'
+import { classifyChannel, hostOf, modelCounts } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
 import { groupsOf, type RowAction } from '../accounts/magpieModel'
+import {
+  accountShow, channelInStatus, matchesQuery, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems,
+  type AccountCountsLike, type ChannelBucket, type ProviderStatus,
+} from './providersModel'
 /**
  * 供应商 (Providers): 统一接入管理「API 渠道」与「订阅账号池」，并管理「全局共享模型」。
- * 顶栏完全对齐用量页面字体与滑块规范；供应商主页分为「API 渠道」与「订阅账号池」两栏展示；
+ * 整页一个搜索、一个状态筛选，同时管两栏。
  * 本地环境自适应 Magpie 原生 CatalogSheet 授权，远端 CPA 把订阅账号池整块交给账号页（embedded）。
  */
 /* CPA 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读），
@@ -67,15 +71,41 @@ watch(() => route.query.tab, (tab) => {
   }
 })
 
+/* 整页一个状态筛选（?status=；旧 /accounts 的 ?show= 照样落地），同时管 API 渠道表与订阅账号池 */
+const statusFilter = ref<ProviderStatus>(parseStatus(route.query.status, route.query.show))
+/* 只对账号有意义的筛选（窗口 ≥90% / 可用重置）在看得到渠道时不生效 */
+const appliedStatus = computed(() => statusForSection(statusFilter.value, sectionFilter.value))
+
+/* 视图状态整体写回 URL：几次 replace 挤在一起时，最后落地的那次也是完整的当前状态 */
+function syncQuery() {
+  const tab = currentTab.value === 'shared' ? 'shared' : sectionFilter.value === 'all' ? undefined : sectionFilter.value
+  const status = appliedStatus.value === 'all' ? undefined : appliedStatus.value
+  void router.replace({ query: { ...route.query, tab, status, show: undefined } })
+}
+
 function setTab(tab: string) {
   currentTab.value = tab
-  void router.replace({ query: { ...route.query, tab: tab === 'shared' ? 'shared' : sectionFilter.value === 'all' ? undefined : sectionFilter.value } })
+  syncQuery()
 }
 
 function setSection(sec: 'all' | 'channels' | 'accounts') {
   sectionFilter.value = sec
-  void router.replace({ query: { ...route.query, tab: sec === 'all' ? undefined : sec } })
+  syncQuery()
 }
+
+function setStatus(value: ProviderStatus) {
+  statusFilter.value = value
+  syncQuery()
+}
+// 旧链接的值、或切栏后不再生效的账号筛选：状态与 URL 都改成实际生效的那个，URL 不声称一个没在用的筛选
+watch([appliedStatus, () => route.query.status, () => route.query.show], ([applied, status, show]) => {
+  if (applied !== statusFilter.value) statusFilter.value = applied
+  if (status !== (applied === 'all' ? undefined : applied) || show !== undefined) syncQuery()
+}, { immediate: true })
+watch(() => [route.query.status, route.query.show], ([status, show]) => {
+  const next = parseStatus(status, show)
+  if (next !== statusFilter.value) statusFilter.value = next
+})
 
 /* ── 核心数据读取 ── */
 const channelsLive = useLive<ChannelsData>(() => api.channels<ChannelsData>(), { intervalMs: 30_000 })
@@ -83,6 +113,9 @@ const healthLive = useLive<HealthResult>((signal) => fetchChannelHealth('24', si
 const accountsLive = useLive<AccountsData>((signal) => accountsApi.list(signal), { intervalMs: 60_000, isEmpty: () => false })
 const sharedLive = useLive(() => api.sharedModels(), { intervalMs: 30_000 })
 const egressLive = useLive<EgressData>((signal) => proxyApi.egress(signal), { intervalMs: 60_000, isEmpty: () => false })
+
+/* CPA 账号池上报的计数（它挂着就一直上报，切到「API 渠道」时也不卸载） */
+const cpaCounts = shallowRef<AccountCountsLike | null>(null)
 
 function refreshAll() {
   void channelsLive.refresh()
@@ -104,9 +137,15 @@ const classes = computed(() => new Map(channelsData.value.map((c) => [c.name, cl
 
 /* Magpie 账号分组列表 */
 const accountGroups = computed(() => groupsOf(accountsData.value))
-/* 订阅账号数：Magpie 用 /api/accounts 的 counts；CPA 由嵌入的账号池上报（它已经有 channels+monitor 那一轮读） */
-const cpaAccountsCount = ref(0)
-const totalAccountsCount = computed(() => (isMagpie.value ? (accountsData.value?.counts?.accounts ?? 0) : cpaAccountsCount.value))
+/* 订阅账号计数：Magpie 用 /api/accounts 的 counts（启用 / 需关注）；CPA 由嵌入的账号池上报（它已经有 channels+monitor 那一轮读） */
+const magpieCounts = computed<AccountCountsLike | null>(() => {
+  const counts = accountsData.value?.counts
+  if (!isMagpie.value || !counts) return null
+  const on = (accountsData.value?.providers ?? []).reduce((n, p) => n + p.counts.on, 0)
+  return { all: counts.accounts, run: on, cool: 0, pause: Math.max(0, counts.accounts - on), bad: 0, warn: counts.attention, hot: 0, reset: 0 }
+})
+const accountCounts = computed(() => (isMagpie.value ? magpieCounts.value : cpaCounts.value))
+const totalAccountsCount = computed(() => accountCounts.value?.all ?? 0)
 const totalProvidersCount = computed(() => channelsData.value.length + totalAccountsCount.value)
 
 /* ── 全局共享模型清单 ── */
@@ -163,6 +202,8 @@ type ChannelRow = {
   statusState: StatusKind
   statusLabel: string
   statusReason?: string
+  /** 筛选桶：停用的渠道一律算「停用」，与行上显示的一致 */
+  bucket: ChannelBucket
   successRateText: string
   p95Text: string
   channelRef: ChannelItem
@@ -196,6 +237,7 @@ const channelRows = computed<ChannelRow[]>(() => {
       statusState: c.enabled ? cls.state : 'off',
       statusLabel: c.enabled ? cls.label : '停用',
       statusReason: c.enabled ? cls.reason : undefined,
+      bucket: c.enabled ? cls.bucket : 'off',
       successRateText: healthAvailable.value && h && h.requests > 0 ? fmtPct(h.successRate, 1) : '100%',
       p95Text: healthAvailable.value && h && h.p95Ms !== null ? fmtDuration(h.p95Ms) : '-',
       channelRef: c,
@@ -205,9 +247,13 @@ const channelRows = computed<ChannelRow[]>(() => {
   return result
 })
 
-/* ── 过滤与搜索 ── */
+/* ── 整页一个搜索（?q=）与上面的状态筛选：同时管 API 渠道表与订阅账号池 ── */
 const searchQuery = ref('')
-const statusFilter = ref<'all' | 'enabled' | 'degraded' | 'disabled'>('all')
+function clearFilters() {
+  searchQuery.value = ''
+  setStatus('all')
+}
+const filtering = computed(() => appliedStatus.value !== 'all' || searchQuery.value.trim() !== '')
 
 const sectionItems = computed<SegmentItem[]>(() => [
   { value: 'all', label: '全部', count: totalProvidersCount.value },
@@ -215,26 +261,15 @@ const sectionItems = computed<SegmentItem[]>(() => [
   { value: 'accounts', label: '订阅账号', count: totalAccountsCount.value },
 ])
 
-const statusItems: SegmentItem[] = [
-  { value: 'all', label: '全部' },
-  { value: 'enabled', label: '启用' },
-  { value: 'degraded', label: '降级' },
-  { value: 'disabled', label: '停用' },
-]
+/* Magpie 账号列表不参与筛选，所以它的计数不进筛选项 */
+const statusItems = computed<SegmentItem[]>(() => buildStatusItems(
+  statusCounts(channelRows.value.map((r) => r.bucket), isMagpie.value ? null : cpaCounts.value, sectionFilter.value),
+  sectionFilter.value,
+  appliedStatus.value,
+))
 
-const filteredChannelRows = computed(() => {
-  return channelRows.value.filter((p) => {
-    if (statusFilter.value === 'enabled' && !p.enabled) return false
-    if (statusFilter.value === 'disabled' && p.enabled) return false
-    if (statusFilter.value === 'degraded' && p.statusState !== 'warn') return false
-
-    if (searchQuery.value) {
-      const q = searchQuery.value.toLowerCase()
-      return p.name.toLowerCase().includes(q) || p.label.toLowerCase().includes(q) || p.type.toLowerCase().includes(q) || p.url.toLowerCase().includes(q)
-    }
-    return true
-  })
-})
+const filteredChannelRows = computed(() => channelRows.value.filter((p) =>
+  channelInStatus(p.bucket, appliedStatus.value) && matchesQuery([p.name, p.type, p.url], searchQuery.value)))
 
 /* ── 列定义 ── */
 const providerColumns = computed<RowColumn<ChannelRow>[]>(() => [
@@ -662,224 +697,234 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       </Plate>
     </template>
 
-    <!-- 4. 全部供应商视图：分「API 渠道」和「订阅账号」两栏展现 -->
-    <template v-else>
-      <div class="pv-body">
-        <!-- 过滤工具栏：搜索 + 两栏分类快速切换 -->
-        <div class="ui-toolbar pv-toolbar">
-          <div class="pv-searchrow">
-            <SearchField
-              v-model="searchQuery"
-              placeholder="搜索渠道或账号..."
-              label="搜索供应商"
-              class="pv-search"
-            />
-          </div>
+    <!-- 4. 全部供应商视图：分「API 渠道」和「订阅账号」两栏展现；切到共享模型时只隐藏，账号池照常上报计数 -->
+    <div v-show="currentTab !== 'shared'" class="pv-body">
+      <!-- 整页一个搜索、一个状态筛选，同时管两栏；右侧切换看哪一栏 -->
+      <div class="ui-toolbar pv-toolbar">
+        <div class="pv-searchrow">
+          <SearchField
+            v-model="searchQuery"
+            query="q"
+            placeholder="搜索渠道或账号"
+            label="搜索渠道或账号"
+            class="pv-search"
+          />
           <Segmented
-            :model-value="sectionFilter"
-            :items="sectionItems"
-            label="分类"
-            @update:model-value="(v: string) => setSection(v as any)"
+            :model-value="appliedStatus"
+            :items="statusItems"
+            label="按状态筛选"
+            @update:model-value="(v) => setStatus(v as ProviderStatus)"
           />
         </div>
+        <Segmented
+          :model-value="sectionFilter"
+          :items="sectionItems"
+          label="分类"
+          @update:model-value="(v: string) => setSection(v as any)"
+        />
+      </div>
 
-        <!-- 栏目 1：API 渠道清单 -->
-        <section v-if="sectionFilter === 'all' || sectionFilter === 'channels'" class="pv-section">
-          <Plate title="API 渠道" flush>
-            <template #actions>
-              <div class="pv-plate-actions">
-                <Segmented v-model="statusFilter" :items="statusItems" label="按状态筛选" />
-                <TxButton variant="subtle" size="small" @click="createChannelOpen = true">
-                  <Icon name="plus" /> 添加渠道
-                </TxButton>
-              </div>
+      <!-- 栏目 1：API 渠道清单 -->
+      <section v-if="sectionFilter === 'all' || sectionFilter === 'channels'" class="pv-section">
+        <Plate title="API 渠道" flush>
+          <template #actions>
+            <TxButton variant="subtle" size="small" @click="createChannelOpen = true">
+              <Icon name="plus" /> 添加渠道
+            </TxButton>
+          </template>
+
+          <RowTable
+            :columns="providerColumns"
+            :data="filteredChannelRows"
+            row-key="id"
+            density="two-line"
+            :state="channelsLive.state.value === 'loading' ? 'loading' : 'ready'"
+            :empty-text="filtering ? '没有匹配的 API 渠道' : '还没有 API 渠道'"
+            :empty-action="filtering ? '清除筛选' : '添加渠道'"
+            caption="API 渠道列表"
+            @row-click="openChannelConfig"
+            @empty-action="filtering ? clearFilters() : (createChannelOpen = true)"
+          >
+            <template #cell-status="{ row }">
+              <span class="cx-2l">
+                <StatusMark :state="row.statusState" :label="row.statusLabel" />
+                <span v-if="row.statusReason" class="cx-l2 sig">{{ row.statusReason }}</span>
+              </span>
             </template>
 
-            <RowTable
-              :columns="providerColumns"
-              :data="filteredChannelRows"
-              row-key="id"
-              density="two-line"
-              :state="channelsLive.state.value === 'loading' ? 'loading' : 'ready'"
-              empty-text="没有匹配的 API 渠道"
-              empty-action="添加渠道"
-              caption="API 渠道列表"
-              @row-click="openChannelConfig"
-              @empty-action="createChannelOpen = true"
-            >
-              <template #cell-status="{ row }">
-                <span class="cx-2l">
-                  <StatusMark :state="row.statusState" :label="row.statusLabel" />
-                  <span v-if="row.statusReason" class="cx-l2 sig">{{ row.statusReason }}</span>
-                </span>
-              </template>
-
-              <template #cell-name="{ row }">
-                <span class="cx-2l">
-                  <span class="pv-name-line">
-                    <button
-                      type="button"
-                      class="ui-link cx-name mono ellip"
-                      :title="`配置 ${row.name}`"
-                      @click.stop="openChannelConfig(row)"
-                    >
-                      {{ row.name }}
-                    </button>
-                    <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
-                  </span>
-                  <span class="cx-l2 mono ellip" :title="row.url">{{ row.url }}</span>
-                </span>
-              </template>
-
-              <template #cell-type="{ row }">
-                <span class="pv-type-cell">{{ row.type }}</span>
-              </template>
-
-              <template #cell-models="{ row }">
-                <span class="cx-2l cx-r num">
+            <template #cell-name="{ row }">
+              <span class="cx-2l">
+                <span class="pv-name-line">
                   <button
                     type="button"
-                    class="ui-link cx-link-num"
+                    class="ui-link cx-name mono ellip"
+                    :title="`配置 ${row.name}`"
                     @click.stop="openChannelConfig(row)"
                   >
-                    <b class="cx-strong">{{ fmtInt(row.modelsOn) }}</b>
-                    <span class="dim"> / {{ fmtInt(row.modelsTotal) }}</span>
+                    {{ row.name }}
                   </button>
-                  <span class="cx-l2">已启用</span>
+                  <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
                 </span>
-              </template>
+                <span class="cx-l2 mono ellip" :title="row.url">{{ row.url }}</span>
+              </span>
+            </template>
 
-              <template #cell-shared="{ row }">
-                <span v-if="row.sharedCount > 0" class="pv-shared-badge">
-                  {{ row.sharedCount }} 个共享
-                </span>
-                <span v-else class="dim">{{ NONE }}</span>
-              </template>
+            <template #cell-type="{ row }">
+              <span class="pv-type-cell">{{ row.type }}</span>
+            </template>
 
-              <template #cell-creds="{ row }">
-                <span class="cx-strong num">{{ row.credsInfo }}</span>
-              </template>
-
-              <template #cell-health="{ row }">
-                <span class="cx-2l cx-r num">
-                  <span class="cx-strong">{{ row.successRateText }}</span>
-                  <span class="cx-l2">{{ row.p95Text }}</span>
-                </span>
-              </template>
-
-              <template #cell-switch="{ row }">
-                <Switch
-                  :model-value="row.enabled"
-                  @click.stop
-                  @update:model-value="toggleChannel(row.channelRef, !row.enabled)"
-                />
-              </template>
-
-              <template #cell-ops="{ row }">
-                <TxButton
-                  variant="subtle"
-                  size="small"
+            <template #cell-models="{ row }">
+              <span class="cx-2l cx-r num">
+                <button
+                  type="button"
+                  class="ui-link cx-link-num"
                   @click.stop="openChannelConfig(row)"
                 >
-                  配置
-                </TxButton>
-              </template>
+                  <b class="cx-strong">{{ fmtInt(row.modelsOn) }}</b>
+                  <span class="dim"> / {{ fmtInt(row.modelsTotal) }}</span>
+                </button>
+                <span class="cx-l2">已启用</span>
+              </span>
+            </template>
 
-              <template #card="{ row }">
-                <div class="cx-card" @click="openChannelConfig(row)">
-                  <div class="cx-card__l1">
-                    <StatusMark :state="row.statusState" :label="row.statusLabel" bare />
-                    <span class="cx-card__name mono ellip">{{ row.name }}</span>
-                    <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
-                    <span class="cx-card__st" :class="{ sig: row.statusState === 'bad' || row.statusState === 'warn' }">{{ row.statusLabel }}</span>
-                    <span class="cx-card__switch" @click.stop @keydown.stop>
-                      <Switch
-                        :model-value="row.enabled"
-                        :aria-label="`${row.enabled ? '停用' : '启用'} ${row.name}`"
-                        @update:model-value="toggleChannel(row.channelRef, !row.enabled)"
-                      />
-                    </span>
-                  </div>
-                  <div class="cx-card__ln num">
-                    <span class="ellip">{{ row.type }} · {{ row.modelsOn }}/{{ row.modelsTotal }} 模型 · {{ row.credsInfo }}</span>
-                  </div>
-                  <div v-if="row.sharedCount > 0" class="cx-card__ln">
-                    <span class="pv-shared-badge">{{ row.sharedCount }} 个全局共享模型</span>
-                  </div>
-                  <div v-if="row.statusReason" class="cx-card__ln cx-card__why sig">
-                    <span class="ellip">{{ row.statusReason }}</span>
-                  </div>
-                </div>
-              </template>
-            </RowTable>
-          </Plate>
-        </section>
+            <template #cell-shared="{ row }">
+              <span v-if="row.sharedCount > 0" class="pv-shared-badge">
+                {{ row.sharedCount }} 个共享
+              </span>
+              <span v-else class="dim">{{ NONE }}</span>
+            </template>
 
-        <!-- 栏目 2：订阅账号池 (OAuth 账号) -->
-        <section v-if="sectionFilter === 'all' || sectionFilter === 'accounts'" class="pv-section">
-          <!-- CPA：账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供 -->
-          <CpaAccountsPage v-if="!isMagpie" embedded plate-title="订阅账号池" @count="cpaAccountsCount = $event" />
-          <Plate v-else title="订阅账号池" flush>
-            <template #actions>
-              <TxButton variant="subtle" size="small" @click="openAddAccount(null)">
-                <Icon name="plus" /> 添加账号
+            <template #cell-creds="{ row }">
+              <span class="cx-strong num">{{ row.credsInfo }}</span>
+            </template>
+
+            <template #cell-health="{ row }">
+              <span class="cx-2l cx-r num">
+                <span class="cx-strong">{{ row.successRateText }}</span>
+                <span class="cx-l2">{{ row.p95Text }}</span>
+              </span>
+            </template>
+
+            <template #cell-switch="{ row }">
+              <Switch
+                :model-value="row.enabled"
+                @click.stop
+                @update:model-value="toggleChannel(row.channelRef, !row.enabled)"
+              />
+            </template>
+
+            <template #cell-ops="{ row }">
+              <TxButton
+                variant="subtle"
+                size="small"
+                @click.stop="openChannelConfig(row)"
+              >
+                配置
               </TxButton>
             </template>
 
-            <!-- 已有订阅账号时按供应商分组展示 -->
-            <div v-if="accountGroups.length" class="pv-accounts-list">
-              <section v-for="group in accountGroups" :key="group.agent" class="pv-acc-group">
-                <header class="pv-acc-gh">
-                  <ProviderMark :provider="group.agent" :size="18" />
-                  <h3 class="pv-acc-name">{{ group.name }}</h3>
-                  <span class="pv-acc-count num">{{ group.accounts.length }} 个账号</span>
-                  <button
-                    type="button"
-                    class="ui-link pv-acc-add"
-                    @click="openAddAccount(group.agent)"
-                  >
-                    <Icon name="plus" :size="12" />添加
-                  </button>
-                </header>
-                <ul class="pv-acc-rows">
-                  <MagpieAccountRow
-                    v-for="account in group.accounts"
-                    :key="account.id"
-                    :account="account"
-                    :now="now"
-                    :busy="accountBusy[account.id]"
-                    :egress="egress"
-                    @action="onAccountAction(account, $event)"
-                  />
-                </ul>
-              </section>
-            </div>
-
-            <!-- 未接入账号时呈现整洁的引导卡片，一键唤醒真机 Magpie 登录流 -->
-            <div v-else class="pv-empty-accounts">
-              <p class="pv-empty-title">支持接入订阅号池（免密钥直接登录）</p>
-              <p class="pv-empty-desc">
-                通过 OAuth / 设备码接入 Claude、ChatGPT (Codex)、AntiGravity 等官方订阅，网关统一托管凭据、额度刷新与自动轮换。
-              </p>
-              <div class="pv-empty-actions">
-                <TxButton variant="secondary" size="small" @click="openAddAccount('claude')">
-                  <ProviderMark provider="claude" :size="16" /> 添加 Claude 账号
-                </TxButton>
-                <TxButton variant="secondary" size="small" @click="openAddAccount('codex')">
-                  <ProviderMark provider="openai" :size="16" /> 添加 Codex 账号
-                </TxButton>
-                <TxButton variant="secondary" size="small" @click="openAddAccount('antigravity')">
-                  <ProviderMark provider="antigravity" :size="16" /> 添加 AntiGravity 账号
-                </TxButton>
-                <TxButton variant="secondary" size="small" @click="openAddAccount('copilot')">
-                  <ProviderMark provider="githubcopilot" :size="16" /> 添加 Copilot 账号
-                </TxButton>
+            <template #card="{ row }">
+              <div class="cx-card" @click="openChannelConfig(row)">
+                <div class="cx-card__l1">
+                  <StatusMark :state="row.statusState" :label="row.statusLabel" bare />
+                  <span class="cx-card__name mono ellip">{{ row.name }}</span>
+                  <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
+                  <span class="cx-card__st" :class="{ sig: row.statusState === 'bad' || row.statusState === 'warn' }">{{ row.statusLabel }}</span>
+                  <span class="cx-card__switch" @click.stop @keydown.stop>
+                    <Switch
+                      :model-value="row.enabled"
+                      :aria-label="`${row.enabled ? '停用' : '启用'} ${row.name}`"
+                      @update:model-value="toggleChannel(row.channelRef, !row.enabled)"
+                    />
+                  </span>
+                </div>
+                <div class="cx-card__ln num">
+                  <span class="ellip">{{ row.type }} · {{ row.modelsOn }}/{{ row.modelsTotal }} 模型 · {{ row.credsInfo }}</span>
+                </div>
+                <div v-if="row.sharedCount > 0" class="cx-card__ln">
+                  <span class="pv-shared-badge">{{ row.sharedCount }} 个全局共享模型</span>
+                </div>
+                <div v-if="row.statusReason" class="cx-card__ln cx-card__why sig">
+                  <span class="ellip">{{ row.statusReason }}</span>
+                </div>
               </div>
+            </template>
+          </RowTable>
+        </Plate>
+      </section>
+
+      <!-- 栏目 2：订阅账号池 (OAuth 账号)。v-show：只看渠道时也挂着，计数不断 -->
+      <section v-show="sectionFilter !== 'channels'" class="pv-section">
+        <!-- CPA：账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供；搜索与筛选用本页的 -->
+        <CpaAccountsPage
+          v-if="!isMagpie"
+          embedded
+          plate-title="订阅账号池"
+          :q="searchQuery"
+          :show="accountShow(appliedStatus)"
+          @counts="cpaCounts = $event"
+          @clear-filters="clearFilters"
+        />
+        <Plate v-else title="订阅账号池" flush>
+          <template #actions>
+            <TxButton variant="subtle" size="small" @click="openAddAccount(null)">
+              <Icon name="plus" /> 添加账号
+            </TxButton>
+          </template>
+
+          <!-- 已有订阅账号时按供应商分组展示 -->
+          <div v-if="accountGroups.length" class="pv-accounts-list">
+            <section v-for="group in accountGroups" :key="group.agent" class="pv-acc-group">
+              <header class="pv-acc-gh">
+                <ProviderMark :provider="group.agent" :size="18" />
+                <h3 class="pv-acc-name">{{ group.name }}</h3>
+                <span class="pv-acc-count num">{{ group.accounts.length }} 个账号</span>
+                <button
+                  type="button"
+                  class="ui-link pv-acc-add"
+                  @click="openAddAccount(group.agent)"
+                >
+                  <Icon name="plus" :size="12" />添加
+                </button>
+              </header>
+              <ul class="pv-acc-rows">
+                <MagpieAccountRow
+                  v-for="account in group.accounts"
+                  :key="account.id"
+                  :account="account"
+                  :now="now"
+                  :busy="accountBusy[account.id]"
+                  :egress="egress"
+                  @action="onAccountAction(account, $event)"
+                />
+              </ul>
+            </section>
+          </div>
+
+          <!-- 未接入账号时呈现整洁的引导卡片，一键唤醒真机 Magpie 登录流 -->
+          <div v-else class="pv-empty-accounts">
+            <p class="pv-empty-title">支持接入订阅号池（免密钥直接登录）</p>
+            <p class="pv-empty-desc">
+              通过 OAuth / 设备码接入 Claude、ChatGPT (Codex)、AntiGravity 等官方订阅，网关统一托管凭据、额度刷新与自动轮换。
+            </p>
+            <div class="pv-empty-actions">
+              <TxButton variant="secondary" size="small" @click="openAddAccount('claude')">
+                <ProviderMark provider="claude" :size="16" /> 添加 Claude 账号
+              </TxButton>
+              <TxButton variant="secondary" size="small" @click="openAddAccount('codex')">
+                <ProviderMark provider="openai" :size="16" /> 添加 Codex 账号
+              </TxButton>
+              <TxButton variant="secondary" size="small" @click="openAddAccount('antigravity')">
+                <ProviderMark provider="antigravity" :size="16" /> 添加 AntiGravity 账号
+              </TxButton>
+              <TxButton variant="secondary" size="small" @click="openAddAccount('copilot')">
+                <ProviderMark provider="githubcopilot" :size="16" /> 添加 Copilot 账号
+              </TxButton>
             </div>
-          </Plate>
-        </section>
-      </div>
-    </template>
+          </div>
+        </Plate>
+      </section>
+    </div>
 
     <!-- 弹窗 1: 渠道配置抽屉（模型开关、渠道开关、删除渠道） -->
     <ChannelSheet
@@ -1033,10 +1078,9 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 /* 3. 工具栏与两栏布局 */
 .pv-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .pv-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
-.pv-searchrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pv-searchrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
 .pv-search { width: 280px; }
 .pv-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.pv-plate-actions { display: inline-flex; align-items: center; gap: 12px; }
 
 /* 账号池样式 */
 .pv-accounts-list { padding: 4px 0; }
@@ -1200,6 +1244,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 @media (max-width: 959px) {
   .pv-actions { justify-content: space-between; }
   .pv-searchrow { flex: 1 1 100%; }
-  .pv-search { width: auto; flex: 1 1 auto; }
+  .pv-search { width: auto; flex: 1 1 220px; }
 }
 </style>
