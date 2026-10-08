@@ -51,16 +51,25 @@ test('仓库补充目录本身有效，且带着补丁 0005 内置的两个 Clau
   assert.match(validateSupplement({ claude: [model('A'), model('a')] }) ?? '', /重复/)
 })
 
-test('合并：按 id（大小写不敏感）整条替换并保留位置，新模型追加到段尾，其余段与未知段原样', () => {
-  const official: CatalogDoc = { ...catalog(), claude: [model('claude-a'), model('Claude-Opus-5-5', { native: true }), model('claude-b')], 'gemini-cli': [model('cli')] }
-  const merged = mergeSupplement(official, { claude: [model('claude-opus-5-5', { display_name: 'Opus' }), model('claude-new')], devin: [model('devin/x')] })
-  assert.deepEqual(ids(merged, 'claude'), ['claude-a', 'claude-opus-5-5', 'claude-b', 'claude-new'])
-  assert.equal((merged.claude as Array<Record<string, unknown>>)[1].native, undefined, '整条替换，不和官方字段混合')
+test('合并：官方没有的补充模型追加到段尾，新段照建，其余段与未知段原样', () => {
+  const official: CatalogDoc = { ...catalog(), claude: [model('claude-a'), model('claude-b')], 'gemini-cli': [model('cli')] }
+  const { doc: merged, redundant } = mergeSupplement(official, { claude: [model('claude-new')], devin: [model('devin/x')] })
+  assert.deepEqual(ids(merged, 'claude'), ['claude-a', 'claude-b', 'claude-new'])
+  assert.deepEqual(ids(merged, 'devin'), ['devin/x'])
+  assert.deepEqual(redundant, [])
   assert.deepEqual(merged.gemini, official.gemini)
   assert.deepEqual(merged['gemini-cli'], official['gemini-cli'])
-  assert.deepEqual(ids(merged, 'devin'), ['devin/x'])
-  assert.deepEqual(ids(official, 'claude'), ['claude-a', 'Claude-Opus-5-5', 'claude-b'], '不改输入')
+  assert.deepEqual(ids(official, 'claude'), ['claude-a', 'claude-b'], '不改输入')
   assert.equal(JSON.stringify(mergeSupplement(official, { claude: [model('claude-new')] })), JSON.stringify(mergeSupplement(official, { claude: [model('claude-new')] })))
+})
+
+test('合并：补充 id 已被官方收录（大小写不敏感）时官方条目逐字节不变，id 记进 redundant', () => {
+  const opus = model('Claude-Opus-5-5', { native_capabilities: { web_search: true }, description: 'upstream' })
+  const official: CatalogDoc = { ...catalog(), claude: [model('claude-a'), opus, model('claude-b')] }
+  const { doc: merged, redundant } = mergeSupplement(official, { claude: [model('claude-opus-5-5', { description: 'pinned' }), model('claude-new')] })
+  assert.deepEqual(ids(merged, 'claude'), ['claude-a', 'Claude-Opus-5-5', 'claude-b', 'claude-new'])
+  assert.equal(JSON.stringify((merged.claude as unknown[])[1]), JSON.stringify(opus))
+  assert.deepEqual(redundant, ['claude-opus-5-5'])
 })
 
 test('保护规则：必需段为空、任一段比上次少一半以上都拦；正好一半放行；首次写入只查空段', () => {
@@ -102,7 +111,7 @@ const json = (doc: unknown) => () => new Response(JSON.stringify(doc), { status:
 function setup(name: string) {
   const dir = fs.mkdtempSync(path.join(testDataDir, `${name}-`))
   const supplementFile = path.join(dir, 'supplement.json')
-  fs.writeFileSync(supplementFile, JSON.stringify({ claude: [model('claude-extra')] }))
+  fs.writeFileSync(supplementFile, JSON.stringify({ claude: [model('claude-extra'), model('CLAUDE-0', { display_name: 'pinned' })] }))
   const audits: string[] = []
   const data: Record<string, unknown> = {}
   let clock = Date.parse('2026-10-09T00:00:00Z')
@@ -121,10 +130,11 @@ test('首次运行：主地址失败回落到备用地址，写入官方 ∪ 补
   const { fetchImpl, calls } = stubFetch({ [URLS[0]]: () => new Response('boom', { status: 503 }), [URLS[1]]: json(catalog()) })
   const outcome = await env.run(fetchImpl)
   assert.equal(outcome.result, 'ok')
-  assert.match(outcome.summary ?? '', /^已更新 \+25 · 25 模型$/)
+  assert.equal(outcome.summary, '已更新 +25 · 25 模型 · 补充已被官方收录：CLAUDE-0')
   assert.deepEqual(calls, URLS)
   const written = JSON.parse(fs.readFileSync(env.file, 'utf8')) as CatalogDoc
   assert.deepEqual(ids(written, 'claude'), ['claude-0', 'claude-1', 'claude-extra'])
+  assert.deepEqual((written.claude as Array<Record<string, unknown>>)[0], model('claude-0'), '官方条目不被补充覆盖')
   assert.equal(validateCpaCatalog(written), null)
   assert.equal(fs.statSync(env.file).mode & 0o777, 0o644)
   assert.equal(fs.existsSync(`${env.file}.prev`), false)
@@ -133,6 +143,7 @@ test('首次运行：主地址失败回落到备用地址，写入官方 ∪ 补
   assert.equal(record.source, URLS[1])
   assert.deepEqual(record.sections.claude.added, ['claude-0', 'claude-1', 'claude-extra'])
   assert.equal(record.counts.claude, 3)
+  assert.deepEqual(record.redundant, ['CLAUDE-0'])
   assert.match(env.audits[0], /^cpa_catalog_update:models\.json:\+25 · 来源 fallback\.example\.test$/)
   assert.ok(typeof env.data.lastWrittenAt === 'number')
 })
@@ -145,7 +156,7 @@ test('内容未变不重写、不记历史；上游变化时重写并把旧版�
 
   const same = await env.run(stubFetch({ [URLS[0]]: json(catalog()) }).fetchImpl)
   assert.equal(same.result, 'ok')
-  assert.match(same.summary ?? '', /^无变化 · 25 模型 · 上次变更 2026-10-09 03:00Z \+25$/)
+  assert.equal(same.summary, '无变化 · 25 模型 · 上次变更 2026-10-09 03:00Z +25 · 补充已被官方收录：CLAUDE-0')
   assert.equal(fs.statSync(env.file).mtimeMs, firstMtime)
   assert.equal(env.history().length, 1)
 
@@ -153,7 +164,7 @@ test('内容未变不重写、不记历史；上游变化时重写并把旧版�
   ;(grown.gemini as unknown[]).push(model('gemini-new'))
   ;(grown.kimi as unknown[]).splice(1, 1)
   const changed = await env.run(stubFetch({ [URLS[0]]: json(grown) }).fetchImpl)
-  assert.match(changed.summary ?? '', /^已更新 \+1 −1 · 25 模型$/)
+  assert.match(changed.summary ?? '', /^已更新 \+1 −1 · 25 模型 · /)
   assert.equal(fs.readFileSync(`${env.file}.prev`, 'utf8'), firstText)
   assert.deepEqual(env.history()[1].sections, { gemini: { added: ['gemini-new'], removed: [], changed: [] }, kimi: { added: [], removed: ['kimi-1'], changed: [] } })
   assert.equal(fs.readdirSync(path.dirname(env.file)).filter(name => name.endsWith('.tmp')).length, 0, '没有残留临时文件')

@@ -8,7 +8,7 @@ import { upstreamLimiter, type SyncOutcome } from './syncRegistry.js'
  * CPA 模型目录 = 官方目录 ∪ 仓库补充目录（deploy/catalog/supplement.json）。
  *
  * CPA 的 `models.catalog` 指向本地文件时整份替换官方来源；它校验不过就保留上一份有效目录，文件被替换后约 15s 内重读。
- * 本任务每 3h 拉官方目录（两个地址，先到的有效者胜）、按模型 id 并入补充目录、用 CPA 同一套规则校验，
+ * 本任务每 3h 拉官方目录（两个地址，先到的有效者胜）、追加补充目录里官方没有的模型、用 CPA 同一套规则校验，
  * 再过保护规则（必需段不能为空、任一段模型数不能比上次写入少一半以上）才原子写入。任何一步失败都不写：
  * 旧文件原样留给 CPA，失败原因作为任务错误（告警）显示，并追加到变更历史。
  */
@@ -150,23 +150,29 @@ export function validateSupplement(doc: unknown): string | null {
 /* ────────────────────────── 合并、差异、保护规则 ────────────────────────── */
 
 /**
- * 按段、按模型 id（去空白、大小写不敏感，与 CPA upsertModelInfos 相同）整条替换或追加。
- * 替换保留官方的位置、追加放在段尾，结果只取决于两份输入，重复运行字节相同。
+ * 官方优先：官方目录原样保留，补充目录里的模型只在该段没有同 id（去空白、大小写不敏感）时追加到段尾。
+ * 已被官方收录的补充条目不替换（官方带着更新的字段，例如 native_capabilities），记进 `redundant` 供删减；
+ * 留在补充目录里仍是兜底：官方哪天去掉它，下一轮就会补回。结果只取决于两份输入，重复运行字节相同。
  */
-export function mergeSupplement(official: CatalogDoc, supplement: CatalogDoc): CatalogDoc {
+export function mergeSupplement(official: CatalogDoc, supplement: CatalogDoc): { doc: CatalogDoc; redundant: string[] } {
   const merged = structuredClone(official)
+  const redundant: string[] = []
   for (const [section, extras] of Object.entries(supplement)) {
     if (!Array.isArray(extras)) continue
     const list: unknown[] = Array.isArray(merged[section]) ? merged[section] as unknown[] : []
+    const present = new Set(list.map(model => modelId(model).toLowerCase()))
     for (const extra of extras) {
       const key = modelId(extra).toLowerCase()
-      const index = list.findIndex(model => modelId(model).toLowerCase() === key)
-      if (index === -1) list.push(structuredClone(extra))
-      else list[index] = structuredClone(extra)
+      if (present.has(key)) {
+        redundant.push(modelId(extra))
+        continue
+      }
+      list.push(structuredClone(extra))
+      present.add(key)
     }
     merged[section] = list
   }
-  return merged
+  return { doc: merged, redundant }
 }
 
 export function sectionCounts(doc: CatalogDoc): Record<string, number> {
@@ -373,7 +379,8 @@ export async function runCpaCatalogSync(options: CpaCatalogOptions): Promise<Syn
   const fetched = await fetchOfficialCatalog(options.fetch ?? fetch, options.urls ?? OFFICIAL_CATALOG_URLS, { timeoutMs: options.timeoutMs, onRequest: options.countRequest })
   if ('errors' in fetched) return alarm(`官方目录拉取失败：${fetched.errors.join('；')}`)
 
-  const merged = mergeSupplement(fetched.doc, supplementRead.doc as CatalogDoc)
+  const { doc: merged, redundant } = mergeSupplement(fetched.doc, supplementRead.doc as CatalogDoc)
+  const redundantWords = redundant.length ? ` · 补充已被官方收录：${redundant.join('、')}` : ''
   const problem = validateCpaCatalog(merged)
   if (problem) return alarm(`合并后校验失败：${problem}`, fetched.url)
   const text = `${JSON.stringify(merged, null, 2)}\n`
@@ -390,7 +397,7 @@ export async function runCpaCatalogSync(options: CpaCatalogOptions): Promise<Syn
     data.lastOkAt = now
     data.counts = counts
     const last = data.lastChange ? ` · 上次变更 ${minute(data.lastChange.at)} ${data.lastChange.summary}` : ''
-    return { result: 'ok', summary: `无变化 · ${total} 模型${last}` }
+    return { result: 'ok', summary: `无变化 · ${total} 模型${last}${redundantWords}` }
   }
 
   const diff = diffCatalog(current?.doc ?? null, merged)
@@ -401,12 +408,12 @@ export async function runCpaCatalogSync(options: CpaCatalogOptions): Promise<Syn
   }
   const words = diffWords(diff)
   appendHistory(options.historyFile, {
-    at, type: 'write', source: fetched.url, sha256: crypto.createHash('sha256').update(text).digest('hex'), counts, sections: diff,
+    at, type: 'write', source: fetched.url, sha256: crypto.createHash('sha256').update(text).digest('hex'), counts, sections: diff, redundant,
   })
   options.audit?.('cpa_catalog_update', path.basename(options.file), `${words} · 来源 ${hostOf(fetched.url)}`)
   data.lastOkAt = now
   data.lastWrittenAt = now
   data.counts = counts
   data.lastChange = { at: now, summary: words }
-  return { result: 'ok', summary: `已更新 ${words} · ${total} 模型` }
+  return { result: 'ok', summary: `已更新 ${words} · ${total} 模型${redundantWords}` }
 }
