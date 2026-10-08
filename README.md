@@ -192,12 +192,13 @@ node cli/cradmin.mjs config apply crosery.json --dry-run
 
 - 两条长期分支：`stage` 对应预发布，`main` 对应正式。
 - 在 `stage` 的某个提交上打 `vX.Y.Z-rc.N`，部署到预发布环境；验收通过后，给**同一个提交**打 `vX.Y.Z`，部署到正式环境。
-- 每个环境的非敏感配置放在 `deploy/env/<env>.env`；密钥只保存在目标机上。
+- 每个环境的非敏感配置放在 `deploy/env/<env>.env`；发布目标写在本机不入库的 `deploy/env/<env>.release.local`；密钥只保存在目标机上。
+- 构建要求 Node 24。
 
 ```bash
 node scripts/release.mjs plan     preview    v1.2.0-rc.1
 node scripts/release.mjs deploy   preview    v1.2.0-rc.1
-node scripts/release.mjs accept   preview
+RELEASE_ACCEPT_KEY=… node scripts/release.mjs accept preview
 node scripts/release.mjs plan     production v1.2.0
 node scripts/release.mjs deploy   production v1.2.0
 node scripts/release.mjs status   production
@@ -206,13 +207,13 @@ node scripts/release.mjs rollback production
 
 | 子命令 | 作用 |
 | --- | --- |
-| `plan <env> <tag>` | 查看部署计划 |
-| `deploy <env> <tag>` | 构建并部署该标签 |
-| `accept preview` | 记录预发布验收通过 |
-| `status <env>` | 查看环境当前运行的版本 |
+| `plan <env> <tag>` | 只跑门禁，列出部署计划 |
+| `deploy <env> <tag>` | 构建、上传、切换、健康检查；不健康自动切回 |
+| `accept <env>` | 验收控制台与网关（JSON、SSE、工具往返），结果记入目标机 |
+| `status <env>` | 查看环境当前运行的版本与最近记录 |
 | `rollback <env>` | 回滚到上一个版本 |
 
-服务以 systemd 运行，单元示例在 [`deploy/edge/systemd/`](deploy/edge/systemd/)，nginx 片段在 [`deploy/nginx/`](deploy/nginx/)。
+完整规则见 [`docs/ops/release.md`](docs/ops/release.md)。服务以 systemd 运行，单元在 [`deploy/systemd/`](deploy/systemd/)，nginx 片段在 [`deploy/nginx/`](deploy/nginx/)。
 
 ## 目录结构
 
