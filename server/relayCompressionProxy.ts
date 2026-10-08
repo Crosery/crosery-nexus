@@ -1,11 +1,12 @@
-import { Agent, createServer, request, ServerResponse, type ClientRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
+import { Agent, createServer, request, ServerResponse, type ClientRequest, type IncomingHttpHeaders, type IncomingMessage, type Server } from 'node:http'
+import type { Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { isSystemKey } from './systemKeys.js'
 
 /**
  * RTK relay: a loopback HTTP proxy in front of the context guard. Requests from opted-in keys to the
  * inference paths below get their tool outputs compressed; everything else is forwarded unchanged,
- * streamed in both directions. Pure module (no config/db): it also runs inside the relay worker.
+ * streamed in both directions. Pure module (no config/db); the process around it is server/rtkRelayMain.ts.
  */
 const PATHS = new Set(['/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/v1/responses'])
 export const MAX_BODY_BYTES = 100 * 1024 * 1024
@@ -136,19 +137,34 @@ class ResponseOutcome {
   }
 }
 
-export function createRelayCompressionProxy(deps: RelayDependencies) {
+export type RelayServer = Server & {
+  /** Open requests plus websocket tunnels. */
+  inFlight: () => number
+  /**
+   * Stops listening at once (new connections are refused, so the reverse proxy fails over), lets open
+   * requests and tunnels finish, closes keep-alive connections as they go idle. At `timeoutMs` whatever is
+   * left is cut. Resolves true when everything finished on its own.
+   */
+  drain: (timeoutMs: number) => Promise<boolean>
+}
+
+export function createRelayCompressionProxy(deps: RelayDependencies): RelayServer {
   const target = relayTarget(deps.target)
   const maxBody = deps.maxBodyBytes ?? MAX_BODY_BYTES
   const maxCompress = Math.min(deps.maxCompressBytes ?? MAX_COMPRESS_BYTES, maxBody)
   // One upstream connection per request, like a reverse proxy without an upstream keepalive pool:
   // no reused-socket race with the guard's idle timeout.
   const agent = new Agent({ keepAlive: false })
+  const tunnels = new Set<Duplex>()
+  let active = 0
   const server = createServer({ maxHeaderSize: 64 * 1024, noDelay: true }, (req, res) => { void handle(req, res) })
   // Longer than a reverse proxy's default upstream keepalive (60s), so it never reuses a socket closed here.
   server.keepAliveTimeout = 75_000
   server.headersTimeout = 80_000
   server.requestTimeout = 600_000
   server.on('upgrade', (req, socket, head) => {
+    tunnels.add(socket)
+    socket.once('close', () => tunnels.delete(socket))
     const child = request(target, { method: req.method, path: req.url, headers: req.rawHeaders, agent })
     child.on('error', () => socket.destroy())
     socket.on('error', () => child.destroy())
@@ -175,7 +191,27 @@ export function createRelayCompressionProxy(deps: RelayDependencies) {
     })
     child.end()
   })
-  return server
+  return Object.assign(server, { inFlight: () => active + tunnels.size, drain })
+
+  function drain(timeoutMs: number) {
+    return new Promise<boolean>((resolve) => {
+      let settled = false
+      const finish = (clean: boolean) => {
+        if (settled) return
+        settled = true
+        clearInterval(idle)
+        clearTimeout(bound)
+        resolve(clean)
+      }
+      const idle = setInterval(() => server.closeIdleConnections(), 1_000)
+      const bound = setTimeout(() => {
+        server.closeAllConnections()
+        for (const socket of tunnels) socket.destroy()
+        finish(false)
+      }, timeoutMs)
+      server.close(() => finish(true))
+    })
+  }
 
   function candidate(req: IncomingMessage, pathname: string) {
     if (req.method !== 'POST' || !PATHS.has(pathname)) return ''
@@ -218,6 +254,7 @@ export function createRelayCompressionProxy(deps: RelayDependencies) {
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
+    active++
     const abort = new AbortController()
     const onClose = () => { if (!res.writableFinished) abort.abort() }
     res.once('close', onClose)
@@ -276,6 +313,7 @@ export function createRelayCompressionProxy(deps: RelayDependencies) {
       reply(res, tooLarge || error instanceof TooLarge ? 413 : 502, tooLarge || error instanceof TooLarge ? 'request_too_large' : 'relay_unavailable')
     } finally {
       res.off('close', onClose)
+      active--
     }
   }
 }

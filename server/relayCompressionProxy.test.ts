@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { createServer, request, type IncomingMessage, type Server } from 'node:http'
+import { Agent, createServer, request, type IncomingMessage, type Server } from 'node:http'
 import { connect } from 'node:net'
 import test from 'node:test'
 import { createRelayCompressionProxy, MAX_BODY_BYTES, relayTarget, type RelayDependencies } from './relayCompressionProxy.js'
@@ -392,4 +392,52 @@ test('large bodies stream through intact; opted-in bodies above the compression 
     assert.equal(chunked.sha, sha(big), 'chunked body crossing the compression cap spills through unchanged')
     assert.deepEqual(calls, { saved: [], failed: [] })
   } finally { await close(server); await close(upstream.server) }
+})
+
+test('drain: idle keep-alive connections close, an open stream may finish, the bound cuts what is left', async () => {
+  let finishStream = () => {}
+  const upstream = await recordingUpstream((req, res) => {
+    if (req.method === 'GET') return void res.writeHead(200, { 'content-type': 'application/json' }).end('{"data":[]}')
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
+    finishStream = () => res.end('data: [DONE]\n\n')
+  })
+  const quick = relay(upstream.base)
+  const idleBase = await listen(quick.server)
+  const keepAlive = new Agent({ keepAlive: true })
+  const idleSocket = await new Promise<import('node:net').Socket>((resolve, reject) => {
+    request(`${idleBase}/v1/models`, { agent: keepAlive }, (res) => {
+      const socket = res.socket as import('node:net').Socket
+      res.resume()
+      res.once('end', () => resolve(socket))
+    }).on('error', reject).end()
+  })
+  const idleClosed = once(idleSocket, 'close')
+  assert.equal(await within(quick.server.drain(5_000), 5_000, 'drain with only an idle connection'), true)
+  await within(idleClosed, 5_000, 'idle keep-alive socket closed')
+  keepAlive.destroy()
+
+  for (const [bound, finishes] of [[5_000, true], [300, false]] as const) {
+    const { server } = relay(upstream.base)
+    const base = await listen(server)
+    const response = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers, body: payload })
+    const reader = response.body!.getReader()
+    await reader.read()
+    assert.equal(server.inFlight(), 1)
+    const drained = server.drain(bound)
+    const port = Number(new URL(base).port)
+    const refusal = await new Promise<string>((resolve) => {
+      const socket = connect(port, '127.0.0.1')
+      socket.once('connect', () => { socket.destroy(); resolve('accepted') }).once('error', (e: NodeJS.ErrnoException) => resolve(String(e.code)))
+    })
+    assert.equal(refusal, 'ECONNREFUSED', 'no new connections once draining')
+    if (finishes) finishStream()
+    assert.equal(await within(drained, 6_000, 'drain settles'), finishes)
+    let rest = ''
+    try {
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) rest += new TextDecoder().decode(chunk.value)
+    } catch { rest += '<cut>' }
+    assert.equal(rest.includes('[DONE]'), finishes, finishes ? 'the stream completed during the drain' : 'the bound cut the stream')
+  }
+  await close(upstream.server)
 })
