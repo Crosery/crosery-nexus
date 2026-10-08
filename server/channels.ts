@@ -11,6 +11,8 @@ import { attachCredentialModels, summarizeCredentialFiles } from './credentials.
 import { modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { ReportingGroupStore } from './reportingGroups.js'
+import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
+import { currentAvailability, modelAvailabilityEnabled, withModelAvailability } from './modelAvailability.js'
 
 const now = () => new Date().toISOString()
 const reportingGroupStore = new ReportingGroupStore(db)
@@ -387,10 +389,11 @@ type CredentialEntry = Awaited<ReturnType<typeof listCredentials>>[number]
 
 /** 把账号按 provider 聚合成 OAuth 渠道，供模型索引使用。 */
 export function groupOAuthProviders(credentials: CredentialEntry[], excluded: Record<string, string[]>): OAuthProviderModels[] {
-  const byProvider = new Map<string, { models: Set<string>; activeAccounts: number }>()
+  const byProvider = new Map<string, { models: Set<string>; activeAccounts: number; accounts: number }>()
   for (const credential of credentials) {
     if (!credential.type) continue
-    const entry = byProvider.get(credential.type) || { models: new Set<string>(), activeAccounts: 0 }
+    const entry = byProvider.get(credential.type) || { models: new Set<string>(), activeAccounts: 0, accounts: 0 }
+    entry.accounts += 1
     if (!credential.disabled) {
       entry.activeAccounts += 1
       for (const model of credential.models) entry.models.add(model)
@@ -398,15 +401,32 @@ export function groupOAuthProviders(credentials: CredentialEntry[], excluded: Re
     byProvider.set(credential.type, entry)
   }
   for (const provider of Object.keys(excluded)) {
-    if (!byProvider.has(provider)) byProvider.set(provider, { models: new Set<string>(), activeAccounts: 0 })
+    if (!byProvider.has(provider)) byProvider.set(provider, { models: new Set<string>(), activeAccounts: 0, accounts: 0 })
   }
   return [...byProvider].map(([provider, entry]) => ({
     provider,
     models: [...entry.models],
     excluded: excluded[provider] || [],
     activeAccounts: entry.activeAccounts,
+    accounts: entry.accounts,
   }))
 }
+
+/**
+ * 凭据文件全部删掉（例如账号迁去别的环境）后仍要保留为分组的 OAuth provider：
+ * 还被某把 Key 选着的（保住成员关系），以及默认对所有 Key 开放的渠道（保住默认开放模型）。
+ */
+function retainedOAuthProviders(): Set<string> {
+  const retained = new Set<string>(DEFAULT_OPEN_CHANNELS)
+  for (const row of db.prepare('SELECT groups_json FROM api_keys').all() as Array<{ groups_json: string }>) {
+    const ids = parse<unknown>(row.groups_json, [])
+    if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string' && id) retained.add(id)
+  }
+  return retained
+}
+
+const catalogGroups = ({ channels, credentials, excluded }: GatewaySnapshot) =>
+  buildGroups(channels, groupOAuthProviders(credentials, excluded), { lastKnown: readLastKnownOAuthModels(), retain: retainedOAuthProviders() })
 
 type GatewaySnapshot = {
   channels: Awaited<ReturnType<typeof fetchChannels>>
@@ -432,7 +452,7 @@ const loadGatewaySnapshot = async (): Promise<GatewaySnapshot> => {
   ])
   const snapshot = { channels, credentials, excluded }
   try {
-    reportingGroupStore.write(buildGroups(channels, groupOAuthProviders(credentials, excluded)))
+    reportingGroupStore.write(catalogGroups(snapshot))
   } catch {
     console.warn('[reporting-groups] 无法持久化最新渠道策略，继续沿用上次成功结果')
   }
@@ -460,10 +480,18 @@ export async function listModelIndex() {
   return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing), channels, credentials }
 }
 
-/** 分组直接由同一份网关快照推导，避免一次页面加载重复扇出控制面接口。 */
+/** 渠道目录本身（不经可用性过滤）：可用性探测要靠它把下线模型继续测下去，报表按它归组。 */
+export async function listGroupCatalog() {
+  return catalogGroups(await gatewaySnapshot())
+}
+
+/**
+ * 授权用的分组：同一份网关快照推导，避免一次页面加载重复扇出控制面接口；
+ * 被可用性探测判为下线的模型不进 Key 白名单，重新上线后自动回来。
+ */
 export async function listGroups() {
-  const { channels, credentials, excluded } = await gatewaySnapshot()
-  return buildGroups(channels, groupOAuthProviders(credentials, excluded))
+  const groups = await listGroupCatalog()
+  return modelAvailabilityEnabled() ? withModelAvailability(groups, currentAvailability()) : groups
 }
 
 /**
@@ -472,7 +500,7 @@ export async function listGroups() {
  */
 export async function listGroupsForReporting() {
   const stored = reportingGroupStore.read()
-  if (!stored) return listGroups()
+  if (!stored) return listGroupCatalog()
   void gatewaySnapshot().catch(() => undefined)
   return stored.groups
 }
