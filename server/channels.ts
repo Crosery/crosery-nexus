@@ -8,7 +8,7 @@ import { gatewayPricingMap } from './modelCatalog.js'
 import type { OAuthProviderModels } from './modelIndex.js'
 import { db } from './db.js'
 import { attachCredentialModels, summarizeCredentialFiles } from './credentials.js'
-import { modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
+import { discoveryFailure, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { ReportingGroupStore } from './reportingGroups.js'
 import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
@@ -249,7 +249,7 @@ export async function discoverChannelModels(protocol: ChannelProtocol, baseUrl: 
       }
       return { models, endpoint }
     } catch (error) {
-      errors.push(`${endpoint}: ${error instanceof Error ? error.message : '请求失败'}`)
+      errors.push(`${endpoint}: ${discoveryFailure(error)}`)
     }
   }
   throw new Error(`模型扫描失败。${errors.join('；').slice(0, 500)}`)
