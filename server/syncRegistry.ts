@@ -179,7 +179,10 @@ const iso = isoOrNull
 
 /** 错误文案进状态文件和响应体前统一截断并去掉可能夹带的凭据。 */
 export function sanitizeSyncError(message: unknown): string {
-  return String(message ?? '')
+  const text = String(message ?? '')
+  // undici 的裸 TypeError：请求没拿到任何答复（拒绝连接、DNS、断开）。同步中心与概览直接显示这一行，换成一句话
+  if (/^\s*fetch failed\s*$/i.test(text)) return '网络没连上（fetch failed）'
+  return text
     .replace(/(bearer\s+)[^\s"',}]+/gi, '$1***')
     .replace(/((?:api[-_]?key|token|secret|password|authorization)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1***')
     .replace(/\b(sk|rk|pk)-[A-Za-z0-9_-]{8,}/g, '$1-***')
