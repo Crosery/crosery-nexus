@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { aggregateSpan, buildHeatGraph, dayBounds, dayTitle, heatLevelOf, heatSummary, heatThresholds, spanTitle, type HeatDayData, type HeatSeries } from '../src/ui/viz/heatModel.js'
-import { sharedUsageQuery, spanLabel, usageFilterFrom, usageSpan, windowText } from '../src/features/usage/filters.js'
+import { refusedWindow, sharedUsageQuery, spanLabel, usageFilterFrom, usageSpan, windowText } from '../src/features/usage/filters.js'
 import { scopeFromQuery, scopeQuery } from '../src/features/usage/tabs/insight/model.js'
 
 /**
@@ -89,4 +89,13 @@ test('共享窗口：from/to 是共享键；两端都是日期才生效（反了
   const scope = scopeFromQuery({ days: '30', from: '2026-09-01', to: '2026-09-28', model: 'm' })
   assert.equal(scopeQuery(scope), 'from=2026-09-01&to=2026-09-28&model=m')
   assert.equal(scopeQuery(scopeFromQuery({ days: '30', from: '2026-09-01' })), 'days=30')
+})
+
+test('超出保留期的窗口：服务端回 7d 时认出来，自定义时间段与相同窗口不算', () => {
+  const asked = usageFilterFrom({ days: '90' })
+  assert.equal(refusedWindow(asked, { days: 7, span: null }), 7)
+  assert.equal(refusedWindow(asked, { days: 90, span: null }), null)
+  assert.equal(refusedWindow(usageFilterFrom({ days: '7' }), { days: 7, span: null }), null)
+  assert.equal(refusedWindow(usageFilterFrom({ from: '2026-09-01', to: '2026-09-03' }), { days: 3, span: { from: '2026-09-01', to: '2026-09-03' } }), null)
+  assert.equal(refusedWindow(asked, null), null)
 })

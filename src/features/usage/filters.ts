@@ -71,6 +71,15 @@ export function usageFilterFrom(state: Record<string, string>): UsageFilter {
   }
 }
 
+/**
+ * The rolling window the server did not serve: it keeps windows inside retention and answers the default 7d for one
+ * it cannot (90d with 30 days kept). The applied days when the answer is for another window than asked, else null.
+ */
+export function refusedWindow(asked: UsageFilter, window: { days: number; span?: unknown } | null | undefined): UsageDays | null {
+  if (asked.from || !window || window.span) return null
+  return window.days === asked.days ? null : usageDays(String(window.days))
+}
+
 /** "近 7 天" / "近 24 小时" — the window named on every plate. */
 export function windowLabel(days: number): string {
   return days === 1 ? '近 24 小时' : `近 ${days} 天`
