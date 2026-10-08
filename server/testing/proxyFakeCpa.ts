@@ -17,6 +17,10 @@ export class FakeCpa {
   providerKeys: Record<string, Array<Record<string, unknown>>> = {}
   failDownloads = new Set<string>()
   down = false
+  /** management routes a test adds on top of these (asked before the 404); `undefined` falls through */
+  extra: ((method: string, route: string, url: URL, raw: string) => { status: number; body: unknown } | undefined) | null = null
+  /** inference routes (`/v1/*`) a test answers; asked before the management-key check, with the caller's Authorization */
+  gateway: ((method: string, url: URL, authorization: string) => { status: number; body: unknown } | undefined) | null = null
   private server: Server | null = null
   base = ''
 
@@ -34,6 +38,8 @@ export class FakeCpa {
         this.requests.push({ method, path: url.pathname + url.search, ...(raw ? { body: raw } : {}) })
         const send = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
         if (this.down) return send(503, { error: 'down' })
+        const inference = url.pathname.startsWith('/v1/') ? this.gateway?.(method, url, req.headers.authorization ?? '') : undefined
+        if (inference) return send(inference.status, inference.body)
         if (req.headers.authorization !== `Bearer ${this.key}`) return send(401, { error: 'unauthorized' })
         const route = url.pathname.replace(/^\/v0\/management/, '')
         if (route === '/auth-files' && method === 'GET') {
@@ -61,6 +67,8 @@ export class FakeCpa {
         if (route === '/openai-compatibility' && method === 'GET') return send(200, { 'openai-compatibility': this.compat })
         const keyRoute = /^\/(claude|codex|gemini|vertex)-api-key$/.exec(route)
         if (keyRoute && method === 'GET') return send(200, { [`${keyRoute[1]}-api-key`]: this.providerKeys[`${keyRoute[1]}-api-key`] ?? [] })
+        const added = this.extra?.(method, route, url, raw)
+        if (added) return send(added.status, added.body)
         return send(404, { error: 'no route' })
       })
     })

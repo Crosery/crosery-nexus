@@ -10,17 +10,11 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-const KERNEL_OWNED = 'owned by wp-kernel; parametrized there'
-
 /**
  * 白名单：path 以 `/` 结尾按目录前缀匹配；rule 为规则 id。
  * pending 的条目由别的分支收口，暂不做「已失效」检查。
  */
 export const ALLOWLIST = [
-  { path: 'deploy/kernels/', rule: '*', reason: KERNEL_OWNED, pending: true },
-  { path: 'scripts/kernel-applier.mjs', rule: '*', reason: KERNEL_OWNED, pending: true },
-  { path: 'scripts/cpa-smoke.mjs', rule: '*', reason: KERNEL_OWNED, pending: true },
-  { path: 'scripts/magpie-standby.mjs', rule: '*', reason: KERNEL_OWNED, pending: true },
   { path: 'server/proxyParseSubscription.test.ts', rule: 'ipv4', reason: '私网/保留段判定与 SSRF 拦截测试，必须用这些段本身（含一个公网对照 8.8.8.8）' },
   { path: 'server/mihomoConfig.ts', rule: 'ipv4', reason: '内核 DNS 用的公共解析器 223.5.5.5 / 1.1.1.1，不是自有地址' },
   { path: 'public/logos/codex.svg', rule: 'ipv4', reason: 'SVG 路径里连写的小数，不是地址' },

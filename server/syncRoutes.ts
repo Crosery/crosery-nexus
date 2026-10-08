@@ -16,6 +16,7 @@ import { PROBE_INTERVAL_MS } from './modelAvailability.js'
 import { autoRowWords, autoupdatePathsFor, buildMagpieAuto, buildRtkAuto, readAutoupdateFacts } from './autoupdate.js'
 import { CATALOG_INTERVAL_MS, runCpaCatalogSync, sanitizeCatalogData } from './cpaCatalog.js'
 import { PRICE_WATCH_INTERVAL_MS, gatewayPriceRead, priceWatcher, sharedPriceReads } from './priceWatch.js'
+import { DEFAULT_KERNEL_WINDOW, zonedClock } from './kernels.js'
 
 /* ────────────────────────── 外部（launchd）任务：只读状态文件 ────────────────────────── */
 
@@ -99,6 +100,8 @@ export type ExternalJobOptions = {
   /** a local Magpie kernel this host could auto-update (GATEWAY_ENGINE=magpie, local control plane) */
   magpieLocal?: () => boolean
   platform?: NodeJS.Platform
+  /** Linux: scripts/rtk-autoupdate.mjs 的状态目录（RTK_STATE_DIR，与 crosery-rtk-autoupdate.service 相同） */
+  rtkStateDir?: string
 }
 
 /** `sync.log` 行：`[ISO] applied: 64 models, +17 ~0 -0[, held N][, confirmed-removed N]` 或 `[ISO] failed: …`。 */
@@ -244,6 +247,65 @@ export function createExternalJobs(options: ExternalJobOptions = {}): ExternalJo
   }
 
   return [catalogSync, kernelUpstream, rtkVersion]
+}
+
+const RTK_DAILY_MS = 24 * 60 * 60_000
+const RTK_FAILED = new Set(['error', 'verify-failed', 'rolled-back', 'trial-failed', 'rate-limited', 'no-release', 'unsupported', 'unwritable'])
+
+/**
+ * Linux（预发布、正式）：crosery-rtk-autoupdate.timer 每天跑一次 scripts/rtk-autoupdate.mjs auto，这里只读它的
+ * autoupdate-rtk.json。预发布先装上新版本试运行满时长，正式只装预发布验收过的版本。
+ */
+export function rtkAutoupdateJob(options: ExternalJobOptions = {}): ExternalJobDef {
+  const dir = options.rtkStateDir ?? (process.env.RTK_STATE_DIR || process.env.MAGPIE_UPSTREAM_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-upstream'))
+  return {
+    id: 'rtk-autoupdate',
+    label: 'RTK 自动升级',
+    kind: 'external',
+    read: (): ExternalSnapshot => {
+      const intervalMs = RTK_DAILY_MS
+      const s = readJsonFile(path.join(dir, 'autoupdate-rtk.json'))
+      const checkedAt = parseTime(s?.checkedAt)
+      if (!s || !checkedAt) return { intervalMs, lastRunAt: null, state: 'unknown', lastResult: null, summary: '定时任务还没跑过' }
+      const now = Date.now()
+      const clock = (value: unknown) => { const at = parseTime(value); return at ? zonedClock(at, now, DEFAULT_KERNEL_WINDOW.tz) : '—' }
+      const local = tag(s.local)
+      const latest = tag(s.latest)
+      const target = tag(s.target)
+      const trial = s.trial && typeof s.trial === 'object' ? s.trial as Record<string, unknown> : null
+      const reasons = Array.isArray(s.reasons) ? s.reasons as Array<{ code?: unknown; text?: unknown }> : []
+      const reason = typeof reasons[0]?.text === 'string' ? reasons[0].text.slice(0, 200) : null
+      const why = typeof s.why === 'string' ? s.why : ''
+      const failed = RTK_FAILED.has(why)
+      const words: Record<string, string> = {
+        disabled: '自动升级关',
+        missing: '本机没有安装 rtk',
+        'up-to-date': `已是最新 ${latest ?? local ?? ''}`.trim(),
+        upgraded: trial?.status === 'soaking' ? `已升级到 ${local} · 试运行到 ${clock(trial.soakUntil)} 后验收` : `已升级到 ${local}`,
+        soaking: `${tag(trial?.version) ?? target} 试运行中 · ${clock(trial?.soakUntil)} 后验收`,
+        accepted: `${tag(trial?.version) ?? target} 试运行通过 · 正式下次检查可装`,
+        'not-promoted': `${latest} 等预发布试运行通过 · 本机 ${local ?? '—'}`,
+        breaking: `${target ?? latest} 停在待复核`,
+        'no-latest': '还没取到 rtk 最新版本',
+      }
+      const role = s.role === 'preview' ? '预发布' : s.role === 'production' ? '正式' : ''
+      const text = failed ? `${target ?? latest ?? ''} 没升级成功`.trim() : words[why] ?? (local ? `本机 ${local}` : '—')
+      const deadline = Math.max(parseTime(s.nextAttemptAt) ?? 0, parseTime(s.retryNotBefore) ?? 0)
+      const backoffUntil = deadline > now ? deadline : null
+      return {
+        intervalMs,
+        lastRunAt: checkedAt,
+        nextRunAt: Math.max(checkedAt + intervalMs, backoffUntil ?? 0),
+        backoffUntil,
+        backoffLevel: backoffUntil ? Math.max(1, Math.floor(Number(s.failures) || 0)) : 0,
+        state: failed ? 'error' : 'idle',
+        lastResult: failed ? 'error' : why === 'disabled' || why === 'missing' || why === 'breaking' || why === 'not-promoted' ? 'skipped' : 'ok',
+        // production waiting for preview is normal; an unusable preview record is not
+        lastError: failed || (why === 'not-promoted' && reasons[0]?.code !== 'not-promoted') ? reason : null,
+        summary: [role, text].filter(Boolean).join(' · '),
+      }
+    },
+  }
 }
 
 /* ────────────────────────── 进程内任务 ────────────────────────── */
@@ -440,9 +502,12 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
     },
   })
 
-  // the external jobs are launchd agents on this Mac; a Linux host (the relay) has none to show
-  if ((deps.externalJobs?.platform ?? process.platform) === 'darwin') {
+  // the Mac's external jobs are launchd agents; a Linux host (preview, production) has the RTK systemd timer
+  const platform = deps.externalJobs?.platform ?? process.platform
+  if (platform === 'darwin') {
     for (const job of createExternalJobs(deps.externalJobs)) registry.register(job)
+  } else if (platform === 'linux') {
+    registry.register(rtkAutoupdateJob(deps.externalJobs))
   }
 }
 

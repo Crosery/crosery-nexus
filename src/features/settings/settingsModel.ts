@@ -69,6 +69,7 @@ export const JOB_SOURCE: Record<string, string> = {
   'catalog-sync': 'launchd · crosery-models-sync',
   'kernel-upstream': 'launchd · magpie 上游检查',
   'rtk-version': 'launchd · rtk releases',
+  'rtk-autoupdate': 'systemd · crosery-rtk-autoupdate',
 }
 
 export type JobMark = { state: MarkKind; label: string; severity: 'bad' | 'warn' | 'busy' | null }

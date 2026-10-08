@@ -7,10 +7,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { assetName, breakingNotes, detectInstall, parseChecksums, rtkPaths, runVersion, upgradeRtk } from './rtk-autoupdate.mjs'
+import {
+  assetName, breakingNotes, detectInstall, functionalCheck, latestStable, parseChecksums, parseRtkPromotion, rtkPaths, rtkPromotionProblems, rtkRole, rtkRuntime,
+  runVersion, upgradeRtk,
+} from './rtk-autoupdate.mjs'
 
 const BREAKING = '## [0.2.0]\n\n### ⚠ BREAKING CHANGES\n\n* **cli:** callers must pass the script explicitly, e.g. `rtk test --shell sh`.\n\n### Features\n\n* x'
-const script = version => `#!/bin/sh\necho "rtk ${version}"\n`
+// a stand-in rtk: `--version`, and `json <file>` (the servers' functional check) echoes the file back
+const script = version => `#!/bin/sh\nif [ "$1" = json ]; then cat "$2"; exit 0; fi\necho "rtk ${version}"\n`
 
 /** A throwaway rtk install + a fake GitHub (releases API with ETag, download host) on 127.0.0.1. */
 async function fixture({ local = '0.1.0', latest = '0.2.0', breakingIn = null, checksums = true, digest = true, badSum = false, signature = false, apiStatus = 200 } = {}) {
@@ -56,7 +60,9 @@ async function fixture({ local = '0.1.0', latest = '0.2.0', breakingIn = null, c
   const paths = rtkPaths(runtime)
   return {
     dir, target, paths, hits: () => apiHits,
-    deps: { env: { RTK_BIN: target }, home: dir, api: `${base}/api/releases`, allowHosts: ['127.0.0.1'] },
+    sum, name,
+    // the Mac's behaviour unless a test picks a server role (the default role depends on the platform)
+    deps: { env: { RTK_BIN: target }, home: dir, api: `${base}/api/releases`, allowHosts: ['127.0.0.1'], role: 'standalone' },
     async close() { server.close(); await fs.rm(dir, { recursive: true, force: true }) },
   }
 }
@@ -231,4 +237,144 @@ test('a target that is replaced while the release downloads is not overwritten, 
     assert.equal(state.attempts['v0.2.0'], undefined)
     assert.ok(Date.parse(state.nextAttemptAt) > now)
   } finally { await f.close() }
+})
+
+/* ── servers: preview trial, production promotion ───────────────────── */
+
+const HOUR = 3_600_000
+const POLICY = { soakMs: 24 * HOUR, maxAgeMs: 7 * 24 * HOUR }
+
+test('role and state dir: explicit role wins, a Mac stays standalone, any other host is production; RTK_STATE_DIR before the old name', () => {
+  assert.equal(rtkRole({ AUTOUPDATE_ROLE: 'preview' }, 'linux'), 'preview')
+  assert.equal(rtkRole({}, 'linux'), 'production')
+  assert.equal(rtkRole({ AUTOUPDATE_ROLE: 'staging' }, 'linux'), 'production')
+  assert.equal(rtkRole({}, 'darwin'), 'standalone')
+  assert.equal(rtkRole({ AUTOUPDATE_ROLE: 'production' }, 'darwin'), 'production')
+  assert.equal(rtkRuntime({ RTK_STATE_DIR: '/srv/rtk', MAGPIE_UPSTREAM_RUNTIME: '/old' }, '/home/x'), '/srv/rtk')
+  assert.equal(rtkRuntime({ MAGPIE_UPSTREAM_RUNTIME: '/old' }, '/home/x'), '/old')
+  assert.equal(rtkRuntime({}, '/home/x'), '/home/x/.agents/crosery/magpie-upstream')
+  assert.equal(latestStable([{ tag: 'v0.9.0' }, { tag: 'v0.10.0' }, { tag: 'v0.11.0', prerelease: true }, { tag: 'v1.0.0', draft: true }]), 'v0.10.0')
+})
+
+test('functional check: the real rtk json round trip, in a throwaway HOME', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rtk-fc-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  await fs.writeFile(path.join(dir, 'good'), script('0.2.0'), { mode: 0o755 })
+  await fs.writeFile(path.join(dir, 'bad'), '#!/bin/sh\necho "rtk 0.2.0"\n', { mode: 0o755 })
+  await fs.writeFile(path.join(dir, 'crash'), '#!/bin/sh\nexit 3\n', { mode: 0o755 })
+  assert.equal((await functionalCheck(path.join(dir, 'good'))).ok, true)
+  assert.match((await functionalCheck(path.join(dir, 'bad'))).detail, /输出不对/)
+  assert.match((await functionalCheck(path.join(dir, 'crash'))).detail, /rtk json 失败/)
+})
+
+test('preview: latest from the releases list (no upstream check), trial with checks every run, one at a time, accepted after the soak', async () => {
+  const f = await fixture()
+  try {
+    let clock = Date.UTC(2026, 9, 9, 3)
+    const deps = () => ({ ...f.deps, role: 'preview', policy: POLICY, now: () => clock })
+    await fs.rm(f.paths.status)
+    const upgraded = await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })
+    assert.equal(upgraded.why, 'upgraded', JSON.stringify(upgraded))
+    let state = JSON.parse(await fs.readFile(f.paths.state, 'utf8'))
+    assert.deepEqual([state.role, state.trial.status, state.trial.version, state.trial.sha256, state.trial.checks.length], ['preview', 'soaking', '0.2.0', f.sum, 1])
+    assert.equal(state.trial.soakUntil, new Date(Date.UTC(2026, 9, 9, 3) + 24 * HOUR).toISOString(), 'the console shows when the soak ends')
+    clock += 6 * HOUR
+    // a newer release meanwhile does not interrupt the trial
+    const cache = JSON.parse(await fs.readFile(f.paths.cache, 'utf8'))
+    await fs.writeFile(f.paths.cache, JSON.stringify({ ...cache, fetchedAt: new Date(clock).toISOString(), releases: [{ tag: 'v0.3.0', draft: false, prerelease: false, body: '', assets: [] }, ...cache.releases] }))
+    const soaking = await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })
+    assert.deepEqual([soaking.why, soaking.soakUntil], ['soaking', new Date(Date.UTC(2026, 9, 9, 3) + 24 * HOUR).toISOString()])
+    clock += 19 * HOUR
+    const accepted = await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })
+    assert.equal(accepted.why, 'accepted')
+    state = JSON.parse(await fs.readFile(f.paths.state, 'utf8'))
+    assert.deepEqual([state.accepted.version, state.accepted.status, state.accepted.checks.length], ['0.2.0', 'accepted', 3])
+    // what the coordinator forwards from this state is what production accepts
+    const record = parseRtkPromotion({ version: 1, kind: 'rtk-promotion', candidate: { version: state.accepted.version, tag: state.accepted.tag, sha256: state.accepted.sha256, asset: state.accepted.asset },
+      installedAt: state.accepted.installedAt, checks: state.accepted.checks, acceptedAt: state.accepted.acceptedAt })
+    assert.deepEqual(rtkPromotionProblems({ record, asset: f.name, now: clock, policy: POLICY }), [])
+  } finally { await f.close() }
+})
+
+test('preview: a failing check during the trial restores the previous binary and rejects the version for good', async () => {
+  const f = await fixture()
+  try {
+    let clock = Date.UTC(2026, 9, 9, 3)
+    let broken = false
+    const deps = () => ({ ...f.deps, role: 'preview', policy: POLICY, now: () => clock, functional: async binary => (broken ? { ok: false, detail: 'rtk json 失败：boom' } : functionalCheck(binary)) })
+    assert.equal((await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })).why, 'upgraded')
+    broken = true
+    clock += 2 * HOUR
+    const failed = await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })
+    assert.deepEqual([failed.why, failed.result], ['trial-failed', 'rolled-back'])
+    assert.match(failed.reasons[0].text, /检查没过：rtk json 失败：boom，已换回 0\.1\.0/)
+    assert.equal(await runVersion(f.target), '0.1.0')
+    broken = false
+    clock += 30 * HOUR
+    assert.equal((await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })).why, 'attempted', 'a rejected trial is not installed again')
+  } finally { await f.close() }
+})
+
+test('preview and production: a binary that fails the functional check right after the swap is put back at once', async () => {
+  const f = await fixture()
+  try {
+    const result = await upgradeRtk({ mode: 'auto', paths: f.paths, deps: { ...f.deps, role: 'preview', functional: async () => ({ ok: false, detail: 'rtk json 输出不对' }) } })
+    assert.equal(result.why, 'rolled-back')
+    assert.match(result.reasons[0].text, /functional check failed \(rtk json 输出不对\); restored 0\.1\.0/)
+    assert.equal(await runVersion(f.target), '0.1.0')
+  } finally { await f.close() }
+})
+
+test('production: never the latest by itself; only the promoted version with the very archive preview accepted', async () => {
+  const f = await fixture()
+  try {
+    const now = Date.UTC(2026, 9, 9, 3)
+    const deps = { ...f.deps, role: 'production', policy: POLICY, now: () => now }
+    const record = (over = {}) => ({ version: 1, kind: 'rtk-promotion', candidate: { version: '0.2.0', tag: 'v0.2.0', sha256: f.sum, asset: f.name },
+      installedAt: new Date(now - 48 * HOUR).toISOString(), checks: [{ at: new Date(now - 48 * HOUR).toISOString(), ok: true }, { at: new Date(now - 23 * HOUR).toISOString(), ok: true }],
+      acceptedAt: new Date(now - 23 * HOUR).toISOString(), ...over })
+    const waiting = await upgradeRtk({ mode: 'auto', paths: f.paths, deps })
+    assert.deepEqual([waiting.why, waiting.reasons[0].code], ['not-promoted', 'not-promoted'])
+    assert.equal(await runVersion(f.target), '0.1.0')
+    for (const [over, code] of [
+      [{ acceptedAt: new Date(now - 8 * 24 * HOUR).toISOString() }, 'stale'],
+      [{ checks: [{ at: new Date(now - 48 * HOUR).toISOString(), ok: true }, { at: new Date(now - 40 * HOUR).toISOString(), ok: true }] }, 'soak'],
+      [{ checks: [{ at: new Date(now - 47 * HOUR).toISOString(), ok: true }, { at: new Date(now - 23 * HOUR).toISOString(), ok: false }] }, 'checks'],
+      [{ candidate: { version: '0.2.0', tag: 'v0.2.0', sha256: f.sum, asset: 'rtk-aarch64-unknown-linux-gnu.tar.gz' } }, 'asset'],
+    ]) {
+      await fs.writeFile(f.paths.promotion, JSON.stringify(record(over)))
+      const refused = await upgradeRtk({ mode: 'auto', paths: f.paths, deps })
+      assert.deepEqual([refused.why, refused.reasons.map(item => item.code).includes(code)], ['not-promoted', true], code)
+      assert.equal(await runVersion(f.target), '0.1.0')
+    }
+    // a record for another archive: downloaded, verified against GitHub, then refused before the swap, and not retried
+    await fs.writeFile(f.paths.promotion, JSON.stringify(record({ candidate: { version: '0.2.0', tag: 'v0.2.0', sha256: 'e'.repeat(64), asset: f.name } })))
+    const mismatch = await upgradeRtk({ mode: 'auto', paths: f.paths, deps })
+    assert.deepEqual([mismatch.why, mismatch.reasons[0].code], ['verify-failed', 'promotion-mismatch'])
+    assert.equal(await runVersion(f.target), '0.1.0')
+    assert.equal((await upgradeRtk({ mode: 'auto', paths: f.paths, deps })).why, 'attempted', 'a version that failed verification is not retried by itself')
+    // the right record: installed, with backup, sha256 and the record it relied on
+    const g = await fixture()
+    try {
+      await fs.writeFile(g.paths.promotion, JSON.stringify({ ...record(), candidate: { version: '0.2.0', tag: 'v0.2.0', sha256: g.sum, asset: g.name } }))
+      const done = await upgradeRtk({ mode: 'auto', paths: g.paths, deps: { ...g.deps, role: 'production', policy: POLICY, now: () => now } })
+      assert.equal(done.why, 'upgraded', JSON.stringify(done))
+      assert.equal(await runVersion(g.target), '0.2.0')
+      const state = JSON.parse(await fs.readFile(g.paths.state, 'utf8'))
+      assert.deepEqual([state.lastUpgrade.sha256, state.lastUpgrade.promotedAt, state.trial], [g.sum, record().acceptedAt, null])
+    } finally { await g.close() }
+  } finally { await f.close() }
+})
+
+test('cli: runs when started through a symlinked release path (systemd uses /opt/crosery-api-console-current)', async t => {
+  const { fileURLToPath } = await import('node:url')
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rtk-cli-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  const link = path.join(dir, 'current')
+  await fs.symlink(path.dirname(fileURLToPath(import.meta.url)), link)
+  const out = execFileSync(process.execPath, [path.join(link, 'rtk-autoupdate.mjs'), 'status'], {
+    encoding: 'utf8', env: { ...process.env, RTK_STATE_DIR: path.join(dir, 'state'), RTK_BIN: path.join(dir, 'none'), AUTOUPDATE_ROLE: 'preview' },
+  })
+  const status = JSON.parse(out)
+  assert.deepEqual([status.role, status.install.method], ['preview', 'missing'])
 })

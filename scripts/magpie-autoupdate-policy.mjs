@@ -153,13 +153,4 @@ export function normalizeConfig(raw) {
   }
 }
 
-/** Numeric dotted-version compare; `v` prefix and pre-release tails ignored. */
-export function compareVersions(left, right) {
-  const parts = value => String(value).replace(/^v/i, '').split(/[.+-]/).slice(0, 3).map(part => Number.parseInt(part, 10) || 0)
-  const [a, b] = [parts(left), parts(right)]
-  for (let index = 0; index < 3; index += 1) {
-    const diff = (a[index] ?? 0) - (b[index] ?? 0)
-    if (diff) return diff
-  }
-  return 0
-}
+export { compareVersions } from './autoupdate-common.mjs'

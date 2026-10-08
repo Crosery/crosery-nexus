@@ -13,7 +13,7 @@ process.env.RTK_BIN = path.join(testDataDir, 'no-rtk')
 fs.mkdirSync(process.env.RTK_HOME, { recursive: true })
 for (const name of ['MAGPIE_SOURCE_CPA_BASE_URL', 'MAGPIE_SOURCE_CPA_KEY', 'GATEWAY_ENGINE']) delete process.env[name]
 
-const { createExternalJobs, installSyncCenter, launchdIntervalMs, parseModelsSyncLog } = await import('./syncRoutes.js')
+const { createExternalJobs, installSyncCenter, launchdIntervalMs, parseModelsSyncLog, registerSyncJobs, rtkAutoupdateJob } = await import('./syncRoutes.js')
 const { SyncRegistry } = await import('./syncRegistry.js')
 
 const root = fs.mkdtempSync(path.join(testDataDir, 'agents-'))
@@ -87,6 +87,49 @@ test('外部任务：共享目录、内核上游、RTK 版本只读状态文件'
   const missing = createExternalJobs({ catalogFile: path.join(root, 'nope/catalog.json'), upstreamDir: path.join(root, 'nope') })
   assert.equal((await missing[0].read()).state, 'unknown')
   assert.equal((await missing[1].read()).state, 'unknown')
+})
+
+test('Linux：RTK 自动升级只读 autoupdate-rtk.json，按角色说预发布试运行 / 正式等验收，失败与退避照实显示', async () => {
+  const dir = path.join(root, 'rtk-state')
+  const job = rtkAutoupdateJob({ rtkStateDir: dir })
+  const state = (value: Record<string, unknown>) => write('rtk-state/autoupdate-rtk.json', JSON.stringify({ version: 1, ...value }))
+  assert.deepEqual(await job.read(), { intervalMs: 86_400_000, lastRunAt: null, state: 'unknown', lastResult: null, summary: '定时任务还没跑过' })
+  const checkedAt = new Date(Date.now() - 3_600_000).toISOString()
+  state({ role: 'preview', checkedAt, why: 'soaking', local: '0.51.0', latest: 'v0.51.0', target: 'v0.51.0',
+    trial: { version: '0.51.0', status: 'soaking', soakUntil: new Date(Date.UTC(2026, 9, 3, 1, 30)).toISOString() } })
+  const soaking = await job.read()
+  assert.equal(soaking.lastRunAt, Date.parse(checkedAt))
+  assert.equal(soaking.nextRunAt, Date.parse(checkedAt) + 86_400_000)
+  assert.equal(soaking.state, 'idle')
+  assert.match(soaking.summary ?? '', /^预发布 · 0\.51\.0 试运行中 · (10\/03 )?09:30 后验收$/)
+  state({ role: 'production', checkedAt, why: 'not-promoted', local: '0.50.0', latest: 'v0.51.0', reasons: [{ code: 'not-promoted', text: 'v0.51.0 还没在预发布跑满 24 小时' }] })
+  const waiting = await job.read()
+  assert.equal(waiting.summary, '正式 · v0.51.0 等预发布试运行通过 · 本机 0.50.0')
+  assert.equal(waiting.lastResult, 'skipped')
+  assert.equal(waiting.lastError, null)
+  state({ role: 'production', checkedAt, why: 'not-promoted', local: '0.50.0', latest: 'v0.51.0', reasons: [{ code: 'stale', text: '预发布的记录超过 7 天' }] })
+  assert.equal((await job.read()).lastError, '预发布的记录超过 7 天')
+  const retry = new Date(Date.now() + 2 * 3_600_000).toISOString()
+  state({ role: 'production', checkedAt, why: 'error', target: 'v0.51.0', failures: 2, nextAttemptAt: retry, reasons: [{ code: 'download', text: 'v0.51.0 下载失败：HTTP 502' }] })
+  const failed = await job.read()
+  assert.equal(failed.state, 'error')
+  assert.equal(failed.lastResult, 'error')
+  assert.equal(failed.lastError, 'v0.51.0 下载失败：HTTP 502')
+  assert.equal(failed.summary, '正式 · v0.51.0 没升级成功')
+  assert.equal(failed.backoffUntil, Date.parse(retry))
+  assert.equal(failed.backoffLevel, 2)
+  assert.equal(failed.nextRunAt, Date.parse(checkedAt) + 86_400_000)
+
+  // registered on Linux only; the Mac keeps its launchd rows
+  const linux = new SyncRegistry({ file: null, log: () => undefined })
+  const deps = {
+    refreshAccountQuota: async () => ({}), onModelsChanged: () => undefined, addAudit: () => undefined,
+    dataPlaneStatus: () => ({ enabled: false, pending: 0, deadLetters: 0, oldestPendingAgeMs: null, lastErrorCode: null, lastAttemptAt: null, lastSuccessAt: null, effectiveBatchSize: 200 }),
+  }
+  registerSyncJobs(linux, { ...deps, externalJobs: { platform: 'linux', rtkStateDir: dir } })
+  const ids = (await linux.status()).jobs.map(item => item.id)
+  assert.ok(ids.includes('rtk-autoupdate'))
+  assert.ok(!ids.includes('rtk-version'))
 })
 
 /* ────────────────────────── 路由 ────────────────────────── */
@@ -291,7 +334,8 @@ test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次
     },
   }, scratch)
   const view = async () => (await scratch.status()).jobs.find(job => job.id === 'model-availability')!
-  assert.deepEqual((await scratch.status()).jobs.map(job => job.id), ['model-discovery', 'pricing', 'model-availability', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane'])
+  // Linux: the RTK systemd job is the only external row
+  assert.deepEqual((await scratch.status()).jobs.map(job => job.id), ['model-discovery', 'pricing', 'model-availability', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane', 'rtk-autoupdate'])
   assert.equal((await view()).intervalMs, 30 * 60_000)
 
   scratch.start()
