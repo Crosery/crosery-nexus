@@ -35,8 +35,8 @@ const listenerLine = computed(() => {
   if (l.state === 'off') return '未设置 RTK_RELAY_PORT · 请求不经过中转'
   const route = `127.0.0.1:${l.port} → ${l.target.replace(/^http:\/\//, '')}`
   if (l.state === 'failed') return `${route} · ${l.error || '未知原因'} · 自动重试中`
-  if (l.state === 'down' || l.state === 'stopped') return `${route} · 中转进程没在运行 · 请求走备用上游`
-  if (l.state === 'draining') return `${route} · 正在收尾 ${fmtInt(l.inFlight)} 个请求 · 新请求走备用上游`
+  if (l.state === 'down' || l.state === 'stopped') return `${route} · 中转进程没在运行 · 请求不经过中转`
+  if (l.state === 'draining') return `${route} · 正在收尾 ${fmtInt(l.inFlight)} 个请求 · 新请求不经过中转`
   return route
 })
 const tally = (t: RtkRelayTally) => `约 ${fmtCompact(t.savedTokens)} tok · ${fmtInt(t.requests)} 次请求${t.errors ? ` · 跳过 ${fmtInt(t.errors)}` : ''}`
