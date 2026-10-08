@@ -4,7 +4,7 @@
  *
  *   node scripts/cpa-smoke.mjs --binary <cli-proxy-api> [--version <expected>] [--config deploy/kernels/cpa-builder/smoke-config.yaml]
  *
- * Runs on the CPA builder (ibuki-wsl-crosery, after go test) and anywhere for a manual check. Starts the binary on a
+ * Runs on the CPA builder (after go test) and anywhere for a manual check. Starts the binary on a
  * free loopback port with the production-shaped fixture (every key path production's config.yaml has, fake values)
  * and checks what the console and the clients rely on: management reads, per-key model / channel allowlists, the
  * compat channel, /v1/models per key; then a management write (the one that migrates a legacy config.yaml to a newer
