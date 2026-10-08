@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  checkTag, parseEnvFile, parseRecords, parseReleaseTag, productionEvidence, publicEnvProblems, releaseIdFor, rollbackTarget, secretLikeKeys, shippable,
+  checkTag, manifestHashes, parseEnvFile, parseRecords, parseReleaseTag, productionEvidence, publicEnvProblems, releaseIdFor, RELAY_ENTRY,
+  relayCodeFiles, relayRestartDecision, rollbackTarget, secretLikeKeys, shippable,
 } from './release-policy.mjs'
 
 const C = 'c'.repeat(40)
@@ -103,4 +104,61 @@ test('release.mjs 能加载：无参数时打印用法并以 2 退出（内嵌 s
   const result = spawnSync(process.execPath, [new URL('./release.mjs', import.meta.url).pathname], { encoding: 'utf8' })
   assert.equal(result.status, 2, result.stderr)
   assert.match(result.stderr, /用法/)
+})
+
+test('中转代码闭包：相对导入（.js → .ts）、type 导入不算、内置模块不算、外部包带上 package-lock.json', () => {
+  const tree = {
+    'server/main.ts': "import fs from 'node:fs'\nimport { a } from './a.js'\nimport type { T } from './typesOnly.js'\nexport * from './b.js'\n",
+    'server/a.ts': "import {\n  b,\n  type B,\n} from './b.js'\nimport path from 'path'\nconst lazy = () => import('../lib/c.js')\n",
+    'server/b.ts': "import './a.js'\n",
+    'lib/c.js': 'export const c = 1\n',
+    'server/typesOnly.ts': "import x from 'left-pad'\n",
+  }
+  const read = (file) => tree[file] ?? null
+  assert.deepEqual(relayCodeFiles(read, 'server/main.ts'), ['lib/c.js', 'server/a.ts', 'server/b.ts', 'server/main.ts'])
+  tree['server/b.ts'] += "import express from 'express'\n"
+  assert.deepEqual(relayCodeFiles(read, 'server/main.ts'), ['lib/c.js', 'package-lock.json', 'server/a.ts', 'server/b.ts', 'server/main.ts'])
+})
+
+test('仓库里的中转进程只加载自己的模块：不带控制台（db/index）也不依赖外部包', async () => {
+  const fs = await import('node:fs')
+  const read = (file) => fs.existsSync(new URL(`../${file}`, import.meta.url)) ? fs.readFileSync(new URL(`../${file}`, import.meta.url), 'utf8') : null
+  const files = relayCodeFiles(read)
+  for (const file of [RELAY_ENTRY, 'server/relayCompressionProxy.ts', 'server/toolCompress.ts', 'server/rtkRelayLedger.ts']) assert.ok(files.includes(file), file)
+  for (const file of ['server/db.ts', 'server/index.ts', 'server/config.ts', 'package-lock.json']) assert.ok(!files.includes(file), file)
+  assert.ok(files.every((file) => read(file) !== null), files.join(' '))
+})
+
+test('发布后中转：没装/没 enable 跳过，代码或配置没变保持，变了才重启', () => {
+  const sha = (char) => char.repeat(64)
+  const manifest = (entries) => Object.entries(entries).map(([file, hash]) => `${sha(hash)}  ${file}`).join('\n')
+  const files = [RELAY_ENTRY, 'server/relayCompressionProxy.ts']
+  const env = { RTK_RELAY_PORT: '8792', PORT: '8787', DATA_DIR: '/data', USAGE_RETENTION_DAYS: '30' }
+  const from = { manifest: manifest({ [RELAY_ENTRY]: 'a', 'server/relayCompressionProxy.ts': 'b', 'server/index.ts': 'c', 'src/App.vue': 'd' }), files, env }
+  const to = (over = {}, envOver = {}, extra = {}) => ({
+    manifest: manifest({ [RELAY_ENTRY]: 'a', 'server/relayCompressionProxy.ts': 'b', 'server/index.ts': 'e', 'src/App.vue': 'f', ...over }),
+    files, env: { ...env, ...envOver }, ...extra,
+  })
+  const decide = (target, state = {}) => relayRestartDecision({ installed: true, enabled: true, dropIn: true, from, to: target, ...state })
+
+  assert.equal(decide(to(), { installed: false }).action, 'skip')
+  assert.equal(decide(to({ 'server/relayCompressionProxy.ts': '9' }), { enabled: false }).action, 'skip')
+  const keep = decide(to({}, { USAGE_RETENTION_DAYS: '7' }))
+  assert.deepEqual({ action: keep.action, changed: keep.changed }, { action: 'keep', changed: [] }, '只改控制台代码与无关配置')
+
+  assert.deepEqual(decide(to({ 'server/relayCompressionProxy.ts': '9' })).changed, ['server/relayCompressionProxy.ts'])
+  assert.deepEqual(decide(to({}, { RTK_RELAY_PORT: '8793' })).changed, ['env RTK_RELAY_PORT'])
+  assert.deepEqual(decide(to({}, { RTK_RELAY_TARGET: 'http://127.0.0.1:9000' })).changed, ['env RTK_RELAY_TARGET'])
+  assert.deepEqual(decide(to(), { dropIn: false }).changed, ['drop-in'])
+  const imported = decide(to({ 'server/newHelper.ts': '1' }, {}, { files: [...files, 'server/newHelper.ts'] }))
+  assert.deepEqual({ action: imported.action, changed: imported.changed }, { action: 'restart', changed: ['server/newHelper.ts'] }, '入口新导入的文件')
+  assert.equal(decide(to(), {}).action, 'keep')
+  assert.match(decide(to({ 'server/relayCompressionProxy.ts': '9' })).reason, /relayCompressionProxy/)
+
+  const unknownFrom = relayRestartDecision({ installed: true, enabled: true, dropIn: true, from: { manifest: '', files: null, env: {} }, to: to() })
+  assert.equal(unknownFrom.action, 'restart', '中转运行的目录没有清单：按变了处理')
+  const older = to()
+  older.manifest = manifest({ 'server/index.ts': 'e' })
+  assert.equal(decide(older).action, 'keep', '回滚到没有中转入口的发布：不重启')
+  assert.equal(manifestHashes(`${sha('a')}  a b.txt\nbroken\n`).get('a b.txt'), sha('a'))
 })

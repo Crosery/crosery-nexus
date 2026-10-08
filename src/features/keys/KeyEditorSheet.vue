@@ -50,6 +50,7 @@ const quota = reactive<QuotaDraft>({ daily: '', weekly: '', total: '' })
 const errors = ref<Record<string, string>>({})
 const quotaErrors = ref<Partial<Record<keyof QuotaDraft, string>>>({})
 const touched = ref(false)
+const rtkCompress = ref(false)
 const write = useSheetWrite()
 const { busy, stale } = write
 const failure = ref('')
@@ -68,6 +69,7 @@ function reset() {
   quota.daily = ''
   quota.weekly = ''
   quota.total = ''
+  rtkCompress.value = item?.rtkCompress ?? false
   errors.value = {}
   quotaErrors.value = {}
   touched.value = false
@@ -142,7 +144,7 @@ async function submit() {
   const mode = props.mode
   const item = props.item
   if (mode === 'edit' && !item) return
-  const payload = editorPayload(draft)
+  const payload = { ...editorPayload(draft), rtkCompress: rtkCompress.value }
   // the quota is taken from what check() just validated, before the first await (FF-02)
   const quotaValues = mode === 'create' ? validateQuotaDraft(quota).values : null
   const verb = mode === 'create' ? '创建' : '保存'
@@ -279,6 +281,12 @@ const QUOTA_WINDOWS: Array<{ key: keyof QuotaDraft; label: string }> = [
           <p v-if="errors.groupConcurrency" class="kx-field__err" role="alert">◆ {{ errors.groupConcurrency }}</p>
         </div>
       </fieldset>
+
+      <div class="kx-field" data-field="rtkCompress">
+        <span class="kx-field__k">RTK 压缩</span>
+        <Switch v-model="rtkCompress" label="压缩这个 Key 请求里的工具输出" />
+        <p class="kx-field__hint">重复行与进度输出折叠后再转发 · 只在 RTK 中转启用时生效</p>
+      </div>
 
       <fieldset v-if="mode === 'create'" class="kx-field">
         <legend class="kx-field__k">额度 <span class="kx-field__opt">美元 · 留空 = 不限</span></legend>

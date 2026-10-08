@@ -42,6 +42,7 @@ export type KeyDraftPayload = {
   groups: string[]
   totalConcurrency: number
   groupConcurrency: Record<string, number>
+  rtkCompress?: boolean
 }
 
 export const keysApi = {

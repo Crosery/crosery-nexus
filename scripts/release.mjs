@@ -14,7 +14,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  checkTag, environment, parseEnvFile, parseRecords, productionEvidence, publicEnvProblems, releaseIdFor, rollbackTarget, shippable,
+  checkTag, environment, parseEnvFile, parseRecords, productionEvidence, publicEnvProblems, releaseIdFor, RELAY_SERVICE, relayCodeFiles,
+  relayRestartDecision, rollbackTarget, shippable,
 } from './release-policy.mjs'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -180,6 +181,8 @@ function build(release) {
       releaseId: release.releaseId, env: release.env, version: release.version, tag: release.tag, commit: release.commit,
       createdAt: new Date().toISOString(), builtBy: 'scripts/release.mjs', node: process.version,
       lockSha256: sha256(fs.readFileSync(path.join(tree, 'package-lock.json'))), files: files.length + 1,
+      // 发布时据此判断要不要重启中转进程（relayRestartDecision）
+      relayFiles: relayCodeFiles((file) => (files.includes(file) ? fs.readFileSync(path.join(tree, file), 'utf8') : null)),
     }
     fs.writeFileSync(path.join(tree, 'RELEASE.json'), `${JSON.stringify(meta, null, 1)}\n`)
     const manifest = ['RELEASE.json', ...files].map((file) => `${sha256(fs.readFileSync(path.join(tree, file)))}  ${file}`).join('\n')
@@ -272,6 +275,36 @@ journalctl -u "$SERVICE" -n 25 --no-pager -o cat | cut -c1-300
 exit 1
 `
 
+// 中转 unit 的状态，以及它实际运行的发布目录（进程 cwd；没在运行时用切换前的 current）与新目录的清单、RELEASE.json、env 文件
+const RELAY_STATE_SH = String.raw`
+set -u
+UNIT=$1 FALLBACK=$2 TO=$3 ENVNAME=$4 CURRENT=$5
+b64() { if [ -f "$1" ]; then base64 -w0 "$1"; fi; }
+echo "LOAD=$(systemctl show -p LoadState --value "$UNIT" 2>/dev/null)"
+echo "ENABLED=$(systemctl is-enabled "$UNIT" 2>/dev/null)"
+pid=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null)
+from=""
+if [ -n "$pid" ] && [ "$pid" != 0 ]; then from=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true); fi
+[ -n "$from" ] || from=$FALLBACK
+echo "FROM=$from"
+want=$(printf '[Service]\nEnvironmentFile=-%s/deploy/env/%s.env\n' "$CURRENT" "$ENVNAME")
+if [ "$(cat "/etc/systemd/system/$UNIT.d/10-release-env.conf" 2>/dev/null)" = "$want" ]; then echo "DROPIN=1"; else echo "DROPIN=0"; fi
+side() { echo "$1_MANIFEST=$(b64 "$2/MANIFEST.sha256")"; echo "$1_RELEASE=$(b64 "$2/RELEASE.json")"; echo "$1_ENV=$(b64 "$2/deploy/env/$ENVNAME.env")"; }
+side FROM "$from"
+side TO "$TO"
+`
+
+// restart = 先停（SIGTERM 排空，最长 15 分钟，期间反向代理把新请求交给 backup 的 guard）再起；--no-block 不等排空
+const RELAY_RESTART_SH = String.raw`
+set -euo pipefail
+UNIT=$1 CURRENT=$2 ENVNAME=$3
+dir="/etc/systemd/system/$UNIT.d"; conf="$dir/10-release-env.conf"
+want=$(printf '[Service]\nEnvironmentFile=-%s/deploy/env/%s.env\n' "$CURRENT" "$ENVNAME")
+mkdir -p "$dir"
+if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then printf '%s\n' "$want" > "$conf"; systemctl daemon-reload; echo "drop-in 更新：$conf"; fi
+systemctl restart --no-block "$UNIT"
+`
+
 const RECORD_SH = String.raw`
 set -eu
 printf '%s\n' "$(printf '%s' "$2" | base64 -d)" >> "$1/deployments.jsonl"
@@ -301,6 +334,42 @@ function switchTo(cfg, env, target) {
   return result.status === 0
 }
 
+/**
+ * 控制台切换并健康之后处理中转 unit：只在它加载的代码或读的配置变了时重启，结论写进日志与部署记录。
+ * 这一步出错只告警：控制台已经切好，中转保持原样继续跑。
+ */
+function relayAfterSwitch(cfg, env, fallback, to) {
+  try {
+    const out = remote(cfg, RELAY_STATE_SH, [RELAY_SERVICE, fallback ?? '', to, env, cfg.RELEASE_CURRENT]).stdout
+    const field = (name) => (out.match(new RegExp(`^${name}=(.*)$`, 'm'))?.[1] ?? '').trim()
+    const decode = (name) => Buffer.from(field(name), 'base64').toString('utf8')
+    const side = (name) => {
+      let release = null
+      try {
+        release = JSON.parse(decode(`${name}_RELEASE`))
+      } catch {
+        release = null
+      }
+      return { manifest: decode(`${name}_MANIFEST`), files: Array.isArray(release?.relayFiles) ? release.relayFiles : null, env: parseEnvFile(decode(`${name}_ENV`)) }
+    }
+    const decision = relayRestartDecision({
+      installed: field('LOAD') === 'loaded', enabled: /^enabled/.test(field('ENABLED')), dropIn: field('DROPIN') === '1', from: side('FROM'), to: side('TO'),
+    })
+    log(`  · 中转 ${RELAY_SERVICE}：${decision.action}（${decision.reason}）${field('FROM') ? `，运行目录 ${field('FROM')}` : ''}`)
+    if (decision.action === 'restart') {
+      const result = remote(cfg, RELAY_RESTART_SH, [RELAY_SERVICE, cfg.RELEASE_CURRENT, env], { allowFail: true })
+      const output = `${result.stdout}${result.stderr}`.trim()
+      if (output) log(output.split('\n').map((line) => `  · ${line}`).join('\n'))
+      if (result.status !== 0) throw new Error(`重启请求失败（退出码 ${result.status}）`)
+      log('  · 已请求重启：旧进程排空（最长 15 分钟，新请求走 guard 后备）后新进程起来')
+    }
+    return { action: decision.action, reason: decision.reason }
+  } catch (error) {
+    console.error(`  ! 中转 ${RELAY_SERVICE} 未处理，保持原样：${error.message ?? error}`)
+    return { action: 'error', reason: String(error.message ?? error).slice(0, 300) }
+  }
+}
+
 /* ───────────── commands ───────────── */
 
 async function deploy(env, tag) {
@@ -321,8 +390,8 @@ async function deploy(env, tag) {
     const switched = switchTo(cfg, env, dest)
     const checked = switched ? health(cfg, commit) : { ok: false, output: '切换或重启失败' }
     if (checked.ok) {
-      record(cfg, { action: 'deploy', result: 'success', ...base })
       log(`✓ ${env} 已切到 ${releaseId}：${checked.output}`)
+      record(cfg, { action: 'deploy', result: 'success', ...base, relay: relayAfterSwitch(cfg, env, previous, dest) })
       return
     }
     console.error(`✗ 新版本不健康，切回 ${previous}\n${checked.output}`)
@@ -468,8 +537,8 @@ async function rollback(env, to) {
     const checked = switchTo(cfg, env, destination) ? health(cfg, '') : { ok: false, output: '切换或重启失败' }
     const meta = { env, path: destination, previous: target.path, commit: null, tag: null }
     if (checked.ok) {
-      record(cfg, { action: 'rollback', result: 'success', ...meta })
       log(`✓ 已回滚：${checked.output}`)
+      record(cfg, { action: 'rollback', result: 'success', ...meta, relay: relayAfterSwitch(cfg, env, target.path, destination) })
       return
     }
     console.error(`✗ 回滚目标不健康，切回 ${target.path}\n${checked.output}`)

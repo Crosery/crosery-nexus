@@ -17,6 +17,7 @@ import { errorMessage } from '../../lib/errors'
 import type { AutoupdateView, RtkGlobalStatus, SyncStatus, VersionsData } from '../../types'
 import SyncCenter from './SyncCenter.vue'
 import RtkSection from './RtkSection.vue'
+import RtkRelaySection from './RtkRelaySection.vue'
 import VersionSection from './VersionSection.vue'
 import PrefsSection from './PrefsSection.vue'
 import ProxySection from './ProxySection.vue'
@@ -25,7 +26,7 @@ import { gatewayIndex, rtkWords, syncTally } from './settingsModel'
 
 /**
  * 设置 (DESIGN §6.8, BRIEF IA 系统): every background job and global switch in one place —
- * 同步中心 #sync · 网关 Magpie #magpie (#version lands there too) · 网关功能 #gateway-features · 代理 #proxy · RTK #rtk · 偏好 #prefs · 会话 #session.
+ * 同步中心 #sync · 网关 Magpie #magpie (#version lands there too) · 网关功能 #gateway-features · 代理 #proxy · RTK #rtk · RTK 中转 #rtk-relay · 偏好 #prefs · 会话 #session.
  * Sources are the shell's (sync 30s, RTK 60s, versions 5m): no second poll, and a write here (RTK apply, run-now,
  * re-check) refreshes the statusline with the same read. Outside the shell the page polls its own.
  */
@@ -89,6 +90,8 @@ const magpieShort = computed(() => (gateway.value ? gatewayIndex(gateway.value) 
 const proxyIndex = ref<{ value: string; hot: boolean; status: string } | null>(null)
 /** 网关功能's own read (/api/gateway/settings): its index word */
 const featuresIndex = ref<{ value: string; hot: boolean } | null>(null)
+/** RTK 中转's own read (/api/rtk/relay): its index word */
+const relayIndex = ref<{ value: string; hot: boolean } | null>(null)
 
 const statusLine = computed(() => {
   const parts: string[] = []
@@ -110,12 +113,13 @@ const toc = computed(() => [
   { id: 'gateway-features', label: '网关功能', value: featuresIndex.value?.value ?? '', hot: featuresIndex.value?.hot ?? false },
   { id: 'proxy', label: '代理', value: proxyIndex.value?.value ?? '', hot: proxyIndex.value?.hot ?? false },
   { id: 'rtk', label: 'RTK', value: rtkW.value ? (rtkW.value.state === 'on' ? '开' : rtkW.value.state === 'off' ? '关' : rtkW.value.coverage) : '', hot: false },
+  { id: 'rtk-relay', label: 'RTK 中转', value: relayIndex.value?.value ?? '', hot: relayIndex.value?.hot ?? false },
   { id: 'prefs', label: '偏好', value: THEME_WORD[theme.pref.value], hot: false },
   { id: 'session', label: '会话', value: session.user?.name ?? 'admin', hot: false },
 ].filter((item) => magpieEngine.value || !MAGPIE_ONLY.includes(item.id)))
 
 /* scroll spy: the index marks the last section whose head has passed a line just under the header */
-const ALL_SECTIONS = ['sync', 'magpie', 'gateway-features', 'proxy', 'rtk', 'prefs', 'session']
+const ALL_SECTIONS = ['sync', 'magpie', 'gateway-features', 'proxy', 'rtk', 'rtk-relay', 'prefs', 'session']
 const MAGPIE_ONLY = ['gateway-features', 'rtk']
 const sections = () => ALL_SECTIONS.filter((id) => magpieEngine.value || !MAGPIE_ONLY.includes(id))
 /** old anchors that now live inside another section */
@@ -274,6 +278,7 @@ async function signOut() {
           @refresh="rtk.refresh"
           @auto="toggleAuto('rtk', $event)"
         />
+        <RtkRelaySection class="c-12" @index="relayIndex = $event" />
         <PrefsSection class="c-8" />
         <Plate id="session" title="会话" class="set-sec c-4">
           <dl class="set-session">
