@@ -593,7 +593,8 @@ export function filterGroups(groups: ProviderGroup[], show: string, q: string): 
 
 /* ── filters, counts ──────────────────────────────────────────────────────────────────────────── */
 
-export type ShowFilter = 'all' | 'run' | 'cool' | 'pause' | 'bad' | 'warn' | 'hot' | 'reset'
+/** `issue` = 失效 or 异常 together (the providers page's 需处理) */
+export type ShowFilter = 'all' | 'run' | 'cool' | 'pause' | 'bad' | 'warn' | 'issue' | 'hot' | 'reset'
 
 export const HOT_RATIO = 0.9
 
@@ -607,6 +608,7 @@ export function matches(row: AccountView, show: string, q: string): boolean {
   if (show === 'pause' && row.state !== 'pause') return false
   if (show === 'bad' && row.state !== 'bad') return false
   if (show === 'warn' && row.state !== 'warn') return false
+  if (show === 'issue' && row.state !== 'bad' && row.state !== 'warn') return false
   if (show === 'hot' && !isHot(row)) return false
   if (show === 'reset' && !((row.credits?.count ?? 0) > 0)) return false
   const needle = q.trim().toLowerCase()

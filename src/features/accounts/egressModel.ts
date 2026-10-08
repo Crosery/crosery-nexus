@@ -22,6 +22,40 @@ const SERVICE_OF: Record<string, EgressService> = {
 export const serviceOf = (provider: string | null | undefined): EgressService | null => SERVICE_OF[String(provider ?? '').toLowerCase()] ?? null
 export const SERVICE_LABEL: Record<EgressService, string> = { claude: 'Claude', openai: 'OpenAI', google: 'Google' }
 
+/* ── an exit in words: where it lands, then its name ─────────────── */
+
+const REGIONS = (() => {
+  try {
+    return new Intl.DisplayNames(['zh-CN'], { type: 'region', style: 'short' })
+  } catch {
+    return null
+  }
+})()
+
+/** `US` → `美国`, `HK` → `香港`; a code Intl does not know stays as it is; null when the exit country is not known. */
+export function regionName(country: string | null | undefined): string | null {
+  const code = String(country ?? '').trim().toUpperCase()
+  if (!code) return null
+  if (!REGIONS || !/^[A-Z]{2}$/.test(code)) return code
+  try {
+    return REGIONS.of(code) ?? code
+  } catch {
+    return code
+  }
+}
+
+/**
+ * `美国 · node-1`: region first, then the entry's name. An auto name already ends in ` · US` (server/proxyCheckPool.ts);
+ * that tail is dropped when the region leads, so the place is said once.
+ */
+export function exitLabel(entry: Pick<EgressEntry, 'name' | 'country'>): string {
+  const region = regionName(entry.country)
+  if (!region) return entry.name
+  const tail = ` · ${entry.country}`
+  const name = entry.country && entry.name.endsWith(tail) ? entry.name.slice(0, -tail.length) : entry.name
+  return name ? `${region} · ${name}` : region
+}
+
 /* ── one exit's reachability for one service ──────────────────────── */
 
 export type CheckMark = {
@@ -51,7 +85,7 @@ export function checkMark(entry: EgressEntry | null | undefined, service: Egress
 
 export type EgressBadge = {
   kind: 'entry' | 'inherit' | 'direct' | 'custom' | 'invalid'
-  /** `东京-01` · `全局 · 东京-01` · `直连` · `自定义地址` */
+  /** `日本 · 东京-01` · `全局 · 日本 · 东京-01` · `直连` · `自定义地址` */
   label: string
   country: string | null
   mark: CheckMark
@@ -83,7 +117,7 @@ export function egressBadge(data: EgressData | null | undefined, ref: string, se
     const entry = entryById(data, own.entryId)
     if (!entry) return { kind: 'custom', label: '自定义地址', country: null, mark: { ok: null, text: '', title: '' }, title: own.masked ? `不在代理池：${own.masked}` : '不在代理池' }
     const mark = checkMark(entry, service)
-    return { kind: 'entry', label: entry.name, country: entry.country, mark, title: [entry.name, entry.country, mark.title].filter(Boolean).join(' · ') }
+    return { kind: 'entry', label: exitLabel(entry), country: entry.country, mark, title: [exitLabel(entry), mark.title].filter(Boolean).join(' · ') }
   }
   const base = inherited(data, ref)
   const scope = data.backend === 'cpa' ? '全局' : '服务'
@@ -91,7 +125,7 @@ export function egressBadge(data: EgressData | null | undefined, ref: string, se
     const entry = entryById(data, base.entryId)
     if (!entry) return { kind: 'inherit', label: `${scope} · 自定义地址`, country: null, mark: { ok: null, text: '', title: '' }, title: `继承${scope}出口（不在代理池）` }
     const mark = checkMark(entry, service)
-    return { kind: 'inherit', label: `${scope} · ${entry.name}`, country: entry.country, mark, title: `继承${scope}出口 ${entry.name}${mark.title ? ` · ${mark.title}` : ''}` }
+    return { kind: 'inherit', label: `${scope} · ${exitLabel(entry)}`, country: entry.country, mark, title: `继承${scope}出口 ${exitLabel(entry)}${mark.title ? ` · ${mark.title}` : ''}` }
   }
   if (base.mode === 'direct' || base.mode === 'inherit') return { kind: 'inherit', label: `${scope} · 直连`, country: null, mark: { ok: null, text: '', title: '' }, title: `继承${scope}设置：不经过代理` }
   return { kind: 'inherit', label: '继承全局', country: null, mark: { ok: null, text: '', title: '' }, title: '继承 CPA 的全局代理（还没读到它的值）' }
@@ -103,18 +137,21 @@ export const EGRESS_CUSTOM = '__custom'
 export const EGRESS_UNKNOWN = '__unknown'
 const PRESET = 'preset:'
 
-/** `东京-01 · JP · ✓ 230ms` / `… · ✗ 地区限制` / `… · 内核未安装` */
+/** `日本 · 东京-01 · Claude ✓ 230ms` / `… · ✗ 地区限制` / `… · 内核未安装` */
 export function entryOptionLabel(entry: EgressEntry, service: EgressService | null): string {
   const mark = checkMark(entry, service)
   const check = mark.text ? (service && mark.ok !== null && !entry.exitState ? `${SERVICE_LABEL[service]} ${mark.text}` : mark.text) : ''
-  return [entry.name, entry.country, entry.assignable ? check : entry.reason].filter(Boolean).join(' · ')
+  return [exitLabel(entry), entry.assignable ? check : entry.reason].filter(Boolean).join(' · ')
 }
 
 export function inheritLabel(data: EgressData | null | undefined, ref: string): string {
   if (!data) return '继承全局'
   const base = inherited(data, ref)
   const scope = data.backend === 'cpa' ? '继承全局' : '不单独设置'
-  if (base.mode === 'url') return `${scope} · ${entryById(data, base.entryId)?.name ?? '自定义地址'}`
+  if (base.mode === 'url') {
+    const entry = entryById(data, base.entryId)
+    return `${scope} · ${entry ? exitLabel(entry) : '自定义地址'}`
+  }
   if (base.mode === 'direct' || base.mode === 'inherit') return `${scope} · 直连`
   return scope
 }
@@ -178,7 +215,8 @@ export function choiceName(data: EgressData | null | undefined, ref: string, cho
   if (choice === '') return inheritLabel(data, ref)
   if (choice === 'direct') return '直连'
   if (choice.startsWith(PRESET)) return presets[Number(choice.slice(PRESET.length))]?.label ?? '预设'
-  return data?.entries.find(entry => entry.id === choice)?.name ?? '出口'
+  const entry = data ? entryById(data, choice) : null
+  return entry ? exitLabel(entry) : '出口'
 }
 
 /** What a sign-in itself goes through (no backend can send one sign-in through a chosen exit). */
@@ -186,16 +224,20 @@ export function signinVia(data: EgressData | null | undefined): { label: string;
   if (!data) return { label: '', note: '' }
   if (data.signin.via === 'direct') return { label: '本机直连', note: data.signin.note }
   const entry = entryById(data, data.signin.exit.entryId)
-  const exit = entry ? entry.name : data.signin.exit.mode === 'inherit' || data.signin.exit.mode === 'direct' ? '直连' : null
+  const exit = entry ? exitLabel(entry) : data.signin.exit.mode === 'inherit' || data.signin.exit.mode === 'direct' ? '直连' : null
   return { label: exit ? `CPA 全局代理 · ${exit}` : 'CPA 全局代理', note: data.signin.note }
 }
 
-/** An account's exit after a write, in words (toasts). */
-export function readLabel(read: EgressRead | EgressAccount): string {
+/** An account's exit after a write, in words (toasts); the pool view, when there, adds where the exit lands. */
+export function readLabel(read: EgressRead | EgressAccount, data?: EgressData | null): string {
   switch (read.mode) {
     case 'inherit': return '继承'
     case 'direct': return '直连'
-    case 'url': return ('entryName' in read && read.entryName) || (read.masked ? `自定义 · ${read.masked}` : '自定义地址')
+    case 'url': {
+      const entry = data ? entryById(data, read.entryId) : null
+      if (entry) return exitLabel(entry)
+      return ('entryName' in read && read.entryName) || (read.masked ? `自定义 · ${read.masked}` : '自定义地址')
+    }
     case 'invalid': return '地址无效'
     default: return '未知'
   }
