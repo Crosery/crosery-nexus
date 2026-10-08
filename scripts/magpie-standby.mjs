@@ -10,8 +10,8 @@
  * the relay's restricted gate (magpie-standby-gate.sh) and report. The relay (scripts/kernel-applier.mjs) verifies the
  * sha256, boots it once in the console's sandbox and only then makes it the standby. It serves no traffic.
  *
- * MAGPIE_STANDBY_SSH is the ssh argument list for the relay with the gate's key, e.g.
- *   "-i ~/.ssh/crosery-magpie-standby -o BatchMode=yes -p 39822 root@<relay>"; unset = do nothing.
+ * MAGPIE_STANDBY_SSH is the ssh argument list for the relay with the gate's key (only in the launchd job's environment,
+ * never in the repo), e.g. "-i <key file> -o BatchMode=yes <ssh alias>"; unset = do nothing.
  */
 import fs from 'node:fs/promises'
 import os from 'node:os'

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { settingsDrift } from './magpie-settings.mjs'
+import { nextAttemptDelay, rateLimitDelay } from './autoupdate-common.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 export const baselinePath = path.join(root, 'deploy/magpie/upstream/api.json')
@@ -169,8 +170,6 @@ export async function publishCandidate(contract, directory) {
   return artifact
 }
 
-const BACKOFF_BASE_MS = 30 * 60_000
-const BACKOFF_MAX_MS = 6 * 60 * 60_000
 /** launchd 的 StartInterval 不是精确时钟：差这么一点就到期的不算「还在退避」。 */
 const BACKOFF_TOLERANCE_MS = 2 * 60_000
 
@@ -184,26 +183,7 @@ class UpstreamHttpError extends Error {
   }
 }
 
-/** 被 GitHub 限流时它自己说的等待时间：Retry-After（秒数或 HTTP 日期），或配额耗尽时的 x-ratelimit-reset。 */
-export function rateLimitDelay(headers, now = Date.now()) {
-  const retryAfter = String(headers.get('retry-after') || '').trim()
-  if (/^\d+$/.test(retryAfter)) return Number(retryAfter) * 1000
-  if (retryAfter) {
-    const at = Date.parse(retryAfter)
-    if (Number.isFinite(at)) return Math.max(0, at - now)
-  }
-  if (headers.get('x-ratelimit-remaining') === '0') {
-    const reset = Number(headers.get('x-ratelimit-reset'))
-    if (Number.isFinite(reset) && reset > 0) return Math.max(0, reset * 1000 - now)
-  }
-  return null
-}
-
-/** 连续失败的退避：第一次失败照常等下一轮，之后 30 分钟起翻倍到 6 小时；上游给的等待时间是下限。 */
-export function nextAttemptDelay(failures, retryAfterMs = null) {
-  const exponential = failures <= 1 ? 0 : Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (failures - 2))
-  return Math.max(retryAfterMs ?? 0, exponential)
-}
+export { nextAttemptDelay, rateLimitDelay }
 
 /**
  * GitHub 匿名配额是每 IP 每小时 60 次，和本机其它工具共用。带 ETag 的条件请求省的是带宽：

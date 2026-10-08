@@ -5,19 +5,33 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
-  applierPaths, applyCpa, classifyInstall, configLayout, decideCpa, decideMagpie, emptyState, normalizeConfig, parseCpaReport, parseMagpieReport,
-  readState, runAuto, sameMajor, windowState, withLock,
+  accountTypes, adoptCpa, applierPaths, applyAcceptance, applyCpa, classifyInstall, configAuthDir, configLayout, decideCpa, decideMagpie, emptyState, ingestCpa,
+  normalizeConfig, parseAcceptance, parseCpaReport, parseMagpieReport, parseProbeModels, parsePromotion, pickProbeModel, probeCommand, promotionProblems,
+  probeService, promotionRecord, readProbeKeys, readState, runAuto, runProbes, sameMajor, startTrial, trialTick, windowState, withLock,
 } from './kernel-applier.mjs'
+import { canonicalChannelName, ensureProbeKeys } from '../server/systemKeys.ts'
 
 // 2026-10-03 in Beijing time (UTC+8, no DST): the default window is 05:00–07:00 there
 const bj = (h, m = 0) => Date.UTC(2026, 9, 3, h - 8, m)
 const sha = text => createHash('sha256').update(text).digest('hex')
+/** a key in the system-keys contract's probe format (server/systemKeys.ts) */
+const probeKey = service => `sk-probe-${service}-${'0'.repeat(64)}`
 const RUNNING = '7.3.15-patched.498fcc2b'
 const NEXT = '7.3.20-patched.1a2b3c4d'
 const MAJOR = '8.0.12-patched.5e6f7a8b'
 
 const config = (over = {}) => normalizeConfig(over)
-const staged = (version, over = {}) => ({ ...emptyState('cpa'), staged: { version, sha256: 'a'.repeat(64), at: new Date(bj(1)).toISOString() }, ...over })
+const HOUR = 3_600_000
+const POLICY = { soakMs: 24 * HOUR, maxAgeMs: 7 * 24 * HOUR }
+const at = ms => new Date(ms).toISOString()
+/** preview's record for `version` (installed two days before the 2026-10-03 window, soaked 25 h, both runs green) */
+const promoted = (version, sha256 = 'a'.repeat(64), over = {}) => {
+  const installed = bj(1) - 48 * HOUR
+  const run = (ms, ok = true) => ({ at: at(ms), ranAt: at(ms), ok, checks: [{ name: 'x', ok }], summary: ok ? '全部通过' : '没过' })
+  return { version: 1, kind: 'cpa-promotion', candidate: { version, sha256 }, installedAt: at(installed), soakMs: 24 * HOUR,
+    acceptance: { first: run(installed + HOUR), soak: run(installed + 25 * HOUR) }, acceptedAt: at(installed + 25 * HOUR), ...over }
+}
+const staged = (version, over = {}) => ({ ...emptyState('cpa'), staged: { version, sha256: 'a'.repeat(64), at: new Date(bj(1)).toISOString() }, promotion: promoted(version), ...over })
 
 test('config: missing = on, default window 05:00–07:00 Asia/Shanghai; bad windows fall back', () => {
   const value = normalizeConfig(null)
@@ -141,24 +155,32 @@ test('lock: a live holder makes the second run busy; a dead holder is taken over
 
 /* ── a whole relay in a temp dir: fake systemctl, fake cpa-install-binary.sh ── */
 
-async function relay({ running = RUNNING, install = { code: 0 } } = {}) {
+async function relay({ running = RUNNING, install = { code: 0 }, role = 'production' } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kar-'))
   const env = { KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_BINARY: path.join(dir, 'cli-proxy-api'),
-    CPA_INSTALL: path.join(dir, 'install.sh'), CPA_HOLD_FILE: path.join(dir, 'hold'), CPA_CONFIG: path.join(dir, 'config.yaml'), MAGPIE_STANDBY_DIR: path.join(dir, 'magpie') }
+    CPA_INSTALL: path.join(dir, 'install.sh'), CPA_HOLD_FILE: path.join(dir, 'hold'), CPA_CONFIG: path.join(dir, 'config.yaml'), MAGPIE_STANDBY_DIR: path.join(dir, 'magpie'),
+    AUTOUPDATE_ROLE: role }
   const paths = applierPaths(env)
   await fs.mkdir(paths.cpa.inbox, { recursive: true })
   await fs.mkdir(paths.magpie.inbox, { recursive: true })
   await fs.mkdir(paths.requests, { recursive: true })
-  const world = { running, active: true, installs: [], install }
+  // `probe`: what the hook would have written for each phase (the real hook is tested on its own below)
+  const world = { running, active: true, installs: [], install, probe: { baseline: true, verify: true } }
   const versionOf = async file => { try { return (await fs.readFile(file, 'utf8')).trim() } catch { return '' } }
   // binaries in this world are text files holding their version; `--version` reads them
   const runner = async (command, args) => {
     if (command === 'systemctl') return { code: 0, stdout: world.active ? 'active\n' : 'inactive\n', stderr: '' }
     if (command === paths.cpa.install) {
       world.installs.push(args)
+      const out = args.includes('--') ? args[args.indexOf('--out') + 1] : null
+      if (out) {
+        for (const [phase, ok] of Object.entries(world.probe)) {
+          await fs.writeFile(path.join(out, `probe-${phase}.json`), JSON.stringify({ version: 1, phase, at: at(bj(5, 10)), ok, results: [{ type: 'claude', service: 'claude', model: 'm', ok }] }))
+        }
+      }
       const result = typeof world.install === 'function' ? await world.install(args) : world.install
       if (result.code === 0) world.running = await versionOf(args[0])
-      return { code: result.code, stdout: result.stdout ?? `开始安装 ${RUNNING} -> ${args[1]}（备份 ${path.join(dir, 'backup.bin')}）\n安装成功\n`, stderr: '' }
+      return { code: result.code, stdout: result.stdout ?? `开始安装 ${RUNNING} -> ${args[1]}（备份 ${path.join(dir, 'backup.bin')}）\n换上 ${args[1]}（swap-at=1791000000）\n安装成功\n`, stderr: '' }
     }
     if (args[0] === '--version') {
       const version = command === paths.cpa.binary ? world.running : await versionOf(command)
@@ -166,14 +188,24 @@ async function relay({ running = RUNNING, install = { code: 0 } } = {}) {
     }
     throw new Error(`unexpected command ${command}`)
   }
-  const drop = async (version, { body = version, report = {} } = {}) => {
+  /** the coordinator's delivery: binary + report, and on production preview's promotion record for it */
+  const drop = async (version, { body = version, report = {}, promote = role === 'production', promotion = {} } = {}) => {
     await fs.writeFile(path.join(paths.cpa.inbox, `${version}.bin`), body)
+    if (promote) await fs.writeFile(path.join(paths.cpa.inbox, 'promotion.json'), JSON.stringify(promoted(version, sha(version), promotion)))
     await fs.writeFile(path.join(paths.cpa.inbox, 'report.json'), JSON.stringify({
       version: 1, kernel: 'cpa', status: 'built', checkedAt: new Date(bj(1)).toISOString(), upstreamLatest: 'v7.3.20', line: 'v7.3', base: 'v7.3.20',
       candidate: { version, sha256: sha(version), tag: 'v7.3.20', checks: [] }, ...report,
     }))
   }
-  return { dir, paths, world, runner, drop, close: () => fs.rm(dir, { recursive: true, force: true }) }
+  /** the coordinator's acceptance run against preview */
+  const accept = async (version, phase, ok = true, ranAt = bj(1)) => {
+    await fs.writeFile(path.join(paths.cpa.inbox, 'acceptance.json'), JSON.stringify({
+      version: 1, kind: 'cpa-acceptance', phase, candidate: { version, sha256: sha(version) }, ranAt: at(ranAt), ok,
+      checks: [{ name: 'm1 SSE', ok }], summary: ok ? '7 项全部通过' : '1/7 项没过：m1 SSE',
+    }))
+  }
+  const installsOf = version => world.installs.filter(args => args[1] === version)
+  return { dir, paths, world, runner, drop, accept, installsOf, close: () => fs.rm(dir, { recursive: true, force: true }) }
 }
 
 test('auto: a drop is verified and staged, waits for the window, installs once through the install script', async () => {
@@ -192,7 +224,8 @@ test('auto: a drop is verified and staged, waits for the window, installs once t
   const second = await runAuto({ paths: r.paths, deps })
   assert.deepEqual(second.log.find(item => item.kernel === 'cpa'), { kernel: 'cpa', action: 'apply', version: NEXT, result: 'applied' })
   assert.equal(second.cpa.why, 'up-to-date')
-  assert.deepEqual(r.world.installs[0], [path.join(r.paths.cpa.staged, NEXT, 'cli-proxy-api'), NEXT])
+  assert.deepEqual(r.world.installs[0].slice(0, 3), [path.join(r.paths.cpa.staged, NEXT, 'cli-proxy-api'), NEXT, '--'])
+  assert.deepEqual(r.world.installs[0].slice(-3, -1), ['probe', '--out'], 'every automatic install carries the real-request hook')
   const after = await readState(r.paths, 'cpa')
   assert.equal(after.lastApply.result, 'applied')
   assert.deepEqual([after.applied.version, after.applied.previous], [NEXT, RUNNING])
@@ -380,4 +413,385 @@ test('cli: runs when started through a symlinked release path (systemd uses /opt
   })
   assert.equal(JSON.parse(out).dryRun, true)
   await fs.rm(dir, { recursive: true, force: true })
+})
+
+/* ── promotion: preview → production ─────────────────────────────────── */
+
+test('promotion record: production refuses anything that is not a matching, soaked, twice-accepted, fresh record', () => {
+  const stagedAt = { version: NEXT, sha256: 'a'.repeat(64) }
+  const now = bj(5, 10)
+  const problems = record => promotionProblems({ record: record && parsePromotion(record), staged: stagedAt, now, policy: POLICY }).map(item => item.code)
+  assert.deepEqual(problems(promoted(NEXT)), [])
+  assert.deepEqual(problems(null), ['no-record'])
+  assert.deepEqual(problems(promoted(NEXT, 'b'.repeat(64))), ['mismatch'])
+  assert.deepEqual(problems(promoted(MAJOR)), ['mismatch'])
+  const base = promoted(NEXT)
+  const installed = Date.parse(base.installedAt)
+  const run = (ms, ok = true) => ({ at: at(ms), ok, checks: [] })
+  assert.deepEqual(problems({ ...base, acceptance: { ...base.acceptance, soak: run(installed + 25 * HOUR, false) } }), ['acceptance'])
+  assert.deepEqual(problems({ ...base, acceptance: { ...base.acceptance, first: run(installed + HOUR, false) } }), ['acceptance'])
+  // measured soak, not the soak the record claims
+  assert.deepEqual(problems({ ...base, soakMs: 48 * HOUR, acceptance: { first: run(installed + HOUR), soak: run(installed + 23 * HOUR) } }), ['soak'])
+  assert.deepEqual(problems({ ...base, acceptance: { first: run(installed + 26 * HOUR), soak: run(installed + 25 * HOUR) } }), ['order'])
+  assert.deepEqual(problems({ ...base, acceptedAt: at(now - 8 * 24 * HOUR) }), ['stale'])
+  assert.deepEqual(problems({ ...base, acceptedAt: at(now + HOUR) }), ['future'])
+  // a stricter production policy wins over what preview used
+  assert.deepEqual(promotionProblems({ record: parsePromotion(base), staged: stagedAt, now, policy: { ...POLICY, soakMs: 48 * HOUR } }).map(item => item.code), ['soak'])
+  assert.equal(parsePromotion({ ...base, kind: 'other' }), null)
+  assert.equal(parsePromotion({ ...base, candidate: { version: '8.0.12; reboot', sha256: 'a'.repeat(64) } }), null)
+  assert.equal(parsePromotion({ ...base, acceptance: { first: base.acceptance.first } }), null)
+  // decideCpa puts the record gate before the window: production never even waits for the window without one
+  const decided = decideCpa({ now: bj(5, 10), config: config(), running: RUNNING, hold: null, state: staged(NEXT, { promotion: null }), policy: POLICY })
+  assert.deepEqual([decided.action, decided.why, decided.reasons[0].code], ['none', 'not-promoted', 'no-record'])
+  assert.equal(decideCpa({ now: bj(12), config: config(), running: RUNNING, hold: null, state: staged(NEXT), policy: POLICY }).why, 'window')
+})
+
+test('preview decide: no window, no daily limit, one trial at a time', () => {
+  const base = { now: bj(12), config: config(), running: RUNNING, hold: null, role: 'preview', policy: POLICY }
+  assert.deepEqual([decideCpa({ ...base, state: staged(NEXT, { promotion: null }) }).action, decideCpa({ ...base, state: staged(NEXT) }).why], ['apply', 'apply'])
+  const trial = startTrial({ version: NEXT, sha256: 'a'.repeat(64), previous: RUNNING, at: at(bj(11)), policy: POLICY })
+  assert.equal(decideCpa({ ...base, running: NEXT, state: staged('7.3.21-patched.0', { trial }) }).why, 'trial-active')
+  assert.equal(decideCpa({ ...base, running: NEXT, state: staged('7.3.21-patched.0', { trial: { ...trial, status: 'accepted' } }) }).why, 'apply')
+  assert.equal(decideCpa({ ...base, state: staged(NEXT, { attempts: { [NEXT]: 1 } }) }).why, 'attempted')
+  assert.equal(decideCpa({ ...base, hold: 'x', state: staged(NEXT) }).why, 'hold-file')
+})
+
+test('preview trial: first acceptance → soak → soak acceptance only after the soak → accepted; mismatches are ignored', () => {
+  const sha256 = sha(NEXT)
+  let trial = startTrial({ version: NEXT, sha256, previous: RUNNING, backup: '/b', at: at(bj(5)), policy: POLICY })
+  assert.equal(trial.soakUntil, at(bj(5) + 24 * HOUR))
+  const record = (phase, ok = true, over = {}) => parseAcceptance({ version: 1, kind: 'cpa-acceptance', phase, candidate: { version: NEXT, sha256 }, ranAt: at(bj(5)), ok, checks: [], summary: ok ? 'ok' : 'SSE 没过', ...over })
+  assert.match(applyAcceptance({ trial, record: record('first', true, { candidate: { version: NEXT, sha256: 'f'.repeat(64) } }), now: bj(6) }).note, /ignored/)
+  assert.match(applyAcceptance({ trial, record: record('soak'), now: bj(6) }).note, /before the first/)
+  trial = applyAcceptance({ trial, record: record('first'), now: bj(6) }).trial
+  assert.equal(trial.status, 'soaking')
+  assert.match(applyAcceptance({ trial, record: record('first'), now: bj(7) }).note, /already recorded/)
+  assert.match(applyAcceptance({ trial, record: record('soak'), now: bj(5) + 23 * HOUR }).note, /too early/)
+  const done = applyAcceptance({ trial, record: record('soak'), now: bj(5) + 24 * HOUR + 60_000 })
+  assert.equal(done.trial.status, 'accepted')
+  const promotion = parsePromotion(promotionRecord(done.trial))
+  assert.ok(promotion, 'what preview writes is what production parses')
+  assert.deepEqual(promotionProblems({ record: promotion, staged: { version: NEXT, sha256 }, now: bj(5) + 30 * HOUR, policy: POLICY }), [])
+  const failed = applyAcceptance({ trial, record: record('soak', false), now: bj(5) + 25 * HOUR })
+  assert.equal(failed.reject.code, 'acceptance')
+  assert.match(failed.reject.reason, /浸泡后验收没过：SSE 没过/)
+  // the candidate must keep running: offline twice in a row rejects it, another binary in its place voids it
+  const once = trialTick({ trial, running: null })
+  assert.equal(once.reject, undefined)
+  assert.equal(trialTick({ trial: once.trial, running: null }).reject.code, 'offline')
+  assert.equal(trialTick({ trial: once.trial, running: NEXT, runningSha: sha256 }).trial.offlineTicks, 0)
+  assert.equal(trialTick({ trial, running: RUNNING }).reject.noRollback, true)
+  assert.equal(trialTick({ trial, running: NEXT, runningSha: 'e'.repeat(64) }).reject.code, 'replaced')
+})
+
+test('auto (preview): installs at once, soaks, takes both acceptance runs, writes the promotion record; a newer build waits', async t => {
+  const r = await relay({ role: 'preview' })
+  t.after(r.close)
+  let clock = bj(12)
+  const deps = { run: r.runner, now: () => clock }
+  await r.drop(NEXT)
+  const first = await runAuto({ paths: r.paths, deps })
+  assert.deepEqual(first.log.find(item => item.kernel === 'cpa'), { kernel: 'cpa', action: 'apply', version: NEXT, result: 'applied' }, 'no window on preview')
+  let state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.env, state.trial.status, state.trial.version, state.trial.sha256], ['preview', 'installed', NEXT, sha(NEXT)])
+  assert.equal(state.lastApply.probes.verify.ok, true)
+
+  const NEWER = '7.3.21-patched.5e5e5e5e'
+  await r.drop(NEWER)
+  assert.equal((await runAuto({ paths: r.paths, deps })).cpa.why, 'trial-active')
+  assert.equal(r.installsOf(NEWER).length, 0)
+
+  await r.accept(NEXT, 'first')
+  clock = bj(13)
+  await runAuto({ paths: r.paths, deps })
+  assert.equal((await readState(r.paths, 'cpa')).trial.status, 'soaking')
+  await r.accept(NEXT, 'soak')
+  clock = bj(12) + 20 * HOUR
+  await runAuto({ paths: r.paths, deps })
+  assert.equal((await readState(r.paths, 'cpa')).trial.status, 'soaking', 'a soak run before the soak is over does not count')
+  await assert.rejects(fs.access(r.paths.cpa.promotion))
+  await r.accept(NEXT, 'soak')
+  clock = bj(12) + 24 * HOUR + 5 * 60_000
+  const accepted = await runAuto({ paths: r.paths, deps })
+  assert.deepEqual(accepted.log.find(item => item.action === 'accept'), { kernel: 'cpa', action: 'accept', version: NEXT, result: 'accepted' })
+  const record = parsePromotion(JSON.parse(await fs.readFile(r.paths.cpa.promotion, 'utf8')))
+  assert.deepEqual([record.candidate.version, record.candidate.sha256, record.acceptance.first.ok, record.acceptance.soak.ok], [NEXT, sha(NEXT), true, true])
+  // the trial is over: the newer build that waited goes in on the same tick
+  assert.deepEqual(accepted.log.find(item => item.action === 'apply'), { kernel: 'cpa', action: 'apply', version: NEWER, result: 'applied' })
+  state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.trial.version, state.trial.status], [NEWER, 'installed'])
+})
+
+test('auto (preview): a failed acceptance rolls preview back through the install script and rejects the candidate for good', async t => {
+  const r = await relay({ role: 'preview' })
+  t.after(r.close)
+  const deps = { run: r.runner, now: () => bj(12) }
+  await r.drop(NEXT)
+  await runAuto({ paths: r.paths, deps })
+  await fs.writeFile(path.join(r.dir, 'backup.bin'), RUNNING)
+  await r.accept(NEXT, 'first', false)
+  const out = await runAuto({ paths: r.paths, deps: { ...deps, now: () => bj(13) } })
+  assert.deepEqual(out.log.find(item => item.action === 'reject'), { kernel: 'cpa', action: 'reject', version: NEXT, result: 'rolled-back', reason: 'acceptance' })
+  assert.deepEqual(r.world.installs.at(-1), [path.join(r.dir, 'backup.bin'), RUNNING], 'the restore goes through the same install transaction')
+  assert.equal(r.world.running, RUNNING)
+  const state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.trial.status, state.trial.rejected.rollback, state.lastApply.action, state.lastApply.result], ['rejected', 'rolled-back', 'reject', 'rolled-back'])
+  assert.match(state.lastApply.reasons[0].text, /首次验收没过/)
+  assert.equal(state.installed.version, RUNNING)
+  assert.equal(out.cpa.why, 'attempted', 'a rejected candidate is never installed again')
+  await assert.rejects(fs.access(r.paths.cpa.promotion), 'no promotion record for a rejected candidate')
+})
+
+test('auto (preview): offline on two ticks rejects and rolls back; a binary swapped by hand voids the trial without touching it', async t => {
+  const r = await relay({ role: 'preview' })
+  t.after(r.close)
+  const deps = { run: r.runner, now: () => bj(12) }
+  await r.drop(NEXT)
+  await runAuto({ paths: r.paths, deps })
+  await fs.writeFile(path.join(r.dir, 'backup.bin'), RUNNING)
+  r.world.active = false
+  await runAuto({ paths: r.paths, deps })
+  assert.equal((await readState(r.paths, 'cpa')).trial.offlineTicks, 1)
+  const out = await runAuto({ paths: r.paths, deps })
+  assert.equal(out.log.find(item => item.action === 'reject')?.reason, 'offline')
+
+  const q = await relay({ role: 'preview' })
+  t.after(q.close)
+  await q.drop(NEXT)
+  await runAuto({ paths: q.paths, deps: { run: q.runner, now: () => bj(12) } })
+  q.world.running = '7.3.19-patched.hand'
+  const installs = q.world.installs.length
+  const voided = await runAuto({ paths: q.paths, deps: { run: q.runner, now: () => bj(13) } })
+  assert.equal(voided.log.find(item => item.action === 'reject')?.result, 'voided')
+  assert.equal(q.world.installs.length, installs, 'nothing restored over a binary someone else installed')
+})
+
+test('auto (production): installs only what the promotion record covers, in the window, with the real-request record kept', async t => {
+  const r = await relay()
+  t.after(r.close)
+  // a report candidate without a record is not even staged on production
+  await r.drop(NEXT, { promote: false })
+  assert.equal((await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })).cpa.why, 'no-candidate')
+  assert.equal((await readState(r.paths, 'cpa')).staged, null)
+  // a record for a binary with another sha256 (rebuilt after preview accepted it) stages nothing either
+  await fs.writeFile(path.join(r.paths.cpa.inbox, `${NEXT}.bin`), 'rebuilt')
+  await fs.writeFile(path.join(r.paths.cpa.inbox, 'promotion.json'), JSON.stringify(promoted(NEXT, sha(NEXT))))
+  await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })
+  assert.equal((await readState(r.paths, 'cpa')).staged, null)
+  // a stale record: staged, never installed
+  await r.drop(NEXT, { promotion: { acceptedAt: at(bj(5) - 8 * 24 * HOUR) } })
+  const stale = await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })
+  assert.deepEqual([stale.cpa.why, stale.cpa.reasons[0].code], ['not-promoted', 'stale'])
+  assert.equal(r.world.installs.length, 0)
+  // the fresh record arrives on its own (the coordinator sends it before the report)
+  await fs.writeFile(path.join(r.paths.cpa.inbox, 'promotion.json'), JSON.stringify(promoted(NEXT, sha(NEXT))))
+  const out = await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 20) } })
+  assert.equal(out.log.find(item => item.kernel === 'cpa')?.result, 'applied')
+  const state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.lastApply.swapAt, state.lastApply.probes.baseline.ok, state.lastApply.probes.verify.ok], [new Date(1791000000_000).toISOString(), true, true])
+  assert.equal(state.promotion.candidate.version, NEXT)
+})
+
+test('auto (production): real requests failing after the swap → the install script restored the old binary; the version is spent', async t => {
+  const backup = '/var/backups/cpa/cli-proxy-api.x'
+  const r = await relay({ install: { code: 1, stdout: [
+    `开始安装 ${RUNNING} -> ${NEXT}（备份 ${backup}）`, `换上 ${NEXT}（swap-at=1791000000）`,
+    `真实请求验证没过（failed: claude ✗ HTTP 502）；准备回滚到 ${RUNNING}（备份 ${backup}）`, '旧二进制已换回（restore-at=1791000012）', `已回滚到 ${RUNNING}，旧版本应答且兼容门禁通过；配置未覆盖`,
+  ].join('\n') } })
+  t.after(r.close)
+  r.world.probe = { baseline: true, verify: false, restored: true }
+  await r.drop(NEXT)
+  await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })
+  const state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.lastApply.result, state.lastApply.restoreSeconds, state.attempts[NEXT]], ['rolled-back', 12, 1])
+  assert.ok(state.lastApply.restoreSeconds <= 30)
+  assert.match(state.lastApply.reasons[0].text, /真实请求验证没过（failed: claude ✗ HTTP 502）/)
+  assert.deepEqual([state.lastApply.probes.verify.ok, state.lastApply.probes.restored.ok], [false, true])
+  assert.equal((await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 50) + 86_400_000 } })).cpa.why, 'attempted')
+})
+
+test('ingest: acceptance only on preview, promotion only on production; unreadable files are dropped', async t => {
+  const p = await relay({ role: 'production' })
+  const v = await relay({ role: 'preview' })
+  t.after(p.close)
+  t.after(v.close)
+  await p.accept(NEXT, 'first')
+  const onProduction = await ingestCpa(p.paths, emptyState('cpa'), {})
+  assert.equal(onProduction.acceptance, null)
+  assert.match(onProduction.notes.join(), /acceptance record ignored on production/)
+  await fs.writeFile(path.join(v.paths.cpa.inbox, 'promotion.json'), JSON.stringify(promoted(NEXT)))
+  await v.accept(NEXT, 'first')
+  const onPreview = await ingestCpa(v.paths, emptyState('cpa'), {})
+  assert.equal(onPreview.state.promotion, null)
+  assert.equal(onPreview.acceptance.phase, 'first')
+  await fs.writeFile(path.join(v.paths.cpa.inbox, 'acceptance.json'), '{"version":1,"kind":"cpa-acceptance","phase":"later"}')
+  assert.match((await ingestCpa(v.paths, emptyState('cpa'), {})).notes.join(), /invalid acceptance.json/)
+  assert.deepEqual(await fs.readdir(v.paths.cpa.inbox), [])
+})
+
+/* ── real requests per OAuth account type ───────────────────────────── */
+
+test('probe inputs: account types from the auth dir, probe keys, models, auth-dir from config.yaml', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kap-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  const auth = path.join(dir, 'auth')
+  await fs.mkdir(auth)
+  const files = { 'claude-a.json': { type: 'claude', access_token: 'secret' }, 'claude-b.json': { type: 'claude' }, 'codex-a.json': { type: 'codex' },
+    'agy-off.json': { type: 'antigravity', disabled: true }, 'weird.json': { type: '../x' }, 'notes.txt': { type: 'gemini' } }
+  for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(auth, name), JSON.stringify(body))
+  await fs.writeFile(path.join(auth, 'broken.json'), '{')
+  assert.deepEqual(await accountTypes(auth), [{ type: 'claude', accounts: 2 }, { type: 'codex', accounts: 1 }])
+  assert.deepEqual(await accountTypes(path.join(dir, 'none')), [])
+  const config = path.join(dir, 'config.yaml')
+  await fs.writeFile(config, 'port: 8317\nauth-dir: "~/.cli-proxy-api" # creds\n')
+  assert.equal(await configAuthDir(config), path.join(os.homedir(), '.cli-proxy-api'))
+  await fs.writeFile(config, 'port: 8317\n')
+  assert.equal(await configAuthDir(config), null)
+  const keys = path.join(dir, 'system-keys.json')
+  await fs.writeFile(keys, JSON.stringify({ version: 1, lockout: 'x', probes: { claude: probeKey('claude'), codex: 'short', other: 'sk-real-key-000000' } }))
+  assert.deepEqual(await readProbeKeys(keys), { claude: probeKey('claude') }, 'only keys in the contract\'s probe format')
+  await fs.writeFile(keys, 'garbage')
+  assert.deepEqual(await readProbeKeys(keys), {})
+  assert.deepEqual(parseProbeModels('claude=claude-haiku-4-5, codex = gpt-5-codex-mini ,bad,=x,y=,openai-compatible-OpenRouter=m'), { claude: 'claude-haiku-4-5', codex: 'gpt-5-codex-mini', openrouter: 'm' })
+  assert.equal(pickProbeModel(['claude-opus-4-1', 'claude-haiku-4-5', 'claude-sonnet-4-5']), 'claude-haiku-4-5')
+  assert.equal(pickProbeModel(['gpt-image-1', 'gpt-5']), 'gpt-5')
+  assert.equal(pickProbeModel([]), null)
+})
+
+test('probes: one request per type in parallel, skipped types say why, failures carry no key, the deadline bounds everything', async () => {
+  const keys = { claude: 'sk-probe-claude-000000', codex: 'sk-probe-codex-0000000' }
+  const types = [{ type: 'claude' }, { type: 'codex' }, { type: 'antigravity' }]
+  const seen = []
+  let inflight = 0
+  let peak = 0
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, auth: init.headers.authorization, model: init.body ? JSON.parse(init.body).model : null })
+    inflight += 1
+    peak = Math.max(peak, inflight)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    inflight -= 1
+    if (url.endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'gpt-5' }, { id: 'gpt-5-codex-mini' }] }))
+    if (init.headers.authorization.includes('codex')) return new Response(JSON.stringify({ error: { message: `upstream rejected sk-probe-codex-0000000` } }), { status: 502 })
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  }
+  const outcome = await runProbes({ types, keys, models: { claude: 'claude-haiku-4-5' }, base: 'http://127.0.0.1:8317', deadline: Date.now() + 20_000, fetchImpl, sleep: async () => {} })
+  assert.equal(outcome.ok, false)
+  const by = Object.fromEntries(outcome.results.map(item => [item.type, item]))
+  assert.deepEqual([by.claude.ok, by.claude.model, by.claude.status], [true, 'claude-haiku-4-5', 200])
+  assert.deepEqual([by.codex.ok, by.codex.model, by.codex.attempt], [false, 'gpt-5-codex-mini', 2], 'a failure is retried once while time is left')
+  assert.match(by.codex.detail, /HTTP 502 upstream rejected \*\*\*/)
+  assert.deepEqual([by.antigravity.ok, by.antigravity.skipped], [null, 'no-probe-key'])
+  assert.equal(JSON.stringify(outcome).includes('sk-probe'), false)
+  assert.ok(peak >= 2, 'types are probed in parallel')
+  assert.ok(seen.every(item => item.url.startsWith('http://127.0.0.1:8317/v1/')))
+  // only skipped or no types at all: nothing failed
+  assert.equal((await runProbes({ types: [{ type: 'antigravity' }], keys, base: 'x', deadline: Date.now() + 1000, fetchImpl })).ok, true)
+  assert.equal((await runProbes({ types: [], keys, base: 'x', deadline: Date.now() + 1000, fetchImpl })).ok, true)
+  // injected clock: with the budget already gone nothing is sent and the type fails
+  const late = await runProbes({ types: [{ type: 'claude' }], keys, models: { claude: 'm' }, base: 'x', deadline: 1_000, now: () => 5_000, fetchImpl: async () => assert.fail('no request without budget') })
+  assert.deepEqual([late.ok, late.results[0].detail], [false, '没有剩余时间'])
+  // a hanging upstream is cut at the deadline, not at the per-request timeout
+  const started = Date.now()
+  const hung = await runProbes({ types: [{ type: 'claude' }], keys, models: { claude: 'm' }, base: 'x', deadline: started + 1_200,
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))) })
+  assert.equal(hung.ok, false)
+  assert.ok(Date.now() - started < 3_000, `took ${Date.now() - started} ms`)
+})
+
+test('probe command: writes the phase record the applier reads; verify reuses the baseline models; no key in the file', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kapc-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  const auth = path.join(dir, 'auth')
+  await fs.mkdir(auth)
+  await fs.writeFile(path.join(auth, 'c.json'), JSON.stringify({ type: 'claude' }))
+  const paths = applierPaths({ KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_AUTH_DIR: auth, CPA_PROBE_BASE_URL: 'http://gw.test' })
+  await fs.mkdir(paths.data, { recursive: true })
+  await fs.writeFile(paths.systemKeys, JSON.stringify({ version: 1, probes: { claude: probeKey('claude') } }))
+  const out = path.join(dir, 'run')
+  const models = []
+  const fetchImpl = async (url, init) => {
+    if (url.endsWith('/v1/models')) return new Response(JSON.stringify({ data: [{ id: 'claude-haiku-4-5' }, { id: 'claude-opus-4-1' }] }))
+    models.push(JSON.parse(init.body).model)
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  }
+  const baseline = await probeCommand({ paths, out, phase: 'baseline', budgetS: '20', deps: { fetch: fetchImpl } })
+  assert.equal(baseline.ok, true)
+  const verify = await probeCommand({ paths, out, phase: 'verify', budgetS: '20', deps: { fetch: async (url, init) => (url.endsWith('/v1/models') ? assert.fail('verify reuses the baseline model') : fetchImpl(url, init)) } })
+  assert.deepEqual([verify.ok, verify.types, models], [true, [{ type: 'claude', accounts: 1 }], ['claude-haiku-4-5', 'claude-haiku-4-5']])
+  const written = await fs.readFile(path.join(out, 'probe-verify.json'), 'utf8')
+  assert.equal(written.includes('sk-probe'), false)
+  await assert.rejects(probeCommand({ paths, out, phase: 'whenever', budgetS: '5' }), /--phase/)
+})
+
+test('adopt (preview): the binary installed by hand becomes the trial, is accepted like a build, and rolls back to the given backup', async t => {
+  const r = await relay({ role: 'preview', running: NEXT })
+  t.after(r.close)
+  await fs.writeFile(r.paths.cpa.binary, NEXT)
+  const backup = path.join(r.dir, 'cli-proxy-api.before')
+  await fs.writeFile(backup, RUNNING)
+  const deps = { run: r.runner, now: () => bj(12) }
+  const production = { ...r.paths, role: 'production' }
+  await assert.rejects(adoptCpa({ paths: production, version: NEXT, sha256: sha(NEXT), deps }), /preview only/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: 'f'.repeat(64), deps }), /sha256/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: '7.3.21-patched.0', sha256: sha(NEXT), deps }), /preview runs 7\.3\.20/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), previous: '7.3.14-patched.0', backup, deps }), /reports 7\.3\.15/)
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), previous: RUNNING, deps }), /go together/)
+
+  const adopted = await adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), previous: RUNNING, backup, deps })
+  assert.equal(adopted.result, 'adopted')
+  let state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.trial.status, state.trial.version, state.trial.sha256, state.trial.previous, state.attempts[NEXT]], ['installed', NEXT, sha(NEXT), RUNNING, 1])
+  assert.deepEqual([state.lastApply.action, state.lastApply.result], ['adopt', 'adopted'])
+  await assert.rejects(adoptCpa({ paths: r.paths, version: NEXT, sha256: sha(NEXT), deps }), /still on trial/)
+  // a tick changes nothing: nothing is reinstalled and the trial waits for the coordinator's acceptance
+  const tick = await runAuto({ paths: r.paths, deps })
+  assert.equal(r.world.installs.length, 0)
+  assert.equal(tick.cpa.why, 'up-to-date')
+  assert.equal((await readState(r.paths, 'cpa')).trial.status, 'installed')
+  // a failed acceptance restores the backup through the install transaction
+  await r.accept(NEXT, 'first', false)
+  const out = await runAuto({ paths: r.paths, deps: { ...deps, now: () => bj(13) } })
+  assert.deepEqual(out.log.find(item => item.action === 'reject'), { kernel: 'cpa', action: 'reject', version: NEXT, result: 'rolled-back', reason: 'acceptance' })
+  assert.deepEqual(r.world.installs.at(-1), [backup, RUNNING])
+  state = await readState(r.paths, 'cpa')
+  assert.deepEqual([state.trial.status, state.installed.version, out.cpa.why], ['rejected', RUNNING, 'attempted'])
+})
+
+test('units: the console loads the host role file after its secrets and before the release drop-in; the repo env files never set role keys', async () => {
+  const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+  const unit = await fs.readFile(path.join(repo, 'deploy/systemd/crosery-api-console.service'), 'utf8')
+  assert.deepEqual(unit.split('\n').filter(line => line.startsWith('EnvironmentFile=')), ['EnvironmentFile=/opt/crosery-api-console/.env', 'EnvironmentFile=-/etc/crosery/autoupdate.env'])
+  // scripts/release.mjs appends deploy/env/<env>.env in a drop-in: loaded last, so it would win; no key overlaps anyway
+  assert.match(await fs.readFile(path.join(repo, 'scripts/release.mjs'), 'utf8'), /EnvironmentFile=-%s\/deploy\/env\/%s\.env/)
+  for (const name of ['preview.env', 'production.env']) {
+    const keys = (await fs.readFile(path.join(repo, 'deploy/env', name), 'utf8')).split('\n').map(line => /^([A-Z_][A-Z0-9_]*)=/.exec(line)?.[1]).filter(Boolean)
+    assert.deepEqual(keys.filter(key => /^(AUTOUPDATE_|CPA_PROBE_|CPA_AUTH_DIR$)/.test(key)), [], name)
+  }
+  for (const file of ['deploy/kernels/relay/crosery-kernel-update.service', 'deploy/systemd/crosery-rtk-autoupdate.service']) {
+    assert.match(await fs.readFile(path.join(repo, file), 'utf8'), /^EnvironmentFile=-\/etc\/crosery\/autoupdate\.env$/m, file)
+  }
+})
+
+test('probe keys: an auth file type finds its key by the contract\'s canonicalChannelName, in the file the console writes', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kapk-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  for (const type of ['claude', 'Codex', ' antigravity ', 'openai-compatible-OpenRouter']) assert.equal(probeService(type), canonicalChannelName(type), type)
+  const auth = path.join(dir, 'auth')
+  await fs.mkdir(auth)
+  for (const [name, type] of [['a', 'antigravity'], ['b', 'claude'], ['c', 'Codex'], ['d', 'openai-compatible-OpenRouter'], ['e', 'gemini']]) {
+    await fs.writeFile(path.join(auth, `${name}.json`), JSON.stringify({ type }))
+  }
+  const paths = applierPaths({ KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_AUTH_DIR: auth, CPA_PROBE_BASE_URL: 'http://gw.test', CPA_PROBE_MODELS: 'antigravity=m,claude=m,codex=m,openrouter=m' })
+  // the console's writer (wp-access): keys stored under the canonical names
+  const written = ensureProbeKeys(path.dirname(paths.systemKeys), ['antigravity', 'claude', 'codex', 'openai-compatible-OpenRouter'])
+  assert.deepEqual(Object.keys(await readProbeKeys(paths.systemKeys)).sort(), ['antigravity', 'claude', 'codex', 'openrouter'])
+  const used = []
+  const record = await probeCommand({ paths, out: path.join(dir, 'run'), phase: 'baseline', budgetS: '10', deps: { fetch: async (_url, init) => {
+    used.push(init.headers.authorization.slice('Bearer '.length))
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  } } })
+  const by = Object.fromEntries(record.results.map(item => [item.type, item]))
+  assert.deepEqual(Object.fromEntries(Object.entries(by).map(([type, item]) => [type, item.skipped ?? item.service])),
+    { antigravity: 'antigravity', claude: 'claude', Codex: 'codex', 'openai-compatible-OpenRouter': 'openrouter', gemini: 'no-probe-key' })
+  assert.deepEqual(used.sort(), [written.antigravity, written.claude, written.codex, written['openai-compatible-OpenRouter']].sort())
 })

@@ -1,6 +1,8 @@
 # 控制台服务（预发布与正式同一份）。代码目录是发布脚本切换的 current 符号链接；
 # 非密钥配置由 scripts/release.mjs 写入的 drop-in 10-release-env.conf 从 current/deploy/env/<env>.env 加载，
-# 密钥在 /opt/crosery-api-console/.env（root 600）。
+# 密钥在 /opt/crosery-api-console/.env（root 600）。主机角色在 /etc/crosery/autoupdate.env（AUTOUPDATE_ROLE 等，不入库），
+# 控制台里手动触发的 RTK / CPA 动作按这台机器的角色走。加载顺序：.env → autoupdate.env → drop-in 里的 deploy/env 文件，
+# 同名键以后加载的为准（deploy/env 优先）；这三处目前没有重叠的键。
 [Unit]
 Description=Crosery API Console edge service
 After=network-online.target cli-proxy-api.service
@@ -13,6 +15,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/crosery-api-console-current
 EnvironmentFile=/opt/crosery-api-console/.env
+EnvironmentFile=-/etc/crosery/autoupdate.env
 Environment=HOME=/tmp
 Environment=XDG_CACHE_HOME=/tmp/.cache
 Environment=PATH=/opt/crosery-node-current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
