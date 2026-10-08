@@ -76,8 +76,9 @@ test('结构性断言：白名单只覆盖必须公开的路径（不误放行 /
   const apiRoutes = registeredPaths(source).filter(entry => entry.path.startsWith('/api/') && entry.kind === 'route')
   const publicApi = apiRoutes.filter(entry => isPublicPath(entry.method, entry.path)).map(entry => `${entry.method} ${entry.path}`)
   // GET /api/public/model-catalog 自鉴权（API Key），中转站旧版即公开、线上有 Key 用户在调
-  assert.deepEqual(publicApi.sort(), ['GET /api/session', 'POST /api/login', 'POST /api/logout', 'GET /api/public/model-catalog'].sort(),
-    `公开的 /api 路由必须恰好是这四个（实际：${publicApi.join(', ')}）`)
+  // GET /api/public/release 只回发布身份（RELEASE.json 的可公开字段），发布脚本与外部验收用
+  assert.deepEqual(publicApi.sort(), ['GET /api/session', 'POST /api/login', 'POST /api/logout', 'GET /api/public/model-catalog', 'GET /api/public/release'].sort(),
+    `公开的 /api 路由必须恰好是这五个（实际：${publicApi.join(', ')}）`)
 })
 
 test('结构性断言：key 会话的可达面只有 /api/me*、/api/session、/api/logout，且 /api/me 下只有只读路由', () => {
@@ -198,6 +199,13 @@ test('端到端：未认证时白名单内可访问、白名单外 401、SPA 深
     assert.equal(badKey.status, 401)
     assert.deepEqual(await badKey.json(), { error: 'API Key 无效或网关暂不可用' })
     assert.equal((await fetch(`${base}/api/public/model-catalog`, { method: 'POST' })).status, 401, '只公开 GET')
+
+    // 发布身份公开、不缓存、只有固定字段；只公开 GET
+    const release = await fetch(`${base}/api/public/release`)
+    assert.equal(release.status, 200)
+    assert.equal(release.headers.get('cache-control'), 'no-store')
+    assert.deepEqual(Object.keys(await release.json() as object).sort(), ['commit', 'createdAt', 'env', 'releaseId', 'tag', 'version'])
+    assert.equal((await fetch(`${base}/api/public/release`, { method: 'POST' })).status, 401, '只公开 GET')
 
     // 静态与 SPA：/docs 与深链接仍返回 index.html/docs.html，不能变成 401 页面
     const docs = await fetch(`${base}/docs`)

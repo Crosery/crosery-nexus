@@ -78,6 +78,7 @@ import { enforceQuotas, quotaStateFor, quotaStatesForAsync, resetQuotaWindow, ty
 import { consumeKeyRevealToken, issueKeyRevealToken } from './keySecrets.js'
 import { normalizeProxyUrl } from './proxyPresets.js'
 import { boundedInteger, readBearerToken } from './publicUsage.js'
+import { currentPublicRelease } from './releaseInfo.js'
 import { cutoffEpochMs } from './timeRange.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { SQLiteReadPool } from './sqliteReadWorker.js'
@@ -429,6 +430,12 @@ if (config.gatewayEngine === 'cpa') app.post('/api/credentials/upload', async (r
     const status = error instanceof UploadGateBusyError ? 409 : known ? 400 : 500
     res.status(status).json({ error: { code, category: 'UPLOAD', message, stage, traceId, retryable: error instanceof UploadGateBusyError } })
   }
+})
+
+// 发布身份（版本、tag、提交号、环境）：scripts/release.mjs 与外部验收据此确认线上运行的就是这次发布的提交。
+app.get('/api/public/release', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json(currentPublicRelease())
 })
 
 /**

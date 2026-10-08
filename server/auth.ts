@@ -278,6 +278,12 @@ export const PUBLIC_PATHS: PublicPathRule[] = [
       + '中转站旧版即公开、线上有 Key 用户在调。',
   },
   {
+    method: 'GET',
+    pattern: /^\/api\/public\/release$/,
+    why: '发布身份（版本、tag、提交号、环境，来自发布目录的 RELEASE.json）：发布脚本和外部验收用它确认线上运行的提交；'
+      + '不含用户数据、主机或密钥，仓库本身公开。',
+  },
+  {
     pattern: /^\/docs(\/|$)/,
     why: '产品文档页：静态 HTML（dist/docs.html），不含任何用户数据，路由自带 max-age=300。',
   },
