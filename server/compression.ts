@@ -145,6 +145,14 @@ function compress(filePath: string, encoding: Exclude<StaticEncoding, 'identity'
   return body
 }
 
+/** Vite 产物 `assets/<名>-<内容哈希>.<扩展名>`：内容变则文件名变，可长期缓存（CDN 按源站 Cache-Control 缓存）。 */
+export const HASHED_ASSET_MAX_AGE_SECONDS = 31_536_000
+
+export function staticCacheControl(urlPath: string, maxAgeSeconds: number): string {
+  const seconds = urlPath.startsWith('/assets/') ? HASHED_ASSET_MAX_AGE_SECONDS : maxAgeSeconds
+  return `public, max-age=${seconds}, immutable`
+}
+
 /**
  * 静态文本压缩中间件。`root` 是静态根（`dist`）；只接管可压缩文本，其余 `next()`。
  */
@@ -186,7 +194,7 @@ export function staticCompression(root: string, options: { maxAgeSeconds?: numbe
     const baseHeaders = () => {
       res.setHeader('Content-Type', contentType)
       res.setHeader('Vary', 'Accept-Encoding')
-      res.setHeader('Cache-Control', `public, max-age=${maxAgeSeconds}, immutable`)
+      res.setHeader('Cache-Control', staticCacheControl(urlPath, maxAgeSeconds))
       res.setHeader('ETag', etag)
       res.setHeader('Last-Modified', stat.mtime.toUTCString())
     }

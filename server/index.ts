@@ -58,7 +58,7 @@ import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
 import { DEFAULT_OPEN_MODELS, defaultOpenModels, getCustomSharedModels, saveCustomSharedModels } from './keyModelAccess.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
-import { staticCompression } from './compression.js'
+import { staticCacheControl, staticCompression } from './compression.js'
 import { buildNamedAPIKey, deriveKeySlug } from './keyNaming.js'
 import { activeProviderPredicate, activeProviderValues, parseCurrentOnly, scopedProviderPredicate } from './currentChannels.js'
 import { canonicalModelSql } from './modelIdentity.js'
@@ -1634,7 +1634,13 @@ app.get(['/docs', '/docs/'], (_req, res) => {
 // 其余一律 next() 交给 express.static / SPA 回退（`/`、深链接、`/docs` 都不经过压缩层）。
 // 语义细节（ETag/304/immutable/Vary/内存缓存上限）见 server/compression.ts 顶部注释。
 app.use(staticCompression(dist, { maxAgeSeconds: 3600 }))
-app.use(express.static(dist, { maxAge: '1h', immutable: true, index: false }))
+const hashedAssets = path.join(dist, 'assets') + path.sep
+app.use(express.static(dist, {
+  maxAge: '1h', immutable: true, index: false,
+  setHeaders: (res, filePath) => {
+    if (filePath.startsWith(hashedAssets)) res.setHeader('Cache-Control', staticCacheControl('/assets/', 3600))
+  },
+}))
 app.use((_req, res) => {
   res.setHeader('Cache-Control', 'no-cache')
   res.sendFile(path.join(dist, 'index.html'))

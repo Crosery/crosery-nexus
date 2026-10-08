@@ -15,7 +15,7 @@ import { brotliDecompressSync, gunzipSync } from 'node:zlib'
  * - 解压后必须与磁盘字节**逐字节相同**（防「压缩层把响应写坏」）
  * - 小于 1KB 的可压缩文件与已压缩类型（.ico/.woff2/.png）**不被压缩**（也不带 Vary）
  * - 条件请求 304、`Range` 走回 express.static 的 206、SPA 深链接回退的 `no-cache`
- * - `Cache-Control` 仍是 `public, max-age=3600, immutable`（没破坏 express.static 语义）
+ * - `Cache-Control`：带内容哈希的 /assets/* 一年 immutable（CDN 按源站缓存），其余静态文件 `public, max-age=3600, immutable`
  *
  * 缓存命中/未命中与协商逻辑用**单元级**断言（`compressionStats()`），避免对耗时做断言（那会 flake）。
  * 本文件不引入 `./testDataDir.js`：它自己 `mkdtemp` 并显式传给子进程（与 concurrency 用例同样的例外）。
@@ -143,8 +143,7 @@ test('静态文本压缩：三态协商 / 完整性 / 边界不被破坏', { tim
     assert.equal(Number(identity.headers['content-length']), css.size)
     assert.equal(identity.body.length, css.size)
     assert.match(String(identity.headers.vary), /Accept-Encoding/i, '可压缩资源必须带 Vary')
-    assert.match(String(identity.headers['cache-control']), /max-age=3600/)
-    assert.match(String(identity.headers['cache-control']), /immutable/)
+    assert.equal(identity.headers['cache-control'], 'public, max-age=31536000, immutable', '/assets/* 带内容哈希，长期缓存')
 
     // ② gzip：更小 + Content-Encoding: gzip + 解压后逐字节一致
     const gzip = await rawGet(`${base}${css.url}`, { 'accept-encoding': 'gzip' })
@@ -186,6 +185,7 @@ test('静态文本压缩：三态协商 / 完整性 / 边界不被破坏', { tim
     if (binary) {
       const raw = await rawGet(`${base}${binary}`, { 'accept-encoding': 'br' })
       assert.equal(raw.headers['content-encoding'], undefined, `已压缩类型不得二次压缩：${binary}`)
+      assert.equal(raw.headers['cache-control'], 'public, max-age=3600, immutable', `根目录静态文件仍是 1 小时：${binary}`)
     }
 
     // ⑦ 条件请求：用 br 响应的 ETag 再请求 → 304（且仍带 Vary）
@@ -282,4 +282,10 @@ test('压缩层单元契约：协商优先级 / 缓存命中计数 / ETag 稳定
     fs.rmSync(dir, { recursive: true, force: true })
     service.resetCompressionCache()
   }
+})
+
+test('缓存头：只有 /assets/ 下的哈希产物是一年', () => {
+  assert.equal(service.staticCacheControl('/assets/console-C1_rS8X0.js', 3600), 'public, max-age=31536000, immutable')
+  assert.equal(service.staticCacheControl('/favicon.svg', 3600), 'public, max-age=3600, immutable')
+  assert.equal(service.staticCacheControl('/assetsx/a.js', 120), 'public, max-age=120, immutable')
 })
