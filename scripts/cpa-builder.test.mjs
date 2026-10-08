@@ -200,3 +200,89 @@ test('builder: an accepted trial on preview is delivered to production with its 
   assert.equal(other.code, 1)
   assert.doesNotMatch(other.prod, /cpa-upload/)
 })
+
+/* ── the patch series: deploy = <tag> + whatever *.patch files the series directory holds ── */
+
+async function series(b, tag, patches) {
+  const dir = path.join(b.root, 'patches', tag)
+  await fs.rm(dir, { recursive: true, force: true })
+  await fs.mkdir(dir, { recursive: true })
+  const sums = []
+  for (const [name, text] of patches) {
+    await fs.writeFile(path.join(dir, name), text)
+    sums.push(`${createHash('sha256').update(text).digest('hex')}  ${name}`)
+  }
+  await fs.writeFile(path.join(dir, 'SHA256SUMS'), `${sums.join('\n')}\n`)
+  return dir
+}
+
+/** format-patch of the fork commit plus `extra` more commits on top of it, from a scratch clone */
+async function porting(b, extra = []) {
+  const work = path.join(b.root, '..', `port-${extra.length}`)
+  b.git(b.root, 'clone', '-q', b.src, work)
+  b.git(work, 'checkout', '-q', '-b', 'port', b.fork)
+  for (const [file, text, message] of extra) {
+    await fs.writeFile(path.join(work, file), text)
+    b.git(work, 'add', file)
+    b.git(work, 'commit', '-qm', message)
+  }
+  const out = path.join(work, '.patches')
+  b.git(work, 'format-patch', '-q', '-o', out, 'v7.3.15..port')
+  const names = (await fs.readdir(out)).sort()
+  return { head: b.git(work, 'rev-parse', 'HEAD'), patches: await Promise.all(names.map(async name => [name, await fs.readFile(path.join(out, name), 'utf8')])) }
+}
+
+test('builder: deploy is rebuilt from the newest series directory, every patch in it, same HEAD as the porting repo', async t => {
+  const b = await builder(t)
+  const one = await porting(b)
+  assert.equal(one.head, b.fork)
+  await series(b, 'v7.3.15', one.patches)
+  // an older series next to it is ignored
+  await series(b, 'v7.3.9', [['0001-old.patch', 'not applied\n']])
+  b.git(b.src, 'reset', '-q', '--hard', 'v7.3.15') // whatever deploy was, the series decides
+  const first = await b.run()
+  assert.equal(first.code, 0, first.log)
+  assert.equal(b.git(b.src, 'rev-parse', 'deploy^1'), b.fork, 'the series HEAD reproduces the porting repo commit, then upstream is merged')
+  assert.equal(b.git(b.src, 'show', 'HEAD:config.txt'), 'fork patch')
+  assert.equal(b.git(b.src, 'show', 'HEAD:upstream.txt'), 'new release')
+  const candidate = JSON.parse(await b.read(`state/candidates/${first.report.candidate.version}/candidate.json`))
+  assert.deepEqual([candidate.series, candidate.patches], ['v7.3.15', 1])
+  // unchanged series: deploy is not rebuilt (the merge stays)
+  const head = b.git(b.src, 'rev-parse', 'deploy')
+  assert.equal((await b.run()).code, 0)
+  assert.equal(b.git(b.src, 'rev-parse', 'deploy'), head)
+
+  // a patch is added to the series (the same directory): rebuilt with it, the old branch kept as deploy-prev
+  const two = await porting(b, [['catalog.txt', 'reload\n', 'feat: reload the catalog']])
+  await series(b, 'v7.3.15', two.patches)
+  const second = await b.run()
+  assert.equal(second.code, 0, second.log)
+  assert.equal(b.git(b.src, 'rev-parse', 'deploy^1'), two.head)
+  assert.equal(b.git(b.src, 'rev-parse', 'deploy-prev'), head)
+  assert.equal(b.git(b.src, 'show', 'HEAD:catalog.txt'), 'reload')
+  assert.notEqual(second.report.candidate.version, first.report.candidate.version)
+  assert.match(second.preview, /cpa-upload\n/)
+})
+
+test('builder: a series that does not check out or does not apply stops the round; deploy stays as it was', async t => {
+  const b = await builder(t)
+  const { patches } = await porting(b)
+  const deploy = b.git(b.src, 'rev-parse', 'deploy')
+  const expectHeld = async (text, prepare) => {
+    await prepare()
+    const out = await b.run()
+    assert.equal(out.code, 1)
+    assert.equal(out.report.status, 'held')
+    assert.match(out.report.reasons[0].text, text)
+    assert.equal(b.git(b.src, 'rev-parse', 'deploy'), deploy)
+    assert.equal(b.git(b.src, 'status', '--porcelain'), '')
+    assert.doesNotMatch(`${out.calls}${out.preview}`, /docker|cpa-upload|cpa-stage/)
+  }
+  const dir = path.join(b.root, 'patches', 'v7.3.15')
+  await expectHeld(/校验不过/, async () => { await series(b, 'v7.3.15', patches); await fs.appendFile(path.join(dir, patches[0][0]), ' ') })
+  await expectHeld(/对不上/, async () => { await series(b, 'v7.3.15', patches); await fs.writeFile(path.join(dir, '0002-unlisted.patch'), 'x\n') })
+  await expectHeld(/基底不是上游 tag/, async () => { await fs.rm(path.join(b.root, 'patches'), { recursive: true }); await series(b, 'v7.3.99', patches) })
+  const broken = patches[0][1].replace('+fork patch', '+fork patch\n+second line').replace('@@ -1 +1 @@', '@@ -1,2 +1,3 @@')
+  await expectHeld(/打不上/, async () => { await fs.rm(path.join(b.root, 'patches'), { recursive: true }); await series(b, 'v7.3.15', [[patches[0][0], broken]]) })
+  assert.equal(b.git(b.src, 'branch', '--show-current'), 'deploy')
+})
