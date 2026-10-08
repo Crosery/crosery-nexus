@@ -1,6 +1,6 @@
 /**
  * Navigation model — the single source for the desktop rail, the mobile tab bar, the 更多 sheet, ⌘K page
- * jumps, 1–8 / 1–4 shortcuts and page heads (`04 / 接入 · ACCOUNTS`). `server/navRoutes.test.ts` holds this
+ * jumps, 1–7 / 1–4 shortcuts and page heads (`04 / 接入 · ACCOUNTS`). `server/navRoutes.test.ts` holds this
  * file and `routes.ts` in parity: every page route has a nav entry and every nav target is a page route.
  */
 import type { IconName } from '../ui/icons'

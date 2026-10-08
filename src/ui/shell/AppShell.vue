@@ -16,7 +16,7 @@ import type { CommandItem, NavItem, ShellRole, ShellStatus, TraceSample, UserMen
 /**
  * App shell (DESIGN.md §4, §5.2 shell/AppShell). ≥960: AppHeader (top rail + HeaderTrace) and the fixed
  * StatusLine; <960: top bar + Ticker + TabBar (+ 更多 sheet). Always: skip link, <main id="main">, ScanLine,
- * ⌘K CommandPalette. Global keys: mod+k palette, ? shortcut sheet, T theme, M mask (admin), 1–8 / 1–4 jump
+ * ⌘K CommandPalette. Global keys: mod+k palette, ? shortcut sheet, T theme, M mask (admin), 1–7 / 1–4 jump
  * (single-key rules in useShortcuts). The toast host and ConfirmHost stay in App.vue (they also serve /login).
  */
 const props = withDefaults(
@@ -74,7 +74,7 @@ const shortcuts = computed<ShortcutMap>(() => {
     t: () => toggleTheme(document.querySelector('.ui-head [aria-label^="切换到"]')),
   }
   if (props.role === 'admin') map.m = () => toggleMask()
-  const max = props.role === 'admin' ? 8 : 4
+  const max = props.role === 'admin' ? 7 : 4
   props.nav.slice(0, max).forEach((item, i) => {
     map[String(i + 1)] = () => void router.push(item.to)
   })

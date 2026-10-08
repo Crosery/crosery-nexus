@@ -14,7 +14,7 @@ const singleOn = single.on
 const rows = [
   { keys: 'mod+k', label: '命令面板：跳转、执行、查找' },
   { keys: '/', label: '聚焦本页搜索' },
-  { keys: props.role === 'admin' ? '1–8' : '1–4', label: '跳到第 N 个页面' },
+  { keys: props.role === 'admin' ? '1–7' : '1–4', label: '跳到第 N 个页面' },
   { keys: 't', label: '切换主题' },
   ...(props.role === 'admin' ? [{ keys: 'm', label: '隐私脱敏' }] : []),
   { keys: '?', label: '本页' },
