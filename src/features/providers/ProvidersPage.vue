@@ -813,6 +813,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
             <template #cell-switch="{ row }">
               <Switch
                 :model-value="row.enabled"
+                :aria-label="`${row.enabled ? '停用' : '启用'} ${row.name}`"
                 @click.stop
                 @update:model-value="toggleChannel(row.channelRef, !row.enabled)"
               />
