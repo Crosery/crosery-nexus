@@ -32,7 +32,7 @@ import { execFile } from 'node:child_process'
 import { request } from 'node:http'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { promotionPolicy, updateRole } from './autoupdate-common.mjs'
+import { hostEnv, promotionPolicy, updateRole } from './autoupdate-common.mjs'
 // the system-keys contract's own reader and channel naming (erasable TS: plain Node 24 imports it)
 import { SYSTEM_KEYS_FILE, canonicalChannelName, readSystemKeys } from '../server/systemKeys.ts'
 
@@ -1130,7 +1130,8 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
 async function main() {
   const action = process.argv[2]
   const arg = name => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1] }
-  const paths = applierPaths()
+  // by hand from a root shell: the host's role file, as the unit loads it
+  const paths = applierPaths(hostEnv(process.env))
   if (action === 'status') {
     const [cpa, magpie] = await Promise.all([readState(paths, 'cpa'), readState(paths, 'magpie')])
     const dry = await runAuto({ dryRun: true, paths })

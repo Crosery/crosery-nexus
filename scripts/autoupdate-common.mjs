@@ -1,7 +1,9 @@
 /**
  * Helpers shared by the scheduled updaters (CPA kernel applier, RTK, and the retired Magpie scripts that re-export them).
- * No I/O here: everything takes its inputs, so each updater stays testable with an injected clock.
+ * No I/O here except hostEnv (one small file read): everything takes its inputs, so each updater stays testable with an
+ * injected clock.
  */
+import { readFileSync } from 'node:fs'
 
 const BACKOFF_BASE_MS = 30 * 60_000
 const BACKOFF_MAX_MS = 6 * 60 * 60_000
@@ -62,4 +64,26 @@ export function promotionPolicy(env = process.env) {
     soakMs: number(env.AUTOUPDATE_SOAK_HOURS, 1, 24 * 30, 24) * HOUR_MS,
     maxAgeMs: number(env.AUTOUPDATE_RECORD_MAX_AGE_DAYS, 1, 30, 7) * DAY_MS,
   }
+}
+
+export const HOST_ENV_FILE = '/etc/crosery/autoupdate.env'
+
+/**
+ * The units load /etc/crosery/autoupdate.env (EnvironmentFile=); run by hand from a root shell it is not loaded. Without
+ * AUTOUPDATE_ROLE in the environment, read the file the same way: KEY=VALUE lines, `#`/`;` comments, optional quotes.
+ * Variables already set win. No file → the environment as it is (no role = production, the strict default).
+ */
+export function hostEnv(env = process.env, file = env.AUTOUPDATE_ENV_FILE || HOST_ENV_FILE) {
+  if (env.AUTOUPDATE_ROLE) return env
+  let text
+  try { text = readFileSync(file, 'utf8') } catch { return env }
+  const out = { ...env }
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*[#;]/.test(line)) continue
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line)
+    if (!match) continue
+    const value = /^(["'])(.*)\1$/.exec(match[2])?.[2] ?? match[2]
+    if (out[match[1]] === undefined) out[match[1]] = value
+  }
+  return out
 }

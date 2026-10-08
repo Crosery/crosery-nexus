@@ -10,6 +10,9 @@ import {
   probeService, promotionRecord, readProbeKeys, readState, runAuto, runProbes, sameMajor, startTrial, trialTick, windowState, withLock,
 } from './kernel-applier.mjs'
 import { canonicalChannelName, ensureProbeKeys } from '../server/systemKeys.ts'
+import { hostEnv } from './autoupdate-common.mjs'
+import { execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 // 2026-10-03 in Beijing time (UTC+8, no DST): the default window is 05:00–07:00 there
 const bj = (h, m = 0) => Date.UTC(2026, 9, 3, h - 8, m)
@@ -800,4 +803,28 @@ test('probe keys: an auth file type finds its key by the contract\'s canonicalCh
   assert.deepEqual(Object.fromEntries(Object.entries(by).map(([type, item]) => [type, item.skipped ?? item.service])),
     { antigravity: 'antigravity', claude: 'claude', Codex: 'codex', 'openai-compatible-OpenRouter': 'openrouter', gemini: 'no-probe-key' })
   assert.deepEqual(used.sort(), [written.antigravity, written.claude, written.codex, written['openai-compatible-OpenRouter']].sort())
+})
+
+test('host env: run by hand without AUTOUPDATE_ROLE, the role file is read like the unit does; what is set wins', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kahe-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'autoupdate.env')
+  await fs.writeFile(file, '# role of this host\nAUTOUPDATE_ROLE=preview\n; another comment\nAUTOUPDATE_SOAK_HOURS="12"\nCPA_PROBE_MODELS=\'claude=m\'\nnot a line\n')
+  const loaded = hostEnv({ PATH: '/bin', CPA_PROBE_MODELS: 'codex=x' }, file)
+  assert.deepEqual([loaded.AUTOUPDATE_ROLE, loaded.AUTOUPDATE_SOAK_HOURS, loaded.CPA_PROBE_MODELS, loaded.PATH], ['preview', '12', 'codex=x', '/bin'])
+  assert.equal(applierPaths(loaded).role, 'preview')
+  assert.equal(applierPaths(loaded).policy.soakMs, 12 * HOUR)
+  const explicit = { AUTOUPDATE_ROLE: 'production' }
+  assert.equal(hostEnv(explicit, file), explicit, 'an explicit role: the file is not read')
+  assert.equal(applierPaths(hostEnv({}, path.join(dir, 'missing'))).role, 'production', 'no file: the strict default')
+  // the CLI itself: `adopt` from a root shell gets past the role check (and stops at what it checks next)
+  const cli = env => new Promise(resolve => execFile(process.execPath, [fileURLToPath(new URL('./kernel-applier.mjs', import.meta.url)), 'adopt', '--version', NEXT, '--sha256', sha(NEXT)],
+    { env: { PATH: process.env.PATH, KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_SERVICE: 'cli-proxy-api-fixture-absent', ...env } },
+    (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stderr })))
+  await fs.mkdir(path.join(dir, 'lib'), { recursive: true })
+  assert.match((await cli({ AUTOUPDATE_ENV_FILE: path.join(dir, 'missing') })).stderr, /adopt runs on preview only/)
+  const hand = await cli({ AUTOUPDATE_ENV_FILE: file })
+  assert.notEqual(hand.code, 0)
+  assert.doesNotMatch(hand.stderr, /preview only/)
+  assert.match(hand.stderr, /preview runs nothing/)
 })
