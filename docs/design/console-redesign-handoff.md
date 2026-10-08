@@ -3,7 +3,7 @@
 Crosery: **本轮交付是交接文档与 spec，不是上线版本。现有分类可作为工作基础，但第一轮草图的视觉、信息完整度和空间利用率未获用户认可。**
 
 - 日期：2026-10-02
-- 产品仓库：`/Users/crosery/work_file/crosery-api-console`
+- 产品仓库：`<repo>`
 - 需求规格：[console-redesign-spec.md](console-redesign-spec.md)
 - 当前阶段：需求对齐 → 第一轮全量草图已评审 → 用户转交 Claude 继续讨论。
 - 最新操作边界：停止继续改草图或产品，先完成这份交接。第二轮视觉修订尚未实施。
@@ -97,7 +97,7 @@ Crosery: **本轮交付是交接文档与 spec，不是上线版本。现有分�
 
 ### 第一轮独立草图
 
-目录：`/Users/crosery/work_file/crosery-console-design-review-20261002/`
+目录：`~/work_file/crosery-console-design-review-20261002/`
 
 | 文件／入口 | 内容 |
 |---|---|
@@ -113,7 +113,7 @@ Crosery: **本轮交付是交接文档与 spec，不是上线版本。现有分�
 
 ```sh
 python3 -m http.server 8798 --bind 127.0.0.1 \
-  --directory /Users/crosery/work_file/crosery-console-design-review-20261002
+  --directory ~/work_file/crosery-console-design-review-20261002
 ```
 
 不要为查看草图重启产品服务。
@@ -154,7 +154,7 @@ python3 -m http.server 8798 --bind 127.0.0.1 \
 
 ### 本地 Magpie 上游
 
-路径：`/Users/crosery/.agents/crosery/magpie-upstream/source/`。
+路径：`~/.agents/crosery/magpie-upstream/source/`。
 
 **这是会更新的工作检出，不等于运行内核，也不能当固定 revision。** 接手时核对版本，再看原生 UI，不能只看我们自己的草图。
 

@@ -1,6 +1,6 @@
 # A/B 实验台与真实用户通道（task-5）
 
-对象仓库：`/Users/crosery/work_file/crosery-api-console`（基线 `281c30e`）｜实例：<http://127.0.0.1:8791>
+对象仓库：`<repo>`（基线 `281c30e`）｜实例：<http://127.0.0.1:8791>
 负责人：`ab-harness`｜可写范围：`src/pages/AbLabPage.vue`、`src/ab/**`、`server/abLab.ts`、`scripts/ab-report.mjs`、`docs/qa/ab/**`
 
 ---
@@ -56,7 +56,7 @@
 ## 3. A 侧冻结副本是怎么产生的（可复现）
 
 ```bash
-cd /Users/crosery/work_file/crosery-api-console
+cd <repo>
 mkdir -p src/ab/variants/legacy
 for p in KeysPage DashboardPage OAuthPage HelpPage; do
   git show 281c30e:src/pages/$p.vue > src/ab/variants/legacy/$p.legacy.vue

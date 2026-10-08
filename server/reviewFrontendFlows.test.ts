@@ -397,17 +397,17 @@ const cred = (name: string, email: string, over: Record<string, unknown> = {}) =
 const rowsOf = (...creds: Array<ReturnType<typeof cred>>) => buildAccounts(creds as never, [], Date.now())
 
 test('FF-04 verify: an existing account is never taken as the new one', () => {
-  const before = rowsOf(cred('codex-a.json', 'a@x.io'))
+  const before = rowsOf(cred('codex-a.json', 'a@example.com'))
   const baseline = new Set(before.map((r) => r.key))
   // deep link: the list was never read before the flow — nothing can be told apart, so no false ✓ 已加入
   assert.equal(verifyOutcome(before, null, null, true), null)
   // B not listed yet while A exists: keep waiting (null), never ✓ 已续期 (removals-regressions fixer, verifyOutcome)
   assert.equal(verifyOutcome(before, baseline, null, true), null)
-  const after = rowsOf(cred('codex-a.json', 'a@x.io'), cred('codex-b.json', 'b@x.io'))
-  assert.deepEqual(verifyOutcome(after, baseline, null, true), { name: 'codex-b.json', email: 'b@x.io' })
+  const after = rowsOf(cred('codex-a.json', 'a@example.com'), cred('codex-b.json', 'b@example.com'))
+  assert.deepEqual(verifyOutcome(after, baseline, null, true), { name: 'codex-b.json', email: 'b@example.com' })
   // re-authorising A: renewed only when that identity is there
-  assert.deepEqual(verifyOutcome(before, baseline, 'A@x.io', true), { renewed: true })
-  assert.equal(verifyOutcome(before, baseline, 'z@x.io', true), null)
+  assert.deepEqual(verifyOutcome(before, baseline, 'A@example.com', true), { renewed: true })
+  assert.equal(verifyOutcome(before, baseline, 'z@example.com', true), null)
   const page = src('features/accounts/CpaAccountsPage.vue')
   assert.match(page, /const addBaseline = shallowRef<Set<string> \| null>\(null\)/)
   // no list yet → null; the first list that arrives while the sheet is open becomes the baseline
@@ -439,7 +439,7 @@ test('FF-16 the success toast states a remaining count only when the server repo
 })
 
 test('FF-17 a filtered provider head counts the filtered accounts only', () => {
-  const rows = rowsOf(cred('codex-a.json', 'a@x.io'), cred('codex-b.json', 'b@x.io'), cred('codex-c.json', 'c@x.io', { disabled: true }))
+  const rows = rowsOf(cred('codex-a.json', 'a@example.com'), cred('codex-b.json', 'b@example.com'), cred('codex-c.json', 'c@example.com', { disabled: true }))
   const all = groupAccounts(rows)
   assert.equal(all[0].routable, 2)
   const paused = filterGroups(all, 'pause', '')
@@ -477,7 +477,7 @@ test('FF-24 a failed proxy pick snaps back to what the server has (removals-regr
 })
 
 test('FF-24 a failed custom-proxy save keeps the typed address for a retry; a landed one is replaced by the answer', () => {
-  const addr = 'socks5://10.0.0.9:1080'
+  const addr = 'socks5://192.0.2.9:1080'
   // success: setProxy lands the answer (knowProxy) while busy is still 'proxy' → the address is still `sent`
   // at that read, so the answer replaces it (RR-2 rule) — the busy transition afterwards changes nothing
   assert.equal(proxyKeepsDraft(PROXY_CUSTOM, addr, addr), false)

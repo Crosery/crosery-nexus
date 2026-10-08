@@ -41,7 +41,7 @@ const usageEvent = (requestId: string): DataPlaneUsageEvent => ({
 function options(overrides: Partial<DataPlaneRelayOptions> = {}): DataPlaneRelayOptions {
   return {
     enabled: true,
-    baseUrl: 'http://100.64.0.8:8788',
+    baseUrl: 'http://192.0.2.8:8788',
     token: 'relay-secret',
     timeoutMs: 100,
     batchSize: 100,
@@ -540,7 +540,7 @@ test('snapshot client accepts only the complete shared envelope', async () => {
   let authorization = ''
   const client = new DataPlaneSnapshotClient(store, {
     enabled: true,
-    baseUrl: 'http://100.64.0.8:8788',
+    baseUrl: 'http://192.0.2.8:8788',
     token: 'snapshot-secret',
     timeoutMs: 100,
     fetch: (async (url, init) => {
@@ -555,7 +555,7 @@ test('snapshot client accepts only the complete shared envelope', async () => {
   const loaded = await client.read('usage:7:all', '/internal/v1/snapshots/7', 60_000)
   assert.equal(loaded?.stale, false)
   assert.equal(loaded?.value.version, 1)
-  assert.equal(requestedUrl, 'http://100.64.0.8:8788/internal/v1/snapshots/7')
+  assert.equal(requestedUrl, 'http://192.0.2.8:8788/internal/v1/snapshots/7')
   assert.equal(authorization, 'Bearer snapshot-secret')
 
   valid = false

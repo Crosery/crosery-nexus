@@ -49,7 +49,7 @@ const withoutImport = source.replace(/^import \{ sortKeyForColumn, tableSortStat
 | 步骤 | 结果 |
 | --- | --- |
 | 名称留空 + 失焦 | 字段旁出现「请填写显示名称（1–40 个字符），它会显示在 API Key 列表里」，`aria-invalid="true"` |
-| 填已存在的名称「龚翰林」+ 失焦 | 「已有同名 API Key，请换一个名称（或先改掉那一个已有的）」 |
+| 填已存在的名称「张三」+ 失焦 | 「已有同名 API Key，请换一个名称（或先改掉那一个已有的）」 |
 | 改成合法名称 + 失焦 | 错误消失、`aria-invalid` 移除 |
 | 并发数填 `0` + 失焦 | 「并发数请填 1–1000 的整数；不限速请打开「不限速」开关」 |
 | 额度填 `-5` + 失焦 | 「单日额度请填 0–1000000 之间的数字；留空表示不限制」，`aria-label="单日额度（美元）"`、`aria-invalid="true"` |

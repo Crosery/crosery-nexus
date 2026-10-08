@@ -100,6 +100,24 @@ test('health: counts, success rate, nearest-rank p95 and slots per channel; othe
   assert.equal(quiet.lastRequestAt, null)
   assert.equal(quiet.lastError, null)
   assert.equal(quiet.enabled, false)
+
+  // the whole gateway in the same window: the channel's 25, the OAuth failure and the deleted channel's success
+  assert.deepEqual(payload.gateway, { requests: 27, errors: 6 })
+})
+
+test('health: the gateway total is read even with no channel at all (an all-OAuth gateway), and stays index-only', async () => {
+  const { add, reader, ops, db } = fixture()
+  add(NOW - 60_000, 'codex', true)
+  add(NOW - 2 * 60_000, 'claude', false, { status: 429, category: 'rate_limited' })
+  add(NOW - 25 * HOUR, 'codex', true) // outside the window
+  const payload = await loadChannelHealth(reader, [], null, 24, NOW)
+  assert.deepEqual(payload.channels, [])
+  assert.deepEqual(payload.gateway, { requests: 2, errors: 1 })
+  assert.equal(ops.length, 1)
+  for (const op of ops[0]) {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${op.sql}`).all(...(op.params ?? [])).map((row) => String(row.detail)).join(' | ')
+    assert.match(plan, /COVERING INDEX/, plan)
+  }
 })
 
 test('health: last request / last error look past the window, and error detail is scrubbed and capped', async () => {

@@ -95,7 +95,7 @@ const proxyOptions = computed<SegmentItem[]>(() => {
 })
 /** where the current exit lands and whether it reaches this account's vendor (Claude account → Claude check) */
 const badge = computed(() => (current.value ? egressBadge(props.egress, ref_.value, service.value, current.value) : null))
-// a pool entry's option already reads `name · country · check`; the tag beside it only says where 继承 / 直连 lands
+// a pool entry's option already reads `region · name · check`; the tag beside it only says where 继承 / 直连 lands
 const pickedEntry = computed(() => Boolean(props.egress?.entries.some((entry) => entry.id === choice.value)))
 function onChoice(value: string) {
   choice.value = value

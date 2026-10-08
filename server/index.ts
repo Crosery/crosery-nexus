@@ -6,8 +6,8 @@ import cookieParser from 'cookie-parser'
 import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/index.js'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
+import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
+import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -55,7 +55,8 @@ const errorStatusOr = (error: unknown, fallback: number): number => {
 }
 import { assertAuthFileName, authFilePath } from './magpieControl.js'
 import { getKeyModelAccessState } from './managementCapability.js'
-import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync } from './sync.js'
+import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync, withKeyAccessLock } from './sync.js'
+import { modelAvailabilityEnabled, probeChatModel, runModelAvailabilityRound } from './modelAvailability.js'
 import { DEFAULT_OPEN_MODELS, defaultOpenModels, getCustomSharedModels, saveCustomSharedModels } from './keyModelAccess.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
 import { staticCacheControl, staticCompression } from './compression.js'
@@ -1626,6 +1627,23 @@ const syncCenter = installSyncCenter(app, {
   onModelsChanged: invalidateControlPlaneCaches,
   dataPlaneStatus: () => readDataPlaneRelayStatus(db, config.dataPlaneEnabled),
   addAudit,
+  modelAvailability: {
+    enabled: modelAvailabilityEnabled,
+    run: (context) => runModelAvailabilityRound({
+      listCatalog: listGroupCatalog,
+      ensureProbeKeys: async (services) => {
+        const keys = await registerProbeKeys(services)
+        await withKeyAccessLock(() => pinProbeKeyChannels(keys))
+        return keys
+      },
+      probe: (key, model) => probeChatModel(config.cpaBaseUrl, key, model),
+      audit: addAudit,
+      onTransitions: async () => {
+        invalidateControlPlaneCaches()
+        await reconcileKeyModelAccess()
+      },
+    }, context),
+  },
 })
 app.get('/api/audit', (_req, res) => res.json({ items: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100').all() }))
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }))
