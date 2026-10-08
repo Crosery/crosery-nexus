@@ -42,7 +42,7 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
 
 - 目录 `CPA_PATCH_DIR`（默认 `~/cpa-pipeline/patches/`），从控制台仓库的 `deploy/kernels/cpa-patches/` 同步过去（`*.patch` 不入库，只在本机和构建机上）。
 - 用版本最高的 `<上游 tag>/` 子目录。里面有几个 `*.patch` 就按文件名顺序打几个；`SHA256SUMS` 必须和补丁文件一一对上、校验通过。
-- 系列一变（加补丁、换基底），就从那个 tag 重建 deploy：每个提交的提交者用补丁作者、提交时间用作者时间，所以同一串补丁总是同一个 HEAD（移植仓库也这样提交时，就和移植仓库的 HEAD 一样）。旧分支留作 `deploy-prev`。
+- 系列一变（加补丁、换基底），就从那个 tag 重建 deploy：每个提交的提交者用补丁作者、提交时间用作者时间，所以同一串补丁在构建机上总是同一个 HEAD。树和系列 README 记的树一致；HEAD 只有在移植仓库也按作者时间提交时才和它相同（移植仓库 rebase 过就不同，版本串里的 HEAD8 因此不同，代码相同）。旧分支留作 `deploy-prev`。
 - 校验不过、补丁打不上、源码目录有未提交改动：这一轮停住并报告原因，deploy 不动。
 - 没有补丁目录时沿用构建机上现有的 deploy 分支。
 - 候选的 `candidate.json` 记下 `series` 和 `patches`（补丁个数）。

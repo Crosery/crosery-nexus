@@ -77,7 +77,7 @@ apply_series(){
   if git rev-parse -q --verify deploy >/dev/null; then git branch -f deploy-prev deploy; fi
   git checkout -q -B deploy "$head" 2>>"$LOG" || { report held "构建机建不了 deploy 分支"; return 1; }
   printf '%s %s\n' "$fp" "$head" > "$STATE/series"
-  log "deploy = $tag + $SERIES_COUNT 个补丁（HEAD ${head:0:8}）"
+  log "deploy = $tag + $SERIES_COUNT 个补丁（HEAD ${head:0:8}，树 $(git rev-parse --short=8 'HEAD^{tree}')）"
 }
 
 cd "$SRC" || { log "src 不存在"; exit 1; }
