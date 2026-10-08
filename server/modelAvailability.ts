@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from './config.js'
-import { maskSystemKeys } from './cpa.js'
+import { maskSystemKeys } from './systemKeys.js'
 import type { ConsoleGroup } from './groups.js'
 import { modelKind as defaultModelKind, type ModelKind } from './modelKind.js'
 import { mapWithConcurrency, sanitizeSyncError, upstreamLimiter, type SyncOutcome, type SyncRunContext } from './syncRegistry.js'
