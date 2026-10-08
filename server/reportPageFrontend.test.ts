@@ -89,7 +89,8 @@ test('性能页签真的请求 /api/usage-performance 并把 trend 画出来（D
 
 test('共享筛选条的目录来自响应，选中值来自 URL（换 scope 不清空选择）', () => {
   // v3：模型 / 客户端 / 渠道 / Key 的筛选从缓存页签收进工作台唯一的 FilterBar，四个页签共用
-  assert.match(workspace, /api\.facets\(filter\.value/)
+  // 读取前先快照 URL 筛选：回包的窗口要跟「问的是哪个窗口」比（90d 超保留期时改看 7d）
+  assert.match(workspace, /const asked = filter\.value\n\s*const answer = await api\.facets\(asked, signal\)/)
   for (const [key, facet] of [['keyId', 'keys'], ['model', 'models'], ['provider', 'channels'], ['client', 'clients']]) {
     assert.match(workspace, new RegExp(`withSelected\\(data\\.value\\?\\.${facet} \\?\\? \\[\\], scope\\.state\\.${key},`), `${key} 的选项来自响应、选中值来自 URL`)
   }
