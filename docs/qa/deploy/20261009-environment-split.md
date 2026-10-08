@@ -7,9 +7,9 @@
 | 阶段 | 状态 |
 |---|---|
 | 1 仓库与发布方式 | 完成 [verified] |
-| 2 预发布环境 | 主机、CPA、控制台、账号完成 [verified]；预发布 API 域名 DNS、控制台 CDN 回源、外网验收未完成 |
-| 3 自动更新 | 模型目录、可用性、Key 白名单、价格在预发布运行 [verified]；CPA 程序流水线与 RTK 中继未合入 |
-| 4 功能 | 供应商页、CLI 树形输出已合入；其余见文末 |
+| 2 预发布环境 | 主机、CPA、控制台、账号、RTK 中转完成 [verified]；预发布 API 域名 DNS、控制台 CDN 回源、外网验收未完成 |
+| 3 自动更新 | 六项都已合入并在预发布运行 [verified]；CPA 程序首个候选在预发布浸泡中 |
+| 4 功能 | 供应商页、CLI 树形输出、契约测试、Antigravity 调优已合入；其余见文末 |
 
 ## 阶段 1：仓库与发布方式
 
@@ -27,13 +27,17 @@
 | 20:28 | deploy rc.4 | success | 可用性探测、OAuth 账号归零不撤权 |
 | 20:38 | deploy rc.5 | success | 系统 Key 文件契约 |
 | 20:47 | deploy rc.6 | success | CPA 模型目录与价格巡检 |
+| 21:29 | deploy rc.7 | success | 供应商页、CLI 树形输出、契约测试、CPA 流水线与 RTK 自动升级 |
+| 21:38 | deploy rc.8 | success | RTK 中转独立进程；中转 unit 未装，发布脚本判定 `skip` |
+| 21:51 | deploy rc.9 | success | 可复现构建、验收三态；中转代码未变，判定 `keep`，没有重启中转 |
 
 每次切换后 4 秒内健康（`/api/public/release` 的提交号一致，`/api/session` 与 `/` 均 200）。
 
 ## 阶段 2：预发布环境
 
 - `<预发布机>`：2C / 1.9G，加 2G swap；Node 24.20.0；目录布局与正式一致。
-- 数据面：反向代理 → 8316 context guard → 8317 CPA。CPA `8.0.21-patched.474ef85e`（补丁 0001–0011，见 `deploy/kernels/cpa-patches/v8.0.21/`），每次替换前保留旧二进制，替换后 `config.yaml` 字节不变。
+- 数据面：反向代理 → 8792 RTK 中转（后备 8316）→ 8316 context guard → 8317 CPA。CPA `8.0.21-patched.7929ae0a`（补丁 0001–0012，见 `deploy/kernels/cpa-patches/v8.0.21/`，构建可复现，sha256 与 `SHA256SUMS` 一致），每次替换前保留旧二进制，替换后 `config.yaml` 字节不变。
+- 停止超时 drop-in：CPA `TimeoutStopSec=5`，换二进制后 30 秒内恢复服务。
 - 美国出口：mihomo 只监听回环，CPA 账号经它出站。
 - 账号：从正式 10 个 Antigravity 账号中拨出 1 个——先在正式停用并备份删除，再在预发布启用；正式剩 9 个，正式 Key 的模型与渠道权限在同步周期之后复核未变。Claude/Codex 没有第二个账号，预发布不测。
 - 实测（经 8316，预发布验收 Key）：`/v1/models` 43 个；Antigravity Gemini 模型 JSON 与 SSE 正常；OpenRouter 免费模型返回上游共享池 429（上游限流，与本机无关）。
@@ -48,10 +52,22 @@
 | Key 白名单 | 下线模型退出白名单；OAuth 账号临时归零时保留分组与权限（回归测试复现 2026-10-09 403 事故并通过）；每次实际变化写审计 |
 | 价格 | `price-watch` 每 6 小时；首轮只记基线 |
 | 共享目录 | models-sync 装到预发布，网关指向本机回环，每小时检查新模型 |
-| CPA 程序 | 补丁移植到 8.0.21 并在预发布运行；自动编译 → 预发布 → 浸泡 → 正式窗口替换的流水线未合入 |
-| RTK | 中继改为独立进程（控制台发版不打断中继中的流），未合入 |
+| CPA 程序 | 构建机：补丁系列 → 合入上游 → 固定镜像编译 → 冒烟 → 协调器。预发布：验收 → 浸泡 24 小时 → 再验收 → 写晋级记录；正式只接受有晋级记录的版本，且只在 05:00–07:00（Asia/Shanghai）替换。当前预发布 `installed` 为手工装的 `7929ae0a`（`adopt` 收编），浸泡到 2026-10-09T21:30Z；构建机已产出下一个候选 `8.0.22-patched.c8e0356f`。验收结论三态：`passed` / `failed` / `inconclusive`（网络或 DNS 原因，不推进也不判失败，连续 6 次报警） |
+| RTK | 中转独立进程已装在预发布并在监听；控制台发版只在中转代码、环境变量或 drop-in 变化时重启中转（rc.8 `skip`、rc.9 `keep`）。rtk CLI 自动升级 timer 已装 |
 
-注意：在 CPA 运行时，用改名替换 `config.yaml` 不会触发热加载；改配置走管理接口或重启。
+注意：
+
+- 在 CPA 运行时，用改名替换 `config.yaml` 不会触发热加载；改配置走管理接口或重启。
+- `config.yaml` 有顶层 `models:` 时，下一次管理接口写入会把文件迁成 v8 布局（客户端 Key 移到 `access.api-keys`）。回滚到 8.0.13 可以正常启动，但 8.0.13 的管理接口写入会删掉 `models:` 段。
+- 一次会话日志里出现过预发布验收 Key 与探测 Key：已轮换验收 Key（新 Key 200、旧 Key 401，构建机与 models-sync 同步更新），清空探测 Key 让可用性任务重建，核对 CPA 只剩两把新探测 Key。
+
+## 正式环境的改动
+
+| 时间 (Asia/Shanghai) | 改动 | 方式 | 结果 |
+|---|---|---|---|
+| 10-09 06:09 | 重试参数：`max-retry-credentials` 4 → 0，`max-retry-interval` 180 → 8（与预发布调优结论一致，见 `20261009-antigravity-tuning.md`） | 管理接口写入，配置文件仍是旧布局，只有这两行变化；改前备份在 `<正式机>` 归档目录 | 改前 30 分钟 `/v1*` 626 个请求、失败 4 个（0.64%）；改后 12 分钟 239 个、失败 0 [verified] |
+
+正式 CPA 程序、控制台版本、nginx 未改动。
 
 ## 回滚入口
 
