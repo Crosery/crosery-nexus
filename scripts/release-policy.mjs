@@ -1,5 +1,7 @@
 // 发布规则（纯函数，scripts/release.mjs 调用，release-policy.test.mjs 覆盖）。
 // 模型：stage 上的提交打 vX.Y.Z-rc.N → 预发布；预发布部署成功并验收通过后，同一提交打 vX.Y.Z → 正式。
+import { builtinModules } from 'node:module'
+import path from 'node:path'
 
 export const ENVIRONMENTS = {
   preview: { branch: 'stage', tag: 'rc' },
@@ -139,4 +141,75 @@ export const NEVER_SHIP = [/^docs\/qa\//, /^\.env$/, /^\.env\.(?!example$)/, /^n
 
 export function shippable(file) {
   return !NEVER_SHIP.some((pattern) => pattern.test(file))
+}
+
+/* ── RTK 中转（crosery-rtk-relay.service，docs/ops/rtk-relay.md）：控制台发版不碰它，只在它自己的代码或配置变了才重启 ── */
+
+export const RELAY_SERVICE = 'crosery-rtk-relay.service'
+export const RELAY_ENTRY = 'server/rtkRelayMain.ts'
+/** 中转进程读的环境变量（server/rtkRelayConfig.ts 的 parseRelayEnv）。 */
+export const RELAY_ENV_KEYS = ['RTK_RELAY_PORT', 'RTK_RELAY_TARGET', 'PORT', 'DATA_DIR']
+
+// 值导入与副作用导入；`import type` / `export type` 在运行时被擦掉，不算
+const IMPORT_RE = /^\s*(?:import|export)\s+(?!type\s)(?:[^'"]*?\sfrom\s+)?['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/gm
+
+/**
+ * 中转进程加载的仓库文件：入口及其相对导入的闭包（`./x.js` 指向存在的 `./x.ts`），排好序。
+ * 导入了 node 内置模块以外的包时加上 package-lock.json。read(file) 返回文件内容，不存在返回 null。
+ */
+export function relayCodeFiles(read, entry = RELAY_ENTRY) {
+  const files = new Set()
+  let external = false
+  const queue = [entry]
+  while (queue.length) {
+    const file = queue.pop()
+    if (files.has(file)) continue
+    files.add(file)
+    const source = read(file)
+    if (source == null) continue
+    for (const match of source.matchAll(IMPORT_RE)) {
+      const spec = match[1] ?? match[2]
+      if (spec.startsWith('.')) {
+        const target = path.posix.join(path.posix.dirname(file), spec)
+        const ts = target.replace(/\.js$/, '.ts')
+        queue.push(ts !== target && read(ts) != null ? ts : target)
+      } else if (!spec.startsWith('node:') && !builtinModules.includes(spec)) {
+        external = true
+      }
+    }
+  }
+  return [...files, ...(external ? ['package-lock.json'] : [])].sort()
+}
+
+/** MANIFEST.sha256（`<sha256>  <file>` 每行）→ Map(file → sha256)。 */
+export function manifestHashes(text) {
+  const hashes = new Map()
+  for (const line of String(text ?? '').split('\n')) {
+    const match = /^([0-9a-f]{64}) {2}(.+)$/.exec(line.trim())
+    if (match) hashes.set(match[2], match[1])
+  }
+  return hashes
+}
+
+/**
+ * 控制台切换成功之后中转怎么办：
+ * - unit 没装或没 enable → skip；
+ * - 目标发布没有中转入口（回滚到更早的版本）→ keep，进程留在它启动时的目录继续跑；
+ * - 中转代码（两边 RELEASE.json 记的 relayFiles 的并集，按 MANIFEST 哈希比）、它读的环境变量或 drop-in 有变 → restart；
+ * - 否则 keep。
+ * from = 中转进程实际运行的发布目录（没在运行时取切换前的 current），to = 新的 current。
+ * side = { manifest: MANIFEST.sha256 文本, files: relayFiles | null, env: 该目录 deploy/env/<env>.env 解析结果 }。
+ */
+export function relayRestartDecision({ installed, enabled, dropIn, from, to }) {
+  if (!installed) return { action: 'skip', reason: `${RELAY_SERVICE} 未安装`, changed: [] }
+  if (!enabled) return { action: 'skip', reason: `${RELAY_SERVICE} 未 enable`, changed: [] }
+  const before = manifestHashes(from.manifest)
+  const after = manifestHashes(to.manifest)
+  if (!after.has(RELAY_ENTRY)) return { action: 'keep', reason: `目标发布没有 ${RELAY_ENTRY}，中转留在原目录运行`, changed: [] }
+  const files = [...new Set([RELAY_ENTRY, ...(from.files ?? []), ...(to.files ?? [])])].sort()
+  const changed = files.filter((file) => before.get(file) !== after.get(file))
+  for (const key of RELAY_ENV_KEYS) if ((from.env?.[key] ?? '') !== (to.env?.[key] ?? '')) changed.push(`env ${key}`)
+  if (!dropIn) changed.push('drop-in')
+  if (!changed.length) return { action: 'keep', reason: `中转代码（${files.length} 个文件）与配置都没变`, changed }
+  return { action: 'restart', reason: `变了：${changed.slice(0, 4).join('、')}${changed.length > 4 ? ` 等 ${changed.length} 项` : ''}`, changed }
 }

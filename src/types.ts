@@ -17,6 +17,8 @@ export type ApiKeyItem = {
   quota: KeyQuota
   blockedReason: string
   quotaState: KeyQuotaState
+  /** RTK 中转压缩：只对开启的 Key 生效（服务端旧版本没有这个字段）。 */
+  rtkCompress?: boolean
 }
 
 export type KeyQuota = { totalUsd: number; dailyUsd: number; weeklyUsd: number }
@@ -927,6 +929,28 @@ export type SyncPolicy = {
 export type SyncStatus = { policy: SyncPolicy; jobs: SyncJob[]; generatedAt: string }
 
 export type SyncRunAccepted = { accepted: true; jobId: string }
+
+/* ── RTK relay (GET/POST /api/rtk/relay, server/rtkRelay.ts) ─────────────────────────────────────── */
+
+export type RtkRelayTally = { savedTokens: number; requests: number; errors: number }
+
+export type RtkRelayStatus = {
+  /** global switch; a Key is compressed only when it also opted in */
+  enabled: boolean
+  /** the relay process (crosery-rtk-relay unit) as its status file reports it; down = expected here but not running */
+  listener: {
+    state: 'off' | 'listening' | 'draining' | 'stopped' | 'failed' | 'down'
+    port: number
+    target: string
+    error: string
+    inFlight: number
+    updatedAt: number | null
+  }
+  optedInKeys: number
+  /** saved = estimated input tokens removed (UTF-8 bytes / 4); errors = compression skipped, request forwarded as is */
+  today: RtkRelayTally
+  total: RtkRelayTally
+}
 
 /* ── C4 RTK global switch ───────────────────────────────────────────────────────────────────────── */
 

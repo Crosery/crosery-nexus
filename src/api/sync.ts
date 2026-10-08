@@ -1,4 +1,4 @@
-import type { RtkGlobalApplyResult, RtkGlobalStatus, SyncRunAccepted, SyncStatus } from '../types'
+import type { RtkGlobalApplyResult, RtkGlobalStatus, RtkRelayStatus, SyncRunAccepted, SyncStatus } from '../types'
 import { request } from './http'
 import { RtkApiError } from './admin'
 
@@ -17,4 +17,10 @@ export const rtkGlobalApi = {
     request<RtkGlobalStatus>('/api/rtk/global', { signal }, (status, message, body, retry) => new RtkApiError(status, message, body, retry)),
   set: (on: boolean) =>
     request<RtkGlobalApplyResult>('/api/rtk/global', { method: 'POST', body: JSON.stringify({ on, confirm: true }) }, (status, message, body, retry) => new RtkApiError(status, message, body, retry)),
+}
+
+/** RTK relay (server/rtkRelay.ts): listener state, the global compression switch and the savings ledger. */
+export const rtkRelayApi = {
+  get: (signal?: AbortSignal) => request<RtkRelayStatus>('/api/rtk/relay', { signal }),
+  set: (enabled: boolean) => request<RtkRelayStatus>('/api/rtk/relay', { method: 'POST', body: JSON.stringify({ enabled }) }),
 }

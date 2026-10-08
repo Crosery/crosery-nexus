@@ -1,0 +1,54 @@
+# RTK 中转（可选；预发布与正式同一份，见 docs/ops/rtk-relay.md）。独立于控制台进程：控制台发版只重启控制台，
+# 正在经过中转的流式请求不受影响；scripts/release.mjs 只在中转自己的代码或它读的配置变了时重启它。
+# 停止 = 排空：SIGTERM 后监听立即关闭（反向代理把新请求交给 backup 的 guard），在途请求与流最多再跑 15 分钟。
+# 配置同控制台：密钥 /opt/crosery-api-console/.env，非密钥由发布脚本写的 drop-in 10-release-env.conf 从
+# current/deploy/env/<env>.env 加载。没设 RTK_RELAY_PORT 时进程写状态 off 后以 0 退出，不会被拉起。
+[Unit]
+Description=Crosery RTK relay (tool-output compression in front of the context guard)
+After=network-online.target crosery-api-console.service
+Wants=network-online.target
+ConditionPathExists=/opt/crosery-api-console-current/server/rtkRelayMain.ts
+ConditionPathExists=/opt/crosery-node-current/bin/node
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/crosery-api-console-current
+EnvironmentFile=/opt/crosery-api-console/.env
+Environment=HOME=/tmp
+Environment=XDG_CACHE_HOME=/tmp/.cache
+Environment=PATH=/opt/crosery-node-current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/crosery-node-current/bin/node --import tsx server/rtkRelayMain.ts
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+# 与 server/rtkRelayMain.ts 的 DRAIN_MS（15 分钟）配套，多留 1 分钟写统计；到时 SIGKILL 整个 cgroup
+TimeoutStopSec=16min
+KillSignal=SIGTERM
+KillMode=mixed
+UMask=0077
+LimitNOFILE=65536
+TasksMax=128
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+ReadWritePaths=/opt/crosery-api-console/data
+
+[Install]
+WantedBy=multi-user.target

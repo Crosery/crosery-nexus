@@ -2,7 +2,7 @@ import type { LoginResult, SessionInfo } from '../types'
 import { request } from './http'
 import { adminApi } from './admin'
 import { meApi } from './me'
-import { rtkGlobalApi, syncApi } from './sync'
+import { rtkGlobalApi, rtkRelayApi, syncApi } from './sync'
 import { accountsApi } from './accounts'
 import { proxyApi } from './proxy'
 
@@ -24,6 +24,7 @@ export const api = {
   me: meApi,
   sync: syncApi,
   rtkGlobal: rtkGlobalApi,
+  rtkRelay: rtkRelayApi,
   accounts: accountsApi,
   proxies: proxyApi,
 }

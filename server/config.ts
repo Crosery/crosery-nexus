@@ -3,6 +3,7 @@ import path from 'node:path'
 import { MAX_INGEST_BATCH_SIZE } from '../packages/contracts/index.js'
 
 import { parseProxyPresets } from './proxyPresets.js'
+import { parseRelayEnv } from './rtkRelayConfig.js'
 
 export function positiveInteger(name: string, raw: string | undefined, fallback: number, range: { min: number; max: number }) {
   const value = raw === undefined || raw === '' ? fallback : Number(raw)
@@ -89,6 +90,9 @@ if (dataPlaneDashboardReadMode === 'snapshot' && !dataPlaneEnabled) {
   throw new Error('DATA_PLANE_DASHBOARD_READ_MODE=snapshot 要求 DATA_PLANE_ENABLED=true')
 }
 
+// The relay process (server/rtkRelayMain.ts) applies the same rules; the console fails on the same bad env.
+const { port: rtkRelayPort, target: rtkRelayTarget } = parseRelayEnv(process.env)
+
 const gatewayEngine = choiceSetting('GATEWAY_ENGINE', process.env.GATEWAY_ENGINE, 'cpa', ['cpa', 'magpie'] as const)
 
 export const config = {
@@ -105,6 +109,10 @@ export const config = {
   magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
   /** The launcher runs the kernel under a sandbox HOME, so its RTK view lacks this host's agents: opt-in only. */
   rtkKernelPlane: booleanSetting('RTK_KERNEL_PLANE', process.env.RTK_KERNEL_PLANE, false),
+  /** Port of the separate RTK relay process on this host (0 = none expected). See docs/ops/rtk-relay.md. */
+  rtkRelayPort,
+  /** Loopback HTTP origin the relay forwards to (the context guard). */
+  rtkRelayTarget,
   magpieChannelsFile: process.env.MAGPIE_CHANNELS_FILE || path.join(dataDir, 'magpie-channels.json'),
   magpieTimeoutMs: positiveInteger('MAGPIE_TIMEOUT_MS', process.env.MAGPIE_TIMEOUT_MS, 600_000, { min: 1000, max: 3_600_000 }),
   magpieSourceCpaBaseUrl: internalHttpBaseUrl('MAGPIE_SOURCE_CPA_BASE_URL', process.env.MAGPIE_SOURCE_CPA_BASE_URL, false),
