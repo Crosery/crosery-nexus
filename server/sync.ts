@@ -1,5 +1,6 @@
 import { config } from './config.js'
-import { db, transaction } from './db.js'
+import { addAudit, db, transaction } from './db.js'
+import { recordKeyAccessChanges } from './keyAccessAudit.js'
 import { listGroups } from './channels.js'
 import { getCPAKeys, getChannelAccess, getModelAccess, hashKey, isSystemKey, isUnsupportedManagementEndpoint, maskKey, popUsage, putChannelAccess, putModelAccess } from './cpa.js'
 import { resolveGroupForModel } from './groups.js'
@@ -132,8 +133,10 @@ export function reconcileKeyModelAccess() {
 
 async function reconcileKeyAccessOnce() {
   const groups = await listGroups()
-  const rows = db.prepare('SELECT key_value, enabled, groups_json FROM api_keys').all() as Array<{
+  const rows = db.prepare('SELECT key_hash, key_value, name, enabled, groups_json FROM api_keys').all() as Array<{
+    key_hash: string
     key_value: string
+    name: string
     enabled: number
     groups_json: string
   }>
@@ -176,6 +179,12 @@ async function reconcileKeyAccessOnce() {
     if (!isUnsupportedManagementEndpoint(error)) throw error
     markKeyModelAccess('unavailable')
   }
+
+  // 两份白名单都写成功后才算生效：只在实际变化时写审计（下线模型退出、账号恢复、编辑 Key……）
+  recordKeyAccessChanges(db, Object.fromEntries(rows.filter((row) => row.enabled).map((row) => [row.key_hash, {
+    models: plan.access[row.key_value] || [],
+    channels: channelPlan[row.key_value] || [],
+  }])), new Map(rows.map((row) => [row.key_hash, row.name])), addAudit)
 
   return plan.access
 }

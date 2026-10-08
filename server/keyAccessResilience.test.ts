@@ -19,6 +19,7 @@ const { db } = await import('./db.js')
 const { reconcileKeyModelAccess } = await import('./sync.js')
 const { hashKey } = await import('./cpa.js')
 const { invalidateGatewaySnapshot } = await import('./channels.js')
+const { writeAvailabilityFile } = await import('./modelAvailability.js')
 
 const key = 'fixture-teacher-key'
 const now = new Date().toISOString()
@@ -27,6 +28,8 @@ db.prepare('INSERT INTO api_keys (key_hash,key_value,name,enabled,groups_json,cr
 
 type AuthFile = { name: string; type: string; disabled: boolean }
 const MODELS: Record<string, string[]> = { antigravity: ['gemini-3-pro', 'gemini-3-flash'], codex: ['gpt-5.6-sol'] }
+/** 按凭据名覆盖模型目录（channels.ts 按凭据名缓存目录 30 秒，换目录要换凭据名）。 */
+const NAMED_MODELS: Record<string, string[]> = { 'codex-b.json': ['gpt-5.6-sol', 'gpt-retired', 'gpt-image-2'] }
 
 const gateway = {
   files: [] as AuthFile[],
@@ -51,7 +54,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (route === '/auth-files') return json({ files: gateway.files })
   if (route === '/auth-files/models') {
     const file = gateway.files.find((item) => item.name === url.searchParams.get('name'))
-    return json({ models: (file ? MODELS[file.type] : []).map((id) => ({ id })) })
+    return json({ models: (file ? NAMED_MODELS[file.name] || MODELS[file.type] : []).map((id) => ({ id })) })
   }
   if (route === '/oauth-excluded-models') return json({ 'oauth-excluded-models': {} })
   if (route.endsWith('-api-key')) return json({ [route.slice(1)]: [] })
@@ -72,6 +75,8 @@ async function reconcileWith(files: AuthFile[]) {
   return { groups: JSON.parse(row.groups_json) as string[], models: gateway.modelAccess[key], channels: gateway.channelAccess[key] }
 }
 
+const accessAudits = () => db.prepare("SELECT target, details FROM audit_log WHERE action = 'key_access_change' ORDER BY id").all() as Array<{ target: string; details: string }>
+
 test('账号归零（删光或全部停用）再回来：Key 的 groups_json 与网关两份白名单都不变', async () => {
   const baseline = await reconcileWith([...ANTIGRAVITY, CODEX])
   assert.deepEqual(baseline.groups, ['antigravity', 'codex'])
@@ -81,6 +86,7 @@ test('账号归零（删光或全部停用）再回来：Key 的 groups_json 与
   assert.deepEqual(await reconcileWith([CODEX]), baseline, '凭据全部迁走')
   assert.deepEqual(await reconcileWith([...ANTIGRAVITY.map((file) => ({ ...file, disabled: true })), CODEX]), baseline, '凭据全部停用')
   assert.deepEqual(await reconcileWith([...ANTIGRAVITY, CODEX]), baseline, '账号回来')
+  assert.deepEqual(accessAudits(), [], '权限没有变化就不写审计（首轮只建基线）')
 })
 
 test('只有管理员编辑 Key 才去掉分组', async () => {
@@ -90,6 +96,46 @@ test('只有管理员编辑 Key 才去掉分组', async () => {
   assert.deepEqual(edited.groups, ['codex'])
   assert.deepEqual(edited.models, ['gpt-5.6-sol'])
   assert.ok(!edited.channels.includes('antigravity'))
+  const [audit] = accessAudits()
+  assert.equal(audit.target, 'teacher')
+  assert.deepEqual(JSON.parse(audit.details), {
+    models: { added: [], removed: ['gemini-3-flash', 'gemini-3-pro'], before: 3, after: 1 },
+    channels: { added: [], removed: ['antigravity'] },
+  })
+})
+
+test('整目录订阅的分组跟随可用性：下线模型退出白名单、上线回来，未探测模型照留，每次变化一条审计', async () => {
+  const CODEX_B = { name: 'codex-b.json', type: 'codex', disabled: false }
+  const at = new Date().toISOString()
+  const state = (retired: 'online' | 'offline') => writeAvailabilityFile({
+    version: 1,
+    updatedAt: at,
+    services: { codex: {
+      'gpt-5.6-sol': { state: 'online', failures: 0, lastOkAt: at, lastError: null, since: at },
+      'gpt-retired': { state: retired, failures: retired === 'offline' ? 3 : 0, lastOkAt: null, lastError: retired === 'offline' ? 'HTTP 404: model_not_found' : null, since: at },
+      'gpt-image-2': { state: 'unprobed', failures: 0, lastOkAt: null, lastError: null, since: at },
+    } },
+    alarms: [],
+  })
+  const before = accessAudits().length
+  const all = await reconcileWith([CODEX_B])
+  assert.deepEqual(all.models, ['gpt-5.6-sol', 'gpt-image-2', 'gpt-retired'], '新模型自动进来')
+
+  state('offline')
+  const offline = await reconcileWith([CODEX_B])
+  assert.deepEqual(offline.models, ['gpt-5.6-sol', 'gpt-image-2'])
+  assert.deepEqual(offline.groups, ['codex'], '成员关系不变')
+  assert.deepEqual(await reconcileWith([CODEX_B]), offline, '没有新变化')
+
+  state('online')
+  assert.deepEqual((await reconcileWith([CODEX_B])).models, all.models)
+
+  const audits = accessAudits().slice(before).map((row) => JSON.parse(row.details).models)
+  assert.deepEqual(audits.map((models: { added: string[]; removed: string[] }) => [models.added, models.removed]), [
+    [['gpt-image-2', 'gpt-retired'], []],
+    [[], ['gpt-retired']],
+    [['gpt-retired'], []],
+  ])
 })
 
 test.after(() => {
