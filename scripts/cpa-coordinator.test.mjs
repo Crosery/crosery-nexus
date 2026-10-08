@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { adoptCandidate, coordinatorConfig, hostReport, planRound, previewStage, readStore, rtkForward, runRound } from './cpa-coordinator.mjs'
+import { adoptCandidate, coordinatorConfig, countInconclusive, hostReport, planRound, previewStage, readStore, rtkForward, runRound } from './cpa-coordinator.mjs'
 
 const V = '8.0.21-patched.aaaaaaaa'
 const W = '8.0.22-patched.bbbbbbbb'
@@ -21,6 +21,9 @@ test('config: both gate targets and the acceptance settings are required, no def
   assert.deepEqual(coordinatorConfig(ENV).preview, ['ssh', 'preview-gate'])
   assert.throws(() => coordinatorConfig({ ...ENV, CPA_PIPELINE_PREVIEW: ' ' }), /CPA_PIPELINE_PREVIEW is not set/)
   assert.throws(() => coordinatorConfig({ ...ENV, CPA_ACCEPT_KEY: '' }), /CPA_ACCEPT_KEY not set/)
+  assert.equal(coordinatorConfig(ENV).inconclusiveAlarm, 6)
+  assert.equal(coordinatorConfig({ ...ENV, CPA_ACCEPT_INCONCLUSIVE_ALARM: '3' }).inconclusiveAlarm, 3)
+  for (const bad of ['0', '-1', 'six', '1.5']) assert.throws(() => coordinatorConfig({ ...ENV, CPA_ACCEPT_INCONCLUSIVE_ALARM: bad }), /CPA_ACCEPT_INCONCLUSIVE_ALARM/)
 })
 
 test('plan: a fresh build goes to preview only; production gets nothing without preview\'s acceptance', () => {
@@ -168,4 +171,53 @@ test('adopt: a binary built elsewhere goes into the store once, is accepted on p
   const delivered = await runRound({ root, env: ENV, deps: { gate: deliver.gate, now: () => NOW } })
   assert.deepEqual(delivered.errors, [])
   assert.equal(deliver.received.production['cpa-upload'], V)
+})
+
+test('round: an inconclusive acceptance is never sent to preview; the same phase is asked again; an alarm after N rounds in a row, still no rejection', async t => {
+  const root = await pipelineRoot(t, built(W), { [V]: V, [W]: W })
+  const states = { preview: { installed: { version: V }, trial: trial('installed') }, production: { installed: { version: OLD } } }
+  let verdict = 'inconclusive'
+  const accept = async () => ({ verdict, ok: verdict === 'passed', ranAt: new Date(NOW).toISOString(), summary: verdict === 'inconclusive' ? '没有结论：连不上网关：ENOTFOUND' : '7 项全部通过',
+    checks: [{ name: '网关 /v1/models', ok: verdict === 'passed', verdict, detail: 'x' }] })
+  const env = { ...ENV, CPA_ACCEPT_INCONCLUSIVE_ALARM: '3' }
+  const round = async () => {
+    const g = gates(states)
+    const out = await runRound({ root, env, deps: { gate: g.gate, accept, now: () => NOW } })
+    return { ...out, g, report: JSON.parse(g.received.production['cpa-report']), previewReport: JSON.parse(g.received.preview['cpa-report']) }
+  }
+  for (let n = 1; n <= 2; n += 1) {
+    const out = await round()
+    assert.equal(out.g.calls.preview.includes('cpa-accept'), false, 'preview hears nothing')
+    assert.deepEqual(out.actions.map(action => `${action.kind}:${action.phase}`), ['accept:first'], 'asked again every round')
+    assert.match(out.log.join(), new RegExp(`inconclusive ${n}x`))
+    assert.deepEqual([out.errors, out.alarm, out.report.alarm], [[], null, null])
+  }
+  const third = await round()
+  assert.equal(third.g.calls.preview.includes('cpa-accept'), false, 'the alarm still rejects nothing')
+  assert.equal(third.alarm.count, 3)
+  assert.match(third.errors.join(), /^alarm: .*首次验收连续 3 轮没有结论：没有结论：连不上网关：ENOTFOUND/)
+  assert.deepEqual([third.report.alarm.code, third.previewReport.alarm.count], ['acceptance-inconclusive', 3], 'both consoles see it')
+  const records = (await fs.readFile(path.join(root, 'state/acceptance.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(records.map(record => record.verdict), ['inconclusive', 'inconclusive', 'inconclusive'], 'every run is traced')
+  // reachable again: the result goes to preview and the counter starts over
+  verdict = 'passed'
+  const passed = await round()
+  assert.equal(JSON.parse(passed.g.received.preview['cpa-accept']).verdict, 'passed')
+  assert.deepEqual([passed.alarm, passed.errors], [null, []])
+  await assert.rejects(fs.access(path.join(root, 'state/acceptance-pending.json')))
+  // a real failure is sent as one (preview rejects and rolls back)
+  verdict = 'failed'
+  const failed = await round()
+  assert.deepEqual([JSON.parse(failed.g.received.preview['cpa-accept']).ok, JSON.parse(failed.g.received.preview['cpa-accept']).verdict], [false, 'failed'])
+})
+
+test('inconclusive count: per candidate and phase; another one starts over', () => {
+  const action = { version: V, phase: 'soak' }
+  const first = countInconclusive({ pending: null, action, result: { summary: 's' }, now: NOW, threshold: 2 })
+  assert.deepEqual([first.pending.count, first.alarm], [1, null])
+  const second = countInconclusive({ pending: first.pending, action, result: { summary: 's' }, now: NOW + HOUR, threshold: 2 })
+  assert.deepEqual([second.pending.count, second.pending.since, second.alarm.phase, second.alarm.since], [2, new Date(NOW).toISOString(), 'soak', new Date(NOW).toISOString()])
+  assert.match(second.alarm.text, /浸泡后验收连续 2 轮没有结论/)
+  assert.equal(countInconclusive({ pending: second.pending, action: { version: W, phase: 'first' }, result: {}, now: NOW, threshold: 2 }).pending.count, 1)
+  assert.equal(countInconclusive({ pending: second.pending, action: { version: V, phase: 'first' }, result: {}, now: NOW, threshold: 2 }).pending.count, 1)
 })

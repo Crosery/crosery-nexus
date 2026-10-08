@@ -32,7 +32,7 @@ import { execFile } from 'node:child_process'
 import { request } from 'node:http'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { promotionPolicy, updateRole } from './autoupdate-common.mjs'
+import { hostEnv, promotionPolicy, updateRole } from './autoupdate-common.mjs'
 // the system-keys contract's own reader and channel naming (erasable TS: plain Node 24 imports it)
 import { SYSTEM_KEYS_FILE, canonicalChannelName, readSystemKeys } from '../server/systemKeys.ts'
 
@@ -215,8 +215,14 @@ export function parseCpaReport(raw) {
     upstreamLatest: TAG.test(String(raw.upstreamLatest)) ? raw.upstreamLatest : null,
     line: /^v\d+\.\d+$/.test(String(raw.line)) ? raw.line : null,
     base: TAG.test(String(raw.base)) ? raw.base : null,
-    heldNewer, candidate, reasons: reasonList(raw.reasons), preview: previewStage(raw.preview),
+    heldNewer, candidate, reasons: reasonList(raw.reasons), preview: previewStage(raw.preview), alarm: alarmOf(raw.alarm),
   }
+}
+
+/** The coordinator's alarm (acceptance inconclusive for many rounds): shown, never acted on. */
+function alarmOf(raw) {
+  if (!isObject(raw) || raw.code !== 'acceptance-inconclusive' || !text(raw.text, 400)) return null
+  return { code: raw.code, text: text(raw.text, 400), count: Number.isInteger(raw.count) ? raw.count : null, since: when(raw.since), at: when(raw.at) }
 }
 
 const PREVIEW_STAGES = new Set(['uploaded', 'installed', 'soaking', 'accepted', 'rejected', 'delivered'])
@@ -1124,7 +1130,8 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
 async function main() {
   const action = process.argv[2]
   const arg = name => { const at = process.argv.indexOf(name); return at < 0 ? undefined : process.argv[at + 1] }
-  const paths = applierPaths()
+  // by hand from a root shell: the host's role file, as the unit loads it
+  const paths = applierPaths(hostEnv(process.env))
   if (action === 'status') {
     const [cpa, magpie] = await Promise.all([readState(paths, 'cpa'), readState(paths, 'magpie')])
     const dry = await runAuto({ dryRun: true, paths })

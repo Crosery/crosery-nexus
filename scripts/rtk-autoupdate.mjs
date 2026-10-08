@@ -29,7 +29,7 @@ import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { compareVersions, nextAttemptDelay, promotionPolicy, rateLimitDelay } from './autoupdate-common.mjs'
+import { compareVersions, hostEnv, nextAttemptDelay, promotionPolicy, rateLimitDelay } from './autoupdate-common.mjs'
 
 export const RELEASES_API = 'https://api.github.com/repos/rtk-ai/rtk/releases?per_page=30'
 export const DOWNLOAD_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com']
@@ -208,6 +208,9 @@ async function download(url, { fetchImpl, allowHosts, maxBytes = MAX_ASSET_BYTES
     if (size > maxBytes) throw new RtkError('download', 'asset is larger than allowed')
     parts.push(chunk)
   }
+  const length = Number(response.headers?.get?.('content-length'))
+  const encoded = (response.headers?.get?.('content-encoding') ?? 'identity') !== 'identity'
+  if (!encoded && Number.isInteger(length) && length > 0 && size !== length) throw new RtkError('download', `${path.basename(new URL(url).pathname)}: got ${size} of ${length} bytes`)
   return Buffer.concat(parts)
 }
 
@@ -244,6 +247,11 @@ export async function prepareUpgrade({ release, platform = process.platform, arc
   if (digest) expected.push({ source: 'GitHub asset digest', sha256: digest })
   if (!expected.length) throw new RtkError('no-checksum', `${release.tag} publishes no sha256 for ${name}; refusing an unverifiable binary`)
   const archive = await download(asset.url, { fetchImpl, allowHosts })
+  // a short body (a proxy or CDN cutting the transfer) is the network, retried later; only a full-size archive with the
+  // wrong sha256 is a release that fails verification
+  if (Number.isInteger(asset.size) && asset.size > 0 && archive.length !== asset.size) {
+    throw new RtkError('download', `${name}: got ${archive.length} bytes, the release lists ${asset.size}`)
+  }
   const actual = sha256(archive)
   const wrong = expected.filter(item => item.sha256 !== actual)
   if (wrong.length) throw new RtkError('checksum-mismatch', `${name} sha256 ${actual.slice(0, 12)}… does not match ${wrong.map(item => item.source).join(' + ')}`)
@@ -589,20 +597,23 @@ export const runRtkAuto = () => upgradeRtk({ mode: 'auto' })
 
 async function main() {
   const action = process.argv[2]
-  const paths = rtkPaths()
+  // by hand from a root shell: the host's role file, as the unit loads it
+  const env = hostEnv(process.env)
+  const paths = rtkPaths(rtkRuntime(env))
+  const deps = { env }
   if (action === 'status') {
-    const install = await detectInstall()
+    const install = await detectInstall({ env })
     const state = await readRtkState(paths.state)
-    console.log(json({ role: rtkRole(), install, latest: state.latest ?? (await readJSON(paths.status))?.rtkRelease ?? null, state }))
+    console.log(json({ role: rtkRole(env), install, latest: state.latest ?? (await readJSON(paths.status))?.rtkRelease ?? null, state }))
   } else if (action === 'plan') {
-    console.log(json(await upgradeRtk({ mode: 'plan', paths })))
+    console.log(json(await upgradeRtk({ mode: 'plan', paths, deps })))
   } else if (action === 'upgrade') {
     if (!process.argv.includes('--confirm')) throw new Error('upgrade replaces the rtk binary; pass --confirm (or use plan to see what it would do)')
-    const result = await upgradeRtk({ mode: 'upgrade', acceptBreaking: process.argv.includes('--accept-breaking'), paths })
+    const result = await upgradeRtk({ mode: 'upgrade', acceptBreaking: process.argv.includes('--accept-breaking'), paths, deps })
     console.log(json(result))
     if (!['upgraded', 'up-to-date'].includes(result.why)) process.exitCode = 1
   } else if (action === 'auto') {
-    console.log(json(await upgradeRtk({ mode: 'auto', paths })))
+    console.log(json(await upgradeRtk({ mode: 'auto', paths, deps })))
   } else {
     throw new Error('Use status, plan, upgrade --confirm [--accept-breaking], or auto')
   }

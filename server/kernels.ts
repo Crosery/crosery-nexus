@@ -356,6 +356,9 @@ function lastError(state: Record<string, unknown>): KernelView['error'] {
   const builder = isObject(state.builder) ? state.builder : null
   const status = str(builder?.status)
   if (builder && status && status !== 'built' && status !== 'up-to-date') found.push({ text: first(reasons(builder.reasons)) || BUILDER_WORD[status] || '构建机没给结果', at: str(builder.checkedAt) })
+  // acceptance that keeps saying nothing (DNS, proxy, another binary answering): an alarm, never a rejection
+  const alarm = isObject(builder?.alarm) ? builder.alarm : null
+  if (alarm && str(alarm.text)) found.push({ text: str(alarm.text)!, at: str(alarm.at) ?? str(builder?.checkedAt) })
   const decision = isObject(state.decision) ? state.decision : null
   if (decision?.why === 'not-promoted' && reasons(decision.reasons).some(item => item.code !== 'no-record')) found.push({ text: first(reasons(decision.reasons)), at: str(decision.at) })
   return found.sort((a, b) => (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0))[0] ?? null
