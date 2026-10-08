@@ -119,7 +119,7 @@ test('cradmin … | head：读端提前关闭时安静退出 0，不打 EPIPE �
   assert.doesNotMatch(stderr, /EPIPE|Unhandled 'error'/)
 })
 
-test('models ls --type：按服务端给的类型筛选，表格带「类型」列；未知类型退出 2；旧服务端没有类型时不假装筛选', async () => {
+test('models ls --type：按服务端给的类型筛选，树里非对话模型带类型标签；未知类型退出 2；旧服务端没有类型时不假装筛选', async () => {
   const src = (channel, enabled = true) => ({ channel, kind: 'compat', enabled, upstreams: 1, channelEnabled: true })
   const index = { models: [
     { id: 'gemini-3.1-flash-image', kind: 'image', sources: [src('or')], enabledSources: 1, contested: false, pricing: { input: 0.5, output: 3 } },
@@ -137,10 +137,12 @@ test('models ls --type：按服务端给的类型筛选，表格带「类型」�
 
   const table = await run(['models', 'ls'], routes)
   assert.equal(table.code, 0, table.stderr)
-  assert.match(table.stdout, /类型/)
-  assert.match(table.stdout, /gemini-3\.1-flash-image[\s│]+图片/)
-  assert.match(table.stdout, /gemini-3\.8-flash[\s│]+对话/)
-  assert.match(table.stdout, /veo-3\.1-generate-preview[\s│]+视频/)
+  assert.match(table.stdout, /└─ Google  3 个/)
+  assert.match(table.stdout, /gemini-3\.1-flash-image\s+图片/)
+  assert.match(table.stdout, /gemini-3\.8-flash\s+\$0\.30/, '对话模型不标类型（同控制台 kindTag）')
+  assert.match(table.stdout, /veo-3\.1-generate-preview\s+视频/)
+  const narrowed = await run(['models', 'ls', '--type', 'image'], routes)
+  assert.doesNotMatch(narrowed.stdout, /图片/, '按类型筛选后每行都同一类，不再标')
 
   const shown = await run(['models', 'show', 'veo-3.1-generate-preview'], routes)
   assert.match(shown.stdout, /类型\s+视频/)

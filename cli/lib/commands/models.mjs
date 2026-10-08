@@ -3,6 +3,7 @@ import { CliError, UsageError } from '../args.mjs'
 import { HttpError, request } from '../client.mjs'
 import { getModelIndex, getSync } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
+import { modelVendor, modelsTree } from '../tree.mjs'
 import { usd } from '../ui.mjs'
 import { waitForJob } from './sync.mjs'
 
@@ -11,7 +12,7 @@ const HELP = `cradmin models <动作> [参数]
 模型目录（网关上实际可用的模型、来源渠道、价格）。
 
 动作：
-  ls                         列出网关上有来源的模型（默认）
+  ls                         列出网关上有来源的模型（默认）：厂商 → 模型，厂商名同控制台「模型」页
       --channel <渠道>       只看某个渠道 / 账号池 provider 的模型
       --search <文本>        按 id 子串过滤
       --unpriced             只看没有价格的模型
@@ -84,11 +85,11 @@ export default {
       if (type) rows = rows.filter(row => row.kind === type)
       return void ctx.output(rows, () => {
         if (!rows.length) return ctx.ui.note('没有匹配的模型')
-        ctx.ui.table(['模型', '类型', '来源', '输入/1M', '输出/1M', '争用', '仅价目'], rows.map(row => [
-          row.id, kindText(row.kind), `${row.enabledSources}/${row.totalSources}`, price(row.inputPer1M), price(row.outputPer1M),
-          row.contested ? { text: '是', tone: 'warn' } : '-', row.catalogOnly ? '是' : '-',
-        ]), { align: ['left', 'left', 'right', 'right', 'right', 'center', 'center'] })
-        ctx.ui.note(`共 ${rows.length} 个；来源 = 启用的来源数 / 全部来源数`)
+        const vendors = new Map((index.models || []).map(model => [model.id, modelVendor(model)]))
+        const tree = modelsTree(rows, vendors, { typeFilter: type })
+        ctx.ui.section('模型目录', `${rows.length} 个模型 · ${tree.length} 个厂商`)
+        ctx.ui.tree(tree)
+        ctx.ui.note('价格 = 每百万 token 输入 / 输出；渠道 = 启用的渠道映射 / 全部映射；对话模型不标类型')
       })
     }
     if (action === 'show') {
