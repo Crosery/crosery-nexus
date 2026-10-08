@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 /**
- * Relay gateway-kernel applier (root, systemd): the production half of「网关内核自动更新」for CPA (serving traffic)
- * and Magpie (standby, serves nothing).
+ * Gateway-kernel applier (root, systemd) on both hosts: the installing half of「网关内核自动更新」for CPA (serving
+ * traffic) and Magpie (standby, serves nothing).
  *
  *   node scripts/kernel-applier.mjs status                     config + state + what `auto` would do now (read-only)
  *   node scripts/kernel-applier.mjs auto [--dry-run]           crosery-kernel-update.service (timer, path unit, gates)
  *   node scripts/kernel-applier.mjs rollback --kernel cpa|magpie --confirm
+ *   node scripts/kernel-applier.mjs probe --out <dir> --phase baseline|verify|restored --budget <s>
+ *                                                              the install script's hook: one real request per OAuth type
  *
- * Builders never install. The CPA builder (ibuki-wsl-crosery ~/cpa-pipeline: upstream tag + our patches, go test, smoke)
- * and the Magpie builder (the owner's Mac, after its own rehearsal) drop a binary + report through their forced-command
- * gates into <lib>/<kernel>/inbox. `auto` runs the console's queued requests, verifies the drops, records what the
- * builders said, then installs:
- * - CPA (kept at upstream's latest release, majors included) only inside the quiet window, once per version, never
- *   while the hold file is set, and only through /usr/local/sbin/cpa-install-binary.sh — its console/AGY gates,
- *   backup and config-aware rollback stay the one install transaction;
- * - Magpie into a new release dir, boots it once in the console's sandbox, checks /internal/health, then flips `current`.
+ * Builders never install. The CPA builder (upstream tag + our patches, go test, smoke; its coordinator
+ * scripts/cpa-coordinator.mjs) and the Magpie builder drop binaries, reports and records through forced-command gates
+ * into <lib>/<kernel>/inbox. AUTOUPDATE_ROLE (/etc/crosery/autoupdate.env) says which half of the CPA promotion this
+ * host is; anything but `preview` is production:
+ * - preview installs a new candidate right away (one trial at a time), keeps it ≥ AUTOUPDATE_SOAK_HOURS, takes the
+ *   coordinator's two acceptance runs, rolls back and rejects it on any failure, and writes the promotion record;
+ * - production installs only a binary whose promotion record matches it (sha256, version, soak, both acceptance runs,
+ *   age), only inside the quiet window, once per version, never while the hold file is set.
+ * Both install only through /usr/local/sbin/cpa-install-binary.sh (gates, backup, swap, real requests per OAuth type,
+ * restore within 30 s). Magpie goes into a new release dir, boots once in the console's sandbox, then flips `current`.
  * The console writes only <data>/kernel-autoupdate.json and <data>/kernel-requests/*.json, and reads
  * <data>/kernels/<kernel>.json, which only this job writes.
  */
@@ -24,7 +28,9 @@ import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { request } from 'node:http'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { promotionPolicy, updateRole } from './autoupdate-common.mjs'
 
 export const DEFAULT_WINDOW = Object.freeze({ start: '05:00', end: '07:00', tz: 'Asia/Shanghai' })
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -32,28 +38,40 @@ const SHA40 = /^[a-f0-9]{40}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const CPA_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/
 const TAG = /^v\d+\.\d+\.\d+$/
+const ACCOUNT_TYPE = /^[a-z0-9][a-z0-9-]{0,39}$/
 const KEEP_STAGED = 2
 const KEEP_MAGPIE = 3
+const KEEP_PROBE_RUNS = 10
 const RETRY_MS = 30 * 60_000
 const DAY_GAP_MS = 20 * 3_600_000
 const MAX_REPORT_BYTES = 64 * 1024
+const PROBE_TIMEOUT_MS = 15_000
+const CLOCK_SKEW_MS = 5 * 60_000
+const APPLIER = fileURLToPath(import.meta.url)
 
 export function applierPaths(env = process.env) {
   const data = path.resolve(env.KERNEL_DATA_DIR || '/opt/crosery-api-console/data')
   const lib = path.resolve(env.KERNEL_LIB_DIR || '/var/lib/crosery-kernels')
   return {
     data, lib,
+    role: updateRole(env),
+    policy: promotionPolicy(env),
     config: path.join(data, 'kernel-autoupdate.json'),
     states: path.join(data, 'kernels'),
     requests: path.join(data, 'kernel-requests'),
+    systemKeys: path.join(data, 'system-keys.json'),
     lock: path.join(lib, 'applier.lock'),
     cpa: {
-      inbox: path.join(lib, 'cpa/inbox'), staged: path.join(lib, 'cpa/staged'),
+      inbox: path.join(lib, 'cpa/inbox'), staged: path.join(lib, 'cpa/staged'), probes: path.join(lib, 'cpa/probes'),
+      promotion: path.join(data, 'kernels/cpa-promotion.json'),
       binary: env.CPA_BINARY || '/usr/local/bin/cli-proxy-api',
       install: env.CPA_INSTALL || '/usr/local/sbin/cpa-install-binary.sh',
       hold: env.CPA_HOLD_FILE || '/etc/cli-proxy-api/auto-update.hold',
       config: env.CPA_CONFIG || '/etc/cli-proxy-api/config.yaml',
       service: env.CPA_SERVICE || 'cli-proxy-api',
+      authDir: env.CPA_AUTH_DIR || null,
+      probeBase: env.CPA_PROBE_BASE_URL || 'http://127.0.0.1:8317',
+      probeModels: parseProbeModels(env.CPA_PROBE_MODELS),
     },
     magpie: {
       inbox: path.join(lib, 'magpie/inbox'),
@@ -193,8 +211,69 @@ export function parseCpaReport(raw) {
     upstreamLatest: TAG.test(String(raw.upstreamLatest)) ? raw.upstreamLatest : null,
     line: /^v\d+\.\d+$/.test(String(raw.line)) ? raw.line : null,
     base: TAG.test(String(raw.base)) ? raw.base : null,
-    heldNewer, candidate, reasons: reasonList(raw.reasons),
+    heldNewer, candidate, reasons: reasonList(raw.reasons), preview: previewStage(raw.preview),
   }
+}
+
+const PREVIEW_STAGES = new Set(['uploaded', 'installed', 'soaking', 'accepted', 'rejected', 'delivered'])
+
+/** The coordinator's word on where the candidate stands on preview (production's console shows it; nothing decides on it). */
+function previewStage(raw) {
+  if (!isObject(raw) || !CPA_VERSION.test(String(raw.version)) || !PREVIEW_STAGES.has(raw.stage)) return null
+  return { version: raw.version, stage: raw.stage, soakUntil: when(raw.soakUntil), at: when(raw.at), reason: text(raw.reason, 300) }
+}
+
+const candidateRef = raw => (isObject(raw) && CPA_VERSION.test(String(raw.version)) && SHA256.test(String(raw.sha256)) ? { version: raw.version, sha256: raw.sha256 } : null)
+
+/** One acceptance run as preview recorded it: `at` is preview's clock when it took the record, `ranAt` the coordinator's. */
+function parseRun(raw) {
+  if (!isObject(raw) || !when(raw.at) || typeof raw.ok !== 'boolean') return null
+  return { at: raw.at, ranAt: when(raw.ranAt), ok: raw.ok, checks: checkList(raw.checks), summary: text(raw.summary, 300) }
+}
+
+/** The coordinator's acceptance run against preview's public API (preview inbox/acceptance.json). */
+export function parseAcceptance(raw) {
+  if (!isObject(raw) || raw.version !== 1 || raw.kind !== 'cpa-acceptance' || !['first', 'soak'].includes(raw.phase)) return null
+  const candidate = candidateRef(raw.candidate)
+  if (!candidate || typeof raw.ok !== 'boolean' || !when(raw.ranAt)) return null
+  return { phase: raw.phase, candidate, ranAt: raw.ranAt, ok: raw.ok, checks: checkList(raw.checks), summary: text(raw.summary, 300) }
+}
+
+/** Preview's promotion record, carried to production by the coordinator (production inbox/promotion.json). */
+export function parsePromotion(raw) {
+  if (!isObject(raw) || raw.version !== 1 || raw.kind !== 'cpa-promotion') return null
+  const candidate = candidateRef(raw.candidate)
+  const first = parseRun(raw.acceptance?.first)
+  const soak = parseRun(raw.acceptance?.soak)
+  const soakMs = Number(raw.soakMs)
+  if (!candidate || !first || !soak || !when(raw.installedAt) || !when(raw.acceptedAt) || !Number.isFinite(soakMs) || soakMs <= 0) return null
+  return { version: 1, kind: 'cpa-promotion', candidate, installedAt: raw.installedAt, soakMs, acceptance: { first, soak }, acceptedAt: raw.acceptedAt }
+}
+
+/**
+ * Why production must not install `staged` on this record ([] = it may). Production checks the soak with its own
+ * policy, measured between preview's install and the soak acceptance, not the soak the record claims.
+ */
+export function promotionProblems({ record, staged, now, policy }) {
+  const problems = []
+  const add = (code, text) => problems.push({ code, text })
+  if (!staged) return problems
+  if (!record) { add('no-record', `${staged.version} 没有预发布验收记录`); return problems }
+  if (record.candidate.version !== staged.version || record.candidate.sha256 !== staged.sha256) {
+    add('mismatch', `预发布记录是 ${record.candidate.version}（${record.candidate.sha256.slice(0, 12)}），暂存的是 ${staged.version}（${String(staged.sha256).slice(0, 12)}）`)
+    return problems
+  }
+  const { first, soak } = record.acceptance
+  const installed = Date.parse(record.installedAt)
+  if (!first.ok) add('acceptance', '预发布首次验收没过')
+  if (!soak.ok) add('acceptance', '预发布浸泡后验收没过')
+  if (Date.parse(first.at) < installed || Date.parse(soak.at) <= Date.parse(first.at)) add('order', '预发布记录的时间顺序不对（安装 → 首次验收 → 浸泡验收）')
+  const soaked = Date.parse(soak.at) - installed
+  if (!(soaked >= policy.soakMs)) add('soak', `预发布只跑了 ${Math.max(0, Math.floor(soaked / 3_600_000))} 小时，要满 ${Math.round(policy.soakMs / 3_600_000)} 小时`)
+  const accepted = Date.parse(record.acceptedAt)
+  if (accepted > now + CLOCK_SKEW_MS) add('future', '预发布记录的验收时间在未来')
+  else if (now - accepted > policy.maxAgeMs) add('stale', `预发布记录已超过 ${Math.round(policy.maxAgeMs / 86_400_000)} 天，要重新验收`)
+  return problems
 }
 
 /** The Magpie builder's report: the revision its own pipeline proved (rehearsed + applied on the Mac) and the linux build of it. */
@@ -218,6 +297,7 @@ export function emptyState(kernel) {
     version: 1, kernel, role: kernel === 'cpa' ? 'serving' : 'standby',
     builder: null, staged: null, installed: null, decision: null,
     attempts: {}, applied: null, lastApply: null, failures: 0, nextAttemptAt: null, checkedAt: null,
+    ...(kernel === 'cpa' ? { env: null, trial: null, promotion: null } : {}),
   }
 }
 
@@ -231,13 +311,19 @@ const saveState = (paths, state) => writeAtomic(path.join(paths.states, `${state
 
 /* ── decisions (pure) ───────────────────────────────────────────────── */
 
+const TRIAL_ACTIVE = new Set(['installed', 'soaking'])
+
 /**
  * What `auto` does with CPA now. action: none | wait | apply. `why` is the one word the console renders:
- * disabled · no-candidate · up-to-date · held · offline · hold-file · attempted · backoff · daily · window · apply.
+ * disabled · no-candidate · up-to-date · held · offline · hold-file · trial-active · attempted · backoff · not-promoted ·
+ * daily · window · apply.
+ * preview: no window and no daily limit, but one trial at a time. production: the promotion record must match.
  */
-export function decideCpa({ now, config, state, running, hold }) {
+export function decideCpa({ now, config, state, running, hold, role = 'production', policy = promotionPolicy({}) }) {
   const window = windowState(now, config.window)
-  const base = { window: window.label, tz: config.window.tz, nextWindowAt: iso(window.nextStart), inWindow: window.inside }
+  const base = role === 'preview'
+    ? { role, window: null, tz: config.window.tz, nextWindowAt: null, inWindow: true }
+    : { role, window: window.label, tz: config.window.tz, nextWindowAt: iso(window.nextStart), inWindow: window.inside }
   if (!config.cpa.enabled) return { action: 'none', why: 'disabled', ...base }
   const builder = state.builder
   const staged = state.staged
@@ -248,15 +334,81 @@ export function decideCpa({ now, config, state, running, hold }) {
   const target = { version: staged.version }
   if (!running) return { action: 'none', why: 'offline', ...target, ...base }
   if (staged.version === running || compareVersions(staged.version, running) < 0) return { action: 'none', why: 'up-to-date', ...target, ...base }
-  if (hold) return { action: 'none', why: 'hold-file', reasons: [{ code: 'hold', text: `生产机上有补丁锁（auto-update.hold）：${hold.slice(0, 160)}` }], ...target, ...base }
+  if (hold) return { action: 'none', why: 'hold-file', reasons: [{ code: 'hold', text: `这台机器上有补丁锁（auto-update.hold）：${hold.slice(0, 160)}` }], ...target, ...base }
+  const trial = state.trial
+  if (role === 'preview' && trial && TRIAL_ACTIVE.has(trial.status) && trial.version !== staged.version) {
+    return { action: 'none', why: 'trial-active', trial: trial.version, ...target, ...base }
+  }
   if ((state.attempts[staged.version] || 0) >= 1) return { action: 'none', why: 'attempted', ...target, ...base }
   const retryAt = Date.parse(state.nextAttemptAt || '')
   if (Number.isFinite(retryAt) && retryAt > now) return { action: 'none', why: 'backoff', retryAt: state.nextAttemptAt, ...target, ...base }
+  if (role === 'preview') return { action: 'apply', why: 'apply', ...target, ...base }
+  const problems = promotionProblems({ record: state.promotion, staged, now, policy })
+  if (problems.length) return { action: 'none', why: 'not-promoted', reasons: problems, ...target, ...base }
   // one replacement per window: a release that lands mid-window after one went in waits for tomorrow's
   const last = state.lastApply
   if (last?.action === 'apply' && last.result !== 'refused' && now - Date.parse(last.at || '') < DAY_GAP_MS) return { action: 'wait', why: 'daily', ...target, ...base }
   if (!window.inside) return { action: 'wait', why: 'window', ...target, ...base }
   return { action: 'apply', why: 'apply', ...target, ...base }
+}
+
+/* ── preview trial (pure) ───────────────────────────────────────────── */
+
+/** Right after preview installed a candidate: the soak runs from this moment. */
+export function startTrial({ version, sha256, previous, backup, at, policy }) {
+  return {
+    version, sha256, installedAt: at, previous: previous ?? null, backup: backup ?? null,
+    soakMs: policy.soakMs, soakUntil: iso(Date.parse(at) + policy.soakMs),
+    status: 'installed', acceptance: { first: null, soak: null }, offlineTicks: 0, rejected: null, acceptedAt: null,
+  }
+}
+
+/**
+ * The coordinator's acceptance run for the trial. Returns the next trial, plus `reject` when the candidate failed
+ * (the caller rolls preview back), or `note` when the record does not apply (another candidate, wrong phase, too early).
+ */
+export function applyAcceptance({ trial, record, now }) {
+  if (!trial || record.candidate.version !== trial.version || record.candidate.sha256 !== trial.sha256) {
+    return { trial, note: `acceptance for ${record.candidate.version} ignored (the trial is ${trial?.version ?? 'none'})` }
+  }
+  if (!TRIAL_ACTIVE.has(trial.status)) return { trial, note: `acceptance ignored: ${trial.version} is ${trial.status}` }
+  const run = { at: iso(now), ranAt: record.ranAt, ok: record.ok, checks: record.checks, summary: record.summary }
+  if (record.phase === 'first') {
+    if (trial.acceptance.first) return { trial, note: `first acceptance of ${trial.version} already recorded` }
+    const next = { ...trial, acceptance: { ...trial.acceptance, first: run } }
+    if (!record.ok) return { trial: next, reject: { code: 'acceptance', reason: `首次验收没过：${record.summary ?? '见记录'}` } }
+    return { trial: { ...next, status: 'soaking' } }
+  }
+  if (trial.status !== 'soaking') return { trial, note: `soak acceptance of ${trial.version} before the first one passed` }
+  if (now < Date.parse(trial.soakUntil)) return { trial, note: `soak acceptance of ${trial.version} too early (soak until ${trial.soakUntil})` }
+  const next = { ...trial, acceptance: { ...trial.acceptance, soak: run } }
+  if (!record.ok) return { trial: next, reject: { code: 'acceptance', reason: `浸泡后验收没过：${record.summary ?? '见记录'}` } }
+  return { trial: { ...next, status: 'accepted', acceptedAt: iso(now) } }
+}
+
+/**
+ * Every tick of an active trial: the candidate must keep running. Offline on two ticks in a row rejects it; another
+ * binary in its place voids it (someone installed something else; nothing to roll back to).
+ */
+export function trialTick({ trial, running, runningSha }) {
+  if (!trial || !TRIAL_ACTIVE.has(trial.status)) return { trial }
+  if (!running) {
+    const offlineTicks = (Number(trial.offlineTicks) || 0) + 1
+    const next = { ...trial, offlineTicks }
+    return offlineTicks >= 2 ? { trial: next, reject: { code: 'offline', reason: `${trial.version} 在预发布连续两次检查都不在运行` } } : { trial: next }
+  }
+  if (running !== trial.version || (runningSha && runningSha !== trial.sha256)) {
+    return { trial: { ...trial, offlineTicks: 0 }, reject: { code: 'replaced', reason: `运行中的已不是 ${trial.version}（${running}），这次试运行作废`, noRollback: true } }
+  }
+  return { trial: trial.offlineTicks ? { ...trial, offlineTicks: 0 } : trial }
+}
+
+/** What preview hands the coordinator once the trial is accepted (production checks it again with its own policy). */
+export function promotionRecord(trial) {
+  return {
+    version: 1, kind: 'cpa-promotion', candidate: { version: trial.version, sha256: trial.sha256 }, installedAt: trial.installedAt,
+    soakMs: trial.soakMs, acceptance: { first: trial.acceptance.first, soak: trial.acceptance.soak }, acceptedAt: trial.acceptedAt,
+  }
 }
 
 /** Magpie standby: no window (it serves nothing), once per revision. */
@@ -334,46 +486,68 @@ async function prune(directory, keep, protect = []) {
   for (const { name } of stats.sort((a, b) => b.at - a.at).slice(keep)) await fs.rm(path.join(directory, name), { recursive: true, force: true })
 }
 
+/** Take one inbox file: parsed value or null; whatever was there is removed (an unreadable or invalid one with a note). */
+async function takeInbox(inbox, name, parse, notes) {
+  const file = path.join(inbox, name)
+  const raw = await readJSON(file, MAX_REPORT_BYTES)
+  if (!raw) {
+    if (await exists(file)) { notes.push(`cpa: unreadable ${name} dropped`); await fs.rm(file, { force: true }) }
+    return null
+  }
+  await fs.rm(file, { force: true })
+  const value = parse(raw)
+  if (!value) notes.push(`cpa: invalid ${name} ignored`)
+  return value
+}
+
 /**
- * A CPA drop: report.json (+ <version>.bin when it built one). The report is recorded as is; the binary is staged only
- * when its sha256 is the reported one and it says it is that version. Returns notes for the log.
+ * A CPA drop through the gate: report.json (the builder's round), acceptance.json (preview: the coordinator's run against
+ * this host), promotion.json (production: preview's record), and <version>.bin. A binary is staged only when it is what
+ * this host may stage — preview: the reported candidate; production: the promoted one — its sha256 is that one and it
+ * says it is that version. Binaries are looked at only once the sender finished (a report or a record arrived).
  */
 export async function ingestCpa(paths, state, deps = {}) {
   const notes = []
-  const reportFile = path.join(paths.cpa.inbox, 'report.json')
-  const raw = await readJSON(reportFile, MAX_REPORT_BYTES)
-  if (!raw) {
-    if (await exists(reportFile)) { notes.push('cpa: unreadable report dropped'); await fs.rm(reportFile, { force: true }) }
-    return { state, notes }
-  }
-  await fs.rm(reportFile, { force: true })
-  const report = parseCpaReport(raw)
-  if (!report) { notes.push('cpa: invalid report ignored'); return { state, notes } }
-  let next = { ...state, builder: report }
-  const candidate = report.candidate
-  if (candidate && state.staged?.version !== candidate.version) {
-    const drop = path.join(paths.cpa.inbox, `${candidate.version}.bin`)
+  const role = paths.role ?? 'production'
+  const now = iso((deps.now ?? Date.now)())
+  const inbox = paths.cpa.inbox
+  let next = state
+  const report = await takeInbox(inbox, 'report.json', parseCpaReport, notes)
+  if (report) next = { ...next, builder: report }
+  const promotion = await takeInbox(inbox, 'promotion.json', parsePromotion, notes)
+  if (promotion && role === 'production') next = { ...next, promotion: { ...promotion, receivedAt: now } }
+  else if (promotion) notes.push('cpa: promotion record ignored on preview')
+  const acceptance = await takeInbox(inbox, 'acceptance.json', parseAcceptance, notes)
+  if (acceptance && role !== 'preview') notes.push('cpa: acceptance record ignored on production')
+  const taken = role === 'preview' ? acceptance : null
+  if (!report && !promotion) return { state: next, notes, acceptance: taken }
+
+  const wanted = role === 'production' ? next.promotion?.candidate ?? null : report?.candidate ?? null
+  if (wanted && next.staged?.version !== wanted.version) {
+    const drop = path.join(inbox, `${wanted.version}.bin`)
     if (await exists(drop)) {
-      const staged = path.join(paths.cpa.staged, candidate.version)
+      const staged = path.join(paths.cpa.staged, wanted.version)
       await fs.mkdir(staged, { recursive: true, mode: 0o700 })
       const binary = path.join(staged, 'cli-proxy-api')
       await fs.rename(drop, binary)
       await fs.chmod(binary, 0o755)
       const sha = await sha256File(binary)
-      const says = sha === candidate.sha256 ? await binaryVersion(binary, deps.run ?? run) : null
-      if (sha !== candidate.sha256 || says !== candidate.version) {
+      const says = sha === wanted.sha256 ? await binaryVersion(binary, deps.run ?? run) : null
+      if (sha !== wanted.sha256 || says !== wanted.version) {
         await fs.rm(staged, { recursive: true, force: true })
-        notes.push(`cpa: ${candidate.version} rejected (${sha !== candidate.sha256 ? 'sha256 mismatch' : `binary says ${says}`})`)
-        next = { ...next, builder: { ...report, status: 'upload-failed', reasons: [{ code: 'verify', text: `生产机校验 ${candidate.version} 没过（${sha !== candidate.sha256 ? 'sha256 不符' : '版本号不符'}），没有暂存` }] } }
+        notes.push(`cpa: ${wanted.version} rejected (${sha !== wanted.sha256 ? 'sha256 mismatch' : `binary says ${says}`})`)
+        const reason = { code: 'verify', text: `${role === 'preview' ? '预发布' : '正式'}机校验 ${wanted.version} 没过（${sha !== wanted.sha256 ? 'sha256 不符' : '版本号不符'}），没有暂存` }
+        if (next.builder) next = { ...next, builder: { ...next.builder, status: 'upload-failed', reasons: [reason] } }
       } else {
-        next = { ...next, staged: { version: candidate.version, sha256: sha, tag: candidate.tag, at: iso((deps.now ?? Date.now)()) } }
-        notes.push(`cpa: staged ${candidate.version}`)
-        await prune(paths.cpa.staged, KEEP_STAGED, [candidate.version])
+        const tag = report?.candidate?.version === wanted.version ? report.candidate.tag : next.builder?.candidate?.version === wanted.version ? next.builder.candidate.tag : null
+        next = { ...next, staged: { version: wanted.version, sha256: sha, tag, at: now } }
+        notes.push(`cpa: staged ${wanted.version}`)
+        await prune(paths.cpa.staged, KEEP_STAGED, [wanted.version])
       }
     }
   }
-  for (const name of await fs.readdir(paths.cpa.inbox).catch(() => [])) if (name.endsWith('.bin')) await fs.rm(path.join(paths.cpa.inbox, name), { force: true })
-  return { state: next, notes }
+  for (const name of await fs.readdir(inbox).catch(() => [])) if (name.endsWith('.bin')) await fs.rm(path.join(inbox, name), { force: true })
+  return { state: next, notes, acceptance: taken }
 }
 
 export async function ingestMagpie(paths, state, deps = {}) {
@@ -410,22 +584,163 @@ export async function ingestMagpie(paths, state, deps = {}) {
   return { state: next, notes }
 }
 
+/* ── real requests per OAuth account type (the install script's hook) ── */
+
+/** CPA_PROBE_MODELS=`claude=claude-haiku-4-5,codex=gpt-5-codex-mini` → { claude: …, codex: … }. */
+export function parseProbeModels(value) {
+  const out = {}
+  for (const item of String(value ?? '').split(',')) {
+    const [service, model] = item.split('=').map(part => part?.trim())
+    if (service && model && ACCOUNT_TYPE.test(service) && /^[\w.:/@-]{1,120}$/.test(model)) out[service] = model
+  }
+  return out
+}
+
+/** config.yaml's top-level `auth-dir:` (quotes and `~` handled); null when it has none. */
+export async function configAuthDir(file) {
+  try {
+    const line = (await fs.readFile(file, 'utf8')).split(/\r?\n/).find(item => /^auth-dir\s*:/.test(item))
+    const value = line?.replace(/^auth-dir\s*:\s*/, '').replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2')
+    if (!value) return null
+    return value.startsWith('~') ? path.join(os.homedir(), value.slice(1)) : value
+  } catch {
+    return null
+  }
+}
+
+/** OAuth account types present in CPA's auth dir (enabled files only); only `type` is read out of each file. */
+export async function accountTypes(dir) {
+  const counts = new Map()
+  for (const name of await fs.readdir(dir).catch(() => [])) {
+    if (!name.endsWith('.json')) continue
+    const value = await readJSON(path.join(dir, name), 1024 * 1024)
+    if (!value || value.disabled === true || !ACCOUNT_TYPE.test(String(value.type ?? ''))) continue
+    counts.set(value.type, (counts.get(value.type) ?? 0) + 1)
+  }
+  return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([type, accounts]) => ({ type, accounts }))
+}
+
+/** <data>/system-keys.json → { service: key } (per-service probe keys; another package writes the file). */
+export async function readProbeKeys(file) {
+  const raw = await readJSON(file, 256 * 1024)
+  if (!raw || raw.version !== 1 || !isObject(raw.probes)) return {}
+  const out = {}
+  for (const [service, key] of Object.entries(raw.probes)) {
+    if (ACCOUNT_TYPE.test(service) && typeof key === 'string' && /^[\x21-\x7e]{8,512}$/.test(key)) out[service] = key
+  }
+  return out
+}
+
+/** Without a configured model: the cheapest-looking one the service's key may use, else the first in name order. */
+export function pickProbeModel(ids) {
+  const list = [...new Set(ids.filter(id => typeof id === 'string' && id))].sort()
+  return list.find(id => /(haiku|mini|flash|lite|nano|small)/i.test(id) && !/(image|embed|tts|audio|vision-preview)/i.test(id))
+    ?? list.find(id => !/(image|embed|tts|audio)/i.test(id)) ?? null
+}
+
+const scrub = (value, key) => String(value ?? '').split(key).join('***').replace(/\s+/g, ' ').slice(0, 160)
+
+/**
+ * One small real completion per OAuth account type, all in parallel, each bounded by the deadline the install script
+ * gave. A type without a probe key is skipped and says so; no type at all is not a failure. Never returns a key.
+ */
+export async function runProbes({ types, keys, models = {}, reuse = {}, base, deadline, fetchImpl = fetch, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  const results = await Promise.all(types.map(async ({ type }) => {
+    const service = type
+    const key = keys[service]
+    if (!key) return { type, service, ok: null, skipped: 'no-probe-key', detail: `没有 ${service} 的系统探测 Key` }
+    const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json' }
+    const timeout = () => Math.min(PROBE_TIMEOUT_MS, deadline - now() - 250)
+    let model = models[service] ?? reuse[service] ?? null
+    if (!model && timeout() > 0) {
+      try {
+        const listed = await fetchImpl(`${base}/v1/models`, { headers, signal: AbortSignal.timeout(Math.min(5_000, timeout())) })
+        const body = listed.ok ? await listed.json().catch(() => null) : (await listed.body?.cancel(), null)
+        model = pickProbeModel(Array.isArray(body?.data) ? body.data.map(item => item?.id) : [])
+      } catch { /* the completion below reports the failure */ }
+    }
+    if (!model) return { type, service, ok: false, detail: 'Key 没有可用模型（/v1/models 为空或不通）' }
+    let last = { type, service, model, ok: false, detail: '没有剩余时间' }
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const budget = timeout()
+      if (budget <= 0) break
+      const started = now()
+      try {
+        const response = await fetchImpl(`${base}/v1/chat/completions`, {
+          method: 'POST', headers, signal: AbortSignal.timeout(budget),
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 64 }),
+        })
+        const text = await response.text()
+        let body = null
+        try { body = JSON.parse(text) } catch { /* not JSON */ }
+        const ok = response.status === 200 && Array.isArray(body?.choices) && body.choices.length > 0
+        last = { type, service, model, ok, status: response.status, ms: now() - started, attempt, ...(ok ? {} : { detail: scrub(`HTTP ${response.status} ${body?.error?.message ?? text}`, key) }) }
+      } catch (error) {
+        last = { type, service, model, ok: false, status: 0, ms: now() - started, attempt, detail: scrub(`${error?.name ?? 'Error'}: ${error?.message ?? error}`, key) }
+      }
+      if (last.ok || deadline - now() < 4_000) break
+      await sleep(1_000)
+    }
+    return last
+  }))
+  const tested = results.filter(item => item.skipped === undefined)
+  return { ok: tested.every(item => item.ok), results }
+}
+
+export function probeSummary({ ok, results }) {
+  if (!results.length) return '没有 OAuth 账号，无需探测'
+  return `${ok ? 'ok' : 'failed'}: ${results.map(item => (item.skipped ? `${item.type} 跳过（${item.detail}）` : `${item.type} ${item.ok ? '✓' : `✗ ${item.detail ?? ''}`.trim()}`)).join(' · ')}`
+}
+
+/** `kernel-applier.mjs probe`: what cpa-install-binary.sh runs before the swap, after it, and after a restore. */
+export async function probeCommand({ paths, out, phase, budgetS, deps = {} }) {
+  if (!['baseline', 'verify', 'restored'].includes(phase)) throw new Error('--phase baseline|verify|restored')
+  const now = deps.now ?? Date.now
+  const started = now()
+  const deadline = started + Math.max(1, Math.min(600, Number(budgetS) || 20)) * 1000
+  const authDir = paths.cpa.authDir ?? await configAuthDir(paths.cpa.config) ?? '/root/.cli-proxy-api'
+  const types = await accountTypes(authDir)
+  const keys = await readProbeKeys(paths.systemKeys)
+  // after the swap: the same models the baseline used, so a pass/fail compares like with like
+  const baseline = phase === 'baseline' ? null : await readJSON(path.join(out, 'probe-baseline.json'))
+  const reuse = Object.fromEntries((baseline?.results ?? []).filter(item => item.model).map(item => [item.service, item.model]))
+  const outcome = await runProbes({ types, keys, models: paths.cpa.probeModels, reuse, base: paths.cpa.probeBase, deadline, fetchImpl: deps.fetch ?? fetch, now, sleep: deps.sleep })
+  const record = { version: 1, phase, at: iso(started), finishedAt: iso(now()), budgetS: Number(budgetS) || null, base: paths.cpa.probeBase, types, ...outcome }
+  await writeAtomic(path.join(out, `probe-${phase}.json`), record)
+  return record
+}
+
+async function readProbes(dir) {
+  const out = {}
+  for (const phase of ['baseline', 'verify', 'restored']) {
+    const value = await readJSON(path.join(dir, `probe-${phase}.json`))
+    if (value) out[phase] = { at: value.at, ok: value.ok === true, results: Array.isArray(value.results) ? value.results.slice(0, 20) : [] }
+  }
+  return out
+}
+
 /* ── CPA install (through cpa-install-binary.sh) ────────────────────── */
+
+const epoch = value => (value ? iso(Number(value) * 1000) : null)
 
 /**
  * Map cpa-install-binary.sh's exit + log lines to one result:
- * applied · up-to-date · refused (nothing touched: baseline gate, hold, config changed, lock) · rolled-back · rollback-failed.
+ * applied · up-to-date · refused (nothing touched: baseline gate or probe, hold, config changed, lock) · rolled-back ·
+ * rollback-failed. `swapAt`/`restoreAt` are when the new binary went in and the old one came back.
  */
 export function classifyInstall({ code, stdout }) {
   const lines = stdout.split('\n').map(line => line.trim()).filter(Boolean)
   const backup = /备份 (\/[^）)\s]+)/.exec(stdout)?.[1] ?? null
   const started = lines.some(line => line.startsWith('开始安装'))
   const last = lines.at(-1) ?? ''
-  if (code === 0) return { result: lines.some(line => line.startsWith('线上已是')) ? 'up-to-date' : 'applied', backup, lines }
+  const swap = /swap-at=(\d+)/.exec(stdout)?.[1] ?? null
+  const restore = /restore-at=(\d+)/.exec(stdout)?.[1] ?? null
+  const times = { swapAt: epoch(swap), restoreAt: epoch(restore), restoreSeconds: swap && restore ? Number(restore) - Number(swap) : null }
+  if (code === 0) return { result: lines.some(line => line.startsWith('线上已是')) ? 'up-to-date' : 'applied', backup, lines, ...times }
   // stopped (or failed to stop) and gave up before replacing anything: the binary is the old one
-  if (!started || lines.some(line => line.includes('二进制未改动'))) return { result: 'refused', backup: null, lines, reason: last }
-  if (lines.some(line => line.startsWith('已回滚到'))) return { result: 'rolled-back', backup, lines, reason: lines.find(line => /；准备回滚到/.test(line)) ?? last }
-  return { result: 'rollback-failed', backup, lines, reason: lines.find(line => line.startsWith('严重')) ?? last }
+  if (!started || lines.some(line => line.includes('二进制未改动'))) return { result: 'refused', backup: null, lines, reason: last, ...times }
+  if (lines.some(line => line.startsWith('已回滚到'))) return { result: 'rolled-back', backup, lines, reason: lines.find(line => /；准备回滚到/.test(line)) ?? last, ...times }
+  return { result: 'rollback-failed', backup, lines, reason: lines.find(line => line.startsWith('严重')) ?? last, ...times }
 }
 
 const TRIM = line => line.replace(/（备份 [^）]*）/, '').slice(0, 200)
@@ -437,9 +752,14 @@ export async function applyCpa({ paths, state, version, deps = {} }) {
   if (!await exists(binary) || await sha256File(binary) !== state.staged?.sha256) {
     return { result: 'refused', reason: '暂存的二进制不见了或被改过，等构建机重新上传', lines: [] }
   }
-  // the install script runs its own gates, backup, restart and rollback (flock /run/cpa-auto-update.lock)
-  const out = await runner(paths.cpa.install, [binary, version], { timeoutMs: 15 * 60_000 })
-  return classifyInstall(out)
+  const probes = path.join(paths.cpa.probes, `${iso((deps.now ?? Date.now)()).replace(/[:.]/g, '-')}-${version}`)
+  await fs.mkdir(probes, { recursive: true, mode: 0o700 })
+  // the install script runs the gates, backup, restart, the hook (real requests) and the restore (flock /run/cpa-auto-update.lock)
+  const hook = [process.execPath, APPLIER, 'probe', '--out', probes]
+  const out = await runner(paths.cpa.install, [binary, version, '--', ...hook], { timeoutMs: 15 * 60_000 })
+  const outcome = { ...classifyInstall(out), probes: await readProbes(probes) }
+  await prune(paths.cpa.probes, KEEP_PROBE_RUNS, [path.basename(probes)])
+  return outcome
 }
 
 /* ── Magpie standby install ─────────────────────────────────────────── */
@@ -628,12 +948,42 @@ async function rollbackKernel({ paths, kernel, deps, now }) {
   return { kernel, action: 'rollback', ...outcome }
 }
 
+/**
+ * preview: the trial failed. Roll back to what it replaced through the same install transaction (unless something else
+ * already replaced it), spend nothing more on this version, and say why. The record is what the console shows.
+ */
+async function rejectTrial({ paths, cpa, reject, deps, now }) {
+  const at = iso(now())
+  let rollback = { result: 'not-needed' }
+  if (!reject.noRollback) {
+    try {
+      rollback = await rollbackCpa({ paths, state: cpa, deps })
+    } catch (error) {
+      rollback = { result: 'refused', reason: String(error?.message || error).slice(0, 200) }
+    }
+  }
+  const restored = rollback.result === 'applied'
+  const outcome = restored ? 'rolled-back' : rollback.result === 'not-needed' ? 'voided' : rollback.result === 'refused' ? 'rollback-refused' : 'rollback-failed'
+  const trial = { ...cpa.trial, status: 'rejected', rejected: { at, code: reject.code, reason: reject.reason, rollback: outcome, ...(rollback.reason ? { detail: TRIM(rollback.reason) } : {}) } }
+  return {
+    ...cpa,
+    trial,
+    attempts: { ...cpa.attempts, [trial.version]: Math.max(1, cpa.attempts[trial.version] || 0) },
+    lastApply: { version: trial.version, from: trial.version, at, action: 'reject', result: outcome, backup: rollback.backup ?? null,
+      reasons: [{ code: reject.code, text: reject.reason }, ...(rollback.reason && !restored ? [{ code: 'rollback', text: TRIM(rollback.reason) }] : [])] },
+    ...(restored ? { applied: null, installed: { version: trial.previous, at } } : {}),
+  }
+}
+
 export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {} } = {}) {
   const now = deps.now ?? Date.now
   const config = normalizeConfig(await readJSON(paths.config))
+  const role = paths.role ?? 'production'
+  const policy = paths.policy ?? promotionPolicy({})
+  const decide = (state, running, hold) => decideCpa({ now: now(), config, state, running, hold, role, policy })
   if (dryRun) {
     const [cpaState, magpieState, running, hold] = await Promise.all([readState(paths, 'cpa'), readState(paths, 'magpie'), runningCpa(paths, deps), readHold(paths.cpa.hold)])
-    return { dryRun: true, config, running, cpa: decideCpa({ now: now(), config, state: cpaState, running, hold }), magpie: decideMagpie({ config, state: magpieState }) }
+    return { dryRun: true, role, config, running, cpa: decide(cpaState, running, hold), magpie: decideMagpie({ config, state: magpieState }) }
   }
   return withLock(paths.lock, async () => {
     const log = []
@@ -642,12 +992,35 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
     /* CPA */
     let cpa = await readState(paths, 'cpa')
     const ingested = await ingestCpa(paths, cpa, deps)
-    cpa = { ...ingested.state, checkedAt: iso(now()) }
+    cpa = { ...ingested.state, env: role, checkedAt: iso(now()) }
     log.push(...ingested.notes)
-    const running = await runningCpa(paths, deps)
+    let running = await runningCpa(paths, deps)
+
+    if (role === 'preview' && cpa.trial && TRIAL_ACTIVE.has(cpa.trial.status)) {
+      const before = cpa.trial.status
+      let step = ingested.acceptance ? applyAcceptance({ trial: cpa.trial, record: ingested.acceptance, now: now() }) : null
+      if (step?.note) log.push(`cpa: ${step.note}`)
+      if (!step?.reject) {
+        const runningSha = running && await exists(paths.cpa.binary) ? await sha256File(paths.cpa.binary).catch(() => null) : null
+        const tick = trialTick({ trial: step?.trial ?? cpa.trial, running, runningSha })
+        step = { ...step, ...tick }
+      }
+      cpa.trial = step.trial
+      if (step.reject) {
+        cpa = await rejectTrial({ paths, cpa, reject: step.reject, deps, now })
+        log.push({ kernel: 'cpa', action: 'reject', version: cpa.trial.version, result: cpa.trial.rejected.rollback, reason: step.reject.code })
+        running = await runningCpa(paths, deps)
+      } else if (cpa.trial.status === 'accepted' && before !== 'accepted') {
+        await writeAtomic(paths.cpa.promotion, promotionRecord(cpa.trial))
+        log.push({ kernel: 'cpa', action: 'accept', version: cpa.trial.version, result: 'accepted' })
+      }
+    } else if (ingested.acceptance) {
+      log.push(`cpa: acceptance for ${ingested.acceptance.candidate.version} ignored (no active trial)`)
+    }
+
     cpa.installed = running ? { version: running, at: cpa.installed?.version === running ? cpa.installed.at : iso(now()) } : cpa.installed
     cpa.configLayout = await configLayout(paths.cpa.config)
-    const decision = decideCpa({ now: now(), config, state: cpa, running, hold: await readHold(paths.cpa.hold) })
+    const decision = decide(cpa, running, await readHold(paths.cpa.hold))
     cpa.decision = { ...decision, at: iso(now()) }
     if (decision.action === 'apply') {
       // the install runs minutes (gates, restart, maybe a rollback): the console shows 「正在替换」 meanwhile
@@ -659,18 +1032,22 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
       const failures = ok ? 0 : (Number(cpa.failures) || 0) + 1
       cpa = {
         ...cpa,
-        // a refused install touched nothing: it is retried (after a pause) inside the window, the attempt is not spent
+        // a refused install touched nothing: it is retried (after a pause), the attempt is not spent
         attempts: touched ? { ...cpa.attempts, [decision.version]: (cpa.attempts[decision.version] || 0) + 1 } : cpa.attempts,
         lastApply: { version: decision.version, from: running, at, action: 'apply', result: outcome.result, backup: outcome.backup ?? null,
-          reasons: outcome.reason ? [{ code: outcome.result, text: TRIM(outcome.reason) }] : [] },
+          reasons: outcome.reason ? [{ code: outcome.result, text: TRIM(outcome.reason) }] : [],
+          swapAt: outcome.swapAt ?? null, restoreAt: outcome.restoreAt ?? null, restoreSeconds: outcome.restoreSeconds ?? null, probes: outcome.probes ?? {} },
         ...(outcome.result === 'applied' ? { applied: { version: decision.version, previous: running, backup: outcome.backup ?? null, at }, installed: { version: decision.version, at } } : {}),
+        ...(outcome.result === 'applied' && role === 'preview'
+          ? { trial: startTrial({ version: decision.version, sha256: cpa.staged.sha256, previous: running, backup: outcome.backup ?? null, at, policy }) }
+          : {}),
         failures, nextAttemptAt: ok ? null : iso(now() + RETRY_MS),
       }
       log.push({ kernel: 'cpa', action: 'apply', version: decision.version, result: outcome.result })
       // what the console shows next is the state after the apply, not the decision that started it
       const after = outcome.result === 'refused' ? running : await runningCpa(paths, deps)
       cpa.configLayout = await configLayout(paths.cpa.config)
-      cpa.decision = { ...decideCpa({ now: now(), config, state: cpa, running: after, hold: await readHold(paths.cpa.hold) }), at: iso(now()) }
+      cpa.decision = { ...decide(cpa, after, await readHold(paths.cpa.hold)), at: iso(now()) }
     }
     await saveState(paths, cpa)
 
@@ -721,8 +1098,15 @@ async function main() {
     const outcome = await withLock(paths.lock, () => rollbackKernel({ paths, kernel, deps: {}, now: Date.now }))
     console.log(json(outcome))
     if (!['applied', 'rolled-back-manually'].includes(outcome.result)) process.exitCode = 1
+  } else if (action === 'probe') {
+    // called by cpa-install-binary.sh while `auto` holds the applier lock: no lock here
+    const out = arg('--out')
+    if (!out || !path.isAbsolute(out)) throw new Error('--out <absolute dir>')
+    const record = await probeCommand({ paths, out, phase: arg('--phase'), budgetS: arg('--budget') })
+    console.log(probeSummary(record))
+    if (!record.ok) process.exitCode = 1
   } else {
-    throw new Error('Use status, auto [--dry-run], or rollback --kernel cpa|magpie --confirm')
+    throw new Error('Use status, auto [--dry-run], rollback --kernel cpa|magpie --confirm, or probe --out <dir> --phase <phase> --budget <s>')
   }
 }
 
