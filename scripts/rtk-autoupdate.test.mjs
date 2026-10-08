@@ -17,7 +17,7 @@ const BREAKING = '## [0.2.0]\n\n### ⚠ BREAKING CHANGES\n\n* **cli:** callers m
 const script = version => `#!/bin/sh\nif [ "$1" = json ]; then cat "$2"; exit 0; fi\necho "rtk ${version}"\n`
 
 /** A throwaway rtk install + a fake GitHub (releases API with ETag, download host) on 127.0.0.1. */
-async function fixture({ local = '0.1.0', latest = '0.2.0', breakingIn = null, checksums = true, digest = true, badSum = false, signature = false, apiStatus = 200 } = {}) {
+async function fixture({ local = '0.1.0', latest = '0.2.0', breakingIn = null, checksums = true, digest = true, badSum = false, signature = false, apiStatus = 200, short = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rtk-au-'))
   const target = path.join(dir, 'bin/rtk')
   await fs.mkdir(path.dirname(target))
@@ -46,6 +46,12 @@ async function fixture({ local = '0.1.0', latest = '0.2.0', breakingIn = null, c
         { tag_name: 'v0.1.5', body: breakingIn === '0.1.5' ? BREAKING : 'fixes', assets: [] },
         { tag_name: 'v0.1.0', body: BREAKING, assets: [] },
       ]))
+      return
+    }
+    // short: a transfer cut by the network — 'clean' ends a chunked body early, 'length' sends fewer bytes than announced
+    if (req.url === `/dl/${name}` && short?.cut) {
+      const half = archive.subarray(0, Math.floor(archive.length / 2))
+      if (short.cut === 'clean') { res.writeHead(200); res.end(half) } else { res.writeHead(200, { 'content-length': archive.length }); res.write(half); res.socket.destroy() }
       return
     }
     if (req.url === `/dl/${name}`) { res.writeHead(200); res.end(archive); return }
@@ -377,4 +383,26 @@ test('cli: runs when started through a symlinked release path (systemd uses /opt
   })
   const status = JSON.parse(out)
   assert.deepEqual([status.role, status.install.method], ['preview', 'missing'])
+})
+
+test('a download cut short is the network: retried after a backoff, never "failed verification"', async () => {
+  for (const cut of ['clean', 'length']) {
+    const short = { cut }
+    const f = await fixture({ short })
+    try {
+      let clock = Date.UTC(2026, 9, 9, 3)
+      const deps = { ...f.deps, now: () => clock }
+      const result = await upgradeRtk({ mode: 'auto', paths: f.paths, deps })
+      assert.equal(result.why, 'error', `${cut}: ${JSON.stringify(result)}`)
+      assert.match(result.reasons[0].text, /下载失败/)
+      assert.equal(await runVersion(f.target), '0.1.0')
+      const state = JSON.parse(await fs.readFile(f.paths.state, 'utf8'))
+      assert.equal(state.attempts['v0.2.0'] ?? 0, 0, 'the attempt is not spent')
+      assert.ok(Date.parse(state.nextAttemptAt) > clock)
+      // the network is back after the backoff: the same release goes in
+      short.cut = null
+      clock = Date.parse(state.nextAttemptAt) + 1000
+      assert.equal((await upgradeRtk({ mode: 'auto', paths: f.paths, deps })).why, 'upgraded')
+    } finally { await f.close() }
+  }
 })
