@@ -1,171 +1,232 @@
-# Crosery Nexus (AI Gateway & Management Console)
+<!-- markdownlint-disable MD013 MD033 MD041 -->
+<p align="center">
+  <img src="docs/assets/banner.png" alt="Crosery Nexus" width="820">
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org/)
+<h1 align="center">Crosery Nexus</h1>
 
-**Crosery Nexus** 是一个专为统一管理主流 AI 供应商、订阅账号池（OAuth / Device Code）、兼容渠道与全局共享模型而打造的高性能网关控制台。基于 Vue 3 + Tuffex + TypeScript + Express + SQLite 构建，提供极低运行时开销、毫秒级报表查询以及生产级安全隔离能力。
+<p align="center">
+  给 <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a> 配的管理控制台：在一个地方管理 API Key、订阅账号、兼容渠道、模型和用量。
+</p>
 
----
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22BB8B" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/node-24.x-35322F?logo=node.js&logoColor=white" alt="Node.js 24">
+  <img src="https://img.shields.io/badge/Vue-3-35322F?logo=vue.js&logoColor=white" alt="Vue 3">
+  <img src="https://img.shields.io/badge/Express-5-35322F?logo=express&logoColor=white" alt="Express 5">
+</p>
 
-## 🌟 核心特性
-
-### 1. 🔑 API Key 多租户与细粒度配额控制
-- **多维度消费限额**：支持总额度（Total）、每日额度（Daily）、每周额度（Weekly）独立设置与实时熔断，支持超额自动拦截。
-- **并发调度策略**：支持全局并发限制与分组并发约束，支持零并发不限流特权分流配置。
-- **安全密钥分发**：生产环境中密钥采用 SHA-256 哈希索引存储，支持基于一次性 60 秒限时防泄露复制令牌（Reveal Token）导出，杜绝前端源码或普通查询泄露明文。
-
-### 2. 🔐 CPA 账号授权登录（OAuth & Device Code 登录池）
-- **官方 OAuth 原生对接**：支持在管理后台直接发起主流提供商账号授权登录，凭证直接写入网关安全接管：
-  - **OpenAI Codex**（ChatGPT / Codex 官方授权）
-  - **Claude / Anthropic**（Claude Pro / Team / Enterprise 账号授权）
-  - **Google Antigravity**（Google 账号 / Gemini 渠道接入）
-  - **Moonshot Kimi**（Device Code 授权流）
-  - **xAI Grok**（Device Code 授权流）
-  - **Cognition Devin**（Devin CLI / Web 授权）
-  - **Meta AI**（Meta Device 授权）
-- **自动化轮询与容错回调**：后台每 2 秒实时探测浏览器授权确认状态，并支持无头网络环境下手动粘贴 Callback URL 完成闭环。
-
-### 3. 📊 系统版本与运行健康双重监控
-- **CPA 网关核心监控**：实时获取 CPA Gateway 运行版本（Version）、Git Commit、构建时间戳（Build Date）。
-- **上游版本发现**：自动比对上游最新 Release 版本，发现新版本时在侧边栏与顶栏提供高亮升级提醒。
-- **Console 管理端版本追溯**：展示管理后台当前构建版本、Release ID 及部署时间戳，方便 DevOps 运维核对。
-
-### 4. 🔀 渠道编排与模型路由
-- **渠道细粒度管控**：OpenAI 兼容渠道一键探测发现、动态启用/停用与配置回收。
-- **模型矩阵治理**：逐模型开关控制，清晰标明多渠道同名模型的轮询权重与上游出口冲突。
-- **出口代理隔离**：为每个账号独立配置 HTTP / HTTPS / SOCKS5 代理出口，或继承网关全局代理。
-
-### 5. ⚡ 毫秒级性能与 Prompt Caching 分析
-- **增量预聚合引擎**：基于 SQLite 小时级聚合表 `usage_hourly_rollup`，千万级调用日志场景下 90 天所有趋势与明细报表均在 1~30ms 内完成响应。
-- **Prompt Caching 命中分析**：精准区分 Anthropic 缓存创建（Cache Write，1.25x 计费）与读取（Cache Read，0.1x 计费），实时还原 Token 成本与省钱比例。
-- **实时调用流**：通过 SSE 长连接提供毫秒级请求水流，支持按模型、客户端与 API Key 实时探查。
-
-### 6. 💳 账号额度与 Banked Reset 管理
-- 集中可视化监控所有已接入 OAuth 账号的 5 小时限额、7 天周期额度。
-- 支持 Claude Banked Reset（重置卡）与 Codex Reset Credits 的额度查询与一键认领。
+<p align="center">
+  <a href="#功能">功能</a> ·
+  <a href="#架构">架构</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#配置">配置</a> ·
+  <a href="#管理-cli">管理 CLI</a> ·
+  <a href="#发布与部署">发布与部署</a>
+</p>
 
 ---
 
-## 🏗️ 架构拓扑
+CLIProxyAPI（下文简称 CPA）负责协议转换和上游转发，本项目负责它之上的管理工作。控制台界面标题为 Crosery API Console。
+
+## 它解决什么问题
+
+- **给每个使用者发独立的 Key**：限定能用哪些模型和渠道、每天或每周能花多少钱、最多几个并发。
+- **订阅账号和 API 渠道放在一起管**：Codex、Claude 等订阅账号与 OpenAI 兼容渠道在同一个「供应商」页里，看得到每个账号还剩多少额度。
+- **每次请求都有账可查**：谁、用了哪个模型、花了多少钱、缓存命中多少、慢在哪里。
+- **Key 持有者可以自助**：用自己的 Key 登录，查看用量、可用模型和接入方式，不必找管理员。
+
+## 功能
+
+### Key 与额度
+
+- 创建、启停、轮换、删除 Key；按分组限定 Key 可用的模型与渠道。
+- 总额度、日额度、周额度（美元）分别设置；超额后自动停用该 Key，窗口滚动或手动重置后自动恢复。
+- 总并发与分组并发限制。
+- 查看或复制完整 Key 需要先换取 60 秒内有效的一次性令牌。
+
+> Key 级模型与渠道白名单由网关执行，需要使用 [`deploy/kernels/cpa-patches/`](deploy/kernels/cpa-patches/) 中补丁构建的 CPA（当前基于上游 v8.0.13）。网关不支持时，控制台会明确提示这层限制没有生效。
+
+### 供应商
+
+| 类型 | 说明 |
+| --- | --- |
+| 订阅账号 | 浏览器 OAuth 或 Device Code 授权：Codex、Claude、Antigravity、Kimi（国内站 / 国际站）、Grok、Devin、Meta AI。无法自动回调时可手动粘贴回调地址。也可以批量上传 `.json` / `.zip` 凭据文件。 |
+| API 渠道 | 支持 OpenAI、Claude、OpenAI Responses 三种协议；从上游探测渠道模型，逐个模型开关；按成功率和 p95 延迟展示渠道健康。 |
+| 全局共享模型 | 默认对所有 Key 开放的模型列表。 |
+| 账号额度 | 展示 Codex、Claude、Antigravity 账号的额度窗口；支持兑现 Codex 重置次数与 Claude banked reset。 |
+| 出口代理 | 每个账号可单独指定代理、强制直连或继承全局设置；代理池可导入订阅链接、Clash 配置和分享链接，由控制台托管的 mihomo 进程提供本地出口，并做连通性检测。 |
+
+### 模型
+
+- 汇总所有渠道与账号提供的模型，标出同名模型的多个来源，可以逐个来源开关。
+- 按输出类型分类（对话、图像、视频、音频、向量、重排）。
+- 显示每个模型的计价来源，标出尚未定价的模型。
+
+### 用量
+
+- 四个页签：**总览**、**请求**明细、**缓存**、**性能**（延迟与首字时间）。
+- 每条请求在入库时按内置价格表计价，区分缓存读取与缓存写入。
+- 实时请求流（SSE），延迟约 1–2 秒。
+- 报表读取小时级预聚合表，并在后台线程里查询，不阻塞主服务。
+
+### Key 用户自助
+
+- 用 API Key 登录后进入 `/me`：概览、用量、可用模型、接入说明。
+- `GET /v1/usage` 按请求头里的 Key 返回它自己的用量，不包含任何管理字段。
+- `/docs` 是独立的接入文档页。
+
+### 运维
+
+- 同步中心：查看模型发现、价格元数据、账号额度等后台任务的状态，并可手动触发。
+- 版本信息、审计日志。
+- 管理员 CLI `cradmin`，见[管理 CLI](#管理-cli)。
+
+## 架构
 
 ```mermaid
-flowchart TD
-    Client["开发者 / 终端应用 (Cursor / Cline / OpenAI SDK)"]
-    Nginx["Nginx 入口代理 (443 / 80)"]
-    Console["CPA Console 管理后台 (:8787)\n[React 19 + Express + SQLite]"]
-    CPA["CLI Proxy API (CPA) 核心网关 (:8317)"]
-    Upstreams["上游 AI 提供商\n(OpenAI / Claude / Google / xAI / Kimi)"]
+flowchart LR
+    client["客户端<br/>SDK · CLI · IDE"]
+    nginx["nginx"]
+    guard["上下文守卫<br/>:8316"]
+    cpa["CLIProxyAPI<br/>:8317"]
+    upstream["上游供应商<br/>账号池 · API 渠道"]
+    user["管理员 / Key 用户<br/>浏览器 · cradmin"]
+    console["控制台 :8787<br/>Vue 3 + Express"]
+    db[("SQLite<br/>console.db")]
 
-    Client -->|API 调用| Nginx
-    Nginx -->|/v1/* 推理流量| CPA
-    Nginx -->|/api/* 控制面与监控| Console
-    Console <-->|/v0/management 管理接口| CPA
-    Console -->|本地 SQLite\n小时增量预聚合| DB[(console.db)]
-    CPA -->|OAuth / API Key| Upstreams
+    client -->|"/v1/*"| nginx --> guard --> cpa --> upstream
+    user --> console
+    console <-->|"/v0/management"| cpa
+    console --> db
 ```
 
----
+- **推理流量不经过控制台**：客户端请求经 nginx 和上下文守卫直达 CPA。上下文守卫是单独部署的组件，不在本仓库，控制台不依赖它。
+- 控制台通过 CPA 管理接口 `/v0/management` 工作：每秒取一次用量队列写入 SQLite，每 15 秒把 Key、模型白名单和额度状态与网关对账一次。
+- 数据存放在 `DATA_DIR/console.db`（Node 内置 `node:sqlite`）。
 
-## 🚀 快速开始
+## 快速开始
 
-### 1. 环境要求
-- **Node.js**: `>= 24.0.0 < 25.0.0`
-- **npm**: `>= 10.0.0`
-- **CLI Proxy API (CPA)**: `>= 7.2.140`（推荐 7.3.15+）
+### 环境要求
 
-### 2. 安装依赖
+- Node.js 24（`>=24 <25`）和 npm
+- 一个已开启管理接口的 CPA 实例，以及它的管理密钥
+
+### 安装与配置
+
 ```bash
 git clone https://github.com/Crosery/crosery-nexus.git
 cd crosery-nexus
 npm install
+cp .env.example .env   # 至少填写 CONSOLE_PASSWORD、SESSION_SECRET、CPA_MANAGEMENT_KEY
 ```
 
-### 3. 环境配置
-复制 `.env.example` 为 `.env` 并填写相关凭据：
-```bash
-cp .env.example .env
-```
-关键环境变量：
-| 变量名 | 说明 | 示例 |
-|---|---|---|
-| `PORT` | 控制台服务监听端口 | `8787` |
-| `CONSOLE_USERNAME` | 管理员登录账号 | `admin` |
-| `CONSOLE_PASSWORD` | 管理员登录密码 | `your-secure-password` |
-| `SESSION_SECRET` | Cookie 会话签名密钥 | `random-32-chars-string` |
-| `CPA_BASE_URL` | CPA 核心网关地址 | `http://127.0.0.1:8317` |
-| `CPA_MANAGEMENT_KEY` | CPA 管理密钥 | `your-cpa-mgmt-key` |
-| `DATA_DIR` | SQLite 数据库存储目录 | `./data` |
-| `USAGE_RETENTION_DAYS` | 用量明细保留天数 | `90` |
-| `PROXY_PRESETS` | 可选出口代理预设列表 | `专线=http://127.0.0.1:7890;海外=http://proxy.example.com:8080` |
+### 运行
 
-### 4. 开发与构建
+服务端不会自动读取 `.env`，启动前先把它导出到环境变量：
 
 ```bash
-# 启动本地开发（前端热重载 + 后端 tsx watch）
-npm run dev
-
-# 仅编译前端静态资源
-npx vite build
-
-# 运行自动化单元测试
-npm test
-
-# 执行完整验证（类型检查 + Lint + 测试）
-npm run verify
+npm run build
+set -a; . ./.env; set +a
+npm start              # http://127.0.0.1:8787，用户名默认 admin
 ```
 
-### 5. 管理 CLI（cradmin）
+### 本地开发
 
-`cradmin` 是中转站的管理员命令行，和公开分发的 `crapi` 分开，只随本仓库使用。
-它只调控制台的 HTTP API，凭据走控制台自己的 `CONSOLE_USERNAME` / `CONSOLE_PASSWORD(_FILE)`、仓库 `.env` 或 macOS 钥匙串。
-默认目标是本地沙盒 `http://127.0.0.1:8791`，生产要显式 `--profile prod`。详见 [docs/cli.md](docs/cli.md)。
+Vite 开发服务器在 `5173` 端口，并把 `/api` 代理到 `127.0.0.1:8791`，所以开发时让服务端监听 8791：
 
 ```bash
-node cli/cradmin.mjs                                   # 交互菜单
-ln -s "$PWD/cli/cradmin.mjs" ~/.local/bin/cradmin       # 可选：装成 cradmin 命令（仓库根目录执行一次）
-node cli/cradmin.mjs channels models codex --only 'gpt-5*'
-node cli/cradmin.mjs keys create --name <名称> --groups codex --daily-usd 5
-node cli/cradmin.mjs config export > crosery.json && node cli/cradmin.mjs config apply crosery.json --dry-run
+set -a; . ./.env; set +a
+PORT=8791 npm run dev  # 前端热更新 + 服务端 tsx watch，打开 http://127.0.0.1:5173
 ```
 
----
+常用检查：
 
-## 🚢 生产部署
-
-生产推荐使用 systemd 服务守护运行，并通过不可变 Release 软链机制发布。
-
-### Magpie 内核接入
-
-保留 Crosery API Console，使用 Magpie 内核处理协议转换和上游转发，不使用 Magpie 界面。
-本地部署、鉴权与用量衔接、迁移待办和回退命令见
-[deploy/magpie/CONSOLE-KERNEL.md](deploy/magpie/CONSOLE-KERNEL.md)。
-默认仍为 CPA 模式，尚未切换生产流量或迁移生产 OAuth 与历史用量。
-该方案仅用于本机验证，不替换生产 CPA、数据库或真实 Agent 配置。
-
-### 部署脚本示例（Systemd 单元）
-```ini
-[Unit]
-Description=CPA Console Management Service
-After=network-online.target cli-proxy-api.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/cpa-console-current
-EnvironmentFile=/opt/cpa-console/.env
-Environment=NODE_ENV=production
-ExecStart=/usr/bin/npm run start
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
+```bash
+npm test               # 服务端、CLI 与脚本的单元测试（node --test）
+npm run lint           # oxlint
+npm run build          # TypeScript 检查 + 前端构建
 ```
 
----
+## 配置
 
-## 📄 开源许可证
+完整示例见 [`.env.example`](.env.example)。常用变量：
 
-本项目采用 [MIT License](LICENSE) 授权开源。欢迎提出 Issue 与 Pull Request！
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HOST` / `PORT` | `127.0.0.1` / `8787` | 控制台监听地址 |
+| `CONSOLE_USERNAME` | `admin` | 管理员用户名 |
+| `CONSOLE_PASSWORD` | 无，必填 | 管理员密码；也可用 `CONSOLE_PASSWORD_FILE` 指向仅属主可读写的文件 |
+| `SESSION_SECRET` | 无，必填 | 会话签名密钥；也可用 `SESSION_SECRET_FILE` |
+| `CPA_BASE_URL` | `http://127.0.0.1:8317` | CPA 地址 |
+| `CPA_MANAGEMENT_KEY` | 无，必填 | CPA 管理密钥 |
+| `PUBLIC_GATEWAY_BASE_URL` | 空 | Key 用户「接入」页显示的公网网关地址；为空时显示本机网关地址 |
+| `DATA_DIR` | `./data` | SQLite 与运行时文件目录 |
+| `USAGE_RETENTION_DAYS` | `90` | 请求明细保留天数 |
+| `USAGE_COLLECT_INTERVAL_MS` | `1000` | 从 CPA 取用量的间隔 |
+| `SYNC_INTERVAL_MS` | `15000` | Key、白名单与额度的对账间隔 |
+| `COOKIE_SECURE` | `true` | 本地用 HTTP 调试时设为 `false` |
+| `PROXY_PRESETS` | 空 | 账号出口代理候选，格式 `标签=地址`，多条用分号分隔 |
+| `MIHOMO_BIN` | 空 | 代理池使用的 mihomo 可执行文件（≥ 1.19）；为空时在 `PATH` 上查找 `mihomo` / `clash-meta` |
+| `GATEWAY_ENGINE` | `cpa` | 网关内核；`magpie` 为实验选项，见 [`deploy/magpie/CONSOLE-KERNEL.md`](deploy/magpie/CONSOLE-KERNEL.md) |
+
+其余变量（额度查询缓存、凭据上传限制、nginx 不限速同步等）见 [`server/config.ts`](server/config.ts)。不要把任何密钥写进仓库。
+
+## 管理 CLI
+
+`cradmin` 是管理员命令行，代码在 [`cli/`](cli/)，只用 Node 内置模块。它只调用控制台的 HTTP API，与网页共用同一套校验和审计；写操作会按影响大小要求确认，所有写命令都支持 `--dry-run`。
+
+```bash
+node cli/cradmin.mjs                                  # 交互菜单
+node cli/cradmin.mjs status                           # 总览
+node cli/cradmin.mjs keys create --name demo --groups codex --daily-usd 5
+node cli/cradmin.mjs config export --out crosery.json # 导出配置（不含任何密钥）
+node cli/cradmin.mjs config apply crosery.json --dry-run
+```
+
+安装方式、凭据来源和完整命令见 [`docs/cli.md`](docs/cli.md)。
+
+## 发布与部署
+
+不使用 CI/CD：在本机从干净的工作树构建，直接部署到目标机。
+
+- 两条长期分支：`stage` 对应预发布，`main` 对应正式。
+- 在 `stage` 的某个提交上打 `vX.Y.Z-rc.N`，部署到预发布环境；验收通过后，给**同一个提交**打 `vX.Y.Z`，部署到正式环境。
+- 每个环境的非敏感配置放在 `deploy/env/<env>.env`；密钥只保存在目标机上。
+
+```bash
+node scripts/release.mjs plan     preview    v1.2.0-rc.1
+node scripts/release.mjs deploy   preview    v1.2.0-rc.1
+node scripts/release.mjs accept   preview
+node scripts/release.mjs plan     production v1.2.0
+node scripts/release.mjs deploy   production v1.2.0
+node scripts/release.mjs status   production
+node scripts/release.mjs rollback production
+```
+
+| 子命令 | 作用 |
+| --- | --- |
+| `plan <env> <tag>` | 查看部署计划 |
+| `deploy <env> <tag>` | 构建并部署该标签 |
+| `accept preview` | 记录预发布验收通过 |
+| `status <env>` | 查看环境当前运行的版本 |
+| `rollback <env>` | 回滚到上一个版本 |
+
+服务以 systemd 运行，单元示例在 [`deploy/edge/systemd/`](deploy/edge/systemd/)，nginx 片段在 [`deploy/nginx/`](deploy/nginx/)。
+
+## 目录结构
+
+| 路径 | 内容 |
+| --- | --- |
+| `src/` | 前端：Vue 3 + Tuffex + UnoCSS，管理员与 Key 用户两套页面 |
+| `server/` | 后端：Express 5，CPA 管理接口客户端、用量采集与报表、SQLite |
+| `cli/` | 管理员 CLI `cradmin` |
+| `packages/contracts/` | 前后端共享的数据契约 |
+| `scripts/` | 构建、价格表、QA 与运维脚本 |
+| `deploy/` | nginx 片段、systemd 单元、CPA 补丁与构建脚本 |
+| `docs/` | 文档与 README 素材 |
+| `public/` | 图标与供应商 logo |
+
+## 许可证
+
+[MIT](LICENSE)
