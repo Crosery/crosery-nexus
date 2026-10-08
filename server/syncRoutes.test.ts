@@ -117,11 +117,14 @@ test('GET /api/sync/status 按契约 C3 返回全部任务', async () => {
   assert.equal(response.status, 200)
   const body = await response.json() as { policy: Record<string, unknown>; jobs: Array<Record<string, unknown>>; generatedAt: string }
   assert.deepEqual(Object.keys(body.policy).sort(), ['backoff', 'globalUpstreamConcurrency', 'jitterPct', 'minIntervalPerHostMs'])
-  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
+  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'cpa-catalog', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
   const required = ['id', 'label', 'kind', 'intervalMs', 'lastRunAt', 'lastFinishedAt', 'nextRunAt', 'state', 'lastResult', 'lastError', 'summary',
     'backoffUntil', 'backoffLevel', 'requests24h', 'history', 'canRunNow', 'runCooldownUntil']
   for (const job of body.jobs) for (const key of required) assert.ok(key in job, `${String(job.id)} 缺少 ${key}`)
   assert.equal(body.jobs.find(job => job.id === 'data-plane')!.state, 'disabled')
+  // CPA_MODELS_CATALOG_FILE unset: the catalog job is listed but never runs
+  const catalog = body.jobs.find(job => job.id === 'cpa-catalog')!
+  assert.deepEqual([catalog.state, catalog.canRunNow, catalog.nextRunAt, catalog.summary], ['disabled', false, null, '未设置 CPA_MODELS_CATALOG_FILE'])
   assert.equal(body.jobs.find(job => job.id === 'kernel-upstream')!.canRunNow, false)
   // CPA engine: discovery would write live routing, so it never runs on its own — only from the sync center
   const discovery = body.jobs.find(job => job.id === 'model-discovery')!
