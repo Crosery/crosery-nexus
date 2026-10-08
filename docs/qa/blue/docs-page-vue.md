@@ -163,7 +163,7 @@ $ npm ls react react-dom lucide-react recharts
 
 删后：
 $ npm ls react react-dom lucide-react recharts
-crosery-cpe-console@0.1.0 /Users/crosery/work_file/crosery-api-console
+crosery-cpe-console@0.1.0 <repo>
 `-- (empty)                                  ← 四个包全空
 $ npm ls react --all
 `-- (empty)                                  ← 全树无任何 react 引入者

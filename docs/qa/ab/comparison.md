@@ -192,7 +192,7 @@ $ tail -1 data/ab-preferences.jsonl
  "admin":true,"redacted":false}
 
 $ node scripts/ab-report.mjs
-A/B 偏好留痕汇总 · 文件：/Users/crosery/work_file/crosery-api-console/data/ab-preferences.jsonl
+A/B 偏好留痕汇总 · 文件：<repo>/data/ab-preferences.jsonl
 共 2 票｜时间范围 2026-10-01T00:50:46.974Z → 2026-10-01T01:14:25.884Z
 
 【① API Key 列表：筛选 / 搜索 / 删除确认】  样本量 1

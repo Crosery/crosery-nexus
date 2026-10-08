@@ -101,7 +101,7 @@ quota= {'totalUsd': 0, 'dailyUsd': 0, 'weeklyUsd': 0}  totalConcurrency= 0
 （抽验用的 Key 是实例上已有的第一个 Key；三类拒绝都发生在任何 `UPDATE`/`addAudit` 之前，事后读回值与抽验前一致。）
 
 ### ⚠️ 我自己的操作披露（必须说明）
-重启**之前**我在运行实例上发过一次 `PATCH {"totalUsd":""}` 作为「修前复现」——旧代码返回 **200** 并**真的写入了一份记录**（审计 `id=31826 update-quota 龚翰林 {"totalUsd":0,"dailyUsd":0,"weeklyUsd":0}`）。
+重启**之前**我在运行实例上发过一次 `PATCH {"totalUsd":""}` 作为「修前复现」——旧代码返回 **200** 并**真的写入了一份记录**（审计 `id=31826 update-quota 张三 {"totalUsd":0,"dailyUsd":0,"weeklyUsd":0}`）。
 - 影响评估：`server/db.ts:120-122` 的额度列默认值都是 `0`，该 Key 此前没有过任何 `update-quota` 审计记录，所以这次写入是 **0 → 0（幂等）**，**实际生效值没有变化**；副作用是一条审计记录。
 - 教训（已按你们写进 `COORDINATION.md` 的方向对齐）：**对运行实例的抽验只发「必然被拒绝」的输入**（400 在写入之前返回），不要用真实 Key 发会成功的写请求；需要验证成功路径时用一次性 Key 并当场删除。
 - 建议后续把这条也写进 COORDINATION：**「抽验优先用 reject-only 输入；需要写成功路径时先建临时对象、验完即删」**。

@@ -211,7 +211,7 @@ node exit code = 1        ← 关键：进程退出码非 0
    ```
    **类型检查这一半完全绿灯**，而 Vue 侧的标识符是悬空的。Vite/esbuild 只擦除类型不做检查 → 浏览器里就是 `ReferenceError`。
 4. blue 自报的真实事故与该类完全一致（`ReferenceError: tableSortState is not defined`，`/models` 表格整块不渲染）。
-5. **参考实现（用户认可的 TUF）恰恰做了这件事**：`/Users/crosery/work_file/geek_main/app/console/package.json`
+5. **参考实现（用户认可的 TUF）恰恰做了这件事**：`geek_main/app/console/package.json`
    - `:8` `"build": "vue-tsc --noEmit -p tsconfig.json && vite build"`
    - `:9` `"typecheck": "vue-tsc --noEmit -p tsconfig.json"`
    - `:23` devDependencies `"vue-tsc": "3.3.11"`

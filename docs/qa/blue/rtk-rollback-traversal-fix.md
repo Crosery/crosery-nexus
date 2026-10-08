@@ -160,7 +160,7 @@ npm run lint        → 仅既有 nativeResponses.ts:200/203 告警         exit
 2. **非白名单 id 的目录不再出现在 `status.backups` 里**（`listRtkBackups` 只列 recognized），
    因此手工放进备份根的目录不会被当作「可用备份」。
 3. 备份根内**软链接目录**不再可用作备份（`backup_path_escape`）——这是有意的 fail closed。
-4. 真实历史备份**仍可正常回滚**（实测：`manifest.id === 目录名`、`manifest.home === /Users/crosery`、
+4. 真实历史备份**仍可正常回滚**（实测：`manifest.id === 目录名`、`manifest.home === ~`、
    `rel` 全部是干净相对路径；既有 `一键回退` / `P0-1` 用例全绿）。
 
 ---
