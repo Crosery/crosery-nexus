@@ -4,7 +4,7 @@ import http from 'node:http'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
-  checkJsonReply, checkModelsList, checkStream, checkToolAnswer, checkToolCall, checkVersionHeader, gatewayRoot, redact, runAcceptance,
+  checkJsonReply, checkModelsList, checkStream, checkToolAnswer, checkToolCall, checkVersionHeader, describeNetworkError, gatewayRoot, redact, runAcceptance,
 } from './cpa-acceptance.mjs'
 
 const KEY = 'sk-accept-fixture-0123456789'
@@ -67,24 +67,94 @@ test('acceptance: each broken answer fails exactly its own check', async () => {
   }
 })
 
-test('acceptance: a gateway answering as another version fails; a missing header is only noted; a network error is a failed check', async () => {
+const netError = (code, message = 'fetch failed') => Object.assign(new TypeError(message), { cause: Object.assign(new Error(`connect ${code}`), { code }) })
+const accept = (fetchImpl, over = {}) => runAcceptance({ baseUrl: 'https://api.example.com', key: KEY, models: ['m1'], fetchImpl, ...over })
+
+test('acceptance: what says nothing about the trial binary is inconclusive, never failed', async () => {
   const g = gateway()
-  const other = await runAcceptance({ baseUrl: 'https://api.example.com', key: KEY, models: ['m1'], expectVersion: '8.0.22-patched.b', fetchImpl: g.fetchImpl })
-  assert.match(other.checks[0].detail, /在跑 8\.0\.21-patched\.a，不是 8\.0\.22-patched\.b/)
-  assert.equal(other.ok, false)
+  // nothing came back: DNS, refused, reset, TLS — and the completions are not even tried
+  for (const code of ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
+    let calls = 0
+    const result = await accept(async () => { calls += 1; throw netError(code, `fetch failed for Bearer ${KEY}`) })
+    assert.equal(result.verdict, 'inconclusive', code)
+    assert.equal(result.ok, false)
+    assert.deepEqual(result.checks.map(item => [item.name, item.verdict]), [['网关 /v1/models', 'inconclusive']], code)
+    assert.match(result.checks[0].detail, new RegExp(`连不上网关：.*${code}`))
+    assert.equal(calls, 1)
+    assert.equal(JSON.stringify(result).includes(KEY), false, 'the key never reaches the record')
+  }
+  // a proxy page, an unavailable upstream, another binary answering
+  const cases = [
+    ['models 502', { models: g.answer(502, '<html>Bad Gateway</html>') }],
+    ['models 503', { models: g.answer(503, json({ error: 'unavailable' })) }],
+    ['models 504', { models: g.answer(504, '') }],
+    ['models html', { models: g.answer(200, '<!doctype html><title>parked</title>') }],
+    ['models empty', { models: g.answer(200, '') }],
+    ['other version', { models: g.answer(200, json({ data: [{ id: 'm1' }] }), { 'x-cpa-version': '8.0.21-patched.84c37416' }) }],
+    ['other version 401', { models: g.answer(401, json({ error: 'bad key' }), { 'x-cpa-version': '8.0.21-patched.84c37416' }) }],
+  ]
+  for (const [name, over] of cases) {
+    const result = await accept(gateway(over).fetchImpl, { expectVersion: '8.0.21-patched.a' })
+    assert.equal(result.verdict, 'inconclusive', name)
+    assert.equal(result.checks.length, 1, `${name}: no completion is judged against something that is not the trial binary`)
+  }
+  assert.match((await accept(gateway(cases[5][1]).fetchImpl, { expectVersion: '8.0.21-patched.a' })).summary, /应答的是 8\.0\.21-patched\.84c37416，不是试运行的 8\.0\.21-patched\.a/)
+  // reachable binary, but a completion hits an unavailable upstream or a model it does not list
+  const busy = await accept(gateway({ reply: g.answer(503, json({ error: 'no capacity' })) }).fetchImpl)
+  assert.deepEqual([busy.verdict, busy.checks.find(item => item.name === 'm1 JSON').verdict], ['inconclusive', 'inconclusive'])
+  const unlisted = await runAcceptance({ baseUrl: 'https://api.example.com', key: KEY, models: ['m9'], fetchImpl: gateway({ reply: g.answer(404, json({ error: 'unknown model' })), stream: g.answer(404, '{}'), toolCall: g.answer(404, '{}') }).fetchImpl })
+  assert.equal(unlisted.verdict, 'inconclusive')
+  assert.match(unlisted.checks[1].detail, /m9 不在 \/v1\/models 里/)
+  // the connection dropped under the body: the network; the body stalling: the gateway
+  const dropped = { status: 200, headers: new Headers(), text: async () => { throw netError('ECONNRESET', 'terminated') } }
+  assert.equal((await accept(gateway({ models: dropped }).fetchImpl)).verdict, 'inconclusive')
+  const stalled = { status: 200, headers: new Headers(), text: async () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }) } }
+  const slow = await accept(gateway({ stream: stalled }).fetchImpl)
+  assert.deepEqual([slow.verdict, slow.checks.find(item => item.name === 'm1 SSE').verdict], ['failed', 'failed'])
+})
+
+test('acceptance: the trial binary answering wrongly is failed, and decides over anything inconclusive', async () => {
+  const g = gateway()
+  const listed = await accept(gateway({ reply: g.answer(400, json({ error: 'bad request' })) }).fetchImpl)
+  assert.deepEqual([listed.verdict, listed.checks.find(item => item.name === 'm1 JSON').verdict], ['failed', 'failed'], '4xx on a listed model')
+  assert.match(listed.summary, /^1\/4 项没过：m1 JSON/)
+  const mixed = await accept(gateway({ reply: g.answer(503, '{}'), stream: g.answer(200, sse(delta('1'))) }).fetchImpl)
+  assert.equal(mixed.verdict, 'failed')
+  assert.deepEqual(mixed.checks.map(item => item.verdict), ['passed', 'inconclusive', 'failed', 'passed'])
+  const key = await accept(gateway({ models: g.answer(401, json({ error: 'bad key' })) }).fetchImpl)
+  assert.equal(key.verdict, 'failed', 'the gateway itself refusing our key is its behaviour')
+  // the header names the trial binary, or is not sent at all (noted)
+  assert.equal((await accept(g.fetchImpl, { expectVersion: '8.0.21-patched.a' })).verdict, 'passed')
   assert.match(checkVersionHeader(null, 'x'), /没有 x-cpa-version 头/)
-  const down = await runAcceptance({ baseUrl: 'https://api.example.com', key: KEY, models: ['m1'], fetchImpl: async () => { throw new TypeError(`fetch failed for Bearer ${KEY}`) } })
-  assert.equal(down.ok, false)
-  assert.equal(down.checks.every(item => !item.ok), true)
-  assert.equal(JSON.stringify(down).includes(KEY), false, 'the key never reaches the record')
   await assert.rejects(runAcceptance({ baseUrl: 'https://api.example.com', key: '', models: ['m1'], fetchImpl: g.fetchImpl }), /CPA_ACCEPT_KEY/)
   await assert.rejects(runAcceptance({ baseUrl: 'https://api.example.com', key: KEY, models: ' , ', fetchImpl: g.fetchImpl }), /no models/)
+})
+
+test('acceptance: real sockets — a refused port and a gateway that never answers are inconclusive', async () => {
+  const closed = http.createServer()
+  await new Promise(resolve => closed.listen(0, '127.0.0.1', resolve))
+  const port = closed.address().port
+  await new Promise(resolve => closed.close(resolve))
+  const refused = await runAcceptance({ baseUrl: `http://127.0.0.1:${port}`, key: KEY, models: ['m1'] })
+  assert.equal(refused.verdict, 'inconclusive')
+  assert.match(refused.checks[0].detail, /ECONNREFUSED/)
+  const silent = http.createServer(() => {})
+  await new Promise(resolve => silent.listen(0, '127.0.0.1', resolve))
+  try {
+    const hung = await runAcceptance({ baseUrl: `http://127.0.0.1:${silent.address().port}`, key: KEY, models: ['m1'], timeoutMs: 300 })
+    assert.equal(hung.verdict, 'inconclusive')
+    assert.match(hung.checks[0].detail, /TimeoutError|timeout/i)
+  } finally {
+    silent.closeAllConnections()
+    silent.close()
+  }
+  assert.match(describeNetworkError(netError('ENOTFOUND')), /ENOTFOUND/)
 })
 
 test('acceptance parsers: canned bodies', () => {
   assert.equal(checkModelsList({ status: 200, text: json({ data: [{ id: 'a' }] }) }), '1 个模型')
   assert.throws(() => checkModelsList({ status: 200, text: json({ data: [] }) }), /为空/)
-  assert.throws(() => checkModelsList({ status: 200, text: '<html>' }), /为空/)
+  assert.throws(() => checkModelsList({ status: 200, text: '<html>' }), /不是 JSON/)
   assert.equal(checkJsonReply({ status: 200, text: json({ choices: [{ message: { content: ' pong ' } }] }) }), '"pong"')
   assert.match(checkStream({ status: 200, text: 'event: x\ndata: {"choices":[{"delta":{"content":"hi"}}]}\r\ndata: [DONE]\n' }), /2 个事件 · 1 个内容增量/)
   assert.throws(() => checkStream({ status: 500, text: 'oops' }), /HTTP 500/)
@@ -122,8 +192,11 @@ test('cli: key from the environment, JSON on stdout, exit code follows the resul
     assert.equal(JSON.parse(good.stdout).ok, true)
     const bad = await runCli({ CPA_ACCEPT_KEY: 'sk-wrong-key-0000000000' })
     assert.equal(bad.code, 1)
-    assert.equal(JSON.parse(bad.stdout).ok, false)
+    assert.equal(JSON.parse(bad.stdout).verdict, 'failed')
     assert.equal(bad.stdout.includes('sk-wrong-key-0000000000'), false)
+    const unreachable = await new Promise(resolve => execFile(process.execPath, [script, '--base-url', 'http://127.0.0.1:1', '--models', 'm1'], { env: { ...process.env, CPA_ACCEPT_KEY: KEY } },
+      (error, stdout) => resolve({ code: error?.code ?? 0, stdout })))
+    assert.deepEqual([unreachable.code, JSON.parse(unreachable.stdout).verdict], [3, 'inconclusive'])
   } finally {
     server.close()
   }
