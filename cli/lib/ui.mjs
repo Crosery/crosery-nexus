@@ -11,8 +11,8 @@ const PALETTE = {
 }
 
 const GLYPHS = {
-  unicode: { ok: '✓', fail: '✗', warn: '!', info: 'i', arrow: '→', dot: '●', bullet: '•', mark: '◆', sep: '│', ellipsis: '…', h: '─', v: '│', tl: '╭', tr: '╮', bl: '╰', br: '╯', lt: '├', rt: '┤', tt: '┬', bt: '┴', x: '┼' },
-  ascii: { ok: '+', fail: 'x', warn: '!', info: 'i', arrow: '->', dot: '*', bullet: '-', mark: '*', sep: '|', ellipsis: '~', h: '-', v: '|', tl: '+', tr: '+', bl: '+', br: '+', lt: '+', rt: '+', tt: '+', bt: '+', x: '+' },
+  unicode: { ok: '✓', fail: '✗', warn: '!', info: 'i', arrow: '→', dot: '●', bullet: '•', mark: '◆', sep: '│', ellipsis: '…', h: '─', v: '│', tl: '╭', tr: '╮', bl: '╰', br: '╯', lt: '├', rt: '┤', tt: '┬', bt: '┴', x: '┼', treeTee: '├─ ', treeEnd: '└─ ', treePipe: '│  ' },
+  ascii: { ok: '+', fail: 'x', warn: '!', info: 'i', arrow: '->', dot: '*', bullet: '-', mark: '*', sep: '|', ellipsis: '~', h: '-', v: '|', tl: '+', tr: '+', bl: '+', br: '+', lt: '+', rt: '+', tt: '+', bt: '+', x: '+', treeTee: '|- ', treeEnd: '`- ', treePipe: '|  ' },
 }
 
 // eslint-disable-next-line no-control-regex
@@ -139,6 +139,10 @@ export function createUi({ stdout, stderr, env = {}, noColor = false, json = fal
       write(deco, renderTable(headers, rows, { align, maxWidth, g, paint: paintOut }))
     },
     renderTable: (headers, rows, options = {}) => renderTable(headers, rows, { align: [], maxWidth: 0, ...options, g, paint: paintOut }),
+    /** 树形输出，挂在上一行（通常是 section 标题）下面；见 renderTree。 */
+    tree(nodes, { maxWidth = (stdout.columns || 0) } = {}) {
+      if (nodes.length) write(deco, renderTree(nodes, { maxWidth, g, paint: paintOut }))
+    },
   }
   return ui
 }
@@ -168,6 +172,57 @@ export function renderTable(headers, rows, { align = [], maxWidth = 0, g = GLYPH
   for (const row of rows) out.push(renderRow(row))
   out.push(rule(g.bl, g.bt, g.br))
   return out.join('\n')
+}
+
+/**
+ * 树形输出：├─ / └─ 连接（ASCII 字形 |- / `-）。node = {cells: [string | {text, tone, bold, align}], kind?, children?}。
+ * 同深度、同 kind 的行按显示宽度共用列宽（kind 区分同层里列含义不同的行）；同层全空的列整列省掉；行末不补空格。
+ * maxWidth > 0 时截断超宽行的最后一列。
+ */
+export function renderTree(nodes, { maxWidth = 0, g = GLYPHS.unicode, paint = (_tone, text) => String(text) } = {}) {
+  const cellsOf = node => {
+    const cells = [...(node.cells || [])]
+    while (cells.length && cellText(cells.at(-1)) === '') cells.pop()
+    return cells
+  }
+  const widths = new Map()
+  const measure = (list, depth) => {
+    for (const node of list) {
+      const key = `${depth}/${node.kind || ''}`
+      const w = widths.get(key) || []
+      cellsOf(node).forEach((cell, column) => { w[column] = Math.max(w[column] || 0, displayWidth(cellText(cell))) })
+      widths.set(key, w)
+      measure(node.children || [], depth + 1)
+    }
+  }
+  measure(nodes, 0)
+  const lines = []
+  const walk = (list, depth, prefix) => list.forEach((node, index) => {
+    const last = index === list.length - 1
+    const lead = prefix + paint('muted', last ? g.treeEnd : g.treeTee)
+    const w = widths.get(`${depth}/${node.kind || ''}`)
+    const cells = cellsOf(node)
+    const parts = []
+    cells.forEach((cell, column) => {
+      if (!w[column]) return
+      const align = (cell && typeof cell === 'object' && cell.align) || 'left'
+      parts.push({ cell, text: cellText(cell), align, width: align === 'right' || column < cells.length - 1 ? w[column] : 0 })
+    })
+    if (maxWidth > 0 && parts.length) {
+      const tail = parts.at(-1)
+      const room = maxWidth - displayWidth(lead) - parts.slice(0, -1).reduce((sum, part) => sum + part.width + 2, 0)
+      if (Math.max(tail.width, displayWidth(tail.text)) > room && room > 1) Object.assign(tail, { text: truncate(tail.text, room, g.ellipsis), width: 0 })
+    }
+    const body = parts.map(({ cell, text, align, width }) => {
+      const padded = width ? pad(text, width, align) : text
+      const bold = Boolean(cell && typeof cell === 'object' && cell.bold)
+      return cellTone(cell) || bold ? paint(cellTone(cell), padded, bold) : padded
+    }).join('  ')
+    lines.push(lead + body)
+    walk(node.children || [], depth + 1, prefix + (last ? ' '.repeat(displayWidth(g.treeEnd)) : paint('muted', g.treePipe)))
+  })
+  walk(nodes, 0, '')
+  return lines.join('\n')
 }
 
 /* ────────── 数值与时间 ────────── */
