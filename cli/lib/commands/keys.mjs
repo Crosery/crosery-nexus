@@ -1,11 +1,12 @@
 // keys：API Key 开通、改分组/并发/额度、启停、轮换、删除、复制。完整 Key 只在 create / rotate 时打印一次。
 import { CliError, UsageError, listValue, numberValue } from '../args.mjs'
 import { request } from '../client.mjs'
+import { fmtDate } from '../fmt.mjs'
 import { getBootstrap, keyCreateItem, keyQuota, keyUpdateItems, localDate } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { parseGroupConcurrency, resolveGroups, resolveKey } from '../resolve.mjs'
-import { keysTree } from '../tree.mjs'
-import { time, usd } from '../ui.mjs'
+import { groupScope, keyStatusView, keyWindowsTree, keysTree } from '../tree.mjs'
+import { time } from '../ui.mjs'
 
 const HELP = `cradmin keys <动作> [参数]
 
@@ -13,7 +14,7 @@ const HELP = `cradmin keys <动作> [参数]
 
 动作：
   ls                         列出全部 Key（同控制台「Key」页：状态、渠道范围、今日 / 本周 / 累计额度，按额度压力排序）
-  show <key>                 查看一把 Key 的分组、并发、额度
+  show <key>                 一把 Key 的状态、渠道、并发与日 / 周 / 累计额度（同控制台 Key 详情）
   create --name <名称> --groups <分组,…>   开通新 Key，完整 Key 只显示这一次
   update <key> [参数]        改名称/备注/分组/并发/额度
   enable|disable <key>       启用 / 停用
@@ -41,20 +42,15 @@ const HELP = `cradmin keys <动作> [参数]
   cradmin keys update <名称> --add-groups xai --concurrency 4 --group-concurrency xai=2
 `
 
-const WINDOW_LABEL = { total: '总', daily: '日', weekly: '周' }
+const QUOTA_WINDOWS = ['total', 'daily', 'weekly']
 
 export function publicKey(key) {
   const pick = ['id', 'name', 'note', 'maskedKey', 'enabled', 'groups', 'totalConcurrency', 'groupConcurrency', 'createdAt', 'updatedAt', 'lastUsedAt', 'quota', 'blockedReason', 'quotaState']
   return Object.fromEntries(pick.filter(field => field in key).map(field => [field, key[field]]))
 }
 
-export function keyStatus(key) {
-  if (key.enabled) return { text: '启用', tone: 'ok' }
-  if (key.blockedReason) return { text: `额度封禁${key.quotaState?.exceededWindow ? `(${WINDOW_LABEL[key.quotaState.exceededWindow] || key.quotaState.exceededWindow})` : ''}`, tone: 'err' }
-  return { text: '停用', tone: 'warn' }
-}
-
-export const concurrencyText = key => (key.totalConcurrency ? `${key.totalConcurrency}${Object.keys(key.groupConcurrency || {}).length ? `（${Object.entries(key.groupConcurrency).map(([g, n]) => `${g}=${n}`).join(',')}）` : ''}` : '不限')
+/** `不限` · `4` · `4 · codex=2 · xai=1`（KeyDetail.vue 并发） */
+export const concurrencyText = key => (key.totalConcurrency ? [key.totalConcurrency, ...Object.entries(key.groupConcurrency || {}).map(([g, n]) => `${g}=${n}`)].join(' · ') : '不限')
 
 function quotaFlags(values) {
   const quota = {
@@ -129,7 +125,7 @@ async function update(ctx, query) {
   if (Object.keys(overrides).length) desired.groupConcurrency = { ...(key.groupConcurrency || {}), ...overrides }
   desired.quota = quotaFlags(values)
   const resets = listValue(values['reset-spent'])
-  for (const window of resets) if (!WINDOW_LABEL[window]) throw new UsageError('--reset-spent 只能是 total、daily 或 weekly')
+  for (const window of resets) if (!QUOTA_WINDOWS.includes(window)) throw new UsageError('--reset-spent 只能是 total、daily 或 weekly')
   desired.resetWindows = [...new Set(resets)]
   const items = keyUpdateItems(key, desired)
   const result = await runPlan(ctx, { level: 'C', title: `修改 Key ${key.name}`, items, empty: '没有需要改动的地方' })
@@ -252,27 +248,23 @@ export default {
       }
       case 'show': {
         needKey()
-        const { key } = await findKey(ctx, query)
+        const { bootstrap, key } = await findKey(ctx, query)
         const data = publicKey(key)
         return void ctx.output(data, () => {
           const { ui } = ctx
+          const status = keyStatusView(data)
           ui.kv('名称', data.name)
           ui.kv('id', data.id)
           ui.kv('Key', data.maskedKey)
-          ui.kv('状态', keyStatus(data).text)
-          ui.kv('备注', data.note || '-')
-          ui.kv('分组', (data.groups || []).join(', ') || '无 · 仅默认开放模型')
+          ui.kv('状态', ui.paint(status.tone, status.text))
+          if (data.blockedReason) ui.kv('', ui.paint('muted', `${data.blockedReason} · 调高额度或重置后自动恢复`))
+          ui.kv('渠道', groupScope(data, bootstrap.groups || []))
           ui.kv('并发', concurrencyText(data))
-          ui.kv('创建', time(data.createdAt))
-          ui.kv('最近使用', time(data.lastUsedAt))
-          ui.section('额度')
-          const state = data.quotaState || {}
-          ui.table(['窗口', '已用', '上限', '比例', '重置时间'], ['daily', 'weekly', 'total'].map(window => {
-            const entry = state[window] || {}
-            return [WINDOW_LABEL[window], usd(entry.spentUsd ?? 0), entry.limitUsd > 0 ? usd(entry.limitUsd) : '不限',
-              entry.ratio === null || entry.ratio === undefined ? '-' : { text: `${(entry.ratio * 100).toFixed(1)}%`, tone: entry.exceeded ? 'err' : entry.ratio >= 0.85 ? 'warn' : 'ok' },
-              time(entry.resetsAt)]
-          }), { align: ['left', 'right', 'right', 'right', 'left'] })
+          ui.kv('创建', fmtDate(data.createdAt))
+          ui.kv('最近使用', data.lastUsedAt ? time(data.lastUsedAt) : '从未')
+          if (data.note) ui.kv('备注', data.note)
+          ui.section('额度', '花费按额度账本')
+          ui.tree(keyWindowsTree(data, ctx.now()))
         })
       }
       case 'create':

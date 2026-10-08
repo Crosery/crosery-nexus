@@ -1,36 +1,31 @@
-// usage：用量统计（GET /api/usage-overview?view=workspace）。
+// usage：用量总览（GET /api/usage-overview?view=workspace）。
 import { UsageError, numberValue } from '../args.mjs'
+import { fmtCompact, fmtInt, fmtSpend } from '../fmt.mjs'
 import { getBootstrap } from '../ops.mjs'
 import { resolveKey } from '../resolve.mjs'
-import { count, percent, tokens, usd } from '../ui.mjs'
+import { usageLedgerTree, usageRankName, usageVsText, usageWindowText } from '../tree.mjs'
 
 const HELP = `cradmin usage [参数]
 
-用量统计：请求数、失败率、tokens、费用、缓存命中率（与上一个同长窗口对比），以及模型、Key、渠道的前 N 名。
+用量总览，词同控制台「用量 · 总览」：请求、Token、花费、失败率、缓存命中、活跃 Key（与上一个同长窗口比），
+以及按模型 / 按 Key / 按渠道的前 N 名。
 
 参数：
   --days 1|7|30|90           统计窗口（默认 7）
   --key <key>                只看一把 Key（名称或 id 前缀）
   --model <id>               只看一个模型
   --channel <id>             只看一个渠道 / 账号池 provider
-  --top <N>                  每张排行表的行数（默认 10）
+  --top <N>                  每张排行的行数（默认 10）
 
 示例：
   cradmin usage --days 1
   cradmin usage --days 30 --key <名称> --json
 `
 
-const delta = (current, previous, format) => {
-  if (previous === null || previous === undefined || current === null || current === undefined) return ''
-  const diff = Number(current) - Number(previous)
-  if (!diff) return '（持平）'
-  return `（${diff > 0 ? '+' : '-'}${format(Math.abs(diff))}）`
-}
-
 export default {
   name: 'usage',
   aliases: ['u'],
-  summary: '用量统计',
+  summary: '用量总览',
   help: HELP,
   options: {
     days: { type: 'string' },
@@ -61,19 +56,15 @@ export default {
     }
     ctx.output(data, () => {
       const { ui } = ctx
-      const ledger = data.ledger || {}
-      const prev = data.previous
-      ui.section(`最近 ${days} 天用量`, prev ? '括号内为与上一个同长窗口的差' : '')
-      ui.kv('请求', `${count(ledger.requests)}${delta(ledger.requests, prev?.requests, count)}`)
-      ui.kv('失败', `${count(ledger.errors)}（${percent(ledger.errorRate)}）`)
-      ui.kv('Tokens', `${tokens(ledger.tokens)}${delta(ledger.tokens, prev?.tokens, tokens)}`)
-      ui.kv('费用', `${usd(ledger.costUsd)}${delta(ledger.costUsd, prev?.costUsd, usd)}${ledger.hasPartialCost ? '（部分模型无价格）' : ''}`)
-      ui.kv('缓存命中', percent(ledger.cacheHitRate))
-      ui.kv('活跃 Key', `${count(ledger.activeKeys)} / 启用 ${count(ledger.enabledKeys)}`)
-      for (const [title, list] of [['模型', data.models], ['Key', data.keys], ['渠道', data.channels]]) {
-        ui.section(`${title === 'Key' ? 'Key 排行' : `${title}排行`}（前 ${top}）`)
-        if (!list.length) { ui.note('没有数据'); continue }
-        ui.table([title, '请求', '失败', 'Tokens', '费用'], list.map(item => [item.label || item.id, count(item.requests), count(item.errors), tokens(item.tokens), usd(item.costUsd)]),
+      const span = data.window?.days ?? days
+      ui.section(`用量 · ${usageWindowText(span)}`, data.previous ? usageVsText(span) : `前 ${span === 1 ? '24 小时' : `${span} 日`}无记录 · 不比较`)
+      ui.tree(usageLedgerTree(data.ledger, data.previous, span))
+      const ranks = [['按模型', '模型', 'models'], ['按 Key', 'Key', 'keys'], ['按渠道', '渠道', 'channels']]
+      for (const [title, column, kind] of ranks) {
+        ui.section(title, `前 ${top}`)
+        const list = (report[kind] || []).slice(0, top)
+        if (!list.length) { ui.note('— 没有请求'); continue }
+        ui.table([column, '请求', '失败', 'Token', '花费'], list.map(item => [usageRankName(item, kind), fmtInt(item.requests), fmtInt(item.errors), fmtCompact(item.tokens), fmtSpend(item.costUsd)]),
           { align: ['left', 'right', 'right', 'right', 'right'] })
       }
     })
