@@ -129,3 +129,74 @@ test('api-keys 永不写空：删光/停光时写入本机封锁 Key，读回时
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('系统 Key：探测 Key 读时隐藏、写时保留，只钉在自己的服务上，封锁 Key 照旧', async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpa-system-keys-'))
+  const { config } = await import('./config.js')
+  const previousDataDir = config.dataDir
+  config.dataDir = dir
+  const userKey = `sk-probe-${'a'.repeat(32)}`
+  const orphan = `sk-probe-${'b'.repeat(64)}`
+  let stored: string[] = ['sk-real', userKey, orphan]
+  const keyPuts: string[][] = []
+  let channels: Record<string, string[]> = { 'sk-real': ['codex'] }
+  let channelPuts = 0
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.endsWith('/api-key-channel-access')) {
+      if (init?.method === 'PUT') {
+        channels = JSON.parse(String(init.body))
+        channelPuts += 1
+      }
+      return json({ 'api-key-channel-access': channels })
+    }
+    if (init?.method === 'PUT') {
+      stored = JSON.parse(String(init.body))
+      keyPuts.push(stored)
+      return json({})
+    }
+    return json({ 'api-keys': stored })
+  }
+  try {
+    const { cpaLockoutKey, getCPAKeys, isSystemKey, maskSystemKeys, pinProbeKeyChannels, readProbeKeys, registerProbeKeys, replaceCPAKeys } = await loadCPA()
+    assert.deepEqual(await getCPAKeys(), ['sk-real', userKey], '残留的系统 Key 按格式隐藏；控制台发放的 32 位随机段不受影响')
+
+    const probes = await registerProbeKeys(['codex', 'mox-aigw'])
+    assert.match(probes.codex, /^sk-probe-[0-9a-f]{64}$/)
+    assert.notEqual(probes.codex, probes['mox-aigw'])
+    assert.equal(fs.statSync(path.join(dir, 'cpa-probe-keys.json')).mode & 0o777, 0o600)
+    assert.deepEqual(readProbeKeys(), probes)
+    assert.deepEqual(keyPuts.at(-1), ['sk-real', userKey, orphan, probes.codex, probes['mox-aigw']], '只补缺的，其它 Key 原样保留')
+    assert.deepEqual(await registerProbeKeys(['codex', 'mox-aigw']), probes, '同一数据目录复用同一把')
+    assert.equal(keyPuts.length, 1, '已注册时不再写')
+    assert.deepEqual(await getCPAKeys(), ['sk-real', userKey], '探测 Key 不算控制台的 Key')
+
+    assert.equal(await pinProbeKeyChannels(probes), true)
+    assert.deepEqual(channels, { 'sk-real': ['codex'], [probes.codex]: ['codex'], [probes['mox-aigw']]: ['mox-aigw'] })
+    assert.equal(await pinProbeKeyChannels(probes), false, '已钉住时不再写')
+    assert.equal(channelPuts, 1)
+
+    await replaceCPAKeys([...(await getCPAKeys()).filter((key: string) => key !== userKey), orphan])
+    assert.deepEqual(stored, ['sk-real', probes.codex, probes['mox-aigw']], '用户 Key 整表写入时带上探测 Key，调用方误传的系统 Key 被剔除')
+
+    await replaceCPAKeys([])
+    const lockout = cpaLockoutKey()
+    assert.deepEqual(stored, [lockout, probes.codex, probes['mox-aigw']], '没有用户 Key 时仍写封锁 Key，探测 Key 照旧保留')
+    assert.deepEqual(channels[lockout], ['__console_no_channels_allowed__'])
+    assert.deepEqual(channels[probes.codex], ['codex'], '封锁 Key 的条目不影响探测 Key 的条目')
+    assert.deepEqual(await getCPAKeys(), [])
+
+    assert.equal(isSystemKey(lockout), true)
+    assert.equal(isSystemKey(userKey), false)
+    assert.equal(maskSystemKeys(`invalid key ${probes.codex} and ${lockout}`).includes(probes.codex.slice(9, 20)), false)
+    assert.equal(maskSystemKeys(`bad ${probes.codex}`), 'bad sk-probe-***')
+  } finally {
+    globalThis.fetch = originalFetch
+    config.dataDir = previousDataDir
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

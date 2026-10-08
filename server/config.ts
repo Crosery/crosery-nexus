@@ -98,6 +98,8 @@ export const config = {
    * Default: on its timer with the Magpie engine, on demand (sync center) with CPA.
    */
   modelDiscoveryScheduled: booleanSetting('MODEL_DISCOVERY_SCHEDULE', process.env.MODEL_DISCOVERY_SCHEDULE, gatewayEngine === 'magpie'),
+  /** Every 30 min, one minimal chat request per chat model per service through CPA (server/modelAvailability.ts); false = off and no filtering. */
+  modelAvailabilityProbe: booleanSetting('MODEL_AVAILABILITY_PROBE', process.env.MODEL_AVAILABILITY_PROBE, true),
   magpieControlPlane: choiceSetting('MAGPIE_CONTROL_PLANE', process.env.MAGPIE_CONTROL_PLANE, 'local', ['local', 'cpa'] as const),
   magpiePort: positiveInteger('MAGPIE_PORT', process.env.MAGPIE_PORT, 8790, { min: 1024, max: 65535 }),
   magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
