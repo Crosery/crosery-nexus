@@ -44,6 +44,8 @@ export type ChannelHealthPayload = {
   slotMs: number
   recentMs: number
   channels: ChannelHealthItem[]
+  /** every request in the window, subscription accounts included; absent on a server that predates it */
+  gateway?: { requests: number; errors: number }
   generatedAt: string
 }
 

@@ -167,22 +167,24 @@ export function accountsFigure(counts: AccountCountsLike | null): StatFigure {
   return { value: `${fmtInt(counts.run)} / ${fmtInt(counts.all)}`, note: parts.length ? parts.join(' · ') : '全部运行中' }
 }
 
-/** The fields of /api/channel-health this page sums. */
-export type HealthLike = { hours: number; channels: ReadonlyArray<{ requests: number; errors: number }> }
+/** The fields of /api/channel-health this page reads. */
+export type HealthLike = {
+  hours: number
+  channels: ReadonlyArray<{ requests: number; errors: number }>
+  gateway?: { requests: number; errors: number } | null
+}
 
 /**
- * Request success rate over the health window, every API channel together: ok / all, client cancellations counted
- * as failures — the same rule as each row's 成功率 (server/channelHealth.ts). Subscription accounts are not in it.
+ * Request success rate over the health window: ok / all, client cancellations counted as failures — the same rule as
+ * each row's 成功率 (server/channelHealth.ts). The whole gateway (subscription accounts included) from `gateway`; a
+ * server that predates that field only has its API channels, and the note says so.
  * `null` = the endpoint has not answered or this server has no channel-health route.
  */
 export function successFigure(health: HealthLike | null): StatFigure {
   if (!health) return NO_DATA
-  let requests = 0
-  let errors = 0
-  for (const channel of health.channels) {
-    requests += channel.requests
-    errors += channel.errors
-  }
-  if (!requests) return { value: null, note: `API 渠道近 ${health.hours} 小时无请求` }
-  return { value: fmtPct((requests - errors) / requests, 1), note: `API 渠道 · ${fmtInt(requests)} 次请求` }
+  const { requests, errors } = health.gateway
+    ?? health.channels.reduce((sum, c) => ({ requests: sum.requests + c.requests, errors: sum.errors + c.errors }), { requests: 0, errors: 0 })
+  const scope = health.gateway ? '全部请求' : 'API 渠道'
+  if (!requests) return { value: null, note: `${scope}近 ${health.hours} 小时无请求` }
+  return { value: fmtPct((requests - errors) / requests, 1), note: `${scope} · ${fmtInt(requests)} 次` }
 }

@@ -91,6 +91,10 @@ test('stat cards: real figures with what they measure; — with a reason when th
   assert.deepEqual(successFigure(null), { value: null, note: '暂无数据' })
   assert.deepEqual(successFigure({ hours: 24, channels: [] }), { value: null, note: 'API 渠道近 24 小时无请求' })
   assert.deepEqual(successFigure({ hours: 24, channels: [{ requests: 0, errors: 0 }] }), { value: null, note: 'API 渠道近 24 小时无请求' })
-  // ok / all over every channel, failures include client cancellations (the row column's rule)
-  assert.deepEqual(successFigure({ hours: 24, channels: [{ requests: 900, errors: 9 }, { requests: 100, errors: 7 }] }), { value: '98.4%', note: 'API 渠道 · 1,000 次请求' })
+  // the whole gateway when the server reports it: subscription accounts are in, the channel rows are not summed again
+  const channels = [{ requests: 900, errors: 9 }, { requests: 100, errors: 7 }]
+  assert.deepEqual(successFigure({ hours: 24, channels, gateway: { requests: 4_000, errors: 40 } }), { value: '99.0%', note: '全部请求 · 4,000 次' })
+  assert.deepEqual(successFigure({ hours: 24, channels: [], gateway: { requests: 0, errors: 0 } }), { value: null, note: '全部请求近 24 小时无请求' })
+  // an older server: ok / all over every API channel, failures include client cancellations (the row column's rule)
+  assert.deepEqual(successFigure({ hours: 24, channels }), { value: '98.4%', note: 'API 渠道 · 1,000 次' })
 })
