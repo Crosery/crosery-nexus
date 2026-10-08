@@ -24,7 +24,11 @@ export const ALLOWLIST = [
   { path: 'server/proxyParseSubscription.test.ts', rule: 'ipv4', reason: '私网/保留段判定与 SSRF 拦截测试，必须用这些段本身（含一个公网对照 8.8.8.8）' },
   { path: 'server/mihomoConfig.ts', rule: 'ipv4', reason: '内核 DNS 用的公共解析器 223.5.5.5 / 1.1.1.1，不是自有地址' },
   { path: 'public/logos/codex.svg', rule: 'ipv4', reason: 'SVG 路径里连写的小数，不是地址' },
+  { path: 'scripts/public-tree-check.test.mjs', rule: '*', reason: '本文件：规则本身与规则自检夹具' },
 ]
+
+/** 计划与实测记录持续写进这里，写时脱敏（`<正式机>`/`<预发布机>` 占位），白名单不得覆盖其中任何文件。 */
+const NEVER_EXEMPT = 'docs/qa/deploy/'
 
 const octets = (ip) => ip.split('.').map(Number)
 
@@ -107,6 +111,12 @@ test('跟踪文件不含真实地址、Key、邮箱与内部主机名', () => {
   assert.deepEqual(problems, [], `公开树里有 ${problems.length} 处命中：\n${problems.join('\n')}`)
   const stale = ALLOWLIST.filter((entry) => !entry.pending && !used.has(entry)).map((entry) => `${entry.path} [${entry.rule}]`)
   assert.deepEqual(stale, [], '白名单条目已不再命中，删掉它')
+})
+
+test(`${NEVER_EXEMPT} 不在任何白名单条目覆盖范围内`, () => {
+  const covering = ALLOWLIST.filter((entry) => entry.path.startsWith(NEVER_EXEMPT) || (entry.path.endsWith('/') && NEVER_EXEMPT.startsWith(entry.path)))
+  assert.deepEqual(covering, [])
+  assert.equal(allowedBy(`${NEVER_EXEMPT}20261009-x.md`, 'ipv4'), undefined)
 })
 
 test('规则自检：放行与命中边界', () => {
