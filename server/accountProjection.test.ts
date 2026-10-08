@@ -85,7 +85,7 @@ test('monitor projection keeps the quota fields the external pollers read (statu
 })
 
 test('proxy and identity masks', () => {
-  assert.equal(maskProxyUserinfo('socks5://u:p@10.0.0.1:1080'), 'socks5://***@10.0.0.1:1080')
+  assert.equal(maskProxyUserinfo('socks5://u:p@192.0.2.1:1080'), 'socks5://***@192.0.2.1:1080')
   assert.equal(maskProxyUserinfo('http://127.0.0.1:7890'), 'http://127.0.0.1:7890')
   assert.equal(maskProxyUserinfo('direct'), 'direct')
   assert.equal(maskProxyUserinfo(undefined), '')

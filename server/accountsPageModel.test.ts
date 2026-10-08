@@ -273,7 +273,7 @@ test('fmtReset: today, tomorrow, this week, later (Asia/Shanghai)', () => {
 test('proxy labels never show userinfo', () => {
   assert.equal(proxyLabel(''), '继承网关')
   assert.equal(proxyLabel('direct'), '直连')
-  assert.equal(proxyLabel('socks5://user:secret@10.0.0.2:1080'), 'socks5://10.0.0.2:1080')
+  assert.equal(proxyLabel('socks5://user:secret@192.0.2.2:1080'), 'socks5://192.0.2.2:1080')
   assert.equal(proxyLabel('http://proxy.local:8080'), 'http://proxy.local:8080')
 })
 
@@ -344,14 +344,14 @@ test('RR-2: the exit picker shows the authoritative per-account value, unknown u
 
 test('RR-2 follow-up: a read that lands while a custom address is being typed keeps it; the sent address is replaced', () => {
   // slow first GET: the admin picked 自定义 and is typing when the read settles → keep the field
-  assert.equal(proxyKeepsDraft(PROXY_CUSTOM, 'socks5://10.0.0.9:1080', null), true)
-  assert.equal(proxyKeepsDraft(PROXY_CUSTOM, '  socks5://10.0.0.9:1080 ', 'other'), true)
+  assert.equal(proxyKeepsDraft(PROXY_CUSTOM, 'socks5://192.0.2.9:1080', null), true)
+  assert.equal(proxyKeepsDraft(PROXY_CUSTOM, '  socks5://192.0.2.9:1080 ', 'other'), true)
   // the address just saved: the PATCH answer (or the re-read after a failed PATCH) takes over
-  assert.equal(proxyKeepsDraft(PROXY_CUSTOM, 'socks5://10.0.0.9:1080 ', 'socks5://10.0.0.9:1080'), false)
+  assert.equal(proxyKeepsDraft(PROXY_CUSTOM, 'socks5://192.0.2.9:1080 ', 'socks5://192.0.2.9:1080'), false)
   // nothing typed, or another option picked: the read resets the picker as before
   assert.equal(proxyKeepsDraft(PROXY_CUSTOM, '   ', null), false)
-  assert.equal(proxyKeepsDraft('direct', 'socks5://10.0.0.9:1080', null), false)
-  assert.equal(proxyKeepsDraft(PROXY_UNKNOWN, 'socks5://10.0.0.9:1080', null), false)
+  assert.equal(proxyKeepsDraft('direct', 'socks5://192.0.2.9:1080', null), false)
+  assert.equal(proxyKeepsDraft(PROXY_UNKNOWN, 'socks5://192.0.2.9:1080', null), false)
 })
 
 test('RR-4: a renewal is only reported for a re-auth of that account; a plain add that is not listed yet is not success', () => {

@@ -65,10 +65,10 @@ test('version is extracted for triage but kept out of the grouping key', () => {
 
 test('forwarded address wins only when the direct peer is the local proxy', () => {
   // 经 nginx 后 client_ip 恒为回环，真实来源只在 XFF 里
-  assert.equal(resolveClientIp('127.0.0.1', '117.136.38.183'), '117.136.38.183')
-  assert.equal(resolveClientIp('::1', '203.0.113.9, 10.0.0.1'), '203.0.113.9')
+  assert.equal(resolveClientIp('127.0.0.1', '198.51.100.183'), '198.51.100.183')
+  assert.equal(resolveClientIp('::1', '203.0.113.9, 192.0.2.1'), '203.0.113.9')
   // 直连时不能被客户端伪造的 XFF 顶掉真实对端
-  assert.equal(resolveClientIp('203.0.113.7', '1.2.3.4'), '203.0.113.7')
+  assert.equal(resolveClientIp('203.0.113.7', '198.51.100.4'), '203.0.113.7')
   assert.equal(resolveClientIp('', ''), '')
 })
 

@@ -9,7 +9,7 @@ const row = (partial: Partial<CacheEventRow> & { model: string }): CacheEventRow
   timestamp: '2026-08-10T00:00:00Z',
   endpoint: 'POST /v1/chat/completions',
   source: 'crosery',
-  keyName: '程耀宇',
+  keyName: '示例用户',
   authIndex: 'a1',
   inputTokens: 0,
   outputTokens: 0,
@@ -67,8 +67,8 @@ test('全命中的请求不进入 worstRequests', () => {
 
 test('按真实 provider 聚合渠道，不把 keyName 或 source 冒充渠道', () => {
   const analytics = buildCacheAnalytics([
-    row({ model: 'gpt-5.6-sol', provider: 'minimax', keyName: '极客班', inputTokens: 1000, cachedTokens: 500 }),
-    row({ model: 'gpt-5.6-sol', provider: 'qijichuangtan', keyName: null, source: 'abel@aucegypt.edu', inputTokens: 1000, cachedTokens: 500 }),
+    row({ model: 'gpt-5.6-sol', provider: 'minimax', keyName: '示例团队', inputTokens: 1000, cachedTokens: 500 }),
+    row({ model: 'gpt-5.6-sol', provider: 'qijichuangtan', keyName: null, source: 'claude-max@example.com', inputTokens: 1000, cachedTokens: 500 }),
   ], [
     { id: 'minimax', name: 'MiniMax', color: '', kind: 'compat', models: ['gpt-5.6-sol'] },
   ])
