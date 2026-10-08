@@ -64,6 +64,18 @@ export function fileBackedSecret(name: string, direct: string | undefined, filen
   }
 }
 
+/** A JSON file the console writes for another service: absolute and under DATA_DIR, the only path the systemd unit may write. */
+export function dataDirJsonFile(name: string, raw: string | undefined, dir: string): string {
+  const value = String(raw || '').trim()
+  if (!value) return ''
+  const root = path.resolve(dir)
+  const relative = path.relative(root, path.resolve(value))
+  if (!path.isAbsolute(value) || !value.endsWith('.json') || !relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${name} 必须是 DATA_DIR 下的 .json 绝对路径`)
+  }
+  return path.resolve(value)
+}
+
 const dataDir = process.env.DATA_DIR || path.resolve('data')
 const dataPlaneEnabled = booleanSetting('DATA_PLANE_ENABLED', process.env.DATA_PLANE_ENABLED, false)
 const dataPlaneBaseUrl = internalHttpBaseUrl('DATA_PLANE_BASE_URL', process.env.DATA_PLANE_BASE_URL, dataPlaneEnabled)
@@ -138,6 +150,8 @@ export const config = {
   dataPlaneBackoffBaseMs: positiveInteger('DATA_PLANE_BACKOFF_BASE_MS', process.env.DATA_PLANE_BACKOFF_BASE_MS, 1_000, { min: 100, max: 60_000 }),
   dataPlaneBackoffMaxMs: positiveInteger('DATA_PLANE_BACKOFF_MAX_MS', process.env.DATA_PLANE_BACKOFF_MAX_MS, 5 * 60_000, { min: 1_000, max: 24 * 60 * 60 * 1000 }),
   cpaRequestTimeoutMs: positiveInteger('CPA_REQUEST_TIMEOUT_MS', process.env.CPA_REQUEST_TIMEOUT_MS, 10_000, { min: 500, max: 60_000 }),
+  /** CPA `models.catalog` 读的本地文件（官方 ∪ 补充目录，由 cpa-catalog 任务写）；空 = 任务停用。 */
+  cpaModelsCatalogFile: dataDirJsonFile('CPA_MODELS_CATALOG_FILE', process.env.CPA_MODELS_CATALOG_FILE, dataDir),
   // Claude OAuth usage/profile are upstream control-plane endpoints, not live request data.
   // Keep them cached and back off aggressively after a 429 so the monitor cannot turn a
   // temporary upstream limit into a continuous retry loop.

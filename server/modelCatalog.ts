@@ -6,6 +6,7 @@ import {
   applyGatewayPricing, getModelPricing, getPriceHistory, getPricingSources, normalizeModelForPricing,
   pricingSourceModelIds, pricingSourceStatus, type ModelPricing, type PriceEntry, type PriceSourceId, type SourcePrice,
 } from './pricing.js'
+import { priceWatcher } from './priceWatch.js'
 
 export type ModelDefinition = {
   id?: string
@@ -130,6 +131,11 @@ function pricingKeysFor(id: string): string[] {
     if (undated.endsWith(suffix)) add(undated.slice(0, -suffix.length))
   }
   return [...keys]
+}
+
+/** 一次 `gatewayPricingMap` 发出的请求数：本机控制面只读共享目录；CPA 控制面是每个原生渠道一次 + openai-compatibility + available-models。 */
+export function gatewayPricingRequests(): number {
+  return config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local' ? 0 : definitionChannels.length + 2
 }
 
 /**
@@ -459,6 +465,9 @@ function priceEntryFields(entry: ModelPricing): PriceEntry {
  * 拉的几次请求，任何一次超时、或 models.dev 富化还没跑完，`gatewayPricingMap()`
  * 就会少一部分模型。整份覆盖会把上一轮已经拿到的价抹掉，下次重启这些模型就真的
  * 没价了——正是这次要根治的那类丢失。合并只增不减；要删模型得人工改快照。
+ *
+ * 已有的模型也不改：快照在重启时以 1970 段装回，拿最新价覆盖等于把改价追溯到全部历史、
+ * 还绕过「超过 50% 要两次读取一致」。改价只走价格巡检（priceWatch.ts），带生效时刻重放。
  */
 export function mergeGatewayPriceSnapshot(
   existing: Record<string, PriceEntry>,
@@ -466,7 +475,7 @@ export function mergeGatewayPriceSnapshot(
 ): Record<string, PriceEntry> {
   const merged: Record<string, PriceEntry> = { ...existing }
   for (const [id, entry] of incoming) {
-    if (!id || !Number.isFinite(entry.input) || !Number.isFinite(entry.output)) continue
+    if (!id || id in merged || !Number.isFinite(entry.input) || !Number.isFinite(entry.output)) continue
     merged[id] = priceEntryFields(entry)
   }
   return merged
@@ -511,8 +520,7 @@ export async function refreshGatewayPricingDetailed(): Promise<{
   /** 本轮失败的价格来源（这些来源的旧价格仍保留在快照里）；非空时同步中心报 partial。 */
   failedSources: string[]
 }> {
-  const local = config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local'
-  const requests = local ? 0 : definitionChannels.length + 2
+  const requests = gatewayPricingRequests()
   const failedSources: string[] = []
   try {
     const map = await gatewayPricingMap(failedSources)
@@ -524,5 +532,7 @@ export async function refreshGatewayPricingDetailed(): Promise<{
   }
 }
 
-// 进程一起来就先把上次落盘的网关价装回去，避免首次刷新完成前的用量被记成未定价。
+// 进程一起来就先把上次落盘的网关价装回去，避免首次刷新完成前的用量被记成未定价；
+// 再重放价格巡检已生效的改价（以静态表或第一次改价前的价为底，不受网关快照存的最新价影响）。
 restoreGatewayPricing()
+priceWatcher.restore()

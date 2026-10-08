@@ -62,6 +62,8 @@ export const JOB_SOURCE: Record<string, string> = {
   'model-discovery': '渠道 /models 探测',
   pricing: '网关价格 · 共享目录双源',
   'model-availability': '网关 /v1/chat/completions · 每模型一次最小请求',
+  'price-watch': '网关 · models.dev · OpenRouter',
+  'cpa-catalog': 'CPA 官方目录 ∪ 补充目录',
   'account-quota': '订阅账号额度 · 页面刷新时',
   'data-plane': 'outbox → 数据面',
   'catalog-sync': 'launchd · crosery-models-sync',

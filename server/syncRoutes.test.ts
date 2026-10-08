@@ -117,11 +117,14 @@ test('GET /api/sync/status 按契约 C3 返回全部任务', async () => {
   assert.equal(response.status, 200)
   const body = await response.json() as { policy: Record<string, unknown>; jobs: Array<Record<string, unknown>>; generatedAt: string }
   assert.deepEqual(Object.keys(body.policy).sort(), ['backoff', 'globalUpstreamConcurrency', 'jitterPct', 'minIntervalPerHostMs'])
-  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
+  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
   const required = ['id', 'label', 'kind', 'intervalMs', 'lastRunAt', 'lastFinishedAt', 'nextRunAt', 'state', 'lastResult', 'lastError', 'summary',
     'backoffUntil', 'backoffLevel', 'requests24h', 'history', 'canRunNow', 'runCooldownUntil']
   for (const job of body.jobs) for (const key of required) assert.ok(key in job, `${String(job.id)} 缺少 ${key}`)
   assert.equal(body.jobs.find(job => job.id === 'data-plane')!.state, 'disabled')
+  // CPA_MODELS_CATALOG_FILE unset: the catalog job is listed but never runs
+  const catalog = body.jobs.find(job => job.id === 'cpa-catalog')!
+  assert.deepEqual([catalog.state, catalog.canRunNow, catalog.nextRunAt, catalog.summary], ['disabled', false, null, '未设置 CPA_MODELS_CATALOG_FILE'])
   assert.equal(body.jobs.find(job => job.id === 'kernel-upstream')!.canRunNow, false)
   // CPA engine: discovery would write live routing, so it never runs on its own — only from the sync center
   const discovery = body.jobs.find(job => job.id === 'model-discovery')!
@@ -288,7 +291,7 @@ test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次
     },
   }, scratch)
   const view = async () => (await scratch.status()).jobs.find(job => job.id === 'model-availability')!
-  assert.deepEqual((await scratch.status()).jobs.map(job => job.id), ['model-discovery', 'pricing', 'model-availability', 'account-quota', 'data-plane'])
+  assert.deepEqual((await scratch.status()).jobs.map(job => job.id), ['model-discovery', 'pricing', 'model-availability', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane'])
   assert.equal((await view()).intervalMs, 30 * 60_000)
 
   scratch.start()
@@ -308,5 +311,37 @@ test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次
     assert.equal((await view()).state, 'disabled')
   } finally {
     scratch.stop()
+  }
+})
+
+test('价格变更任务登记在同步中心：读网关价与共享产物，共享产物缺失时报 partial 并写明原因', async () => {
+  const { config } = await import('./config.js')
+  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl, engine: config.gatewayEngine, catalog: process.env.CROSERY_SHARED_CATALOG }
+  config.gatewayEngine = 'cpa'
+  config.cpaManagementKey = 'fixture-management-key'
+  config.cpaBaseUrl = 'https://cpa.example.test'
+  process.env.CROSERY_SHARED_CATALOG = path.join(root, 'nope/catalog.json')
+  const priced = { id: 'watched-model', cost: { input: 1, output: 2 } }
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    if (url.includes('/model-definitions/')) return new Response(JSON.stringify({ models: [priced] }), { status: 200 })
+    if (url.endsWith('/openai-compatibility')) return new Response(JSON.stringify({ 'openai-compatibility': [] }), { status: 200 })
+    if (url.endsWith('/available-models')) return new Response(JSON.stringify({ models: [priced] }), { status: 200 })
+    throw new Error(`unexpected ${url}`)
+  }) as typeof fetch
+  try {
+    const { outcome } = await registry.run('price-watch', 'manual')
+    assert.equal(outcome.result, 'partial')
+    assert.equal(outcome.summary, '无改价生效 · 价格源 1/3')
+    assert.match(outcome.error ?? '', /models\.dev 读取失败：共享目录没有价格段；OpenRouter 读取失败：共享目录没有价格段/)
+    const view = (await registry.status()).jobs.find(job => job.id === 'price-watch')!
+    assert.deepEqual([view.intervalMs, view.requests24h, view.lastResult], [6 * 60 * 60_000, 7, 'partial'])
+  } finally {
+    globalThis.fetch = original.fetch
+    config.cpaManagementKey = original.key
+    config.cpaBaseUrl = original.base
+    config.gatewayEngine = original.engine
+    if (original.catalog === undefined) delete process.env.CROSERY_SHARED_CATALOG
+    else process.env.CROSERY_SHARED_CATALOG = original.catalog
   }
 })
