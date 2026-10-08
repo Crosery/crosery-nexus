@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  checkMark, choiceName, cpaRef, EGRESS_CUSTOM, EGRESS_UNKNOWN, egressBadge, egressChoice, egressOptions, egressWarning, egressWrite, magpieRef,
-  readLabel, serviceOf, signinVia,
+  checkMark, choiceName, cpaRef, EGRESS_CUSTOM, EGRESS_UNKNOWN, egressBadge, egressChoice, egressOptions, egressWarning, egressWrite, exitLabel, magpieRef,
+  readLabel, regionName, serviceOf, signinVia,
 } from '../src/features/accounts/egressModel.js'
 import { rowMenu } from '../src/features/accounts/magpieModel.js'
 import type { EgressData, EgressEntry, EgressRead, MagpieAccount } from '../src/types.js'
@@ -43,6 +43,20 @@ test('refs and services: a Claude account checks Claude, a Codex one OpenAI, Ant
   assert.equal(serviceOf('qwen'), null)
 })
 
+test('an exit reads region first, then its name; an auto name\'s own country tail is not said twice', () => {
+  assert.equal(regionName('US'), '美国')
+  assert.equal(regionName('jp'), '日本')
+  assert.equal(regionName('HK'), '香港')
+  assert.equal(regionName(null), null)
+  assert.equal(regionName(''), null)
+  assert.equal(regionName('XX'), 'XX', 'a code Intl does not know stays as it is')
+  assert.equal(regionName('EU-1'), 'EU-1')
+  assert.equal(exitLabel({ name: '东京-01', country: 'JP' }), '日本 · 东京-01')
+  assert.equal(exitLabel({ name: '203.0.113.7 · US', country: 'US' }), '美国 · 203.0.113.7')
+  assert.equal(exitLabel({ name: 'node-ss', country: null }), 'node-ss')
+  assert.equal(exitLabel({ name: '', country: 'SG' }), '新加坡')
+})
+
 test('check marks: ✓ with latency, ✗ with the reason, 未检测, and the exit itself down wins', () => {
   assert.deepEqual(checkMark(entry(), 'claude'), { ok: true, text: '✓ 230ms', title: '经这个出口可以访问 Claude' })
   assert.deepEqual(checkMark(entry(), 'openai'), { ok: false, text: '✗ 地区限制', title: '经这个出口访问 OpenAI：地区限制' })
@@ -54,11 +68,12 @@ test('check marks: ✓ with latency, ✗ with the reason, 未检测, and the exi
 test('badges: own exit with country + this vendor\'s check; inherit names what it resolves to; nothing when unknown', () => {
   const d = data()
   const own = egressBadge(d, 'cpa:c1.json', 'claude')!
-  assert.deepEqual([own.kind, own.label, own.country, own.mark.text], ['entry', '东京-01', 'JP', '✓ 230ms'])
+  assert.deepEqual([own.kind, own.label, own.country, own.mark.text], ['entry', '日本 · 东京-01', 'JP', '✓ 230ms'])
+  assert.doesNotMatch(own.title, /:\/\//, 'never a proxy URL')
   assert.equal(egressBadge(d, 'cpa:c1.json', 'openai')!.mark.ok, false, 'the same exit, checked for the account\'s own vendor')
   assert.deepEqual(egressBadge(d, 'cpa:c2.json', 'claude')!.label, '全局 · 直连')
   const viaGlobal = egressBadge(data({ default: { mode: 'url', entryId: 'px_aaaaaaaaaa' } }), 'cpa:c2.json', 'claude')!
-  assert.deepEqual([viaGlobal.kind, viaGlobal.label, viaGlobal.country, viaGlobal.mark.text], ['inherit', '全局 · 东京-01', 'JP', '✓ 230ms'])
+  assert.deepEqual([viaGlobal.kind, viaGlobal.label, viaGlobal.country, viaGlobal.mark.text], ['inherit', '全局 · 日本 · 东京-01', 'JP', '✓ 230ms'])
   assert.equal(egressBadge(data({ default: { mode: 'unknown', entryId: null } }), 'cpa:c2.json', 'claude')!.label, '继承全局')
   const custom = egressBadge(d, 'cpa:c3.json', 'claude')!
   assert.deepEqual([custom.kind, custom.label], ['custom', '自定义地址'])
@@ -69,27 +84,27 @@ test('badges: own exit with country + this vendor\'s check; inherit names what i
   assert.equal(egressBadge(null, 'cpa:c1.json', 'claude'), null)
   // a fresher per-account read wins over what the pool last saw
   const read: EgressRead = { ref: 'cpa:c2.json', mode: 'url', entryId: 'px_aaaaaaaaaa', masked: 'x', at: AT, entryName: '东京-01', preset: 0 }
-  assert.equal(egressBadge(d, 'cpa:c2.json', 'claude', read)!.label, '东京-01')
+  assert.equal(egressBadge(d, 'cpa:c2.json', 'claude', read)!.label, '日本 · 东京-01')
 })
 
 test('Magpie badges: an account without its own exit follows its service, else the kernel (direct)', () => {
   const d = data({ backend: 'magpie', accounts: { 'magpie:codex:a@x.test': { mode: 'url', entryId: 'px_aaaaaaaaaa', masked: 'x', at: null } }, services: { claude: { mode: 'url', entryId: 'px_aaaaaaaaaa', masked: 'x', at: null } } })
   assert.equal(egressBadge(d, 'magpie:codex:a@x.test', 'openai')!.mark.text, '✗ 地区限制')
   assert.equal(egressBadge(d, 'magpie:codex:b@x.test', 'openai')!.label, '服务 · 直连')
-  assert.equal(egressBadge(d, 'magpie:claude:c@x.test', 'claude')!.label, '服务 · 东京-01')
+  assert.equal(egressBadge(d, 'magpie:claude:c@x.test', 'claude')!.label, '服务 · 日本 · 东京-01')
 })
 
 test('picker: 继承 · 直连 · exits (unassignable listed, disabled, with the reason) · presets not in the pool · 自定义', () => {
   const options = egressOptions(data({ default: { mode: 'url', entryId: 'px_aaaaaaaaaa' } }), 'cpa:c1.json', 'claude', { presets: [{ label: '东京', url: 'socks5://a:b@h:1' }, { label: '住宅', url: 'http://c:d@r:2' }], custom: true })
   assert.deepEqual(options, [
-    { value: '', label: '继承全局 · 东京-01' },
+    { value: '', label: '继承全局 · 日本 · 东京-01' },
     { value: 'direct', label: '直连' },
-    { value: 'px_aaaaaaaaaa', label: '东京-01 · JP · Claude ✓ 230ms', disabled: false },
+    { value: 'px_aaaaaaaaaa', label: '日本 · 东京-01 · Claude ✓ 230ms', disabled: false },
     { value: 'px_bbbbbbbbbb', label: 'node-ss · CPA 不在本机，本机端口对它不可用', disabled: true },
     { value: 'preset:1', label: '住宅 · 预设' },
     { value: EGRESS_CUSTOM, label: '自定义地址…' },
   ])
-  assert.equal(egressOptions(data(), 'cpa:c1.json', 'openai')[2].label, '东京-01 · JP · OpenAI ✗ 地区限制')
+  assert.equal(egressOptions(data(), 'cpa:c1.json', 'openai')[2].label, '日本 · 东京-01 · OpenAI ✗ 地区限制')
   assert.equal(egressOptions(data({ backend: 'magpie' }), 'magpie:codex:a@x.test', 'openai')[0].label, '不单独设置 · 直连')
   assert.equal(egressOptions(null, 'cpa:c1.json', 'claude').length, 2, 'no pool view: 继承 and 直连 only')
 })
@@ -111,7 +126,7 @@ test('choice and write: entries by id through the pool, presets by address throu
   assert.equal(egressWrite('preset:9', presets), null)
   assert.equal(egressWrite('socks5://typed:1', presets), null, 'a typed address is the caller\'s')
   assert.equal(choiceName(d, 'cpa:c1.json', 'preset:1', presets), '住宅')
-  assert.equal(choiceName(d, 'cpa:c1.json', 'px_aaaaaaaaaa'), '东京-01')
+  assert.equal(choiceName(d, 'cpa:c1.json', 'px_aaaaaaaaaa'), '日本 · 东京-01')
 })
 
 test('warning: only a pick whose last check failed for this account\'s vendor', () => {
@@ -122,10 +137,11 @@ test('warning: only a pick whose last check failed for this account\'s vendor', 
 })
 
 test('sign-in route is stated (no backend sends one sign-in through a chosen exit); toast words never show a URL', () => {
-  assert.deepEqual(signinVia(data({ default: { mode: 'url', entryId: 'px_aaaaaaaaaa' }, signin: { via: 'cpa-global', exit: { mode: 'url', entryId: 'px_aaaaaaaaaa' }, perSignin: false, note: 'n' } })), { label: 'CPA 全局代理 · 东京-01', note: 'n' })
+  assert.deepEqual(signinVia(data({ default: { mode: 'url', entryId: 'px_aaaaaaaaaa' }, signin: { via: 'cpa-global', exit: { mode: 'url', entryId: 'px_aaaaaaaaaa' }, perSignin: false, note: 'n' } })), { label: 'CPA 全局代理 · 日本 · 东京-01', note: 'n' })
   assert.equal(signinVia(data()).label, 'CPA 全局代理 · 直连')
   assert.equal(signinVia(data({ signin: { via: 'direct', exit: { mode: 'direct', entryId: null }, perSignin: false, note: 'k' } })).label, '本机直连')
   assert.equal(readLabel({ ref: 'r', mode: 'url', entryId: 'px_aaaaaaaaaa', masked: 'http://***@h:1', at: null, entryName: '东京-01', preset: null }), '东京-01')
+  assert.equal(readLabel({ ref: 'r', mode: 'url', entryId: 'px_aaaaaaaaaa', masked: 'http://***@h:1', at: null, entryName: '东京-01', preset: null }, data()), '日本 · 东京-01', 'with the pool view: where it lands')
   assert.equal(readLabel({ ref: 'r', mode: 'url', entryId: null, masked: 'http://***@h:1', at: null, entryName: null, preset: null }), '自定义 · http://***@h:1')
 })
 
