@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { allowFreshInvalidation, createLimiter, mapWithConcurrency, SyncRegistry, type SyncOutcome } from './syncRegistry.js'
+import { allowFreshInvalidation, createLimiter, mapWithConcurrency, sanitizeSyncError, SyncRegistry, type SyncOutcome } from './syncRegistry.js'
 
 type FakeTimer = { callback: () => void; ms: number; cleared: boolean }
 
@@ -370,4 +370,11 @@ test('SB-19 根级时间按时钟夹住：未来的 manualAt / lastRunAt 不能�
   assert.equal(Date.parse(view.runCooldownUntil!), now + 6 * 60 * 60_000)
   clock.now = now + 6 * 60 * 60_000 + 1
   assert.equal(registry.admitManual('job'), null, '夹住之后到点即可手动运行，而不是等一年')
+})
+
+test('任务错误：裸 fetch failed 写成一句话，其它原样（凭据照旧打码），重复清洗不变', () => {
+  assert.equal(sanitizeSyncError('fetch failed'), '网络没连上（fetch failed）')
+  assert.equal(sanitizeSyncError(sanitizeSyncError('fetch failed')), '网络没连上（fetch failed）')
+  assert.equal(sanitizeSyncError('CPA 502: boom'), 'CPA 502: boom')
+  assert.equal(sanitizeSyncError('upstream rejected sk-abcdefgh12345'), 'upstream rejected sk-***')
 })

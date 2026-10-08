@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { defaultModelAlias, modelDiscoveryUrls, normalizeDiscoveredModels, parseChannelProtocol, validateChannelName, validateSelectedModels } from './channelDiscovery.js'
+import { CPARequestError } from './cpa.js'
+import { defaultModelAlias, discoveryFailure, modelDiscoveryUrls, normalizeDiscoveredModels, parseChannelProtocol, validateChannelName, validateSelectedModels } from './channelDiscovery.js'
 
 test('uses /models when base url already ends in /v1', () => {
   assert.deepEqual(modelDiscoveryUrls('openai', 'https://api.minimaxi.com/v1/'), ['https://api.minimaxi.com/v1/models'])
@@ -57,4 +58,11 @@ test('channel names and selected aliases are validated', () => {
   assert.throws(() => validateChannelName('bad name'), /渠道名/)
   assert.throws(() => validateSelectedModels([]), /至少选择/)
   assert.throws(() => validateSelectedModels([{ id: 'a', alias: 'same' }, { id: 'b', alias: 'same' }]), /重复/)
+})
+
+test('探测失败原因：CPA 连不上上游的 502 换成一句话，其它原因原样', () => {
+  assert.equal(discoveryFailure(new CPARequestError(502, '/api-call', '{"error":"request failed"}')), '连不上这个地址 · 检查域名与网络')
+  assert.equal(discoveryFailure(new CPARequestError(500, '/api-call', 'boom')), 'CPA 500: boom')
+  assert.equal(discoveryFailure(new Error('超时')), '超时')
+  assert.equal(discoveryFailure('x'), '请求失败')
 })

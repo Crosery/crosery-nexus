@@ -154,6 +154,24 @@ function reveal(id: string) {
   document.getElementById(id)?.scrollIntoView({ block: 'start' })
 }
 
+/** 代理 and RTK 中转 read their own data and grow after the shell's answers: keep the deep-linked plate placed
+ *  while the plates above it grow, until the person scrolls, jumps elsewhere, or 4 s pass */
+const body = ref<HTMLElement | null>(null)
+let holding: ResizeObserver | null = null
+function holdPlace(id: string) {
+  if (!body.value || typeof ResizeObserver === 'undefined') return
+  holding?.disconnect()
+  const observer = new ResizeObserver(() => {
+    if (pinned && active.value === id) reveal(id)
+  })
+  observer.observe(body.value)
+  holding = observer
+  setTimeout(() => {
+    observer.disconnect()
+    if (holding === observer) holding = null
+  }, 4000)
+}
+
 onMounted(async () => {
   window.addEventListener('scroll', onScroll, { passive: true })
   for (const type of USER_SCROLL_EVENTS) window.addEventListener(type, unpin, { passive: true })
@@ -178,9 +196,12 @@ onMounted(async () => {
     })
   }
   await nextTick()
-  if (pinned) reveal(id)
+  if (!pinned) return
+  reveal(id)
+  holdPlace(id)
 })
 onBeforeUnmount(() => {
+  holding?.disconnect()
   window.removeEventListener('scroll', onScroll)
   for (const type of USER_SCROLL_EVENTS) window.removeEventListener(type, unpin)
   if (frame) cancelAnimationFrame(frame)
@@ -240,7 +261,7 @@ async function signOut() {
         </a>
       </nav>
 
-      <div class="set-body ui-grid">
+      <div ref="body" class="set-body ui-grid">
         <SyncCenter
           class="c-12"
           :data="sync.data.value"

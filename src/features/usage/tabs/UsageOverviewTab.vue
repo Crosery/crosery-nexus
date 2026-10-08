@@ -153,6 +153,7 @@ const keyRows = computed<RankRow[]>(() =>
     name: r.label,
     value: !keysByCost.value ? r.requests : r.costUsd === 0 && r.partialCost ? null : r.costUsd,
     sub: r.id === '__deleted__' ? '已删除' : r.id === '__none__' ? '未带 Key' : r.enabled === false ? '已停用' : undefined,
+    selectable: !UNSELECTABLE.has(r.id),
   })),
 )
 // a channel removed since keeps its history here, named by its id and marked (the 全部渠道 scope is the default)

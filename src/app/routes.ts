@@ -7,6 +7,7 @@
 import { defineComponent } from 'vue'
 import type { RouteRecordRaw } from 'vue-router'
 import type { SessionRole } from '../types'
+import { carry } from './legacyRedirect'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -67,11 +68,11 @@ export const routes: RouteRecordRaw[] = [
       { path: '/me/connect', name: 'me-connect', component: () => import('../features/me/MeConnectPage.vue'), meta: { title: '接入' } },
     ],
   },
-  // v2 paths keep working (bookmarks, old links); query and hash are carried over by the router.
-  { path: '/channels', redirect: '/providers?tab=channels' },
-  { path: '/accounts', redirect: '/providers?tab=accounts' },
-  { path: '/oauth', redirect: '/providers?tab=accounts' },
-  { path: '/monitor', redirect: '/providers?tab=accounts' },
+  // v2 paths keep working (bookmarks, old links); query and hash are carried over (`carry` where the target has its own query).
+  { path: '/channels', redirect: carry('/providers?tab=channels') },
+  { path: '/accounts', redirect: carry('/providers?tab=accounts') },
+  { path: '/oauth', redirect: carry('/providers?tab=accounts') },
+  { path: '/monitor', redirect: carry('/providers?tab=accounts') },
   { path: '/rtk', redirect: '/settings' },
   { path: '/charts', redirect: '/usage/performance' },
   { path: '/analytics', redirect: '/usage/requests' },

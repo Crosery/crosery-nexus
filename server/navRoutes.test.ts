@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { carry } from '../src/app/legacyRedirect.js'
 
 /**
  * 导航 ⇄ 路由一致性（CONTRACTS「Frontend routes」）。
@@ -103,7 +105,7 @@ test('角色守卫：两个壳各自声明 meta.role，路由守卫按 meta.role
 })
 
 test('旧路径重定向与契约逐条相等；被删除的页面不再挂载', () => {
-  const redirects = Object.fromEntries([...routesSource.matchAll(/\{ path: '([^']+)', redirect: '([^']+)' \}/g)].map((m) => [m[1], m[2]]))
+  const redirects = Object.fromEntries([...routesSource.matchAll(/\{ path: '([^']+)', redirect: (?:carry\()?'([^']+)'\)? \}/g)].map((m) => [m[1], m[2]]))
   assert.deepEqual(redirects, {
     '/channels': '/providers?tab=channels',
     '/accounts': '/providers?tab=accounts',
@@ -116,6 +118,9 @@ test('旧路径重定向与契约逐条相等；被删除的页面不再挂载',
     '/credentials': '/dashboard',
     '/ab': '/dashboard',
   })
+  for (const match of routesSource.matchAll(/\{ path: '([^']+)', redirect: '([^']+)' \}/g)) {
+    assert.ok(!match[2].includes('?'), `${match[1]} 的目标自带查询，要用 carry()，否则 ?q= / ?add= 会丢`)
+  }
   const pages = new Set(adminRoutes.map((r) => r.path))
   assert.deepEqual(Object.values(redirects).map((to) => to.split('?')[0]).filter((to) => !pages.has(to)), [], '重定向目标必须是真实页面')
   const all = [...adminRoutes, ...keyRoutes].map((r) => r.path)
@@ -123,6 +128,26 @@ test('旧路径重定向与契约逐条相等；被删除的页面不再挂载',
     assert.ok(!all.includes(removed), `${removed} 不应再挂页面（只剩重定向）`)
   }
   assert.match(routesSource, /path: '\/:pathMatch\(\.\*\)\*', name: 'unknown', component: Redirecting, meta: \{ home: true \}/)
+})
+
+test('旧链接的查询与锚点跟着重定向走：/channels?q=、/accounts?add=1 不丢', async () => {
+  const Page = { render: () => null }
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/providers', component: Page },
+      { path: '/channels', redirect: carry('/providers?tab=channels') },
+      { path: '/accounts', redirect: carry('/providers?tab=accounts') },
+    ],
+  })
+  await router.push('/channels?q=openrouter&status=off')
+  assert.deepEqual(router.currentRoute.value.query, { q: 'openrouter', status: 'off', tab: 'channels' })
+  await router.push('/accounts?add=1#oauth')
+  assert.equal(router.currentRoute.value.path, '/providers')
+  assert.deepEqual(router.currentRoute.value.query, { add: '1', tab: 'accounts' })
+  assert.equal(router.currentRoute.value.hash, '#oauth')
+  await router.push('/accounts?tab=channels')
+  assert.equal(router.currentRoute.value.query.tab, 'accounts', '目标自己的 tab 优先')
 })
 
 test('解析守卫有牙齿：合成样本里漏一个导航项、多一个路由都必须被抓出来', () => {

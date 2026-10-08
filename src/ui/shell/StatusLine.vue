@@ -11,7 +11,7 @@ import type { ShellRole, ShellStatus } from '../types'
 /**
  * Statusline (DESIGN.md §4.1, desktop ≥960): 24px fixed bottom bar, paper-2, top rule, mono 11px ink-3 with
  * ink-2 values; segments split by │. Admin:
- *   ADMIN │ 网关 ● 94.8 rpm · p95 6.41s │ 同步 ▮▮▯▮▮ … │ magpie 3fe2ff9 · RTK 开 │ ⌘K 命令 · 1–8 跳转 · T 主题 · M 脱敏 │ 14:32:08 CST
+ *   ADMIN │ 网关 ● 94.8 rpm · p95 6.41s │ 同步 ▮▮▯▮▮ … │ magpie 3fe2ff9 · RTK 开 │ ⌘K 命令 · 1–7 跳转 · T 主题 · M 脱敏 │ 14:32:08 CST
  * Key: KEY │ name │ 今日 $38.20 / $50.00 · 本周 85% · 可用模型 24 │ 1–4 跳转 · T 主题 │ 14:32:11 CST
  * Sync squares: ok ink-3, running blinks, backoff orange, failed an orange diamond; each links to
  * /settings#sync and carries its detail as title.
@@ -75,7 +75,7 @@ const magpieTip = computed(() => {
         <template v-else-if="status.kernel">{{ status.kernel }}</template>
         <template v-if="(magpie || status.kernel) && status.rtk != null"> · </template><template v-if="status.rtk != null">RTK <b>{{ status.rtk ? '开' : '关' }}</b></template>
       </span>
-      <span class="ui-sl__seg ui-sl__keys"><Kbd keys="mod+k" /> 命令 · 1–8 跳转 · T 主题 · M 脱敏</span>
+      <span class="ui-sl__seg ui-sl__keys"><Kbd keys="mod+k" /> 命令 · 1–7 跳转 · T 主题 · M 脱敏</span>
     </template>
     <template v-else>
       <span v-if="status.key" class="ui-sl__seg"><b>{{ status.key.name }}</b></span>

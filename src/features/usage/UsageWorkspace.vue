@@ -7,9 +7,10 @@ import { useIndicator } from '../../ui/composables/useIndicator'
 import { useLive } from '../../ui/composables/useLive'
 import { fmtInt, fmtPct } from '../../ui/fmt'
 import { useQueryState } from '../../lib/listState'
+import { notify } from '../../ui/feedback/toast'
 import { USAGE_TABS } from '../../app/nav'
 import type { FilterBarField, SegmentItem } from '../../ui/types'
-import { isCurrentOnly, sharedUsageQuery, spanLabel, USAGE_DAYS, USAGE_FILTER_DEFAULTS, USAGE_RANGE_ITEMS, usageFilterFrom } from './filters'
+import { isCurrentOnly, refusedWindow, sharedUsageQuery, spanLabel, USAGE_DAYS, USAGE_FILTER_DEFAULTS, USAGE_RANGE_ITEMS, usageFilterFrom } from './filters'
 import { api } from './shared/api'
 import { isPendingRestart } from './shared/format'
 import type { UsageFacetOption } from './shared/types'
@@ -38,7 +39,18 @@ if (typeof route.query.hours === 'string' && route.query.hours && !route.query.d
 const scope = useQueryState(USAGE_FILTER_DEFAULTS)
 const filter = computed(() => usageFilterFrom(scope.state))
 
-const facets = useLive((signal) => api.facets(filter.value, signal), { intervalMs: 60_000 })
+const rangeWord = (days: number) => USAGE_RANGE_ITEMS.find((item) => item.value === String(days))?.label ?? `${days}d`
+/* a window past retention comes back as 7d: move the range control to the window the numbers are for, and say so */
+const facets = useLive(async (signal) => {
+  const asked = filter.value
+  const answer = await api.facets(asked, signal)
+  const applied = refusedWindow(asked, answer.window)
+  if (applied !== null && !signal.aborted) {
+    notify(`◇ ${rangeWord(asked.days)} 超出数据保留期 · 已改看 ${rangeWord(applied)}`, { tone: 'note', id: 'usage-window' })
+    scope.patch({ days: String(applied) })
+  }
+  return answer
+}, { intervalMs: 60_000 })
 watch(
   [() => scope.state.days, () => scope.state.from, () => scope.state.to, () => scope.state.keyId, () => scope.state.model, () => scope.state.provider, () => scope.state.client, () => scope.state.currentOnly],
   () => void facets.refresh(),

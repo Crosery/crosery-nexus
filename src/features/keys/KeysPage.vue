@@ -555,7 +555,7 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
         </template>
 
         <template #cell-ops="{ row }">
-          <span class="kx-ops" @click.stop @keydown.stop>
+          <span class="kx-ops" @click.stop @keydown.enter.stop @keydown.space.stop>
             <TxButton
               v-if="layout.quotaBtn"
               variant="secondary"

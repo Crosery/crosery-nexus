@@ -77,8 +77,10 @@ const winMessage = computed(() => {
 })
 
 function onRowClick(event: MouseEvent) {
-  const target = event.target as HTMLElement
-  if (target.closest('button, a, input, select, label, .tx-switch, .acc-row__x')) return
+  // the dispatch path, not target.closest(): ⋯ swaps its icon on click, so by the time the row hears the click
+  // the clicked <path> is detached and has no button ancestor — the row would toggle the detail straight back
+  const fromControl = event.composedPath().some((node) => node instanceof Element && node.matches('button, a, input, select, label, .tx-switch, .acc-row__x'))
+  if (fromControl) return
   if (window.getSelection()?.toString()) return
   emit('expand')
 }

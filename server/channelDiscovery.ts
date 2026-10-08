@@ -19,6 +19,16 @@ export function normalizeBaseUrl(value: string) {
 }
 
 /**
+ * 一次探测失败的原因。CPA 的 /api-call 连不上上游（域名、拒绝连接、证书）时回 502 `{"error":"request failed"}`，
+ * 原样给填表的人看不懂，换成一句话。
+ */
+export function discoveryFailure(error: unknown): string {
+  const status = (error as { status?: unknown } | null)?.status
+  if (error instanceof Error && error.name === 'CPARequestError' && status === 502) return '连不上这个地址 · 检查域名与网络'
+  return error instanceof Error ? error.message : '请求失败'
+}
+
+/**
  * 兼容用户填 host 根路径、/v1，以及完整 /models 地址。按常见程度依次探测，
  * 上游任一路径返回模型列表即停止。'responses'（OpenAI Responses 中继）的模型列表
  * 与 Bearer 鉴权都是 OpenAI 形状，只有转发端点不同（内核 relay-mode），所以走 openai 分支。

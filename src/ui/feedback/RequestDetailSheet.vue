@@ -21,8 +21,10 @@ const props = withDefaults(
     request: RequestDetailItem | null
     state?: DataState
     error?: unknown
+    /** error_category → plain words (the page's table); the raw code stays as a mono suffix */
+    categoryLabel?: (category: string) => string
   }>(),
-  { state: 'ready', error: null },
+  { state: 'ready', error: null, categoryLabel: (category: string) => category },
 )
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ retry: [] }>()
@@ -64,7 +66,10 @@ const tokens = computed(() => {
     <div v-else-if="request" class="ui-reqd">
       <p class="ui-reqd__status" :class="{ 'is-bad': !ok }">
         <span aria-hidden="true">{{ ok ? '✓' : '◆' }}</span> {{ request.statusCode ?? NONE }}
-        <span v-if="request.errorCategory" class="dim">· {{ request.errorCategory }}</span>
+        <template v-if="request.errorCategory">
+          · {{ categoryLabel(request.errorCategory) }}
+          <span v-if="categoryLabel(request.errorCategory) !== request.errorCategory" class="dim mono">{{ request.errorCategory }}</span>
+        </template>
       </p>
       <dl class="ui-reqd__facts">
         <template v-for="f in facts" :key="f.k">

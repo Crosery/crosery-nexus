@@ -50,7 +50,7 @@ const motionNote = computed(() => (motion.reduced.value ? '当前减弱 · 不�
         </span>
       </div>
       <div class="set-pref">
-        <span class="set-pref__k">单键快捷键<small>T 主题 · M 脱敏 · 1–8 跳转</small></span>
+        <span class="set-pref__k">单键快捷键<small>T 主题 · M 脱敏 · 1–7 跳转</small></span>
         <span class="set-pref__v">
           <Switch :model-value="keys.on.value" aria-label="单键快捷键" @update:model-value="keys.set" />
         </span>

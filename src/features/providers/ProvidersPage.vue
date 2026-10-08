@@ -287,7 +287,8 @@ const channelRows = computed<ChannelRow[]>(() => {
 })
 
 /* ── 整页一个搜索（?q=）与上面的状态筛选：同时管 API 渠道表与订阅账号池 ── */
-const searchQuery = ref('')
+// start from the URL: left to SearchField's own sync, a deep link (/channels?q=…) filtered the lists but the box stayed empty
+const searchQuery = ref(typeof route.query.q === 'string' ? route.query.q : '')
 function clearFilters() {
   searchQuery.value = ''
   setStatus('all')
@@ -812,6 +813,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
             <template #cell-switch="{ row }">
               <Switch
                 :model-value="row.enabled"
+                :aria-label="`${row.enabled ? '停用' : '启用'} ${row.name}`"
                 @click.stop
                 @update:model-value="toggleChannel(row.channelRef, !row.enabled)"
               />
@@ -834,7 +836,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
                   <span class="cx-card__name mono ellip">{{ row.name }}</span>
                   <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
                   <span class="cx-card__st" :class="{ sig: row.statusState === 'bad' || row.statusState === 'warn' }">{{ row.statusLabel }}</span>
-                  <span class="cx-card__switch" @click.stop @keydown.stop>
+                  <span class="cx-card__switch" @click.stop @keydown.enter.stop @keydown.space.stop>
                     <Switch
                       :model-value="row.enabled"
                       :aria-label="`${row.enabled ? '停用' : '启用'} ${row.name}`"
@@ -1251,5 +1253,11 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
   .pv-actions { justify-content: space-between; }
   .pv-searchrow { flex: 1 1 100%; }
   .pv-search { width: auto; flex: 1 1 220px; }
+}
+/* 窄屏：两个页签加实时标记挤不下一行，页签会折成两行、指示条落到第二个页签下。实时标记移到上一行，页签独占一行 */
+@media (max-width: 599px) {
+  .pv-page .usage-ws__head { flex-wrap: wrap; }
+  .pv-page .pv-actions { order: -1; width: 100%; justify-content: flex-end; padding-bottom: 0; }
+  .pv-page .usage-ws__tabs { flex-wrap: nowrap; width: 100%; }
 }
 </style>
