@@ -21,7 +21,7 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
 
 ```
 构建机（cpa-pipeline.timer，30 分钟一轮）
-  合并上游最新正式 release → docker go build + go test → cpa-smoke → 本机候选库
+  补丁系列（见下）→ deploy 分支 → 合并上游最新正式 release → docker go build + go test → cpa-smoke → 本机候选库
   └ tools/cpa-coordinator.mjs round（每轮最后）
       ├ 预发布空闲 → 上传候选（cpa-upload / cpa-stage / cpa-report）
       ├ 预发布装上了 → cpa-acceptance 对预发布公网 API 验收一次 → cpa-accept
@@ -35,6 +35,31 @@ AUTOUPDATE_RECORD_MAX_AGE_DAYS=7   # 正式接受的预发布记录最长多少�
   只暂存与晋级记录一致的二进制 → 记录检查 → 安静时段（默认 05:00–07:00 北京时间）→ cpa-install-binary.sh
   换上后每类 OAuth 账号并行发一个真实请求 → 25 秒内没全过就换回旧版本（换回在换上后 30 秒内完成）
 ```
+
+### 补丁系列
+
+构建机的 deploy 分支由补丁目录决定，不是固定清单：
+
+- 目录 `CPA_PATCH_DIR`（默认 `~/cpa-pipeline/patches/`），从控制台仓库的 `deploy/kernels/cpa-patches/` 同步过去（`*.patch` 不入库，只在本机和构建机上）。
+- 用版本最高的 `<上游 tag>/` 子目录。里面有几个 `*.patch` 就按文件名顺序打几个；`SHA256SUMS` 必须和补丁文件一一对上、校验通过。
+- 系列一变（加补丁、换基底），就从那个 tag 重建 deploy：每个提交的提交者用补丁作者、提交时间用作者时间，所以同一串补丁总是同一个 HEAD（移植仓库也这样提交时，就和移植仓库的 HEAD 一样）。旧分支留作 `deploy-prev`。
+- 校验不过、补丁打不上、源码目录有未提交改动：这一轮停住并报告原因，deploy 不动。
+- 没有补丁目录时沿用构建机上现有的 deploy 分支。
+- 候选的 `candidate.json` 记下 `series` 和 `patches`（补丁个数）。
+
+### 接入预发布上手工装的二进制
+
+二进制不是构建机这一轮构建的（比如在别处构建、已经手工装上预发布），也可以走同一条晋级路径：
+
+```sh
+# 预发布：核对运行中的版本和 sha256，开始试运行；给了上一个版本和它的备份，验收不过就自动换回去
+node /opt/crosery-api-console-current/scripts/kernel-applier.mjs adopt --version <版本> --sha256 <sha256> \
+  --previous <上一个版本> --backup <备份文件>
+# 构建机：把同一个文件收进候选库，晋级时送正式的就是它
+node ~/cpa-pipeline/tools/cpa-coordinator.mjs adopt --root ~/cpa-pipeline --binary <文件> --version <版本> --sha256 <sha256>
+```
+
+之后协调者照常做首次验收、浸泡后验收、送正式。试运行期间构建机自己的新构建排队等着。
 
 ### 正式的保护规则
 
@@ -108,6 +133,7 @@ command="/usr/local/sbin/cpa-pipeline-gate.sh production",restrict <构建机公
 | --- | --- |
 | `deploy/kernels/cpa-builder/{run.sh,build-in-container.sh}` | `~/cpa-pipeline/` |
 | `scripts/{cpa-coordinator.mjs,cpa-acceptance.mjs,autoupdate-common.mjs,cpa-smoke.mjs}`、`deploy/kernels/cpa-builder/smoke-config.yaml` | `~/cpa-pipeline/tools/` |
+| `deploy/kernels/cpa-patches/<上游 tag>/`（含本机的 `*.patch`） | `~/cpa-pipeline/patches/<上游 tag>/` |
 | `pipeline.env` | `~/cpa-pipeline/pipeline.env`，600，不入库，格式如下 |
 
 ```sh
@@ -118,7 +144,7 @@ CPA_ACCEPT_KEY=<预发布的验收 Key>
 CPA_ACCEPT_MODELS=<逗号分隔的模型>
 ```
 
-缺任何一项 `run.sh` 直接失败，没有默认值。
+缺任何一项 `run.sh` 直接失败，没有默认值。主机名、地址、端口和 SSH 用户只写在构建机的 `~/.ssh/config`（别名）里，不进仓库。
 
 ## 5. 控制台
 
