@@ -3,6 +3,7 @@ import { CliError, UsageError, listValue } from '../args.mjs'
 import { channelState, channelToggleItem, getChannels, getModelIndex, modelToggleItems, modelsOf, providerModels, providersOf } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { planModelChanges, resolveChannel } from '../resolve.mjs'
+import { channelsTree } from '../tree.mjs'
 
 const HELP = `cradmin channels <动作> [参数]
 
@@ -10,7 +11,7 @@ const HELP = `cradmin channels <动作> [参数]
 <渠道> 是兼容渠道名，或账号池 provider（如 codex、claude）。
 
 动作：
-  ls                         列出全部渠道与账号池（默认）
+  ls                         列出全部渠道与账号池（默认）：供应商 → API 渠道 / 订阅账号池，同控制台「供应商」页
   show <渠道>                渠道详情与模型开关
   models <渠道>              只看模型开关；带下面的参数时改开关
       --enable p,…           启用匹配的模型（精确 id，或带 * ? 的通配）
@@ -186,14 +187,10 @@ export default {
         const rows = await listView(ctx)
         return void ctx.output(rows, () => {
           if (!rows.length) return ctx.ui.note('还没有渠道')
-          ctx.ui.table(['渠道', '类型', '状态', '模型', '上游Key/账号', 'Base URL'], rows.map(row => [
-            row.name, row.kind === 'compat' ? '兼容渠道' : '账号池',
-            { text: row.state, tone: row.state === '启用' ? 'ok' : row.state === '失效' ? 'err' : 'warn' },
-            row.totalModels === null ? '-' : `${row.enabledModels}/${row.totalModels}`,
-            row.kind === 'compat' ? `${row.keys ?? '-'} Key` : `${row.accounts} 账号`,
-            row.baseUrl || '-',
-          ]), { align: ['left', 'left', 'center', 'right', 'right', 'left'] })
-          ctx.ui.note('看模型：cradmin channels models <渠道>')
+          const compat = rows.filter(row => row.kind === 'compat').length
+          ctx.ui.section('供应商', `API 渠道 ${compat} · 订阅账号池 ${rows.length - compat}`)
+          ctx.ui.tree(channelsTree(rows))
+          ctx.ui.note('看模型：cradmin channels models <渠道>（订阅账号池用括号里的 type，或名称的小写）')
         })
       }
       case 'show': {

@@ -4,6 +4,7 @@ import { request } from '../client.mjs'
 import { getBootstrap, keyCreateItem, keyQuota, keyUpdateItems, localDate } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { parseGroupConcurrency, resolveGroups, resolveKey } from '../resolve.mjs'
+import { keysTree } from '../tree.mjs'
 import { time, usd } from '../ui.mjs'
 
 const HELP = `cradmin keys <动作> [参数]
@@ -11,7 +12,7 @@ const HELP = `cradmin keys <动作> [参数]
 管理 API Key。<key> 可以是唯一的显示名称，或 id 前缀（至少 8 位十六进制）。
 
 动作：
-  ls                         列出全部 Key
+  ls                         列出全部 Key（同控制台「Key」页：状态、渠道范围、今日 / 本周 / 累计额度，按额度压力排序）
   show <key>                 查看一把 Key 的分组、并发、额度
   create --name <名称> --groups <分组,…>   开通新 Key，完整 Key 只显示这一次
   update <key> [参数]        改名称/备注/分组/并发/额度
@@ -51,16 +52,6 @@ export function keyStatus(key) {
   if (key.enabled) return { text: '启用', tone: 'ok' }
   if (key.blockedReason) return { text: `额度封禁${key.quotaState?.exceededWindow ? `(${WINDOW_LABEL[key.quotaState.exceededWindow] || key.quotaState.exceededWindow})` : ''}`, tone: 'err' }
   return { text: '停用', tone: 'warn' }
-}
-
-export function quotaText(key) {
-  const state = key.quotaState || {}
-  const parts = []
-  for (const window of ['daily', 'weekly', 'total']) {
-    const entry = state[window]
-    if (entry?.limitUsd > 0) parts.push(`${WINDOW_LABEL[window]} ${usd(entry.spentUsd)}/${usd(entry.limitUsd)}`)
-  }
-  return parts.length ? parts.join(' ') : '不限'
 }
 
 export const concurrencyText = key => (key.totalConcurrency ? `${key.totalConcurrency}${Object.keys(key.groupConcurrency || {}).length ? `（${Object.entries(key.groupConcurrency).map(([g, n]) => `${g}=${n}`).join(',')}）` : ''}` : '不限')
@@ -254,11 +245,9 @@ export default {
         const keys = (bootstrap.keys || []).map(publicKey)
         return void ctx.output(keys, () => {
           if (!keys.length) return ctx.ui.note('还没有 Key：cradmin keys create --name <名称> --groups <分组>')
-          ctx.ui.table(['名称', 'Key', '状态', '分组', '并发', '额度（已用/上限）', '最近使用'], keys.map(key => [
-            key.name, key.maskedKey, keyStatus(key), (key.groups || []).join(',') || { text: '无 · 仅默认开放模型', tone: 'warn' },
-            concurrencyText(key), quotaText(key), time(key.lastUsedAt),
-          ]), { align: ['left', 'left', 'center', 'left', 'right', 'right', 'left'] })
-          ctx.ui.note(`共 ${keys.length} 把；详情：cradmin keys show <名称>`)
+          ctx.ui.section('全部 Key', `${keys.length} 把 · 按额度压力排序`)
+          ctx.ui.tree(keysTree(keys, bootstrap.groups || []))
+          ctx.ui.note('详情：cradmin keys show <名称>；无渠道 = 只能用默认开放的模型')
         })
       }
       case 'show': {
