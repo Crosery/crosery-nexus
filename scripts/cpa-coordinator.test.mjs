@@ -60,9 +60,11 @@ test('reports: both hosts get the round, each with its own up-to-date, and where
 })
 
 test('rtk: only an accepted preview trial is forwarded, once, and never to a production already at that version', () => {
-  const accepted = { trial: { version: '0.51.0', tag: 'v0.51.0', sha256: 'c'.repeat(64), asset: 'rtk-x86_64-unknown-linux-musl.tar.gz', status: 'accepted', installedAt: 'a', checks: [], acceptedAt: 'b' } }
+  const last = { version: '0.51.0', tag: 'v0.51.0', sha256: 'c'.repeat(64), asset: 'rtk-x86_64-unknown-linux-musl.tar.gz', status: 'accepted', installedAt: 'a', checks: [], acceptedAt: 'b' }
+  // preview may already be soaking the next version: the accepted one is forwarded all the same
+  const accepted = { trial: { ...last, version: '0.52.0', status: 'soaking' }, accepted: last }
   assert.equal(rtkForward({ preview: accepted, production: { local: '0.50.0' } }).candidate.version, '0.51.0')
-  assert.equal(rtkForward({ preview: { trial: { ...accepted.trial, status: 'soaking' } }, production: { local: '0.50.0' } }), null)
+  assert.equal(rtkForward({ preview: { trial: { ...last, status: 'soaking' } }, production: { local: '0.50.0' } }), null)
   assert.equal(rtkForward({ preview: accepted, production: { local: '0.51.0' } }), null)
   assert.equal(rtkForward({ preview: accepted, production: { local: '0.50.0', promotion: { candidate: { version: '0.51.0' } } } }), null)
   assert.equal(rtkForward({ preview: accepted, production: null }), null)

@@ -13,7 +13,7 @@
  *    production (`cpa-upload`, `cpa-stage`, `cpa-promote`);
  * 3. the slot on preview is free (no trial, or the last one rejected or delivered) → upload this round's build to preview;
  * 4. report the round to both hosts (`cpa-report`) with where the candidate stands on preview;
- * 5. RTK: preview accepted a version → forward its record to production (`rtk-promote`).
+ * 5. RTK: preview accepted a version → forward that record to production (`rtk-promote`).
  *
  * Environment (<root>/pipeline.env on the build machine, not in the repo):
  *   CPA_PIPELINE_PREVIEW / CPA_PIPELINE_PRODUCTION   command prefix that reaches each gate, e.g. `ssh -o BatchMode=yes <alias>`
@@ -130,9 +130,12 @@ export function hostReport(report, host, stage) {
   return { ...report, status, preview: stage }
 }
 
-/** RTK: preview's accepted trial as the record production checks (production re-checks everything with its own policy). */
+/**
+ * RTK: preview's last accepted trial (kept as `accepted` while the next trial runs) as the record production checks;
+ * production re-checks everything with its own policy.
+ */
 export function rtkForward({ preview, production }) {
-  const trial = isObject(preview?.trial) ? preview.trial : null
+  const trial = isObject(preview?.accepted) ? preview.accepted : null
   if (!trial || trial.status !== 'accepted' || !production) return null
   if (production.promotion?.candidate?.version === trial.version || atLeast(production.local, trial.version)) return null
   return {
