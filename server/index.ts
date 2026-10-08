@@ -98,6 +98,7 @@ import { mergeCredentialUploadItems } from './credentialUploadMerge.js'
 import { MultipartUploadError, receiveUploadFile } from './multipartUpload.js'
 import { UploadGate, UploadGateBusyError } from './uploadGate.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
+import { parseRtkCompress, registerRtkRelayRoutes, setKeyRtkCompress, startRtkRelay } from './rtkRelay.js'
 import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
 const app = express()
@@ -224,6 +225,8 @@ registerAccountsRoutes(app, accountsService())
 registerGatewaySettingsRoutes(app, createGatewaySettingsService())
 // 代理池（PROXY-SPEC）：/api/proxies/* 仅管理员（默认拒绝守卫），响应全部脱敏；账号的 proxy_url 仍是唯一事实来源。
 registerProxyRoutes(app, proxyService())
+// RTK 中转压缩（docs/ops/rtk-relay.md）：全局开关与节省统计；监听线程在文件末尾按 RTK_RELAY_PORT 启动。
+registerRtkRelayRoutes(app)
 
 const parseJson = <T>(value: string, fallback: T): T => {
   try { return JSON.parse(value) as T } catch { return fallback }
@@ -478,6 +481,7 @@ function publicKeyRow(row: Record<string, unknown>, quotaState = quotaStateFor(r
     },
     blockedReason: String(row.quota_blocked_reason || ''),
     quotaState,
+    rtkCompress: Number(row.rtk_compress) === 1,
   }
 }
 
@@ -644,11 +648,13 @@ app.post('/api/keys', async (req, res) => {
   const totalConcurrency = parseTotalConcurrency(req.body?.totalConcurrency)
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : {}
   validatePolicy({ enabled: true, groups, totalConcurrency, groupConcurrency })
+  const rtkCompress = parseRtkCompress(req.body?.rtkCompress) ?? false
   const cpaKeys = await getCPAKeys()
   await replaceCPAKeys([...cpaKeys, value])
   const now = new Date().toISOString()
   db.prepare(`INSERT INTO api_keys (key_hash,key_value,name,note,enabled,groups_json,total_concurrency,group_concurrency_json,created_at,updated_at) VALUES (?,?,?,?,1,?,?,?,?,?)`)
     .run(hashKey(value), value, name, String(req.body?.note || ''), JSON.stringify(groups), totalConcurrency, JSON.stringify(groupConcurrency), now, now)
+  if (rtkCompress) setKeyRtkCompress(hashKey(value), name, true)
   await reconcileKeyModelAccess()
   addAudit('create_key', name, JSON.stringify({ slug, groups, totalConcurrency }))
   await reconcileNginxUnlimitedAccess()
@@ -667,6 +673,7 @@ app.patch('/api/keys/:id', async (req, res) => {
   const totalConcurrency = parseTotalConcurrency(req.body?.totalConcurrency, Number(row.total_concurrency))
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : parseJson(String(row.group_concurrency_json), {})
   validatePolicy({ enabled, groups, totalConcurrency, groupConcurrency })
+  const rtkCompress = parseRtkCompress(req.body?.rtkCompress)
   const value = String(row.key_value)
   const keys = await getCPAKeys()
   const hasKey = keys.includes(value)
@@ -678,6 +685,7 @@ app.patch('/api/keys/:id', async (req, res) => {
   const manualDisable = req.body?.enabled === false
   db.prepare('UPDATE api_keys SET name=?,note=?,enabled=?,groups_json=?,total_concurrency=?,group_concurrency_json=?,quota_blocked_reason=?,updated_at=? WHERE key_hash=?')
     .run(name, note, enabled ? 1 : 0, JSON.stringify(groups), totalConcurrency, JSON.stringify(groupConcurrency), enabled || manualDisable ? '' : String(row.quota_blocked_reason || ''), now, req.params.id)
+  if (rtkCompress !== undefined) setKeyRtkCompress(req.params.id, name, rtkCompress)
   await reconcileKeyModelAccess()
   addAudit('update_key', name, JSON.stringify({ enabled, groups, totalConcurrency }))
   await reconcileNginxUnlimitedAccess()
@@ -1693,6 +1701,7 @@ if (config.gatewayEngine === 'magpie') {
   await startMagpieServer()
 }
 if (config.nativeResponsesEnabled) startNativeResponsesServer()
+if (config.rtkRelayPort) startRtkRelay()
 // nginx 默认 60s 空闲即断开代理连接，25s 心跳保证 SSE 长连接不被切断
 setInterval(heartbeat, 25_000).unref()
 app.listen(config.port, config.host, () => {

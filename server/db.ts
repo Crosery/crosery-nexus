@@ -6,6 +6,7 @@ import { migrateQuotaLedger } from './quotaLedger.js'
 import { categorizeUsageError } from './usageDetails.js'
 import { CACHE_CEILING_INDEX_DDL } from './cacheStats.js'
 import { migrateUsageRollup } from './usageRollup.js'
+import { migrateRtkRelay } from './rtkRelayLedger.js'
 
 fs.mkdirSync(config.dataDir, { recursive: true })
 
@@ -264,6 +265,7 @@ if (!quotaColumns.has('cost_usd')) {
 }
 migrateQuotaLedger(db)
 migrateUsageRollup(db)
+migrateRtkRelay(db)
 
 const CLAUDE_PROVIDER_SQL = "lower(trim(provider)) IN ('claude','claude-api-key','anthropic','anthropic-api-key')"
 const QUOTA_LEDGER_BACKFILL = 'quota-ledger-cost-backfill-v2'
