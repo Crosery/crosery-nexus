@@ -1,0 +1,12 @@
+# 发布目标（不入库）：复制为 deploy/env/<preview|production>.release.local（.gitignore 的 *.local 已忽略），
+# 填本机发布到该环境所需的信息。scripts/release.mjs 只从这里读部署目标，运行配置读仓库里的 <env>.env。
+RELEASE_SSH=<ssh 别名>
+RELEASE_ROOT=/opt/crosery-api-console-releases
+RELEASE_CURRENT=/opt/crosery-api-console-current
+RELEASE_SERVICE=crosery-api-console.service
+RELEASE_HEALTH_URL=http://127.0.0.1:8787
+RELEASE_NODE=/opt/crosery-node-current/bin
+RELEASE_CONSOLE_URL=https://console.example.com
+RELEASE_API_URL=https://api.example.com
+# 验收逐个实测 JSON / SSE / 工具往返的模型（逗号分隔）
+RELEASE_ACCEPT_MODELS=

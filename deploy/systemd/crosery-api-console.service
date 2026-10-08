@@ -1,0 +1,50 @@
+# 控制台服务（预发布与正式同一份）。代码目录是发布脚本切换的 current 符号链接；
+# 非密钥配置由 scripts/release.mjs 写入的 drop-in 10-release-env.conf 从 current/deploy/env/<env>.env 加载，
+# 密钥在 /opt/crosery-api-console/.env（root 600）。
+[Unit]
+Description=Crosery API Console edge service
+After=network-online.target cli-proxy-api.service
+Wants=network-online.target
+ConditionPathExists=/opt/crosery-api-console-current/package.json
+ConditionPathExists=/opt/crosery-node-current/bin/node
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/crosery-api-console-current
+EnvironmentFile=/opt/crosery-api-console/.env
+Environment=HOME=/tmp
+Environment=XDG_CACHE_HOME=/tmp/.cache
+Environment=PATH=/opt/crosery-node-current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/crosery-node-current/bin/npm run start
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+LimitNOFILE=65536
+TasksMax=128
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+ReadWritePaths=/opt/crosery-api-console/data
+
+[Install]
+WantedBy=multi-user.target
