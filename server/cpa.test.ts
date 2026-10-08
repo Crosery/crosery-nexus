@@ -115,7 +115,9 @@ test('api-keys 永不写空：删光/停光时写入本机封锁 Key，读回时
     const lockout = cpaLockoutKey()
     assert.match(lockout, /^sk-lockout-[0-9a-f]{64}$/)
     assert.deepEqual(puts[0], [lockout], '空列表必须换成封锁 Key')
-    assert.equal(fs.statSync(path.join(dir, 'cpa-lockout-key')).mode & 0o777, 0o600)
+    const file = path.join(dir, 'system-keys.json')
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { version: 1, lockout, probes: {} })
     assert.deepEqual(channels, { 'sk-other': ['codex'], [lockout]: ['__console_no_channels_allowed__'] }, '封锁 Key 显式拒绝所有渠道，其它条目原样保留')
     assert.deepEqual(await getCPAKeys(), [], '封锁 Key 不算控制台的 Key')
     await replaceCPAKeys([...(await getCPAKeys()), 'sk-real'])
@@ -138,8 +140,8 @@ test('系统 Key：探测 Key 读时隐藏、写时保留，只钉在自己的�
   const { config } = await import('./config.js')
   const previousDataDir = config.dataDir
   config.dataDir = dir
-  const userKey = `sk-probe-${'a'.repeat(32)}`
-  const orphan = `sk-probe-${'b'.repeat(64)}`
+  const userKey = `sk-probe-codex-${'a'.repeat(32)}`
+  const orphan = `sk-probe-gone-${'b'.repeat(64)}`
   let stored: string[] = ['sk-real', userKey, orphan]
   const keyPuts: string[][] = []
   let channels: Record<string, string[]> = { 'sk-real': ['codex'] }
@@ -162,38 +164,39 @@ test('系统 Key：探测 Key 读时隐藏、写时保留，只钉在自己的�
     return json({ 'api-keys': stored })
   }
   try {
-    const { cpaLockoutKey, getCPAKeys, isSystemKey, maskSystemKeys, pinProbeKeyChannels, readProbeKeys, registerProbeKeys, replaceCPAKeys } = await loadCPA()
+    const { cpaLockoutKey, getCPAKeys, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys } = await loadCPA()
+    const { isSystemKey, maskSystemKeys, readSystemKeys } = await import('./systemKeys.js')
     assert.deepEqual(await getCPAKeys(), ['sk-real', userKey], '残留的系统 Key 按格式隐藏；控制台发放的 32 位随机段不受影响')
 
-    const probes = await registerProbeKeys(['codex', 'mox-aigw'])
-    assert.match(probes.codex, /^sk-probe-[0-9a-f]{64}$/)
-    assert.notEqual(probes.codex, probes['mox-aigw'])
-    assert.equal(fs.statSync(path.join(dir, 'cpa-probe-keys.json')).mode & 0o777, 0o600)
-    assert.deepEqual(readProbeKeys(), probes)
-    assert.deepEqual(keyPuts.at(-1), ['sk-real', userKey, orphan, probes.codex, probes['mox-aigw']], '只补缺的，其它 Key 原样保留')
-    assert.deepEqual(await registerProbeKeys(['codex', 'mox-aigw']), probes, '同一数据目录复用同一把')
+    const probes = await registerProbeKeys(['codex', 'Mox-AIGW'])
+    assert.match(probes.codex, /^sk-probe-codex-[0-9a-f]{64}$/)
+    assert.match(probes['Mox-AIGW'], /^sk-probe-mox-aigw-[0-9a-f]{64}$/)
+    assert.equal(fs.statSync(path.join(dir, 'system-keys.json')).mode & 0o777, 0o600)
+    assert.deepEqual(readSystemKeys(dir).probes, { codex: probes.codex, 'mox-aigw': probes['Mox-AIGW'] }, '文件里按规范渠道名存')
+    assert.deepEqual(keyPuts.at(-1), ['sk-real', userKey, probes.codex, probes['Mox-AIGW']], '补上探测 Key，用户 Key 原样保留，没人持有的系统 Key 清掉')
+    assert.deepEqual(await registerProbeKeys(['codex', 'Mox-AIGW']), probes, '同一数据目录复用同一把')
     assert.equal(keyPuts.length, 1, '已注册时不再写')
     assert.deepEqual(await getCPAKeys(), ['sk-real', userKey], '探测 Key 不算控制台的 Key')
 
     assert.equal(await pinProbeKeyChannels(probes), true)
-    assert.deepEqual(channels, { 'sk-real': ['codex'], [probes.codex]: ['codex'], [probes['mox-aigw']]: ['mox-aigw'] })
+    assert.deepEqual(channels, { 'sk-real': ['codex'], [probes.codex]: ['codex'], [probes['Mox-AIGW']]: ['mox-aigw'] }, '钉在 CPA 的规范渠道名上')
     assert.equal(await pinProbeKeyChannels(probes), false, '已钉住时不再写')
     assert.equal(channelPuts, 1)
 
     await replaceCPAKeys([...(await getCPAKeys()).filter((key: string) => key !== userKey), orphan])
-    assert.deepEqual(stored, ['sk-real', probes.codex, probes['mox-aigw']], '用户 Key 整表写入时带上探测 Key，调用方误传的系统 Key 被剔除')
+    assert.deepEqual(stored, ['sk-real', probes.codex, probes['Mox-AIGW']], '用户 Key 整表写入时带上探测 Key，调用方误传的系统 Key 被剔除')
 
     await replaceCPAKeys([])
     const lockout = cpaLockoutKey()
-    assert.deepEqual(stored, [lockout, probes.codex, probes['mox-aigw']], '没有用户 Key 时仍写封锁 Key，探测 Key 照旧保留')
+    assert.deepEqual(stored, [lockout, probes.codex, probes['Mox-AIGW']], '没有用户 Key 时仍写封锁 Key，探测 Key 照旧保留')
+    assert.equal(readSystemKeys(dir).lockout, lockout)
     assert.deepEqual(channels[lockout], ['__console_no_channels_allowed__'])
     assert.deepEqual(channels[probes.codex], ['codex'], '封锁 Key 的条目不影响探测 Key 的条目')
     assert.deepEqual(await getCPAKeys(), [])
 
     assert.equal(isSystemKey(lockout), true)
     assert.equal(isSystemKey(userKey), false)
-    assert.equal(maskSystemKeys(`invalid key ${probes.codex} and ${lockout}`).includes(probes.codex.slice(9, 20)), false)
-    assert.equal(maskSystemKeys(`bad ${probes.codex}`), 'bad sk-probe-***')
+    assert.equal(maskSystemKeys(`invalid key ${probes.codex} and ${lockout}`), 'invalid key sk-probe-*** and sk-lockout-***')
   } finally {
     globalThis.fetch = originalFetch
     config.dataDir = previousDataDir
