@@ -31,7 +31,9 @@ async function host(t, { live = binary(OLD), budget = 10, gate = '', watch = fal
   await fs.writeFile(p('watched.json'), '{"token":"a"}')
   await fs.writeFile(p('data/system-keys.json'), JSON.stringify({ version: 1, probes: { claude: 'sk-probe-claude-000000' } }))
   const executable = (name, body) => fs.writeFile(p(`bin/${name}`), `#!/bin/bash\n${body}`, { mode: 0o755 })
-  await executable('systemctl', `echo "$*" >> "${p('systemctl.log')}"; [ "$1" = is-active ] && echo active; exit 0\n`)
+  // `show -p TimeoutStopUSec`: what the drop-in sets, unless FAKE_STOP_TIMEOUT says otherwise
+  await executable('systemctl', `echo "$*" >> "${p('systemctl.log')}"; [ "$1" = is-active ] && echo active
+    [ "$1" = show ] && echo "TimeoutStopUSec=\${FAKE_STOP_TIMEOUT-5s}"; exit 0\n`)
   await executable('flock', 'exit 0\n')
   await executable('logger', 'exit 0\n')
   // console gate stand-in: baseline passes; after the swap it fails (and may touch config.yaml, like a migration)
@@ -60,13 +62,13 @@ async function host(t, { live = binary(OLD), budget = 10, gate = '', watch = fal
     // the hook's own settings (kernel-applier.mjs probe)
     KERNEL_DATA_DIR: p('data'), KERNEL_LIB_DIR: p('lib'), CPA_AUTH_DIR: p('auth'), CPA_PROBE_BASE_URL: base, CPA_PROBE_MODELS: 'claude=m1',
   }
-  const install = async (candidate, version, { hook = true } = {}) => {
+  const install = async (candidate, version, { hook = true, extra = {} } = {}) => {
     await fs.writeFile(p('candidate'), candidate, { mode: 0o755 })
     const out = p(`probes/${Date.now()}`)
     await fs.mkdir(out)
     const args = [script, p('candidate'), version, ...(hook ? ['--', process.execPath, applier, 'probe', '--out', out] : [])]
     const started = Date.now()
-    const child = spawn('bash', args, { env })
+    const child = spawn('bash', args, { env: { ...env, ...extra } })
     let stdout = ''
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stdout += chunk })
@@ -160,4 +162,20 @@ test('install: same version is up to date; old backups are pruned to CPA_KEEP_BA
   assert.equal(left.filter(name => !name.endsWith('.state')).length, 5)
   assert.equal(left.filter(name => name.endsWith('.state')).length, 5, 'each kept binary keeps its snapshot')
   assert.ok(left.includes(path.basename(out.backup)))
+})
+
+test('install: a stop timeout over 10 s (the systemd default is 90 s) is refused before anything is touched', async t => {
+  const h = await host(t)
+  for (const value of ['1min 30s', '11s', 'infinity', '']) {
+    const out = await h.install(binary(NEW), NEW, { extra: { FAKE_STOP_TIMEOUT: value } })
+    assert.equal(out.result, 'refused', `${value}: ${out.stdout}`)
+    assert.match(out.reason, /停止超时.*10-stop-timeout\.conf.*线上未改动/)
+    assert.match(out.live, /0ld0ld00/)
+    assert.doesNotMatch(out.systemctl, /stop cli-proxy-api-fixture/)
+  }
+  for (const value of ['10s', '500ms', '5s 500ms']) {
+    const out = await h.install(binary(NEW, value), NEW, { extra: { FAKE_STOP_TIMEOUT: value } })
+    assert.equal(out.result, 'applied', `${value}: ${out.stdout}`)
+    await fs.writeFile(h.p('cli-proxy-api'), binary(OLD), { mode: 0o755 })
+  }
 })

@@ -8,6 +8,8 @@
 # `--phase baseline|verify|restored --budget <秒>`：baseline 在替换前跑，没过就不替换（已有故障不能造成误回滚）；
 # verify 在换上之后跑；restored 在换回旧版本之后跑，只记录。
 # 换上新二进制之后的全部检查必须在 CPA_VERIFY_BUDGET 秒（默认 25）内通过，否则立即换回旧二进制：出问题 30 秒内换回。
+# 换回要先停服务：服务的 TimeoutStopSec 超过 10 秒（systemd 默认 90 秒）就拒绝替换，线上不动；
+# 装上 cli-proxy-api.service.d/10-stop-timeout.conf（TimeoutStopSec=5）再来。
 # 配置或被监视的凭据文件在换装期间变了（可能是新版本迁移了配置）就不自动换回：旧版本不能对着没审过的配置启动。
 #
 # 主机相关的值只来自 /etc/cli-proxy-api/install.env（root 600，不入库）或环境变量：
@@ -118,6 +120,32 @@ run_hook(){ # <phase> <end>
   bounded "$budget" "${HOOK[@]}" --phase "$1" --budget "$budget" >"$tmp/hook-$1.out" 2>&1
 }
 hook_says(){ tail -n 1 "$tmp/hook-$1.out" 2>/dev/null | cut -c1-200; }
+
+# systemd time span (`5s`, `1min 30s`, `500ms`, `infinity`) → whole seconds, rounded up; fails when it is not one
+span_seconds(){
+  local us=0 word n unit
+  [ -n "$1" ] || return 1
+  for word in $1; do
+    n=${word%%[!0-9]*}; unit=${word#"$n"}
+    [ -n "$n" ] || return 1
+    case "$unit" in
+      us|usec) us=$((us + n)) ;;
+      ms|msec) us=$((us + n * 1000)) ;;
+      ''|s|sec) us=$((us + n * 1000000)) ;;
+      m|min) us=$((us + n * 60000000)) ;;
+      h|hr) us=$((us + n * 3600000000)) ;;
+      d|day|days) us=$((us + n * 86400000000)) ;;
+      *) return 1 ;;
+    esac
+  done
+  echo $(( (us + 999999) / 1000000 ))
+}
+MAX_STOP_S=10
+stop_raw=$(systemctl show -p TimeoutStopUSec "$SVC" 2>/dev/null | sed -n 's/^TimeoutStopUSec=//p' | head -1)
+if ! stop_s=$(span_seconds "$stop_raw") || [ "$stop_s" -gt "$MAX_STOP_S" ]; then
+  log "$SVC 的停止超时是 ${stop_raw:-未知}（要不超过 ${MAX_STOP_S} 秒），出问题时 30 秒内换不回旧版本；先装 cli-proxy-api.service.d/10-stop-timeout.conf 再 systemctl daemon-reload，线上未改动"
+  exit 1
+fi
 
 [ -z "$CONSOLE_GATE" ] || [ -x "$CONSOLE_GATE" ] || { log "兼容检查器缺失，线上未改动"; exit 1; }
 for gate in $EXTRA_GATES; do [ -x "$gate" ] || { log "兼容检查器缺失（$gate），线上未改动"; exit 1; }; done
