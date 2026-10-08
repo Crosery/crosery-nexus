@@ -83,3 +83,41 @@ test('reads only the credential proxy field through the authenticated adapter', 
     globalThis.fetch = originalFetch
   }
 })
+
+test('api-keys 永不写空：删光/停光时写入本机封锁 Key，读回时过滤掉它', async () => {
+  const fs = await import('node:fs')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpa-lockout-'))
+  const { config } = await import('./config.js')
+  const previousDataDir = config.dataDir
+  config.dataDir = dir
+  const puts: string[][] = []
+  let stored: string[] = []
+  globalThis.fetch = async (_input, init) => {
+    if (init?.method === 'PUT') {
+      stored = JSON.parse(String(init.body))
+      puts.push(stored)
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ 'api-keys': stored }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const { cpaLockoutKey, getCPAKeys, replaceCPAKeys } = await loadCPA()
+    await replaceCPAKeys([])
+    const lockout = cpaLockoutKey()
+    assert.match(lockout, /^sk-lockout-[0-9a-f]{64}$/)
+    assert.deepEqual(puts[0], [lockout], '空列表必须换成封锁 Key')
+    assert.equal(fs.statSync(path.join(dir, 'cpa-lockout-key')).mode & 0o777, 0o600)
+    assert.deepEqual(await getCPAKeys(), [], '封锁 Key 不算控制台的 Key')
+    await replaceCPAKeys([...(await getCPAKeys()), 'sk-real'])
+    assert.deepEqual(puts[1], ['sk-real'], '有真实 Key 时不再带封锁 Key')
+    await replaceCPAKeys(['', 'sk-real'].filter((key) => key !== 'sk-real'))
+    assert.deepEqual(puts[2], [lockout], '空字符串不算 Key')
+    assert.equal(cpaLockoutKey(), lockout, '同一数据目录复用同一把')
+  } finally {
+    globalThis.fetch = originalFetch
+    config.dataDir = previousDataDir
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

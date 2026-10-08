@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.js'
 
@@ -146,13 +146,33 @@ async function cpaRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex')
 export const maskKey = (key: string) => `${key.slice(0, 7)}••••••••${key.slice(-5)}`
 
+/**
+ * CPA 的 api-keys 为空时不注册 Key 鉴权，网关对任何人开放。删光、停光或额度全部封禁时，
+ * 改写入一把只存在于本机数据目录的封锁 Key（从不展示、不发放），网关始终要求鉴权。
+ */
+export function cpaLockoutKey(): string {
+  const file = join(config.dataDir, 'cpa-lockout-key')
+  try {
+    const existing = readFileSync(file, 'utf8').trim()
+    if (/^sk-lockout-[0-9a-f]{64}$/.test(existing)) return existing
+  } catch {
+    // 首次使用时生成
+  }
+  const key = `sk-lockout-${randomBytes(32).toString('hex')}`
+  mkdirSync(config.dataDir, { recursive: true })
+  writeFileSync(file, `${key}\n`, { mode: 0o600 })
+  return key
+}
+
 export async function getCPAKeys(): Promise<string[]> {
   const result = await cpaRequest<{ 'api-keys': string[] }>('/api-keys')
-  return result['api-keys'] || []
+  const lockout = cpaLockoutKey()
+  return (result['api-keys'] || []).filter((key) => key !== lockout)
 }
 
 export async function replaceCPAKeys(keys: string[]) {
-  return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(keys) })
+  const list = keys.filter(Boolean)
+  return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(list.length ? list : [cpaLockoutKey()]) })
 }
 
 export async function getModelAccess(): Promise<Record<string, string[]>> {
