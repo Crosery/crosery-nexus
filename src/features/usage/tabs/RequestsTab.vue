@@ -212,7 +212,7 @@ const tableEmpty = computed(() => (data.value && data.value.total === 0 ? emptyT
       </Plate>
     </template>
 
-    <RequestDetailSheet v-model="detailOpen" :request="selected" />
+    <RequestDetailSheet v-model="detailOpen" :request="selected" :category-label="categoryLabel" />
   </div>
 </template>
 
