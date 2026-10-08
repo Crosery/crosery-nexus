@@ -110,7 +110,7 @@ function backfillOptions(fixture, overrides = {}) {
     sqlitePath: fixture.sqlitePath,
     checkpointPath: fixture.checkpointPath,
     sourceId: 'backup-2026-08-31T00-00-00Z',
-    baseUrl: 'http://100.64.0.8:8792',
+    baseUrl: 'http://192.0.2.8:8792',
     token: TOKEN,
     batchRows: 2,
     batchBytes: 64 * 1024,
@@ -184,9 +184,9 @@ test('backfills an immutable SQLite snapshot in id order and safely replays an a
 
   assert.equal(calls, 3)
   assert.deepEqual(requests.map((request) => request.url), [
-    'http://100.64.0.8:8792/internal/v1/usage/batches',
-    'http://100.64.0.8:8792/internal/v1/usage/batches',
-    'http://100.64.0.8:8792/internal/v1/usage/batches',
+    'http://192.0.2.8:8792/internal/v1/usage/batches',
+    'http://192.0.2.8:8792/internal/v1/usage/batches',
+    'http://192.0.2.8:8792/internal/v1/usage/batches',
   ])
   assert.equal(requests[0].body.batchId, requests[1].body.batchId)
   assert.deepEqual(requests[0].body.events.map((event) => event.requestId), [

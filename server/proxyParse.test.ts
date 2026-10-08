@@ -109,13 +109,13 @@ test('hysteria2 / hy2, tuic v5 and v4, wireguard', () => {
   const tuicV4 = parseShareLink('tuic://sometoken@u.example.test:443#v4')
   assert.equal(tuicV4.node?.token, 'sometoken')
 
-  const wg = parseShareLink('wireguard://cHJpdmF0ZWtleQ%3D%3D@w.example.test:51820?publickey=cHVibGljLWtleQ%3D%3D&address=10.0.0.2%2F32%2Cfd00%3A%3A2%2F128&reserved=1%2C2%2C3&mtu=1280#wg')
+  const wg = parseShareLink('wireguard://cHJpdmF0ZWtleQ%3D%3D@w.example.test:51820?publickey=cHVibGljLWtleQ%3D%3D&address=192.0.2.2%2F32%2Cfd00%3A%3A2%2F128&reserved=1%2C2%2C3&mtu=1280#wg')
   assert.equal(wg.status, 'ok', wg.reason)
   assert.equal(wg.node?.['private-key'], 'cHJpdmF0ZWtleQ==')
-  assert.equal(wg.node?.ip, '10.0.0.2')
+  assert.equal(wg.node?.ip, '192.0.2.2')
   assert.equal(wg.node?.ipv6, 'fd00::2')
   assert.deepEqual(wg.node?.reserved, [1, 2, 3])
-  assert.equal(parseShareLink('wg://k@w.example.test:51820?publickey=p&address=10.0.0.3').protocol, 'wireguard')
+  assert.equal(parseShareLink('wg://k@w.example.test:51820?publickey=p&address=192.0.2.3').protocol, 'wireguard')
 })
 
 test('http/https/socks links are url entries; v2rayN socks base64 userinfo; loopback is external', () => {
@@ -211,7 +211,7 @@ test('subscription bodies never yield nested providers to fetch', () => {
 })
 
 test('sing-box / Surge / QX inputs get the ?flag=clash hint', () => {
-  for (const sample of ['{"outbounds": [{"type": "vmess"}]}', '[Proxy]\nHK = ss, 1.2.3.4, 443, encrypt-method=aes-128-gcm, password=x', 'shadowsocks=1.2.3.4:443, method=aes-128-gcm, password=x, tag=a']) {
+  for (const sample of ['{"outbounds": [{"type": "vmess"}]}', '[Proxy]\nHK = ss, 198.51.100.4, 443, encrypt-method=aes-128-gcm, password=x', 'shadowsocks=198.51.100.4:443, method=aes-128-gcm, password=x, tag=a']) {
     assert.throws(() => parseProxyInput(sample), (error: unknown) => error instanceof ProxyParseError && error.code === 'unsupported_format' && Boolean(error.hint?.includes('flag=clash')))
   }
 })

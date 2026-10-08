@@ -31,7 +31,7 @@ function openDatabase() {
       output_tokens INTEGER NOT NULL
     );
   `)
-  database.prepare('INSERT INTO api_keys VALUES (?, ?)').run('key-a', '程耀宇')
+  database.prepare('INSERT INTO api_keys VALUES (?, ?)').run('key-a', '示例用户')
   database.prepare('INSERT INTO api_keys VALUES (?, ?)').run('key-b', '同事')
   const insert = database.prepare('INSERT INTO usage_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
   const hourAgo = NOW - 3_600_000
@@ -122,10 +122,10 @@ test('quotaWindowStart falls back to seven days and takes the earliest account w
 test('buildQuotaShare weighs cached input and sorts by share', () => {
   const keys = buildQuotaShare([
     { keyId: 'key-b', keyName: '同事', requests: 1, promptTokens: 5_000, outputTokens: 1_000 },
-    { keyId: 'key-a', keyName: '程耀宇', requests: 2, promptTokens: 182_000, outputTokens: 1_000 },
+    { keyId: 'key-a', keyName: '示例用户', requests: 2, promptTokens: 182_000, outputTokens: 1_000 },
     { keyId: null, keyName: null, requests: 1, promptTokens: 0, outputTokens: 0 },
   ])
-  assert.deepEqual(keys.map((key) => key.keyName), ['程耀宇', '同事', '未关联 Key'])
+  assert.deepEqual(keys.map((key) => key.keyName), ['示例用户', '同事', '未关联 Key'])
   assert.ok(Math.abs(keys[0].share - 183_000 / 189_000) < 1e-9)
   assert.ok(Math.abs(keys.reduce((sum, key) => sum + key.share, 0) - 1) < 1e-9)
   assert.deepEqual(buildQuotaShare([]), [])
@@ -139,7 +139,7 @@ test('loadQuotaShare aggregates per key inside the window from SQLite', async ()
 
     assert.equal(share.windowStart, NOW - 2 * 86_400_000)
     assert.deepEqual(share.keys, [
-      { keyId: 'key-a', keyName: '程耀宇', requests: 2, promptTokens: 182_000, outputTokens: 1_000, share: 183_000 / 189_000 },
+      { keyId: 'key-a', keyName: '示例用户', requests: 2, promptTokens: 182_000, outputTokens: 1_000, share: 183_000 / 189_000 },
       { keyId: 'key-b', keyName: '同事', requests: 1, promptTokens: 5_000, outputTokens: 1_000, share: 6_000 / 189_000 },
     ])
     assert.match(operations[0].sql, /u\.success = 1/)
@@ -162,10 +162,10 @@ test('loadMonitorQuotaShare returns all three providers with account-derived win
     ], NOW)
 
     assert.equal(result.codex.windowStart, codexReset * 1000 - 604_800_000)
-    assert.deepEqual(result.codex.keys.map((key) => key.keyName), ['程耀宇', '同事'])
+    assert.deepEqual(result.codex.keys.map((key) => key.keyName), ['示例用户', '同事'])
     assert.equal(result.claude.windowStart, Date.parse('2026-09-04T00:00:00Z') - WEEK_MS)
     // 未关联 Key 的请求单独成行；claude 的缓存写入也计入体量
-    assert.deepEqual(result.claude.keys.map((key) => [key.keyName, key.promptTokens, key.outputTokens]), [['程耀宇', 2_410, 100], ['未关联 Key', 10, 90]])
+    assert.deepEqual(result.claude.keys.map((key) => [key.keyName, key.promptTokens, key.outputTokens]), [['示例用户', 2_410, 100], ['未关联 Key', 10, 90]])
     assert.equal(result.antigravity.windowStart, NOW - WEEK_MS)
     assert.deepEqual(result.antigravity.keys, [])
   } finally {

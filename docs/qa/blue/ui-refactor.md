@@ -1,6 +1,6 @@
 # 蓝队 B（blue-ui / task-4）UI 交互重构交付说明
 
-日期：2026-10-01 · 仓库：`/Users/crosery/work_file/crosery-api-console` · 参考实现（只读）：`/Users/crosery/work_file/geek_main/app/console/src`
+日期：2026-10-01 · 仓库：`<repo>` · 参考实现（只读）：`geek_main/app/console/src`
 对应红队报告：`docs/qa/red-team/ui-interaction-audit.md`（32 条缺陷 + Top 10）
 
 ## 0. 一句话结论
@@ -80,7 +80,7 @@
 - 改后：全部改走 `await confirm({danger: true})`（全局唯一确认框）：
   - 删除密钥、重置今日/本周/**总计**用量（文案写明「这是密钥因超额停用后唯一的恢复手段，且不可撤销」）；
   - 删除渠道、批量剪枝（列出将删除的失效渠道名）、停用渠道（影响线上流量）。
-- 实测（点开但不确认）：确认框标题「删除密钥」、正文「…将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。」；`Esc` 关闭后行数仍为 14（未删除）；焦点回到触发按钮 `删除 龚翰林`。**注**：该轮「Escape 稳定性」后被 Lead 复验为 flaky（修复前 3 轮 1 轮可关），最终修复与 4/4 判据见 §5.1.1 / §5.1.2。
+- 实测（点开但不确认）：确认框标题「删除密钥」、正文「…将被彻底删除，使用它的客户端会立即收到 401 认证失败，且无法恢复。」；`Esc` 关闭后行数仍为 14（未删除）；焦点回到触发按钮 `删除 张三`。**注**：该轮「Escape 稳定性」后被 Lead 复验为 flaky（修复前 3 轮 1 轮可关），最终修复与 4/4 判据见 §5.1.1 / §5.1.2。
 - 截图：`docs/qa/blue/shots/after-keys-delete-confirm-focus.png`
 
 ### D19 / D20（高，随 P0 一并收口）
@@ -120,7 +120,7 @@
 1. **确认框关闭后焦点没回到触发元素**（Lead 复验不通过 → 已修，含在 `ccee64e`）。
    - 根因：TxModal 自带的还原目标取自它自己的 props 变化时刻，部分路径下落到了 body/顶栏。
    - 修法：`src/lib/confirm.ts` 在 `confirm()` **同步调用点**抓 `document.activeElement`（`getConfirmTrigger()`）；`src/components/ConfirmHost.vue` 在关闭（Escape / 遮罩 / 右上角关闭三条路径）后显式 `focus()` 回该元素，`isConnected === false` 时退回页面主区第一个可聚焦控件；`ConsoleShell.vue` 给 `.shell__content` 加 `tabindex="-1"` 作为兜底落点。
-   - **判据**（Lead 给定）：`document.activeElement.getAttribute("aria-label") === 触发按钮 aria-label`。我方复测 4 条路径：Escape ✅ / 遮罩点击 ✅ / 右上角关闭 ✅（三条都回到 `删除 龚翰林`）；把触发按钮从 DOM 移除后再 Escape ✅ 落到页面主区的「创建 API Key」，**不是 body**。
+   - **判据**（Lead 给定）：`document.activeElement.getAttribute("aria-label") === 触发按钮 aria-label`。我方复测 4 条路径：Escape ✅ / 遮罩点击 ✅ / 右上角关闭 ✅（三条都回到 `删除 张三`）；把触发按钮从 DOM 移除后再 Escape ✅ 落到页面主区的「创建 API Key」，**不是 body**。
 2. **Escape 关闭不稳定**（Lead 复验发现的真缺陷 → Lead 直接补丁，含在 `ccee64e`）。
    - 根因：Tuffex 的 Escape 绑在遮罩元素上（`modal/src/TxModal2.vue.js:36-58`），焦点一旦不在遮罩子树内就关不掉——而焦点修复后焦点会回到触发按钮，于是「弹窗留在原地、Esc 无效」。Lead 实测修复前 3 轮只 1 轮能关，在 `ConfirmHost.vue` 用 window 捕获阶段处理 Escape 后 **4/4 轮可关且焦点回归**。
    - **教训记录**：我早前两次「Escape 关闭 + 焦点回归 ✅」的结论是**在焦点仍在遮罩内的时序下测得的**，属于 flaky 通过，不应写成稳定结论。本文件先前的相应表述以此节为准。

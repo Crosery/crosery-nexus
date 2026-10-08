@@ -1,6 +1,6 @@
 # 红蓝对抗协作约定（Lead 维护）
 
-日期：2026-10-01 · 仓库：`/Users/crosery/work_file/crosery-api-console`
+日期：2026-10-01 · 仓库：`<repo>`
 
 ## 角色与写入边界
 

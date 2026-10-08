@@ -175,8 +175,8 @@ HTTP 200 {"backupId":"../evil2","restored":["../../cac-sec-write-canary.txt"]}
 $ curl -s -X POST http://127.0.0.1:8850/api/login -H 'Content-Type: application/json' -d '{bad json'
 <!DOCTYPE html><html lang="en">...<pre>SyntaxError: Expected property name or '}' in JSON at position 1 ...
     at JSON.parse (<anonymous>)
-    at parse (/Users/crosery/work_file/crosery-api-console/node_modules/body-parser/lib/types/json.js:91:21)
-    at /Users/crosery/work_file/crosery-api-console/node_modules/body-parser/lib/read.js:162:18
+    at parse (<repo>/node_modules/body-parser/lib/types/json.js:91:21)
+    at <repo>/node_modules/body-parser/lib/read.js:162:18
     ...对照：超大 body → PayloadTooLargeError: request entity too large + 同样堆栈
 
 $ curl -s -X POST http://127.0.0.1:8791/api/login ... -d '{bad'      # 生产实例，1 次，非写操作
@@ -185,7 +185,7 @@ $ curl -s -X POST http://127.0.0.1:8791/api/login ... -d '{bad'      # 生产实
 
 - **未认证可达**：`express.json()` 在鉴权中间件**之前**执行（`server/index.ts:137`），所以任何人带一个畸形 JSON 就能触发。
 - **根因**：没有自定义错误中间件，落到 Express 默认错误处理器；而启动环境**未设置 `NODE_ENV`**（`grep -rn NODE_ENV scripts/*.mjs server/*.ts` 为空；`scripts/magpie-console.mjs:103-111` 的 env 白名单里也没有），Express 因此按 development 模式回显堆栈。生产 launchd 服务同样如此。
-- 影响：泄露部署绝对路径、依赖与目录结构（有助于针对性攻击）；日志侧同样落盘（`grep -o '/Users/crosery/work_file/crosery-api-console[^ ]*' console.log` 命中 body-parser/raw-body 路径）。
+- 影响：泄露部署绝对路径、依赖与目录结构（有助于针对性攻击）；日志侧同样落盘（`grep -o '<repo>[^ ]*' console.log` 命中 body-parser/raw-body 路径）。
 - **修法**：启动 env 加 `NODE_ENV=production`；并加统一错误中间件（JSON + 仅 `code/reason`，堆栈只进服务日志）。
 - 好消息：**没有**密钥类泄漏 —— 我用 canary 值（`LEAKCANARY-CPA-KEY-9f3a` / `LEAKCANARY-SRC-KEY-7b1c`）设置了 `CPA_MANAGEMENT_KEY` 与 `MAGPIE_SOURCE_CPA_KEY`，畸形请求、登录失败、上游不可达 (`{"error":"fetch failed"}`) 三类响应与日志中命中数均为 **0**；`SESSION_SECRET`/管理员密码在响应与日志中 0 命中。
 
