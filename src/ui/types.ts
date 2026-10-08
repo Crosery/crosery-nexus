@@ -126,6 +126,8 @@ export type RankRow = {
   /** optional second line (ink-3) */
   sub?: string
   to?: string
+  /** false: shown as plain text even in a selectable list (nothing to filter by, e.g. 已删除的 Key) */
+  selectable?: boolean
 }
 
 export type RangeRow = { key?: string | number; name: string; p50: number | null; p95: number | null; n?: number | null }

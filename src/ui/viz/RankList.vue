@@ -44,7 +44,7 @@ const items = computed(() => {
     <li v-for="it in items" :key="it.row.key ?? it.row.name" data-row :style="{ '--r': it.i }">
       <span class="ui-rank__n">
         <RouterLink v-if="it.row.to" :to="it.row.to" class="ui-link ellip">{{ it.row.name }}</RouterLink>
-        <button v-else-if="selectable" type="button" class="ui-rank__btn ellip" @click="emit('select', it.row, it.i)">{{ it.row.name }}</button>
+        <button v-else-if="selectable && it.row.selectable !== false" type="button" class="ui-rank__btn ellip" @click="emit('select', it.row, it.i)">{{ it.row.name }}</button>
         <span v-else class="ellip">{{ it.row.name }}</span>
         <span v-if="it.row.sub" class="ui-rank__sub ellip">{{ it.row.sub }}</span>
       </span>
