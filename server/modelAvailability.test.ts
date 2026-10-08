@@ -47,7 +47,7 @@ test('判定：限流/额度/余额、上游 401/403、账号冷却、超时与�
 })
 
 test('判定原因里的系统 Key 与凭据被打码', () => {
-  const key = `sk-probe-${'c'.repeat(64)}`
+  const key = `sk-probe-kimi-${'c'.repeat(64)}`
   const verdict = classifyProbe(http(404, { error: { message: `model not found for key ${key}` } }))
   assert.equal(verdict.outcome, 'countable')
   assert.ok(!verdict.reason.includes('c'.repeat(16)))

@@ -1,7 +1,8 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.js'
+import { canonicalChannelName, ensureLockoutKey, ensureProbeKeys, isSystemKey, readSystemKeys } from './systemKeys.js'
 
 export type UsageRecord = {
   timestamp?: string
@@ -149,67 +150,10 @@ export const maskKey = (key: string) => `${key.slice(0, 7)}•••••••
 /**
  * CPA 的 api-keys 为空时不注册 Key 鉴权，网关对任何人开放。删光、停光或额度全部封禁时，
  * 改写入一把只存在于本机数据目录的封锁 Key（从不展示、不发放），网关始终要求鉴权。
+ * 系统 Key 的落盘格式与识别规则见 systemKeys.ts。
  */
 export function cpaLockoutKey(): string {
-  const file = join(config.dataDir, 'cpa-lockout-key')
-  try {
-    const existing = readFileSync(file, 'utf8').trim()
-    if (/^sk-lockout-[0-9a-f]{64}$/.test(existing)) return existing
-  } catch {
-    // 首次使用时生成
-  }
-  const key = `sk-lockout-${randomBytes(32).toString('hex')}`
-  mkdirSync(config.dataDir, { recursive: true })
-  writeFileSync(file, `${key}\n`, { mode: 0o600 })
-  return key
-}
-
-/**
- * 系统 Key = 控制台自己持有、从不发放的网关 Key：封锁 Key，以及每个服务一把的可用性探测 Key。
- * 读 api-keys 时一律隐藏（不能被 syncKeysFromCPA 导入成用户 Key），写 api-keys 时一律由这里重新带上。
- * 按格式识别而不只按本机文件：数据目录丢失后网关里残留的旧系统 Key 也不会被导入，下次写入时被清掉。
- * 控制台发放的 Key 随机段是 32 位十六进制（index.ts 的 buildNamedAPIKey），不会撞上 64 位的格式。
- */
-const SYSTEM_KEY_PATTERN = /^sk-(?:lockout|probe)-[0-9a-f]{64}$/
-const PROBE_KEY_PATTERN = /^sk-probe-[0-9a-f]{64}$/
-export const isSystemKey = (key: unknown): boolean => typeof key === 'string' && SYSTEM_KEY_PATTERN.test(key)
-
-/** 文本里出现的系统 Key 一律打码（探测错误原文、上游回显等进日志或状态文件之前）。 */
-export const maskSystemKeys = (text: string) => text.replace(/sk-(lockout|probe)-[0-9a-f]{8,}/g, 'sk-$1-***')
-
-const probeKeysFile = () => join(config.dataDir, 'cpa-probe-keys.json')
-
-/** 服务 → 探测 Key。坏文件当作空表：探测任务下一轮重新生成并注册，旧 Key 在网关里按格式被隐藏、随后清掉。 */
-export function readProbeKeys(): Record<string, string> {
-  try {
-    const parsed = JSON.parse(readFileSync(probeKeysFile(), 'utf8')) as { keys?: unknown }
-    const keys = parsed?.keys
-    if (!keys || typeof keys !== 'object' || Array.isArray(keys)) return {}
-    return Object.fromEntries(Object.entries(keys).filter(([service, key]) => service && PROBE_KEY_PATTERN.test(String(key)))) as Record<string, string>
-  } catch {
-    return {}
-  }
-}
-
-function writeProbeKeys(keys: Record<string, string>) {
-  mkdirSync(config.dataDir, { recursive: true })
-  const file = probeKeysFile()
-  const temporary = `${file}.${process.pid}.tmp`
-  writeFileSync(temporary, `${JSON.stringify({ version: 1, keys }, null, 2)}\n`, { mode: 0o600 })
-  renameSync(temporary, file)
-}
-
-/** 每个服务一把探测 Key，首次使用时生成并落盘（0600）。 */
-export function probeKeysFor(services: string[]): Record<string, string> {
-  const keys = readProbeKeys()
-  let created = false
-  for (const service of services) {
-    if (keys[service]) continue
-    keys[service] = `sk-probe-${randomBytes(32).toString('hex')}`
-    created = true
-  }
-  if (created) writeProbeKeys(keys)
-  return Object.fromEntries(services.map((service) => [service, keys[service]]))
+  return ensureLockoutKey(config.dataDir)
 }
 
 async function getRawCPAKeys(): Promise<string[]> {
@@ -240,7 +184,7 @@ function serializeApiKeys<T>(task: () => Promise<T>): Promise<T> {
 export async function replaceCPAKeys(keys: string[]) {
   return serializeApiKeys(async () => {
     const list = keys.filter((key) => key && !isSystemKey(key))
-    const probes = Object.values(readProbeKeys())
+    const probes = [...new Set(Object.values(readSystemKeys(config.dataDir).probes))]
     if (list.length) return cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([...list, ...probes]) })
     const lockout = cpaLockoutKey()
     const result = await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([lockout, ...probes]) })
@@ -256,10 +200,10 @@ export async function replaceCPAKeys(keys: string[]) {
 
 /** 把探测 Key 补进 api-keys（只增不删，其它 Key 原样保留）。返回服务 → 探测 Key。 */
 export async function registerProbeKeys(services: string[]): Promise<Record<string, string>> {
-  const wanted = probeKeysFor(services)
+  const wanted = ensureProbeKeys(config.dataDir, services)
   await serializeApiKeys(async () => {
     const current = await getRawCPAKeys()
-    const missing = Object.values(wanted).filter((key) => !current.includes(key))
+    const missing = [...new Set(Object.values(wanted))].filter((key) => !current.includes(key))
     if (missing.length) await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([...current, ...missing]) })
   })
   return wanted
@@ -272,10 +216,10 @@ export async function registerProbeKeys(services: string[]): Promise<Record<stri
 export async function pinProbeKeyChannels(pins: Record<string, string>) {
   const current = await getChannelAccess()
   const desired = { ...current }
-  for (const [service, key] of Object.entries(pins)) desired[key] = [service]
-  // CPA 按小写规范化渠道名，比较时同口径，否则大小写不同的渠道名每轮都会重写一次
+  for (const [service, key] of Object.entries(pins)) desired[key] = [canonicalChannelName(service)]
+  // CPA 存的是规范渠道名，比较时同口径，否则大小写或前缀不同的渠道名每轮都会重写一次
   const changed = Object.entries(pins).some(([service, key]) =>
-    JSON.stringify((Array.isArray(current[key]) ? current[key] : []).map((name) => String(name).toLowerCase())) !== JSON.stringify([service.toLowerCase()]))
+    JSON.stringify((Array.isArray(current[key]) ? current[key] : []).map((name) => canonicalChannelName(String(name)))) !== JSON.stringify([canonicalChannelName(service)]))
   if (changed) await putChannelAccess(desired)
   return changed
 }
