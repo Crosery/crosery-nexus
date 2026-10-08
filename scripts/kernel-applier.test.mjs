@@ -7,12 +7,15 @@ import { createHash } from 'node:crypto'
 import {
   accountTypes, adoptCpa, applierPaths, applyAcceptance, applyCpa, classifyInstall, configAuthDir, configLayout, decideCpa, decideMagpie, emptyState, ingestCpa,
   normalizeConfig, parseAcceptance, parseCpaReport, parseMagpieReport, parseProbeModels, parsePromotion, pickProbeModel, probeCommand, promotionProblems,
-  promotionRecord, readProbeKeys, readState, runAuto, runProbes, sameMajor, startTrial, trialTick, windowState, withLock,
+  probeService, promotionRecord, readProbeKeys, readState, runAuto, runProbes, sameMajor, startTrial, trialTick, windowState, withLock,
 } from './kernel-applier.mjs'
+import { canonicalChannelName, ensureProbeKeys } from '../server/systemKeys.ts'
 
 // 2026-10-03 in Beijing time (UTC+8, no DST): the default window is 05:00–07:00 there
 const bj = (h, m = 0) => Date.UTC(2026, 9, 3, h - 8, m)
 const sha = text => createHash('sha256').update(text).digest('hex')
+/** a key in the system-keys contract's probe format (server/systemKeys.ts) */
+const probeKey = service => `sk-probe-${service}-${'0'.repeat(64)}`
 const RUNNING = '7.3.15-patched.498fcc2b'
 const NEXT = '7.3.20-patched.1a2b3c4d'
 const MAJOR = '8.0.12-patched.5e6f7a8b'
@@ -645,11 +648,11 @@ test('probe inputs: account types from the auth dir, probe keys, models, auth-di
   await fs.writeFile(config, 'port: 8317\n')
   assert.equal(await configAuthDir(config), null)
   const keys = path.join(dir, 'system-keys.json')
-  await fs.writeFile(keys, JSON.stringify({ version: 1, lockout: 'x', probes: { claude: 'sk-probe-claude-000000', codex: 'short', 'bad name': 'sk-probe-000000000' } }))
-  assert.deepEqual(await readProbeKeys(keys), { claude: 'sk-probe-claude-000000' })
-  await fs.writeFile(keys, JSON.stringify({ version: 2, probes: { claude: 'sk-probe-claude-000000' } }))
+  await fs.writeFile(keys, JSON.stringify({ version: 1, lockout: 'x', probes: { claude: probeKey('claude'), codex: 'short', other: 'sk-real-key-000000' } }))
+  assert.deepEqual(await readProbeKeys(keys), { claude: probeKey('claude') }, 'only keys in the contract\'s probe format')
+  await fs.writeFile(keys, 'garbage')
   assert.deepEqual(await readProbeKeys(keys), {})
-  assert.deepEqual(parseProbeModels('claude=claude-haiku-4-5, codex = gpt-5-codex-mini ,bad,=x,y='), { claude: 'claude-haiku-4-5', codex: 'gpt-5-codex-mini' })
+  assert.deepEqual(parseProbeModels('claude=claude-haiku-4-5, codex = gpt-5-codex-mini ,bad,=x,y=,openai-compatible-OpenRouter=m'), { claude: 'claude-haiku-4-5', codex: 'gpt-5-codex-mini', openrouter: 'm' })
   assert.equal(pickProbeModel(['claude-opus-4-1', 'claude-haiku-4-5', 'claude-sonnet-4-5']), 'claude-haiku-4-5')
   assert.equal(pickProbeModel(['gpt-image-1', 'gpt-5']), 'gpt-5')
   assert.equal(pickProbeModel([]), null)
@@ -703,7 +706,7 @@ test('probe command: writes the phase record the applier reads; verify reuses th
   await fs.writeFile(path.join(auth, 'c.json'), JSON.stringify({ type: 'claude' }))
   const paths = applierPaths({ KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_AUTH_DIR: auth, CPA_PROBE_BASE_URL: 'http://gw.test' })
   await fs.mkdir(paths.data, { recursive: true })
-  await fs.writeFile(paths.systemKeys, JSON.stringify({ version: 1, probes: { claude: 'sk-probe-claude-000000' } }))
+  await fs.writeFile(paths.systemKeys, JSON.stringify({ version: 1, probes: { claude: probeKey('claude') } }))
   const out = path.join(dir, 'run')
   const models = []
   const fetchImpl = async (url, init) => {
@@ -767,4 +770,28 @@ test('units: the console loads the host role file after its secrets and before t
   for (const file of ['deploy/kernels/relay/crosery-kernel-update.service', 'deploy/systemd/crosery-rtk-autoupdate.service']) {
     assert.match(await fs.readFile(path.join(repo, file), 'utf8'), /^EnvironmentFile=-\/etc\/crosery\/autoupdate\.env$/m, file)
   }
+})
+
+test('probe keys: an auth file type finds its key by the contract\'s canonicalChannelName, in the file the console writes', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kapk-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  for (const type of ['claude', 'Codex', ' antigravity ', 'openai-compatible-OpenRouter']) assert.equal(probeService(type), canonicalChannelName(type), type)
+  const auth = path.join(dir, 'auth')
+  await fs.mkdir(auth)
+  for (const [name, type] of [['a', 'antigravity'], ['b', 'claude'], ['c', 'Codex'], ['d', 'openai-compatible-OpenRouter'], ['e', 'gemini']]) {
+    await fs.writeFile(path.join(auth, `${name}.json`), JSON.stringify({ type }))
+  }
+  const paths = applierPaths({ KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_AUTH_DIR: auth, CPA_PROBE_BASE_URL: 'http://gw.test', CPA_PROBE_MODELS: 'antigravity=m,claude=m,codex=m,openrouter=m' })
+  // the console's writer (wp-access): keys stored under the canonical names
+  const written = ensureProbeKeys(path.dirname(paths.systemKeys), ['antigravity', 'claude', 'codex', 'openai-compatible-OpenRouter'])
+  assert.deepEqual(Object.keys(await readProbeKeys(paths.systemKeys)).sort(), ['antigravity', 'claude', 'codex', 'openrouter'])
+  const used = []
+  const record = await probeCommand({ paths, out: path.join(dir, 'run'), phase: 'baseline', budgetS: '10', deps: { fetch: async (_url, init) => {
+    used.push(init.headers.authorization.slice('Bearer '.length))
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  } } })
+  const by = Object.fromEntries(record.results.map(item => [item.type, item]))
+  assert.deepEqual(Object.fromEntries(Object.entries(by).map(([type, item]) => [type, item.skipped ?? item.service])),
+    { antigravity: 'antigravity', claude: 'claude', Codex: 'codex', 'openai-compatible-OpenRouter': 'openrouter', gemini: 'no-probe-key' })
+  assert.deepEqual(used.sort(), [written.antigravity, written.claude, written.codex, written['openai-compatible-OpenRouter']].sort())
 })

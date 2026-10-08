@@ -33,6 +33,8 @@ import { request } from 'node:http'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { promotionPolicy, updateRole } from './autoupdate-common.mjs'
+// the system-keys contract's own reader and channel naming (erasable TS: plain Node 24 imports it)
+import { SYSTEM_KEYS_FILE, canonicalChannelName, readSystemKeys } from '../server/systemKeys.ts'
 
 export const DEFAULT_WINDOW = Object.freeze({ start: '05:00', end: '07:00', tz: 'Asia/Shanghai' })
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -40,7 +42,7 @@ const SHA40 = /^[a-f0-9]{40}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const CPA_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/
 const TAG = /^v\d+\.\d+\.\d+$/
-const ACCOUNT_TYPE = /^[a-z0-9][a-z0-9-]{0,39}$/
+const ACCOUNT_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const KEEP_STAGED = 2
 const KEEP_MAGPIE = 3
 const KEEP_PROBE_RUNS = 10
@@ -61,7 +63,7 @@ export function applierPaths(env = process.env) {
     config: path.join(data, 'kernel-autoupdate.json'),
     states: path.join(data, 'kernels'),
     requests: path.join(data, 'kernel-requests'),
-    systemKeys: path.join(data, 'system-keys.json'),
+    systemKeys: path.join(data, SYSTEM_KEYS_FILE),
     lock: path.join(lib, 'applier.lock'),
     cpa: {
       inbox: path.join(lib, 'cpa/inbox'), staged: path.join(lib, 'cpa/staged'), probes: path.join(lib, 'cpa/probes'),
@@ -593,7 +595,7 @@ export function parseProbeModels(value) {
   const out = {}
   for (const item of String(value ?? '').split(',')) {
     const [service, model] = item.split('=').map(part => part?.trim())
-    if (service && model && ACCOUNT_TYPE.test(service) && /^[\w.:/@-]{1,120}$/.test(model)) out[service] = model
+    if (service && model && ACCOUNT_TYPE.test(service) && /^[\w.:/@-]{1,120}$/.test(model)) out[probeService(service)] = model
   }
   return out
 }
@@ -622,16 +624,16 @@ export async function accountTypes(dir) {
   return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([type, accounts]) => ({ type, accounts }))
 }
 
-/** <data>/system-keys.json → { service: key } (per-service probe keys; another package writes the file). */
+/**
+ * <data>/system-keys.json → { canonical channel name: probe key }, read by the contract's own reader
+ * (server/systemKeys.ts: format checks, legacy migration). The console writes the file.
+ */
 export async function readProbeKeys(file) {
-  const raw = await readJSON(file, 256 * 1024)
-  if (!raw || raw.version !== 1 || !isObject(raw.probes)) return {}
-  const out = {}
-  for (const [service, key] of Object.entries(raw.probes)) {
-    if (ACCOUNT_TYPE.test(service) && typeof key === 'string' && /^[\x21-\x7e]{8,512}$/.test(key)) out[service] = key
-  }
-  return out
+  return readSystemKeys(path.dirname(file)).probes
 }
+
+/** An auth file's `type` → the key in `probes`: CPA's canonical channel name (trim, lowercase, no openai-compatible-). */
+export const probeService = type => canonicalChannelName(type)
 
 /** Without a configured model: the cheapest-looking one the service's key may use, else the first in name order. */
 export function pickProbeModel(ids) {
@@ -648,7 +650,7 @@ const scrub = (value, key) => String(value ?? '').split(key).join('***').replace
  */
 export async function runProbes({ types, keys, models = {}, reuse = {}, base, deadline, fetchImpl = fetch, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const results = await Promise.all(types.map(async ({ type }) => {
-    const service = type
+    const service = probeService(type)
     const key = keys[service]
     if (!key) return { type, service, ok: null, skipped: 'no-probe-key', detail: `没有 ${service} 的系统探测 Key` }
     const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json' }

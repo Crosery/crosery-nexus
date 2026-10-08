@@ -29,7 +29,7 @@ async function host(t, { live = binary(OLD), budget = 10, gate = '', watch = fal
   await fs.writeFile(p('auth/claude.json'), JSON.stringify({ type: 'claude' }))
   await fs.writeFile(p('auth/codex.json'), JSON.stringify({ type: 'codex' }))
   await fs.writeFile(p('watched.json'), '{"token":"a"}')
-  await fs.writeFile(p('data/system-keys.json'), JSON.stringify({ version: 1, probes: { claude: 'sk-probe-claude-000000' } }))
+  await fs.writeFile(p('data/system-keys.json'), JSON.stringify({ version: 1, probes: { claude: `sk-probe-claude-${'0'.repeat(64)}` } }))
   const executable = (name, body) => fs.writeFile(p(`bin/${name}`), `#!/bin/bash\n${body}`, { mode: 0o755 })
   // `show -p TimeoutStopUSec`: what the drop-in sets, unless FAKE_STOP_TIMEOUT says otherwise
   await executable('systemctl', `echo "$*" >> "${p('systemctl.log')}"; [ "$1" = is-active ] && echo active
