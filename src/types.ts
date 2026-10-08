@@ -733,6 +733,7 @@ export type KernelView = {
   name: string
   role: 'serving' | 'standby'
   roleText: string
+  env: 'preview' | 'production' | null
   version: string | null
   online: boolean | null
   upstream: { latest: string | null; line: string | null; heldNewer: string | null; checkedAt: string | null } | null
@@ -745,8 +746,12 @@ export type KernelView = {
   last: { text: string; tone: AutoTone; at: string } | null
   rollback: { to: string } | null
   checkedAt: string | null
+  /** CPA 候选走到哪：预发布试运行 → 浸泡/验收通过 → 正式已暂存 → 已装上 / 没过 */
+  pipeline: { stage: string; tone: AutoTone; text: string } | null
+  checks: { last: string | null; next: string | null }
+  error: { text: string; at: string | null } | null
 }
-export type KernelsView = { available: boolean; reason: string | null; scheduler: 'installed' | 'missing' | 'stale'; window: KernelWindow; kernels: KernelView[] }
+export type KernelsView = { available: boolean; reason: string | null; env: 'preview' | 'production' | null; scheduler: 'installed' | 'missing' | 'stale'; window: KernelWindow; kernels: KernelView[] }
 
 /** magpie 内核更新状态（`GET /api/magpie/update-status`，task-79）。 */
 export type MagpieUpdateStatus = {

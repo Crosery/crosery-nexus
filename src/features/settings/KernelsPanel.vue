@@ -114,6 +114,10 @@ async function saveWindow() {
           </template>
           <span v-else class="dim">—</span>
         </dd>
+        <template v-if="k.pipeline">
+          <dt>流水线</dt>
+          <dd><span class="set-krn__t" :class="`is-${k.pipeline.tone}`">{{ mark(k.pipeline.tone) }}{{ k.pipeline.text }}</span></dd>
+        </template>
         <dt>自动更新</dt>
         <dd class="set-krn__auto">
           <Switch
@@ -141,11 +145,19 @@ async function saveWindow() {
             回滚到 {{ k.rollback.to }}…
           </TxButton>
         </dd>
+        <dt>检查</dt>
+        <dd>
+          <span class="dim">上次 {{ k.checks.last ? fmtTime(k.checks.last) : '—' }} · 下次约 {{ k.checks.next ? fmtTime(k.checks.next) : '—' }}</span>
+          <span v-if="k.error" class="set-krn__t is-warn">◇ 最近错误：{{ k.error.text }}<template v-if="k.error.at"> · {{ fmtTime(k.error.at) }}</template></span>
+        </dd>
       </dl>
     </section>
     <p class="set-krn__win">
-      <span>替换时段 <b class="num">{{ data.window.label }}</b> · 每个版本只试一次 · 失败自动回滚</span>
-      <button type="button" class="ui-link" @click="editWindow">改时段</button>
+      <span v-if="data.env === 'preview'">预发布：新候选随到随装 · 一次只试一个 · 两次验收过了才交给正式 · 失败自动回滚</span>
+      <template v-else>
+        <span>替换时段 <b class="num">{{ data.window.label }}</b> · 只装预发布验收过的版本 · 每个版本只试一次 · 失败自动回滚</span>
+        <button type="button" class="ui-link" @click="editWindow">改时段</button>
+      </template>
       <span v-if="data.scheduler === 'missing'" class="set-krn__warn">◇ 中转站还没装内核更新定时任务</span>
       <span v-else-if="data.scheduler === 'stale'" class="set-krn__warn">◇ 定时任务超过 30 分钟没跑</span>
     </p>

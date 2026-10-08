@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import {
-  KernelConfigError, buildKernelsView, kernelPaths, readKernelConfig, readKernelFacts, registerKernelRoutes, writeKernelConfig, zonedClock,
+  KernelConfigError, buildKernelsView, kernelPaths, probeWords, readKernelConfig, readKernelFacts, registerKernelRoutes, writeKernelConfig, zonedClock,
 } from './kernels.js'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -81,6 +81,67 @@ test('CPA view: upstream, candidate and one-click rollback (across a major only 
   const conflict = cpaView(tick({ why: 'held' }, { builder: { status: 'merge-conflict', checkedAt: at(NOW), reasons: [{ code: 'merge', text: '合并 v7.3.22 冲突：internal/config/config.go' }] } }))
   assert.equal(conflict.candidate?.tone, 'bad')
   assert.equal(conflict.candidate?.text, '合并 v7.3.22 冲突：internal/config/config.go')
+})
+
+const CAND = '8.0.22-patched.1a2b3c4d'
+const SHA = 'b'.repeat(64)
+
+test('CPA view on preview: the trial in the owner\'s words; a rejection says what was restored', () => {
+  const trial = (over: Record<string, unknown>) => ({ env: 'preview', trial: { version: CAND, sha256: SHA, previous: RUNNING, installedAt: at(bj(9)), soakMs: 86_400_000, soakUntil: at(bj(9) + 86_400_000), status: 'installed', rejected: null, ...over } })
+  const installed = buildKernelsView(facts(tick({ why: 'up-to-date', version: CAND }, trial({}))), NOW)
+  assert.equal(installed.env, 'preview')
+  assert.equal(installed.kernels[0].roleText, '接流量 · 预发布')
+  assert.equal(installed.kernels[0].pipeline?.text, `${CAND} 已在预发布试运行 · 等首次验收`)
+  assert.equal(cpaView(tick({ why: 'up-to-date' }, trial({ status: 'soaking' }))).pipeline?.text, `${CAND} 首次验收通过 · 浸泡到 10/04 09:00 再验收`)
+  assert.equal(cpaView(tick({ why: 'up-to-date' }, trial({ status: 'accepted' }))).pipeline?.text, `${CAND} 两次验收通过（浸泡 24 小时）· 记录交给正式`)
+  const reject = { at: at(bj(11)), code: 'acceptance', reason: '首次验收没过：stream 没有 [DONE]', rollback: 'rolled-back' }
+  const rejected = cpaView(tick({ why: 'up-to-date' }, { ...trial({ status: 'rejected', rejected: reject }),
+    lastApply: { version: CAND, at: reject.at, action: 'reject', result: 'rolled-back', reasons: [{ code: 'acceptance', text: reject.reason }] } }))
+  assert.deepEqual(rejected.pipeline, { stage: 'rejected', tone: 'bad', text: `${CAND} 没过：首次验收没过：stream 没有 [DONE] · 已换回 ${RUNNING}` })
+  assert.equal(rejected.last?.text, `11:00 ${CAND} 在预发布没过（首次验收没过：stream 没有 [DONE]），已换回 ${RUNNING}`)
+  assert.deepEqual(rejected.error, { text: '首次验收没过：stream 没有 [DONE]', at: reject.at })
+  const voided = cpaView(tick({ why: 'up-to-date' }, trial({ status: 'rejected', rejected: { ...reject, code: 'replaced', reason: '运行中的已不是它', rollback: 'voided' } })))
+  assert.equal(voided.pipeline?.tone, 'warn')
+  assert.match(voided.pipeline?.text ?? '', /没有回滚（已被换掉）$/)
+  assert.match(cpaView(tick({ why: 'trial-active', version: '8.0.23-patched.2', trial: CAND }, trial({}))).line, new RegExp(`^${CAND} 还在试运行 · 8\\.0\\.23-patched\\.2 等它结束`))
+})
+
+test('CPA view on production: staged with the preview record, then installed; an unusable record is held with its reason', () => {
+  const promotion = { candidate: { version: CAND, sha256: SHA }, acceptedAt: at(bj(9, 30)) }
+  const staged = cpaView(tick({ why: 'window', version: CAND }, { env: 'production', promotion, staged: { version: CAND, sha256: SHA } }))
+  assert.equal(staged.roleText, '接流量 · 正式')
+  assert.deepEqual(staged.pipeline, { stage: 'staged', tone: 'ok', text: `${CAND} 预发布两次验收通过 · 已暂存到正式，等 05:00–07:00（北京时间）替换` })
+  const installed = cpaView(tick({ why: 'up-to-date' }, { env: 'production', promotion, staged: { version: CAND }, installed: { version: CAND } }))
+  assert.equal(installed.pipeline?.text, `${CAND} 已装上 · 预发布验收于 09:30`)
+  const waiting = cpaView(tick({ why: 'not-promoted', version: CAND, reasons: [{ code: 'no-record', text: '没有预发布的记录' }] }, { env: 'production', staged: { version: CAND } }))
+  assert.equal(waiting.tone, 'idle')
+  assert.equal(waiting.line, `${CAND} 已暂存 · 等预发布两次验收的记录`)
+  assert.equal(waiting.error, null)
+  const stale = { why: 'not-promoted', version: CAND, at: at(NOW - 60_000), reasons: [{ code: 'stale', text: '预发布的记录超过 7 天' }] }
+  const held = cpaView(tick(stale, { env: 'production', promotion, staged: { version: CAND } }))
+  assert.equal(held.state, 'held')
+  assert.equal(held.line, `${CAND} 的预发布记录不能用：预发布的记录超过 7 天`)
+  assert.equal(held.pipeline?.tone, 'warn')
+  assert.deepEqual(held.error, { text: '预发布的记录超过 7 天', at: stale.at })
+  // earlier stages come from the coordinator's word on preview
+  const soaking = cpaView(tick({ why: 'up-to-date' }, { env: 'production', builder: { status: 'built', checkedAt: at(NOW), preview: { version: CAND, stage: 'soaking', soakUntil: at(bj(20)) } } }))
+  assert.deepEqual(soaking.pipeline, { stage: 'soaking', tone: 'idle', text: `${CAND} 在预发布浸泡，到 20:00 再验收` })
+  const failed = cpaView(tick({ why: 'up-to-date' }, { env: 'production', builder: { status: 'built', checkedAt: at(NOW), preview: { version: CAND, stage: 'rejected', reason: '浸泡后验收没过：tool' } } }))
+  assert.equal(failed.pipeline?.text, `${CAND} 在预发布没过：浸泡后验收没过：tool`)
+})
+
+test('CPA view: checks show the last tick and the next; an install says how the real requests went and how fast it was restored', () => {
+  const view = cpaView(tick({ why: 'up-to-date' }))
+  assert.deepEqual(view.checks, { last: at(NOW - 60_000), next: at(NOW + 9 * 60_000) })
+  const verify = { ok: false, results: [{ type: 'claude', ok: true }, { type: 'codex', ok: false, detail: '502' }, { type: 'antigravity', ok: null, skipped: 'no-probe-key' }] }
+  assert.equal(probeWords({ verify }), '真实请求 1/2 通过（codex 没过） · 跳过 antigravity（没有探测 Key）')
+  assert.equal(probeWords({ verify: { ok: true, results: [] } }), '没有 OAuth 账号，免真实请求')
+  assert.equal(probeWords({}), '')
+  const rolled = cpaView(tick({ why: 'attempted', version: CAND }, {
+    lastApply: { version: CAND, at: at(bj(5, 10)), action: 'apply', result: 'rolled-back', restoreSeconds: 12, probes: { verify }, reasons: [{ code: 'verify', text: 'codex 探针 502' }] },
+  }))
+  assert.equal(rolled.last?.text, `05:10 替换 ${CAND} 后验收没过，12 秒内换回旧版本 · 真实请求 1/2 通过（codex 没过） · 跳过 antigravity（没有探测 Key）`)
+  assert.deepEqual(rolled.error, { text: 'codex 探针 502', at: at(bj(5, 10)) })
 })
 
 test('routes: GET/PUT; rollback is queued only with confirm and only when there is something to roll back', async () => {

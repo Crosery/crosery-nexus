@@ -18,11 +18,15 @@ export type KernelReason = { code: string; text: string }
 export type KernelWindow = { start: string; end: string; tz: string }
 export type KernelConfig = { version: 1; cpa: { enabled: boolean }; magpie: { enabled: boolean }; window: KernelWindow; updatedAt?: string }
 
+export type KernelEnv = 'preview' | 'production'
+
 export type KernelView = {
   id: KernelId
   name: string
   role: 'serving' | 'standby'
   roleText: string
+  /** which half of the CPA promotion this host is (the applier records it); null = not said yet */
+  env: KernelEnv | null
   /** what runs (CPA) / what is installed (Magpie standby); null = unknown */
   version: string | null
   online: boolean | null
@@ -38,11 +42,18 @@ export type KernelView = {
   last: { text: string; tone: KernelTone; at: string } | null
   rollback: { to: string } | null
   checkedAt: string | null
+  /** CPA: where the candidate stands — built → on preview → soaking/accepted → staged on production → installed / rejected */
+  pipeline: { stage: string; tone: KernelTone; text: string } | null
+  /** the applier's last tick and the next one (timer every 10 minutes) */
+  checks: { last: string | null; next: string | null }
+  /** the most recent failure anywhere in the pipeline, with when it happened */
+  error: { text: string; at: string | null } | null
 }
 
 export type KernelsView = {
   available: boolean
   reason: string | null
+  env: KernelEnv | null
   scheduler: 'installed' | 'missing' | 'stale'
   window: KernelWindow & { label: string }
   kernels: KernelView[]
@@ -54,6 +65,7 @@ export const DEFAULT_KERNEL_WINDOW: KernelWindow = { start: '05:00', end: '07:00
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
 const MAX_FILE_BYTES = 512 * 1024
 const STALE_MS = 30 * 60_000
+const TICK_MS = 10 * 60_000
 const ZONE_WORD: Record<string, string> = { 'Asia/Shanghai': '北京时间', 'America/New_York': '纽约时间', UTC: 'UTC' }
 
 export function kernelPaths(dataDir: string, timerUnit = '/etc/systemd/system/crosery-kernel-update.timer'): KernelPaths {
@@ -197,10 +209,28 @@ function candidateLine(id: KernelId, builder: Record<string, unknown> | null, st
   return { label: label || '—', tone: status === 'held' ? 'warn' : 'bad', text: first(list) || BUILDER_WORD[status ?? ''] || '构建机没给结果' }
 }
 
+type ProbeItem = { type?: unknown; ok?: unknown; skipped?: unknown; detail?: unknown }
+
+/** `真实请求 2/2 通过 · 跳过 gemini（没有探测 Key）` from the install's verify phase; '' when it did not run. */
+export function probeWords(probes: unknown): string {
+  const verify = isObject(probes) && isObject(probes.verify) ? probes.verify : null
+  if (!verify || !Array.isArray(verify.results)) return ''
+  const items = (verify.results as ProbeItem[]).filter(isObject)
+  if (!items.length) return '没有 OAuth 账号，免真实请求'
+  const tested = items.filter(item => item.skipped === undefined || item.skipped === null)
+  const skipped = items.filter(item => typeof item.skipped === 'string').map(item => String(item.type))
+  const failed = tested.filter(item => item.ok !== true).map(item => String(item.type))
+  return [
+    `真实请求 ${tested.length - failed.length}/${tested.length} 通过${failed.length ? `（${failed.join('、')} 没过）` : ''}`,
+    skipped.length ? `跳过 ${skipped.join('、')}（没有探测 Key）` : '',
+  ].filter(Boolean).join(' · ')
+}
+
 /** The one line under the switch, from the applier's last decision and last apply. */
 function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknown>, now: number): Pick<KernelView, 'state' | 'tone' | 'line' | 'reasons' | 'last'> {
   const window = windowLabel(facts.config.window)
   const tz = facts.config.window.tz
+  const preview = state.env === 'preview'
   const decision = isObject(state.decision) ? state.decision : {}
   const why = str(decision.why) ?? 'unknown'
   const target = str(decision.version) ?? short(str(decision.revision))
@@ -210,10 +240,18 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
   const lastResult = str(lastRaw?.result)
   const lastReasons = reasons(lastRaw?.reasons)
   const at = lastAt ? zonedClock(Date.parse(lastAt), now, tz) : ''
-  const LAST: Record<string, [string, KernelTone]> = {
-    applied: [id === 'cpa' ? `${at} 替换到 ${lastTarget}` : `${at} 备用内核换成 ${lastTarget}（启动检查通过）`, 'ok'],
+  const probed = probeWords(lastRaw?.probes)
+  const restoreSeconds = typeof lastRaw?.restoreSeconds === 'number' ? lastRaw.restoreSeconds : null
+  const trial = isObject(state.trial) ? state.trial : null
+  const LAST: Record<string, [string, KernelTone]> = lastRaw?.action === 'reject' ? {
+    'rolled-back': [`${at} ${lastTarget} 在预发布没过（${first(lastReasons)}），已换回 ${str(trial?.previous) ?? '上一个版本'}`, 'bad'],
+    voided: [`${at} ${lastTarget} 被别的版本换掉，这次试运行作废`, 'warn'],
+    'rollback-refused': [`${at} ${lastTarget} 在预发布没过，回滚没开始：${lastReasons[1]?.text ?? '安装脚本拒绝'} · 需要人工处理`, 'bad'],
+    'rollback-failed': [`${at} ${lastTarget} 在预发布没过，回滚也没成功 · 需要人工处理`, 'bad'],
+  } : {
+    applied: [id === 'cpa' ? [`${at} 替换到 ${lastTarget}`, probed].filter(Boolean).join(' · ') : `${at} 备用内核换成 ${lastTarget}（启动检查通过）`, 'ok'],
     'up-to-date': [`${at} 已是 ${lastTarget}`, 'ok'],
-    'rolled-back': [`${at} 替换 ${lastTarget} 后验收没过，已自动回滚`, 'bad'],
+    'rolled-back': [`${at} 替换 ${lastTarget} 后验收没过，${restoreSeconds !== null ? `${restoreSeconds} 秒内换回旧版本` : '已自动回滚'}${probed ? ` · ${probed}` : ''}`, 'bad'],
     'rollback-failed': [`${at} 替换 ${lastTarget} 失败，回滚也没成功 · 需要人工处理`, 'bad'],
     refused: [`${at} ${lastRaw?.action === 'rollback' ? '回滚' : '替换'}没开始：${first(lastReasons) || '安装脚本拒绝'}`, 'warn'],
     failed: [`${at} ${lastTarget} 启动检查没过，没有换上`, 'bad'],
@@ -229,8 +267,15 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
   if (now - checkedAt > STALE_MS) return out('stale', 'warn', `定时任务 ${Math.round((now - checkedAt) / 60_000)} 分钟没跑了`)
   const decisionReasons = reasons(decision.reasons)
   switch (why) {
-    case 'up-to-date': return out('up-to-date', 'ok', id === 'cpa' ? `已是最新候选 · 新版本先在构建机演练，通过后在 ${window}替换` : '已是最新 · 新版本先在 Mac 上演练，通过后换上')
+    case 'up-to-date': return out('up-to-date', 'ok', id !== 'cpa' ? '已是最新 · 新版本先在 Mac 上演练，通过后换上'
+      : preview ? '已是最新候选 · 新版本构建通过就装到这里试运行' : `已是最新候选 · 新版本先在预发布验收，通过后在 ${window}替换`)
     case 'no-candidate': return out('up-to-date', 'idle', id === 'cpa' ? '还没有演练通过的候选' : '还没有备用内核 · 等 Mac 发布第一个')
+    case 'trial-active': return out('eligible', 'ok', `${str(decision.trial) ?? '上一个候选'} 还在试运行 · ${target} 等它结束`)
+    case 'not-promoted': {
+      const list = reasons(decision.reasons)
+      const waiting = list.every(item => item.code === 'no-record')
+      return out(waiting ? 'eligible' : 'held', waiting ? 'idle' : 'warn', waiting ? `${target} 已暂存 · 等预发布两次验收的记录` : `${target} 的预发布记录不能用：${first(list)}`, list)
+    }
     case 'window': return out('eligible', 'ok', `${target} 演练通过 · 等 ${window}替换`)
     case 'daily': return out('eligible', 'ok', `${target} 演练通过 · 这个时段已经换过一次，明天 ${window}再换`)
     case 'apply': return out('applying', 'ok', `${target} 正在替换`)
@@ -251,6 +296,76 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
   }
 }
 
+const hours = (ms: number) => Math.round(ms / 3_600_000)
+
+/**
+ * Where the CPA candidate stands. Preview reads its own trial; production reads its own staged / promotion / installed
+ * state first and the coordinator's word on preview (the builder report) for the earlier stages.
+ */
+export function pipelineLine(facts: KernelFacts, state: Record<string, unknown>, now: number): KernelView['pipeline'] {
+  const tz = facts.config.window.tz
+  const clock = (value: unknown) => (typeof value === 'string' && Number.isFinite(Date.parse(value)) ? zonedClock(Date.parse(value), now, tz) : '—')
+  const installed = isObject(state.installed) ? str(state.installed.version) : null
+  if (state.env === 'preview') {
+    const trial = isObject(state.trial) ? state.trial : null
+    if (!trial) return null
+    const version = str(trial.version) ?? '—'
+    const rejected = isObject(trial.rejected) ? trial.rejected : null
+    switch (trial.status) {
+      case 'installed': return { stage: 'preview', tone: 'ok', text: `${version} 已在预发布试运行 · 等首次验收` }
+      case 'soaking': return { stage: 'soaking', tone: 'ok', text: `${version} 首次验收通过 · 浸泡到 ${clock(trial.soakUntil)} 再验收` }
+      case 'accepted': return { stage: 'accepted', tone: 'ok', text: `${version} 两次验收通过（浸泡 ${hours(Number(trial.soakMs) || 0)} 小时）· 记录交给正式` }
+      case 'rejected': {
+        const restored = rejected?.rollback === 'rolled-back' ? `已换回 ${str(trial.previous) ?? '上一个版本'}` : rejected?.rollback === 'voided' ? '没有回滚（已被换掉）' : '回滚没完成 · 需要人工处理'
+        return { stage: 'rejected', tone: rejected?.rollback === 'voided' ? 'warn' : 'bad', text: `${version} 没过：${str(rejected?.reason) ?? '见上次'} · ${restored}` }
+      }
+      default: return null
+    }
+  }
+  const promotion = isObject(state.promotion) ? state.promotion : null
+  const promoted = isObject(promotion?.candidate) ? str(promotion.candidate.version) : null
+  const staged = isObject(state.staged) ? str(state.staged.version) : null
+  if (promoted && installed === promoted) return { stage: 'installed', tone: 'ok', text: `${promoted} 已装上 · 预发布验收于 ${clock(promotion?.acceptedAt)}` }
+  if (promoted && staged === promoted) {
+    const decision = isObject(state.decision) ? state.decision : {}
+    const tone: KernelTone = decision.why === 'not-promoted' ? 'warn' : 'ok'
+    return { stage: 'staged', tone, text: `${promoted} 预发布两次验收通过 · 已暂存到正式，${tone === 'ok' ? `等 ${windowLabel(facts.config.window)}替换` : '记录不能用，见自动更新'}` }
+  }
+  const builder = isObject(state.builder) ? state.builder : null
+  const stage = isObject(builder?.preview) ? builder.preview : null
+  const version = str(stage?.version) ?? '—'
+  switch (stage?.stage) {
+    case 'uploaded': return { stage: 'preview', tone: 'idle', text: `${version} 已上传到预发布 · 等它装上` }
+    case 'installed': return { stage: 'preview', tone: 'idle', text: `${version} 在预发布试运行 · 等首次验收` }
+    case 'soaking': return { stage: 'soaking', tone: 'idle', text: `${version} 在预发布浸泡，到 ${clock(stage.soakUntil)} 再验收` }
+    case 'accepted':
+    case 'delivered': return { stage: 'accepted', tone: 'ok', text: `${version} 预发布两次验收通过 · 等送到正式` }
+    case 'rejected': return { stage: 'rejected', tone: 'warn', text: `${version} 在预发布没过：${str(stage.reason) ?? '见预发布控制台'}` }
+    default: return null
+  }
+}
+
+const FAILED = new Set(['rolled-back', 'rollback-failed', 'refused', 'failed', 'rollback-refused', 'voided'])
+
+/** The latest failure anywhere: the last apply or rejection, the preview trial, or the builder. */
+function lastError(state: Record<string, unknown>): KernelView['error'] {
+  const found: Array<{ text: string; at: string | null }> = []
+  const lastApply = isObject(state.lastApply) ? state.lastApply : null
+  if (lastApply && FAILED.has(String(lastApply.result))) found.push({ text: first(reasons(lastApply.reasons)) || BUILDER_WORD.error, at: str(lastApply.at) })
+  const builder = isObject(state.builder) ? state.builder : null
+  const status = str(builder?.status)
+  if (builder && status && status !== 'built' && status !== 'up-to-date') found.push({ text: first(reasons(builder.reasons)) || BUILDER_WORD[status] || '构建机没给结果', at: str(builder.checkedAt) })
+  const decision = isObject(state.decision) ? state.decision : null
+  if (decision?.why === 'not-promoted' && reasons(decision.reasons).some(item => item.code !== 'no-record')) found.push({ text: first(reasons(decision.reasons)), at: str(decision.at) })
+  return found.sort((a, b) => (Date.parse(b.at ?? '') || 0) - (Date.parse(a.at ?? '') || 0))[0] ?? null
+}
+
+function checksOf(state: Record<string, unknown>): KernelView['checks'] {
+  const last = str(state.checkedAt)
+  const at = Date.parse(last ?? '')
+  return { last, next: Number.isFinite(at) ? new Date(at + TICK_MS).toISOString() : null }
+}
+
 export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsView {
   const cpaState = facts.cpa ?? {}
   const magpieState = facts.magpie ?? {}
@@ -261,8 +376,9 @@ export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsV
     const applied = isObject(cpaState.applied) ? cpaState.applied : null
     const previous = str(applied?.previous)
     const heldNewer = isObject(builder?.heldNewer) ? str(builder.heldNewer.tag) : null
+    const env = cpaState.env === 'preview' || cpaState.env === 'production' ? cpaState.env : null
     views.push({
-      id: 'cpa', name: 'CPA', role: 'serving', roleText: '接流量',
+      id: 'cpa', name: 'CPA', role: 'serving', roleText: env === 'preview' ? '接流量 · 预发布' : env === 'production' ? '接流量 · 正式' : '接流量', env,
       version: facts.cpaRunning ?? installed, online: facts.cpaRunning ? true : null,
       upstream: builder ? { latest: str(builder.upstreamLatest), line: str(builder.line), heldNewer, checkedAt: str(builder.checkedAt) } : null,
       candidate: candidateLine('cpa', builder, isObject(cpaState.staged) ? cpaState.staged : null),
@@ -271,6 +387,9 @@ export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsV
       // across a major only while config.yaml is still legacy: an older major cannot start on a config the newer one migrated
       rollback: applied && previous && (versionMajor(previous) === versionMajor(str(applied.version)) || cpaState.configLayout === 'legacy') ? { to: previous } : null,
       checkedAt: str(cpaState.checkedAt),
+      pipeline: pipelineLine(facts, cpaState, now),
+      checks: checksOf(cpaState),
+      error: lastError(cpaState),
     })
   }
   {
@@ -279,7 +398,7 @@ export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsV
     const applied = isObject(magpieState.applied) ? magpieState.applied : null
     const revision = str(installed?.revision)
     views.push({
-      id: 'magpie', name: 'Magpie', role: 'standby', roleText: '备用 · 不接流量',
+      id: 'magpie', name: 'Magpie', role: 'standby', roleText: '备用 · 不接流量', env: null,
       version: revision ? [short(revision), str(installed?.release)].filter(Boolean).join(' · ') : null, online: null,
       upstream: builder ? { latest: str(builder.upstreamLatest) ?? short(str(builder.upstreamRevision)), line: null, heldNewer: null, checkedAt: str(builder.checkedAt) } : null,
       candidate: candidateLine('magpie', builder, isObject(magpieState.staged) ? magpieState.staged : null),
@@ -287,11 +406,14 @@ export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsV
       ...autoLine('magpie', facts, magpieState, now),
       rollback: applied && str(applied.previous) ? { to: short(str(applied.previousRevision)) || str(applied.previous)! } : null,
       checkedAt: str(magpieState.checkedAt),
+      pipeline: null,
+      checks: checksOf(magpieState),
+      error: lastError(magpieState),
     })
   }
   const ticks = views.map(view => Date.parse(view.checkedAt ?? '')).filter(Number.isFinite)
   const scheduler = facts.scheduler === 'missing' ? 'missing' : ticks.length && now - Math.max(...ticks) > STALE_MS ? 'stale' : 'installed'
-  return { available: true, reason: null, scheduler, window: { ...facts.config.window, label: windowLabel(facts.config.window) }, kernels: views }
+  return { available: true, reason: null, env: views[0].env, scheduler, window: { ...facts.config.window, label: windowLabel(facts.config.window) }, kernels: views }
 }
 
 export function readKernelFacts(paths: KernelPaths, cpaRunning: string | null): KernelFacts {
@@ -319,7 +441,7 @@ const UNAVAILABLE = '只有中转站（Linux、CPA 网关）有内核更新定�
 export function registerKernelRoutes(app: express.Express, deps: KernelRouteDeps): void {
   const view = async (): Promise<KernelsView> => {
     if (!deps.available()) {
-      return { available: false, reason: UNAVAILABLE, scheduler: 'missing', window: { ...DEFAULT_KERNEL_WINDOW, label: windowLabel(DEFAULT_KERNEL_WINDOW) }, kernels: [] }
+      return { available: false, reason: UNAVAILABLE, env: null, scheduler: 'missing', window: { ...DEFAULT_KERNEL_WINDOW, label: windowLabel(DEFAULT_KERNEL_WINDOW) }, kernels: [] }
     }
     const running = await deps.cpaRunning().catch(() => null)
     return buildKernelsView(readKernelFacts(deps.paths(), running))
