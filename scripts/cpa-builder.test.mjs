@@ -48,7 +48,9 @@ async function builder(t, { tag = 'v8.0.12', conflict = false } = {}) {
   await executable('sha256sum', 'exec shasum -a 256 "$@"\n')
   await executable('docker', `
     echo docker >> "$CPA_PIPELINE_ROOT/calls"
+    printf '%s\\n' "$@" > "$CPA_PIPELINE_ROOT/docker-args"
     [ "\${FAKE_BUILD_FAIL:-}" != 1 ] || { echo 'FAIL fake build'; exit 1; }
+    echo go1.26.5 > "$CPA_PIPELINE_ROOT/src/.pipeline-out/go-version"
     for arg in "$@"; do case "$arg" in VERSION=*) version=\${arg#VERSION=};; esac; done
     printf '#!/bin/bash\\necho "CLIProxyAPI Version: %s, Commit: fixture"\\n' "$version" > "$CPA_PIPELINE_ROOT/src/.pipeline-out/cli-proxy-api"
     chmod 755 "$CPA_PIPELINE_ROOT/src/.pipeline-out/cli-proxy-api"
@@ -112,6 +114,14 @@ for (const tag of ['v7.3.20', 'v7.4.0', 'v8.0.12']) {
     assert.doesNotMatch(`${preview}${prod}`, /cpa-install/)
     const stored = JSON.parse(await b.read(`state/candidates/${version}/candidate.json`))
     assert.equal(stored.sha256, report.candidate.sha256)
+    // reproducible: the pinned image, the commit's own time as BUILD_DATE, recorded with the go version
+    const args = (await b.read('docker-args')).split('\n')
+    const image = 'golang:1.26.5-bookworm@sha256:53eeac89074db483fdf0ab3be1df32bf6e47562263d2d0d6baa7f26acb4957dd'
+    const committed = new Date(Number(b.git(b.src, 'log', '-1', '--format=%ct', 'HEAD')) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    assert.ok(args.includes(image))
+    assert.ok(args.includes(`BUILD_DATE=${committed}`), args.join(' '))
+    assert.ok(['CGO_ENABLED=0', 'GOFLAGS=-buildvcs=false', 'GOOS=linux', 'GOARCH=amd64'].every(arg => args.includes(arg)))
+    assert.deepEqual(stored.build, { go: 'go1.26.5', buildDate: committed, image })
     const uploaded = gunzipSync(await fs.readFile(path.join(b.root, 'upload-preview.gz')))
     assert.equal(createHash('sha256').update(uploaded).digest('hex'), stored.sha256, 'the gate receives the stored binary, gzip-compressed')
     // the next round: built before (same commit) → no docker; staged on preview already → no second upload
@@ -167,6 +177,20 @@ test('builder: failed checkout preserves unfinished edits and never builds anoth
   assert.equal(b.git(b.src, 'branch', '--show-current'), 'scratch')
   assert.equal(await fs.readFile(path.join(b.src, 'config.txt'), 'utf8'), 'unfinished local edit\n')
   assert.doesNotMatch(`${calls}${preview}`, /docker|cpa-upload|cpa-stage/)
+})
+
+test('builder: a Go image that is not pinned by digest is refused before anything runs', async t => {
+  const b = await builder(t)
+  for (const image of ['golang:1.26.5-bookworm', 'golang:latest@sha256:abc']) {
+    const out = spawnSync('bash', [script], { env: { ...b.env, CPA_GO_IMAGE: image }, encoding: 'utf8', timeout: 15_000 })
+    assert.equal(out.status, 2, image)
+    assert.match(out.stderr, /pinned by digest/)
+  }
+  assert.equal(await b.read('calls'), '')
+  const mirror = `mirror.example/library/golang:1.26.5-bookworm@sha256:${'5'.repeat(64)}`
+  const { code } = await b.run({ CPA_GO_IMAGE: mirror })
+  assert.equal(code, 0)
+  assert.ok((await b.read('docker-args')).split('\n').includes(mirror))
 })
 
 test('builder: no gate targets in pipeline.env → fails before building anything', async t => {
