@@ -198,13 +198,21 @@ export async function replaceCPAKeys(keys: string[]) {
   })
 }
 
-/** 把探测 Key 补进 api-keys（只增不删，其它 Key 原样保留）。返回服务 → 探测 Key。 */
+/**
+ * 把探测 Key 补进 api-keys，用户 Key 原样保留。返回服务 → 探测 Key。
+ * 顺手清掉本机文件里没有的系统 Key（rc.4 的旧格式探测 Key、数据目录丢失前的旧 Key）：没人持有它们，留着只是多一把有效凭据。
+ */
 export async function registerProbeKeys(services: string[]): Promise<Record<string, string>> {
   const wanted = ensureProbeKeys(config.dataDir, services)
   await serializeApiKeys(async () => {
     const current = await getRawCPAKeys()
-    const missing = [...new Set(Object.values(wanted))].filter((key) => !current.includes(key))
-    if (missing.length) await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify([...current, ...missing]) })
+    const system = readSystemKeys(config.dataDir)
+    const held = new Set([...Object.values(system.probes), ...(system.lockout ? [system.lockout] : [])])
+    const kept = current.filter((key) => !isSystemKey(key) || held.has(key))
+    const next = [...kept, ...[...new Set(Object.values(wanted))].filter((key) => !kept.includes(key))]
+    // api-keys 永不写空；内容没变就不写
+    if (!next.length || (next.length === current.length && next.every((key, index) => key === current[index]))) return
+    await cpaRequest('/api-keys', { method: 'PUT', body: JSON.stringify(next) })
   })
   return wanted
 }

@@ -173,7 +173,7 @@ test('系统 Key：探测 Key 读时隐藏、写时保留，只钉在自己的�
     assert.match(probes['Mox-AIGW'], /^sk-probe-mox-aigw-[0-9a-f]{64}$/)
     assert.equal(fs.statSync(path.join(dir, 'system-keys.json')).mode & 0o777, 0o600)
     assert.deepEqual(readSystemKeys(dir).probes, { codex: probes.codex, 'mox-aigw': probes['Mox-AIGW'] }, '文件里按规范渠道名存')
-    assert.deepEqual(keyPuts.at(-1), ['sk-real', userKey, orphan, probes.codex, probes['Mox-AIGW']], '只补缺的，其它 Key 原样保留')
+    assert.deepEqual(keyPuts.at(-1), ['sk-real', userKey, probes.codex, probes['Mox-AIGW']], '补上探测 Key，用户 Key 原样保留，没人持有的系统 Key 清掉')
     assert.deepEqual(await registerProbeKeys(['codex', 'Mox-AIGW']), probes, '同一数据目录复用同一把')
     assert.equal(keyPuts.length, 1, '已注册时不再写')
     assert.deepEqual(await getCPAKeys(), ['sk-real', userKey], '探测 Key 不算控制台的 Key')

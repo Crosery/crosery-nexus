@@ -17,16 +17,20 @@ export type SystemKeys = { version: 1; lockout: string | null; probes: Record<st
 export const SYSTEM_KEYS_FILE = 'system-keys.json'
 /** 旧版只有封锁 Key 时的单独文件；首次读取时迁进 system-keys.json，旧文件原样留着。 */
 const LEGACY_LOCKOUT_FILE = 'cpa-lockout-key'
+/** v0.2.0-rc.4 的探测 Key 文件（旧格式 Key）：不迁移，新文件第一次落盘时删掉，旧 Key 由 CPA 写入方按格式清掉。 */
+const LEGACY_PROBE_KEYS_FILE = 'cpa-probe-keys.json'
 
 export const LOCKOUT_KEY_PATTERN = /^sk-lockout-[0-9a-f]{64}$/
 export const PROBE_KEY_PATTERN = /^sk-probe-[a-z0-9][a-z0-9._-]*-[0-9a-f]{64}$/
+/** v0.2.0-rc.4 写进过预发布 CPA 的旧格式（没有服务段）：只用于识别，从不再生成。 */
+const LEGACY_PROBE_KEY_PATTERN = /^sk-probe-[0-9a-f]{64}$/
 
 /**
  * 按格式识别：数据目录丢失后网关里残留的旧系统 Key 也不会被当成用户 Key 导入。
  * 控制台发放的 Key 随机段是 32 位十六进制（keyNaming.ts 的 buildNamedAPIKey），撞不上 64 位的格式。
  */
 export const isSystemKey = (key: unknown): boolean =>
-  typeof key === 'string' && (LOCKOUT_KEY_PATTERN.test(key) || PROBE_KEY_PATTERN.test(key))
+  typeof key === 'string' && (LOCKOUT_KEY_PATTERN.test(key) || PROBE_KEY_PATTERN.test(key) || LEGACY_PROBE_KEY_PATTERN.test(key))
 
 /** 文本里出现的系统 Key 一律打码（探测错误原文、上游回显等进日志或状态文件之前）。 */
 export const maskSystemKeys = (text: string) => text.replace(/sk-(lockout|probe)-[A-Za-z0-9._-]{8,}/g, 'sk-$1-***')
@@ -69,6 +73,7 @@ function writeSystemKeys(dataDir: string, keys: SystemKeys) {
   const temporary = `${file}.${process.pid}.tmp`
   fs.writeFileSync(temporary, `${JSON.stringify({ version: 1, lockout: keys.lockout, probes: keys.probes }, null, 2)}\n`, { mode: 0o600 })
   fs.renameSync(temporary, file)
+  try { fs.rmSync(path.join(dataDir, LEGACY_PROBE_KEYS_FILE), { force: true }) } catch { /* 删不掉也无害：内容不再被读取 */ }
 }
 
 /**
