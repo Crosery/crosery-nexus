@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, shallowRef, watch } from 'vue'
 import { TxPopover } from '@talex-touch/tuffex/popover'
 import Sheet from '../feedback/Sheet.vue'
 
@@ -21,18 +21,23 @@ function liveAnchor(el: HTMLElement): HTMLElement | null {
   const date = el.dataset.date
   return date ? document.querySelector<HTMLElement>(`[data-date="${date}"]:not([data-void])`) : null
 }
-const reference = computed(() => {
-  const el = props.anchor
-  if (!el) return undefined
-  return {
-    getBoundingClientRect: () => {
-      const live = liveAnchor(el)
-      if (live) lastRect = live.getBoundingClientRect()
-      return lastRect ?? el.getBoundingClientRect()
-    },
-    contextElement: el,
-  }
+// One virtual reference for the card's whole life, reading whichever cell is current. Swapping it per anchor (and
+// unsetting it on close) let TxPopover fall back to its hidden 0×0 reference at the heatmap's left edge, and every
+// card opened after a close was placed there.
+const current = shallowRef<HTMLElement | null>(props.anchor)
+watch(() => props.anchor, (el) => {
+  if (el) current.value = el
 })
+const reference = {
+  getBoundingClientRect: () => {
+    const live = current.value ? liveAnchor(current.value) : null
+    if (live) lastRect = live.getBoundingClientRect()
+    return lastRect ?? new DOMRect()
+  },
+  get contextElement() {
+    return current.value ?? undefined
+  },
+}
 const shown = computed(() => props.open && Boolean(props.anchor))
 
 // TxPopover places a virtual reference only on open / scroll / resize; moving to another cell while the card
