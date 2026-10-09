@@ -139,6 +139,7 @@ CPA_ACCEPT_KEY=… node scripts/cpa-acceptance.mjs --base-url <公网地址> --m
 | --- | --- |
 | `deploy/kernels/relay/cpa-install-binary.sh` | `/usr/local/sbin/cpa-install-binary.sh`（唯一的安装入口） |
 | `deploy/kernels/relay/cpa-pipeline-gate.sh` | `/usr/local/sbin/cpa-pipeline-gate.sh` |
+| `deploy/kernels/relay/cpa-management-console-compat-check` | `/usr/local/sbin/cpa-management-console-compat-check`（安装脚本默认的管理 API/控制台门禁；缺了它安装脚本拒绝替换，除非 `install.env` 里把 `CPA_CONSOLE_GATE` 设为空） |
 | `deploy/kernels/relay/crosery-kernel-update.{service,timer}`、`crosery-kernel-request.path` | `/etc/systemd/system/` |
 | `deploy/kernels/relay/cli-proxy-api.service.d/10-stop-timeout.conf` | `/etc/systemd/system/cli-proxy-api.service.d/`，然后 `systemctl daemon-reload`（`TimeoutStopSec=5`；没有它安装脚本拒绝替换） |
 | `deploy/systemd/crosery-rtk-autoupdate.{service,timer}` | `/etc/systemd/system/` |
