@@ -81,8 +81,10 @@
 | 10-09 09:55 | 控制台 `v0.2.0` | `release deploy production v0.2.0`；门禁核对了预发布部署与 `api=passed` 验收 | 3 秒内健康；CPA 的 14 把用户 Key 与改前快照逐把比对，模型与渠道权限没有变化；首轮可用性：5 个服务在线、无告警，新增 5 把只钉在本服务的探测 Key [verified] |
 | 10-09 10:03 | CPA/RTK 自动更新 unit、安装脚本、构建机网关（`production` 角色）、CPA 停止超时 drop-in | 原文件备份到归档；不重启 CPA（drop-in 只在下次停止时生效） | applier：`up-to-date`、角色 production、下个窗口 05:00；RTK 已是最新；构建机经网关 `cpa-version` / `cpa-state` 正常，任意命令 `denied` [verified] |
 | 10-09 10:05 | RTK 中转 unit 上线（端口 8792，指向 8316） | 先只监听，不接流量；回环金丝雀：模型列表、JSON、SSE 与直连 guard 结果一致 | [verified] |
-| 10-09 10:06 | API 站点 `location /` 改为中转在前、guard 后备 | 改前站点文件备份到归档；`nginx -t` 通过后 reload | 见下方观察 |
+| 10-09 10:06 | API 站点 `location /` 改为中转在前、guard 后备 | 改前站点文件备份到归档；`nginx -t` 通过后 reload | 改前 30 分钟 `/v1*` 534 个请求、失败 23 个（4.3%，其中 5xx 3 个）；改后 10 分钟 138 个、失败 3 个（全是 4xx），5xx 为 0，nginx 没有连不上中转的记录 [verified] |
 | 10-09 06:09 | 重试参数：`max-retry-credentials` 4 → 0，`max-retry-interval` 180 → 8（与预发布调优结论一致，见 `20261009-antigravity-tuning.md`） | 管理接口写入，配置文件仍是旧布局，只有这两行变化；改前备份在 `<正式机>` 归档目录 | 改前 30 分钟 `/v1*` 626 个请求、失败 4 个（0.64%）；改后 12 分钟 239 个、失败 0 [verified] |
+
+正式库里 14 把启用的 Key 的「RTK 压缩」都是开的，这是 10-08 那次带中转的发布留下的设置，中转接回后压缩随之恢复。不想要时：设置 → RTK 中转 → 关闭「压缩工具输出」，不用重启。中转统计写库偶尔遇到锁（`rtk_relay_ledger_deferred`），会留到下一轮再写，不影响请求。
 
 正式 CPA 程序没有替换，仍是 `8.0.13-patched.7b53aee6`。它要等预发布候选浸泡期满、写出晋级记录后，才会在 05:00–07:00 自动替换。
 
