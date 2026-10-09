@@ -54,7 +54,7 @@ test('篡改任一字段都失效：角色、key_hash、到期、签名、段数
     `${expires}.v2.admin.${HASH_A}.${signature}`,
     `${expires}.v2.key.${HASH_B}.${signature}`, // 换成别人的 Key
     `${Number(expires) + 1000}.v2.key.${HASH_A}.${signature}`, // 延长有效期
-    `${expires}.v2.key.${HASH_A}.${signature.slice(0, -2)}00`,
+    `${expires}.v2.key.${HASH_A}.${signature.slice(0, -2)}${signature.endsWith('00') ? '11' : '00'}`, // 一个签名有 1/256 本来就以 00 结尾
     `${expires}.v2.key.${HASH_A}.${signature.toUpperCase()}`,
     `${expires}.v2.key.${HASH_A.toUpperCase()}.${hmac(`crosery-console-session|v2|${expires}|key|${HASH_A.toUpperCase()}`)}`,
     `${expires}.v2.root.-.${hmac(`crosery-console-session|v2|${expires}|root|-`)}`, // 未知角色，即使签名正确

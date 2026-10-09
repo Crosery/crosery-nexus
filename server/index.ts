@@ -669,7 +669,9 @@ app.patch('/api/keys/:id', async (req, res) => {
   const groups = Array.isArray(req.body?.groups) ? req.body.groups : parseJson(String(row.groups_json), [] as string[])
   const totalConcurrency = parseTotalConcurrency(req.body?.totalConcurrency, Number(row.total_concurrency))
   const groupConcurrency = typeof req.body?.groupConcurrency === 'object' ? req.body.groupConcurrency : parseJson(String(row.group_concurrency_json), {})
-  validatePolicy({ enabled, groups, totalConcurrency, groupConcurrency })
+  // 停用后、且这次不改分组：库里的分组可能已被对账清空（渠道在 CPA 侧下线），这不能挡住停用；分组原样保留。
+  // 启用或改分组照常校验（启用的 Key 至少要有一个分组）；总并发已由 parseTotalConcurrency 校验过。
+  if (enabled || Array.isArray(req.body?.groups) || groups.length) validatePolicy({ enabled, groups, totalConcurrency, groupConcurrency })
   const rtkCompress = parseRtkCompress(req.body?.rtkCompress)
   const value = String(row.key_value)
   const keys = await getCPAKeys()

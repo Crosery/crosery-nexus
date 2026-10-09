@@ -142,13 +142,24 @@ function seed(dataDir: string): number {
 
 type Harness = { base: string; dataDir: string; cpaBaseUrl: string; stop: () => Promise<void>; logs: () => string }
 
-/** A CPA management API that accepts every write and lists no keys (the key PATCH syncs its key list there). */
+/**
+ * The CPA management API of the world seed() writes: the one live channel (RETIRED is gone from it) and the keys seed()
+ * leaves enabled; writes are accepted. The console reconciles against it at startup, racing seed(): against a CPA
+ * with no channel and no keys, a reconcile that reads the seeded rows empties every key's groups (unknown groups are
+ * dropped) and disables every key, so the outcome depended on who won.
+ */
+const CPA_KEYS = [KEY_A, KEY_B, KEY_E, KEY_F, KEY_G, KEY_H]
+const CPA_CHANNELS = [{ name: CHANNEL, 'base-url': 'https://upstream.example.test/v1', 'api-key-entries': [], models: [{ name: MARKER_A }, { name: MARKER_B }] }]
+
 async function startCpaStub() {
   const server = createServer((req, res) => {
     req.resume()
     req.on('end', () => {
+      const route = (req.url || '').split('?')[0]
       res.setHeader('content-type', 'application/json')
-      res.end(JSON.stringify((req.url || '').startsWith('/v0/management/api-keys') ? { 'api-keys': [] } : {}))
+      if (req.method === 'GET' && route === '/v0/management/api-keys') return void res.end(JSON.stringify({ 'api-keys': CPA_KEYS }))
+      if (req.method === 'GET' && route === '/v0/management/openai-compatibility') return void res.end(JSON.stringify({ 'openai-compatibility': CPA_CHANNELS }))
+      res.end('{}')
     })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -174,6 +185,8 @@ async function startHarness(): Promise<Harness> {
       COOKIE_SECURE: 'false',
       CPA_BASE_URL: cpaBaseUrl,
       CPA_MANAGEMENT_KEY: 'me-isolation-management-key',
+      // only the startup reconcile: a periodic one would undo what the test does to the rows directly (delete E, toggle F)
+      SYNC_INTERVAL_MS: '3600000',
       PUBLIC_GATEWAY_BASE_URL: '',
       LOGIN_MAX_FAILURES: '3',
       LOGIN_WINDOW_MS: '60000',
