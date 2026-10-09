@@ -162,7 +162,7 @@ test('并发的第一批请求只登录一次（单飞）；结束时只注销�
       ? () => new Promise(resolve => setTimeout(() => resolve(json(200, {}, { 'set-cookie': `crosery_console_session=${token}` })), 20))
       : json(200, { ok: true })),
   })
-  await Promise.all([request(rt, 'GET', '/api/version'), request(rt, 'GET', '/api/magpie/update-status'), request(rt, 'GET', '/api/bootstrap')])
+  await Promise.all([request(rt, 'GET', '/api/version'), request(rt, 'GET', '/api/sync/status'), request(rt, 'GET', '/api/bootstrap')])
   await rt.session.close()
   assert.equal(calls.filter(call => call.pathname === '/api/login').length, 1)
   assert.equal(calls.filter(call => call.pathname === '/api/logout').length, 1)
@@ -252,7 +252,7 @@ test('写请求超时报「结果未知」而不是「连不上」；读请求�
   const { rt } = harness({ responses: () => json(200, {}) })
   rt.session = { cookie: async () => 'c=1', invalidate: async () => false, tierLabel: () => '' }
   rt.fetch = hang
-  await assert.rejects(request(rt, 'POST', '/api/magpie/update', { body: {}, timeoutMs: 30, unknownHint: '用 status 确认' }),
+  await assert.rejects(request(rt, 'POST', '/api/sync/run/pricing', { body: {}, timeoutMs: 30, unknownHint: '用 status 确认' }),
     error => error.exitCode === 1 && /结果未知/.test(error.message) && error.hint === '用 status 确认')
   await assert.rejects(request(rt, 'GET', '/api/version', { timeoutMs: 30 }), error => /连不上控制台.*请求超时/.test(error.message))
 })

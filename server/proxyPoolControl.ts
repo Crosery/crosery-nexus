@@ -1,31 +1,27 @@
 /**
  * The console's own control plane, as the proxy pool sees it (PROXY-SPEC §7, §8).
  *
- * Reads go through `server/cpa.ts`, which already routes to the remote CPA management API or to the local Magpie
- * shim; the sandbox bridge (`MAGPIE_SOURCE_CPA_BASE_URL`) is never a source. Writes use the existing paths:
+ * Reads go through `server/cpa.ts` (the CPA management API). Writes use the existing paths:
  * `setCredentialProxy` (channels.ts) for a credential and `setGlobalProxy` (cpa.ts) for the CPA global default.
  * Raw credential files are read server-side only and reduced to `proxy_url` immediately.
  */
 
-import fs from 'node:fs'
 import { config } from './config.js'
-import { cpaSameHost, proxyBackend, type ProxyBackend } from './proxyPoolStore.js'
+import { cpaSameHost } from './proxyPoolStore.js'
 import { getAuthFileProxy, getCompatChannels, getGlobalProxy, getProviderKeyEntries, listAuthFiles, PROVIDER_KEY_ENDPOINTS, providerChannelName } from './cpa.js'
-import { accountProxySupport, accountProxyWriter, readAccountProxy, type AccountProxySupport } from './magpieAccountProxies.js'
 
 export type ControlCredential = {
   name: string
   provider: string
   label: string
   disabled: boolean
-  /** present when the list itself carries the value (local shim); CPA's list never does */
+  /** present when the list itself carries the value; CPA's list never does */
   proxyUrl?: string
 }
 
 export type ControlProxyRef = { ref: string; url: string; label: string; provider?: string }
 
 export type ProxyControlPlane = {
-  backend(): ProxyBackend
   cpaSameHost(): boolean
   listCredentials(): Promise<ControlCredential[]>
   readCredentialProxy(name: string): Promise<string>
@@ -34,19 +30,7 @@ export type ProxyControlPlane = {
   writeGlobalProxy(url: string): Promise<void>
   /** channel and key `proxy-url` values (read-only in v1) */
   readChannelProxies(): Promise<ControlProxyRef[]>
-  /** Magpie provider / per-account proxies from the registry's optional `accounts` section (read-only) */
-  readMagpieAccountProxies(): ControlProxyRef[]
   presets(): Array<{ label: string; url: string }>
-  /**
-   * Per-account exits of Magpie kernel accounts (`magpie:<agent>:<user>`): writable only when the kernel routes
-   * them (capability `account-proxy`). Absent on control planes without kernel accounts.
-   */
-  magpieAccounts?: {
-    support(): Promise<AccountProxySupport>
-    read(agent: string, user: string): string
-    /** stores the exit and pushes it to the kernel; '' = follow the service / global */
-    write(agent: string, user: string, url: string): Promise<void>
-  }
 }
 
 const text = (value: unknown, max = 256) => (typeof value === 'string' ? value.slice(0, max) : '')
@@ -63,35 +47,10 @@ export function projectCredential(file: Record<string, unknown>): ControlCredent
   }
 }
 
-/** The optional `accounts` section of MAGPIE_CHANNELS_FILE: `{<agent>: {proxy?, accountProxies?: {<user>: url}}}`. */
-export function readMagpieAccountsSection(file = config.magpieChannelsFile): ControlProxyRef[] {
-  try {
-    const stat = fs.lstatSync(file)
-    if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return []
-    const state = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; accounts?: unknown }
-    if (state.version !== 1 || !state.accounts || typeof state.accounts !== 'object') return []
-    const out: ControlProxyRef[] = []
-    for (const [agent, raw] of Object.entries(state.accounts as Record<string, unknown>)) {
-      if (!raw || typeof raw !== 'object' || !/^[a-z0-9][a-z0-9_.-]{0,63}$/i.test(agent)) continue
-      const section = raw as { proxy?: unknown; accountProxies?: unknown }
-      if (typeof section.proxy === 'string' && section.proxy.trim()) out.push({ ref: `magpie:${agent}`, url: section.proxy.trim(), label: agent, provider: agent })
-      if (section.accountProxies && typeof section.accountProxies === 'object') {
-        for (const [user, url] of Object.entries(section.accountProxies as Record<string, unknown>)) {
-          if (typeof url === 'string' && user && user.length <= 256) out.push({ ref: `magpie:${agent}:${user}`, url: url.trim(), label: user, provider: agent })
-        }
-      }
-    }
-    return out
-  } catch {
-    return []
-  }
-}
-
 let credentialCache: { at: number; value: ControlCredential[] } | null = null
 
 export function defaultControlPlane(): ProxyControlPlane {
   return {
-    backend: proxyBackend,
     cpaSameHost: () => cpaSameHost(),
     async listCredentials() {
       if (credentialCache && Date.now() - credentialCache.at < 15_000) return credentialCache.value
@@ -136,13 +95,7 @@ export function defaultControlPlane(): ProxyControlPlane {
       }
       return out
     },
-    readMagpieAccountProxies: () => (proxyBackend() === 'magpie' ? readMagpieAccountsSection() : []),
     presets: () => config.proxyPresets,
-    magpieAccounts: {
-      support: () => (proxyBackend() === 'magpie' ? accountProxySupport() : Promise.resolve({ supported: false, reason: '只有本机 Magpie 内核的账号可以单独设置出口' })),
-      read: (agent, user) => readAccountProxy(agent, user),
-      write: (agent, user, url) => accountProxyWriter()(agent, user, url),
-    },
   }
 }
 

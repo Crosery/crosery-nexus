@@ -3,14 +3,13 @@
  * account's exit — the pickable pool entries with their exit country and per-service reachability, every
  * account's current exit as the pool knows it, and what a sign-in itself goes through.
  *
- * `GET /api/proxies/egress` reads local state only (pool.json, health.json, the Magpie registry); it never calls
+ * `GET /api/proxies/egress` reads local state only (pool.json, health.json); it never calls
  * CPA, a vendor or an exit. The authoritative per-account read (`GET /api/proxies/egress/account`) asks the
  * control plane for one account (CPA management API, not a vendor), coalesced per account, and keeps the pool's
  * index in step. Every value that leaves is masked: no URL credential, no listener credential.
  */
 
 import { maskProxyUserinfo } from './accountProjection.js'
-import type { AccountProxySection, AccountProxySupport } from './magpieAccountProxies.js'
 import { assignability, type AssignContext, type UsedBy } from './proxyPoolView.js'
 import { matchEntryForUrl, proxyMode, type HealthRecord, type PoolFile, type ProxyEntry } from './proxyPoolStore.js'
 
@@ -73,23 +72,14 @@ export function egressEntry(entry: ProxyEntry, health: HealthRecord | undefined,
   }
 }
 
-const isAccountRef = (ref: string) => /^cpa:(?!global$|channel:|key:)/.test(ref) || /^magpie:[^:]+:./.test(ref)
+const isAccountRef = (ref: string) => /^cpa:(?!global$|channel:|key:)/.test(ref)
 
 /** CPA accounts as the pool last saw them (the list API carries no proxy_url; a per-account read refreshes one). */
 export function poolAccounts(pool: PoolFile): Record<string, EgressAccount> {
   const out: Record<string, EgressAccount> = {}
   for (const [ref, seen] of Object.entries(pool.observed)) {
-    if (!isAccountRef(ref) || !ref.startsWith('cpa:')) continue
+    if (!isAccountRef(ref)) continue
     out[ref] = { mode: seen.mode, entryId: pool.links[ref]?.entryId ?? null, masked: seen.mode === 'url' ? seen.masked ?? null : null, at: seen.at ?? null }
-  }
-  return out
-}
-
-/** Magpie kernel accounts from the registry (live: the registry is the source of truth, links derive from it). */
-export function registryAccounts(pool: PoolFile, section: AccountProxySection): Record<string, EgressAccount> {
-  const out: Record<string, EgressAccount> = {}
-  for (const [agent, entry] of Object.entries(section)) {
-    for (const [user, url] of Object.entries(entry.accountProxies ?? {})) out[`magpie:${agent}:${user}`] = accountValue(pool, url, null)
   }
   return out
 }
@@ -112,7 +102,7 @@ export function presetIndex(presets: Array<{ url: string }>, raw: string): numbe
 
 export type SigninEgress = {
   /** what the sign-in's own token exchange goes through */
-  via: 'cpa-global' | 'direct'
+  via: 'cpa-global'
   exit: { mode: EgressMode | 'unsupported'; entryId: string | null }
   /** whether a sign-in can be sent through a chosen exit (no backend can today) */
   perSignin: false
@@ -125,32 +115,22 @@ export type EgressViewInput = {
   used: Map<string, UsedBy>
   context: AssignContext
   presets: Array<{ label: string; url: string }>
-  magpie: AccountProxySection | null
-  support: AccountProxySupport
 }
 
 /** The page read model (GET /api/proxies/egress). Pure; the caller supplies local state only. */
 export function egressView(input: EgressViewInput) {
   const { pool, context } = input
   const entries = pool.entries.filter(entry => entry.enabled).map(entry => egressEntry(entry, input.health[entry.id], input.used.get(entry.id), context))
-  const accounts = { ...poolAccounts(pool), ...(input.magpie ? registryAccounts(pool, input.magpie) : {}) }
+  const accounts = poolAccounts(pool)
   const global = pool.observed['cpa:global']
-  const defaultExit = context.backend === 'cpa'
-    ? { mode: (global?.mode ?? 'unknown') as EgressMode, entryId: pool.links['cpa:global']?.entryId ?? null }
-    : { mode: 'direct' as EgressMode, entryId: null }
-  // a Magpie account with no exit of its own follows its service's `proxy`, else the kernel's (never set here: direct)
-  const services: Record<string, EgressAccount> = {}
-  for (const [agent, entry] of Object.entries(input.magpie ?? {})) if (entry.proxy) services[agent] = accountValue(pool, entry.proxy, null)
-  const signin: SigninEgress = context.backend === 'cpa'
-    ? { via: 'cpa-global', exit: defaultExit, perSignin: false, note: '登录由 CPA 完成，走 CPA 的全局代理，不能为一次登录单独指定出口' }
-    : { via: 'direct', exit: { mode: 'direct', entryId: null }, perSignin: false, note: '登录由本机内核完成，不经过代理，不能为一次登录单独指定出口' }
+  const defaultExit = { mode: (global?.mode ?? 'unknown') as EgressMode, entryId: pool.links['cpa:global']?.entryId ?? null }
+  const signin: SigninEgress = { via: 'cpa-global', exit: defaultExit, perSignin: false, note: '登录由 CPA 完成，走 CPA 的全局代理，不能为一次登录单独指定出口' }
   return {
-    backend: context.backend,
+    backend: 'cpa' as const,
     cpaSameHost: context.cpaSameHost,
     kernel: { state: context.kernel.state },
-    accountProxy: input.support,
+    accountProxy: { supported: true, reason: null },
     default: defaultExit,
-    services,
     signin,
     entries,
     accounts,

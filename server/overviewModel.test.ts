@@ -257,21 +257,23 @@ test('Key burn: over-quota first, then pressure, then spend; state words are the
 })
 
 test('kernel and sync to-dos; 巡检 marks follow the worst open item per domain', () => {
-  const versions = { cpa: { engine: 'magpie', version: '3fe2ff9', commit: '3fe2ff99587e', buildDate: '', upstream: { status: 'review_required', latestRelease: 'v0.1.613', candidateRevision: 'abc', changes: { addedRoutes: ['a', 'b'], removedRoutes: [], changedRoutes: ['c'], addedLoginAgents: ['kimi'], removedLoginAgents: [] } } } } as unknown as VersionsData
+  const versions = { cpa: { version: 'offline', commit: '', buildDate: '' } } as VersionsData
   const jobs = [
     job('pricing', { state: 'backoff', backoffUntil: iso(NOW + H), backoffLevel: 1, lastError: '429' }),
     job('models', { history: [{ at: iso(NOW - 3 * H), result: 'error', durationMs: 10 }, { at: iso(NOW - H), result: 'ok', durationMs: 10 }] }),
   ]
   const r = attention({ now: NOW, versions, jobs })
-  assert.deepEqual(r.items.map((it: Loose) => [it.kind, it.severity]), [['SYNC', 'warn'], ['KERN', 'note']])
-  assert.equal(r.items[0].action?.to, '/settings#sync')
-  // same count as /settings 内核与版本 (routes + login agents)
-  assert.equal(r.items[1].reason, '内核上游有候选 · 契约变化 4 项')
+  assert.deepEqual(r.items.map((it: Loose) => [it.kind, it.severity]), [['KERN', 'bad'], ['SYNC', 'warn']])
+  assert.equal(r.items[0].reason, '网关内核离线 · 请求无法转发')
+  assert.equal(r.items[0].action?.to, '/settings#gateway')
+  assert.equal(r.items[1].action?.to, '/settings#sync')
   assert.equal(r.recovered.length, 1)
   const rows = checks({ attention: r, jobs, versions, keys: [key('1')], channels: [], accounts: [] })
   const by = Object.fromEntries(rows.map((row: Loose) => [row.key, row]))
   assert.equal(by.sync.mark, '◇')
-  assert.equal(by.kern.mark, '○')
+  assert.equal(by.kern.mark, '◆')
+  assert.equal(by.kern.text, 'cpa offline · 离线')
+  assert.equal(attention({ now: NOW, versions: { cpa: { version: 'v8.0.21', commit: '', buildDate: '' } } as VersionsData }).items.length, 0)
   assert.equal(by.key.mark, '✓')
   assert.equal(by.acct.text, '没有接入账号 · OAuth 额度为 0')
   assert.equal(by.gateway.mark, '—')

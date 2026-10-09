@@ -62,7 +62,6 @@ async function fixture({ local = '0.1.0', latest = '0.2.0', breakingIn = null, c
   base = `http://127.0.0.1:${server.address().port}`
   const runtime = path.join(dir, 'runtime')
   await fs.mkdir(runtime, { mode: 0o700 })
-  await fs.writeFile(path.join(runtime, 'status.json'), JSON.stringify({ version: 1, rtkRelease: `v${latest}` }))
   const paths = rtkPaths(runtime)
   return {
     dir, target, paths, hits: () => apiHits,
@@ -197,7 +196,7 @@ test('a Homebrew install is upgraded with brew, said so in the plan; disabled co
     assert.equal(plan.command, 'brew upgrade rtk')
     await fs.writeFile(f.paths.config, JSON.stringify({ rtk: { enabled: false } }))
     assert.equal((await upgradeRtk({ mode: 'auto', paths: f.paths, deps: f.deps })).why, 'disabled')
-    assert.equal(f.hits(), 0, 'neither the plan for brew nor a disabled run asks GitHub')
+    assert.equal(f.hits(), 1, 'the plan for brew reads the releases list once; a disabled run asks nothing')
   } finally { await f.close() }
 })
 
@@ -250,15 +249,14 @@ test('a target that is replaced while the release downloads is not overwritten, 
 const HOUR = 3_600_000
 const POLICY = { soakMs: 24 * HOUR, maxAgeMs: 7 * 24 * HOUR }
 
-test('role and state dir: explicit role wins, a Mac stays standalone, any other host is production; RTK_STATE_DIR before the old name', () => {
+test('role and state dir: explicit role wins, a Mac stays standalone, any other host is production; RTK_STATE_DIR or the default dir', () => {
   assert.equal(rtkRole({ AUTOUPDATE_ROLE: 'preview' }, 'linux'), 'preview')
   assert.equal(rtkRole({}, 'linux'), 'production')
   assert.equal(rtkRole({ AUTOUPDATE_ROLE: 'staging' }, 'linux'), 'production')
   assert.equal(rtkRole({}, 'darwin'), 'standalone')
   assert.equal(rtkRole({ AUTOUPDATE_ROLE: 'production' }, 'darwin'), 'production')
-  assert.equal(rtkRuntime({ RTK_STATE_DIR: '/srv/rtk', MAGPIE_UPSTREAM_RUNTIME: '/old' }, '/home/x'), '/srv/rtk')
-  assert.equal(rtkRuntime({ MAGPIE_UPSTREAM_RUNTIME: '/old' }, '/home/x'), '/old')
-  assert.equal(rtkRuntime({}, '/home/x'), '/home/x/.agents/crosery/magpie-upstream')
+  assert.equal(rtkRuntime({ RTK_STATE_DIR: '/srv/rtk' }, '/home/x'), '/srv/rtk')
+  assert.equal(rtkRuntime({}, '/home/x'), '/home/x/.agents/crosery/rtk')
   assert.equal(latestStable([{ tag: 'v0.9.0' }, { tag: 'v0.10.0' }, { tag: 'v0.11.0', prerelease: true }, { tag: 'v1.0.0', draft: true }]), 'v0.10.0')
 })
 
@@ -278,7 +276,6 @@ test('preview: latest from the releases list (no upstream check), trial with che
   try {
     let clock = Date.UTC(2026, 9, 9, 3)
     const deps = () => ({ ...f.deps, role: 'preview', policy: POLICY, now: () => clock })
-    await fs.rm(f.paths.status)
     const upgraded = await upgradeRtk({ mode: 'auto', paths: f.paths, deps: deps() })
     assert.equal(upgraded.why, 'upgraded', JSON.stringify(upgraded))
     let state = JSON.parse(await fs.readFile(f.paths.state, 'utf8'))

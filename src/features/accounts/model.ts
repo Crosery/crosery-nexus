@@ -29,7 +29,7 @@ export type ProviderInfo = {
   /** the remote-server fallback: paste the localhost callback URL from the address bar */
   paste: boolean
   pastePlaceholder?: string
-  /** Magpie marks these: sharing the subscription through a gateway can get the account banned */
+  /** sharing the subscription through a gateway can get the account banned */
   risk: boolean
   /** the console has a reset endpoint for this type */
   resettable: boolean
@@ -233,7 +233,7 @@ export function windowView(w: NormalizedWindow): WindowView {
 const tightest = (list: WindowView[]) => list.reduce<WindowView | null>((best, w) => (!best || w.used > best.used ? w : best), null)
 
 /**
- * The row shows two windows (Magpie: at most two, tightest per family): A = tightest short window (≤1 day),
+ * The row shows at most two windows, tightest per family: A = tightest short window (≤1 day),
  * B = tightest long one. Per-model windows only stand in when no general window exists in that class.
  */
 export function pickWindows(windows: WindowView[]): { a: WindowView | null; b: WindowView | null; extra: WindowView[] } {
@@ -646,7 +646,7 @@ function wall(t: number) {
   return { y: Number(p.year), m: p.month, d: p.day, hm: `${hour}:${p.minute}`, wd: WD[p.weekday] ?? 0, day: Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day)) }
 }
 
-/** Magpie's resetClock: today `15:10` · tomorrow `明天 09:00` · this week `周四 09:00` · else `10/04 22:30`. */
+/** Reset clock: today `15:10` · tomorrow `明天 09:00` · this week `周四 09:00` · else `10/04 22:30`. */
 export function fmtReset(value: string | number | null | undefined, now = Date.now()): string {
   const t = ms(value)
   if (t === null) return '—'

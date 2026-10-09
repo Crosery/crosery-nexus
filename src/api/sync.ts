@@ -1,4 +1,4 @@
-import type { RtkGlobalApplyResult, RtkGlobalStatus, RtkRelayStatus, SyncRunAccepted, SyncStatus } from '../types'
+import type { RtkGlobalStatus, RtkRelayStatus, SyncRunAccepted, SyncStatus } from '../types'
 import { request } from './http'
 import { RtkApiError } from './admin'
 
@@ -8,15 +8,10 @@ export const syncApi = {
   run: (id: string) => request<SyncRunAccepted>(`/api/sync/${encodeURIComponent(id)}/run`, { method: 'POST' }),
 }
 
-/**
- * RTK global switch (C4). `set` always sends `confirm: true` — call it only after the user confirmed.
- * Partial failure is HTTP 200 with `ok:false` and per-agent errors; gate failures reject with RtkApiError.
- */
+/** RTK global switch state (C4); gate failures reject with RtkApiError. */
 export const rtkGlobalApi = {
   get: (signal?: AbortSignal) =>
     request<RtkGlobalStatus>('/api/rtk/global', { signal }, (status, message, body, retry) => new RtkApiError(status, message, body, retry)),
-  set: (on: boolean) =>
-    request<RtkGlobalApplyResult>('/api/rtk/global', { method: 'POST', body: JSON.stringify({ on, confirm: true }) }, (status, message, body, retry) => new RtkApiError(status, message, body, retry)),
 }
 
 /** RTK relay (server/rtkRelay.ts): listener state, the global compression switch and the savings ledger. */

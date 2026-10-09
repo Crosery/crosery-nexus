@@ -108,8 +108,8 @@ test('chrome model: sync chips, statusline words and kernel label', () => {
     '价格元数据 退避 → 16:00 · 账号额度 同步中',
   )
 
-  assert.equal(kernelWord({ cpa: { engine: 'magpie', version: 'v0.1.597', commit: '3fe2ff9c0ffee' } }), 'magpie 3fe2ff9')
-  assert.equal(kernelWord({ cpa: { engine: 'magpie', version: 'offline', commit: '' } }), 'magpie 离线')
+  assert.equal(kernelWord({ cpa: { version: 'v8.0.21', commit: '3fe2ff9c0ffee' } }), 'cpa 3fe2ff9')
+  assert.equal(kernelWord({ cpa: { version: 'offline', commit: '' } }), 'cpa 离线')
   assert.equal(kernelWord({ cpa: { version: '6.1.0', commit: 'unknown' } }), 'cpa 6.1.0')
   assert.equal(kernelWord(undefined), null)
 })

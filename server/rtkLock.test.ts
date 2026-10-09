@@ -8,9 +8,6 @@ import test, { after } from 'node:test'
 /**
  * 跨进程写入锁的红队第九轮（R9-A…R9-E）回归用例。
  *
- * 这些用例放在独立文件 `server/rtkLock.test.ts`，用于同时验证
- * `test:magpie` 的 glob 改成了 `server/rtk*.test.ts`（否则本文件会被静默排除）。
- *
  * 纪律：所有写入都发生在临时 HOME/临时备份目录；真实 agent 配置只在末尾做 sha256 比对。
  */
 
@@ -25,7 +22,6 @@ process.env.RTK_BACKUP_DIR = backupDir
 const service = await import('./rtkService.js')
 const lockPath = () => service.rtkLockPath(home, { ...process.env, RTK_BACKUP_DIR: backupDir } as NodeJS.ProcessEnv)
 const env = { ...process.env, RTK_BACKUP_DIR: backupDir } as NodeJS.ProcessEnv
-const offlineTargets = { kernel: { engine: 'cpa' as const }, relay: { baseUrl: '', key: '' } }
 
 /**
  * 等到条件成立（有上限）。**不要**用固定 sleep 赌条件已成立：负载下定时器可能被推迟，
@@ -192,7 +188,7 @@ test('R9-D RTK_LOCK_DISABLED 旁路必须可观测（info.disabled / 响应 lock
   const previous = process.env.RTK_LOCK_DISABLED
   process.env.RTK_LOCK_DISABLED = '1'
   try {
-    const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: path.join(workspace, 'no-such-rtk'), ...offlineTargets })
+    const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: path.join(workspace, 'no-such-rtk') })
     assert.equal(result.ok, true)
     assert.equal(result.lockDisabled, true, '写操作响应必须能看到旁路')
     assert.equal(result.lock?.disabled, true)
@@ -392,9 +388,8 @@ test('R11-C 跨进程时序 SIGSTOP → 接管 → 恢复：不会「双方都�
 
   const childScript = `
     const service = await import(${JSON.stringify(new URL('./rtkService.ts', import.meta.url).pathname)})
-    const targets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
     try {
-      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(fenceHome)}, bin: ${JSON.stringify(slowCli)}, ...targets })
+      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(fenceHome)}, bin: ${JSON.stringify(slowCli)} })
       console.log('RESULT ' + JSON.stringify({ ok: true, lockLost: result.lockLost ?? false }))
       process.exit(0)
     } catch (error) {
@@ -510,7 +505,7 @@ test('落盘点 e2e：rollbackRTK 的被夺锁路径（确定性同步点，不�
   let backupId = ''
   try {
     const seeded = await service.setRTKAgentHook('codex', true, {
-      plane: 'local', home: fenceHome, bin: path.join(dir, 'no-rtk'), ...offlineTargets,
+      plane: 'local', home: fenceHome, bin: path.join(dir, 'no-rtk'),
     })
     backupId = seeded.backupId ?? ''
     assert.ok(backupId, '需要一份真实备份作为回滚目标')
@@ -708,7 +703,6 @@ async function startRtkInstance(options: { dir: string; home: string; backups: s
       HOST: '127.0.0.1', PORT: String(port), COOKIE_SECURE: 'false',
       CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: 'lock-http-password', SESSION_SECRET: 'lock-http-session-secret',
       DATA_DIR: path.join(options.dir, 'data'), RTK_HOME: options.home, RTK_BACKUP_DIR: options.backups,
-      GATEWAY_ENGINE: 'cpa', MAGPIE_CHANNELS_FILE: path.join(options.dir, 'data/magpie-channels.json'),
       RTK_TEST_LOCK_HOLD_MS: String(options.holdMs),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -750,7 +744,7 @@ test('HTTP 层：锁被夺时 toggle 与 rollback 的 409 都带 reason 与 lock
   process.env.RTK_BACKUP_DIR = httpBackups
   let backupId = ''
   try {
-    const seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home: httpHome, bin: path.join(dir, 'no-rtk'), ...offlineTargets })
+    const seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home: httpHome, bin: path.join(dir, 'no-rtk') })
     backupId = seeded.backupId ?? ''
     assert.ok(backupId, '需要一份真实备份')
   } finally {
@@ -861,9 +855,8 @@ exit 0
 
   const childScript = `
     const service = await import(${JSON.stringify(new URL('./rtkService.ts', import.meta.url).pathname)})
-    const targets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
     try {
-      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(tailHome)}, bin: ${JSON.stringify(fakeCli)}, ...targets })
+      const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home: ${JSON.stringify(tailHome)}, bin: ${JSON.stringify(fakeCli)} })
       console.log('RESULT ' + JSON.stringify({ ok: true, lockLost: result.lockLost ?? false, preservedBak: result.preservedBak ?? null }))
       process.exit(0)
     } catch (error) {

@@ -248,7 +248,7 @@ export default {
       return void ctx.output({ ...data, entries }, () => {
         const ports = data.ports ? `${data.ports.base}–${data.ports.last}` : '-'
         ui.kv('内核', `${kernelText(data.kernel)}${data.summary?.mihomo ? ` · 本机端口 ${ports}` : ''}`)
-        if (data.default && !['unsupported', 'unknown'].includes(data.default.mode)) {
+        if (data.default && data.default.mode !== 'unknown') {
           const named = data.default.entryId ? (data.entries || []).find(entry => entry.id === data.default.entryId)?.name : null
           ui.kv('默认出口', named || (data.default.mode === 'direct' ? '直连' : data.default.mode === 'inherit' ? '未设置' : data.default.masked || '-'))
         }
@@ -369,7 +369,6 @@ export default {
     if (action === 'default') {
       if (args.length !== 1) throw new UsageError('用法：cradmin proxy default <出口|inherit|direct>')
       const { data } = await listView(ctx)
-      if (data.default?.mode === 'unsupported') throw new CliError('Magpie 模式的默认出口还没有接入（改 CPA 全局代理只在 CPA 控制面可用）')
       const target = targetOf(data.entries || [], args[0])
       const current = data.default?.entryId ? (data.entries || []).find(entry => entry.id === data.default.entryId)?.name : { inherit: '未设置', direct: '直连' }[data.default?.mode] || data.default?.masked || '-'
       const result = await runPlan(ctx, {

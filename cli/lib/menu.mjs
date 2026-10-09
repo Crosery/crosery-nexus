@@ -45,7 +45,7 @@ const isQuit = text => String(text).trim().toLowerCase() === 'q'
 
 const MAIN = [
   ['总览', 'status'], ['渠道与模型', 'channels'], ['API Key', 'keys'], ['账号池', 'accounts'], ['模型目录', 'models'],
-  ['用量', 'usage'], ['同步任务', 'sync'], ['RTK', 'rtk'], ['Magpie 内核', 'magpie'], ['设置', 'settings'],
+  ['用量', 'usage'], ['同步任务', 'sync'], ['RTK', 'rtk'], ['设置', 'settings'],
   ['导出/应用配置', 'config'], ['诊断', 'doctor'],
 ]
 
@@ -213,10 +213,6 @@ export async function runMenu(rt, { invoke: run }) {
     async rtk() {
       const action = await submenu('RTK', [['查看状态', 'status'], ['打开', 'on'], ['关闭', 'off']])
       if (action) await runArgv(['rtk', action])
-    },
-    async magpie() {
-      const action = await submenu('Magpie 内核', [['查看版本与更新状态', 'status'], ['检查上游', 'check'], ['临时目录演练', 'rehearse']])
-      if (action) await runArgv(['magpie', action])
     },
     async config() {
       const action = await submenu('导出/应用配置', [['导出到文件', 'export'], ['预览应用文件', 'preview'], ['应用文件', 'apply']])

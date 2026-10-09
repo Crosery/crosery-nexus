@@ -196,7 +196,7 @@ function parseExport(json: Record<string, unknown>): ParsedInput {
     const account = raw.account
     const backend = typeof account.backend === 'string' ? account.backend : ''
     const identity = typeof account.identity === 'string' ? account.identity.slice(0, 256) : ''
-    if (!['cpa', 'magpie'].includes(backend) || !identity) continue
+    if (backend !== 'cpa' || !identity) continue
     assignments.push({ entryRef: raw.entryRef.slice(0, 32), account: { backend, provider: typeof account.provider === 'string' ? account.provider.slice(0, 64) : '', identity } })
     if (assignments.length >= 5000) break
   }

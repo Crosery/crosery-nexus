@@ -10,8 +10,7 @@ import test, { after } from 'node:test'
  * 所有写入都发生在 mkdtemp 的 HOME 里；文件末尾断言真实 agent 配置逐字节不变。
  */
 
-for (const name of ['MAGPIE_SOURCE_CPA_BASE_URL', 'MAGPIE_SOURCE_CPA_KEY', 'MAGPIE_SOURCE_CPA_KEY_FILE', 'MAGPIE_KERNEL_SOCKET', 'GATEWAY_ENGINE',
-  'RTK_WRITE_MODE', 'RTK_ALLOW_REMOTE_WRITE', 'RTK_ALLOW_KERNEL_WRITE', 'RTK_ALLOW_REAL_AGENT_WRITE']) delete process.env[name]
+for (const name of ['RTK_WRITE_MODE', 'RTK_ALLOW_REAL_AGENT_WRITE']) delete process.env[name]
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'rtk-global-test-'))
 process.env.RTK_HOME = path.join(workspace, 'default-home')
@@ -43,7 +42,6 @@ const digest = (file: string) => { try { return createHash('sha256').update(fs.r
 const realBefore = new Map(watched.map(rel => [rel, digest(path.join(realHome, rel))]))
 
 const service = await import('./rtkService.js')
-const offline = { kernel: { engine: 'cpa' as const }, relay: { baseUrl: '', key: '' } }
 
 const home = (name: string, agents: string[]) => {
   const dir = path.join(workspace, `home-${name}`)
@@ -56,10 +54,10 @@ after(() => {
   fs.rmSync(workspace, { recursive: true, force: true })
 })
 
-test('全局视图：只统计权威平面上已安装且支持全局钩子的 agent；混合状态为 null', async () => {
+test('全局视图：只统计已安装且支持全局钩子的 agent；混合状态为 null', async () => {
   const dir = home('view', ['.codex', '.vibe'])
   fs.writeFileSync(path.join(dir, '.codex/hooks.json'), JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook codex' }] }] } }))
-  const view = await service.readRTKGlobal({ home: dir, fresh: true, ...offline })
+  const view = await service.readRTKGlobal({ home: dir, fresh: true })
   assert.equal(view.plane, 'local')
   assert.deepEqual(view.agents, { supported: 2, on: 1 })
   assert.equal(view.on, null)
@@ -70,14 +68,14 @@ test('全局视图：只统计权威平面上已安装且支持全局钩子的 a
 
 test('全局开关必须显式确认；RTK_WRITE_MODE=off 时拒绝且不动文件', async () => {
   const dir = home('gates', ['.codex'])
-  await assert.rejects(service.setRTKGlobal(true, { home: dir, ...offline }), (error: unknown) => {
+  await assert.rejects(service.setRTKGlobal(true, { home: dir }), (error: unknown) => {
     const failure = service.rtkFailure(error)
     return failure.status === 403 && failure.reason === 'confirmation_required'
   })
   process.env.RTK_WRITE_MODE = 'off'
   try {
-    await assert.rejects(service.setRTKGlobal(true, { home: dir, confirm: true, ...offline }), (error: unknown) => service.rtkFailure(error).reason === 'write_disabled')
-    assert.equal((await service.readRTKGlobal({ home: dir, fresh: true, ...offline })).writable, false)
+    await assert.rejects(service.setRTKGlobal(true, { home: dir, confirm: true }), (error: unknown) => service.rtkFailure(error).reason === 'write_disabled')
+    assert.equal((await service.readRTKGlobal({ home: dir, fresh: true })).writable, false)
   } finally {
     delete process.env.RTK_WRITE_MODE
   }
@@ -86,7 +84,7 @@ test('全局开关必须显式确认；RTK_WRITE_MODE=off 时拒绝且不动文�
 
 test('全局开关逐个套用现有开关：成功的生效，失败的逐条如实返回，没装的 agent 不碰', async () => {
   const dir = home('bulk', ['.codex', '.vibe'])
-  const on = await service.setRTKGlobal(true, { home: dir, confirm: true, ...offline })
+  const on = await service.setRTKGlobal(true, { home: dir, confirm: true })
   assert.equal(on.plane, 'local')
   assert.equal(on.ok, false)
   assert.deepEqual(on.results.map(result => [result.agent, result.ok]), [['codex', true], ['vibe', false]])
@@ -95,7 +93,7 @@ test('全局开关逐个套用现有开关：成功的生效，失败的逐条�
   assert.match(fs.readFileSync(path.join(dir, '.codex/hooks.json'), 'utf8'), /rtk hook codex/)
   assert.ok(!fs.existsSync(path.join(dir, '.claude')) && !fs.existsSync(path.join(dir, '.cursor')), '没安装的 agent 不建配置')
 
-  const off = await service.setRTKGlobal(false, { home: dir, confirm: true, ...offline })
+  const off = await service.setRTKGlobal(false, { home: dir, confirm: true })
   assert.deepEqual(off.results.map(result => [result.agent, result.ok, Boolean(result.unchanged)]), [['codex', true, false], ['vibe', true, true]])
   assert.equal(off.ok, true)
   assert.equal(off.on, false)
@@ -105,7 +103,7 @@ test('全局开关逐个套用现有开关：成功的生效，失败的逐条�
 test('全局开关：CLI 连带写坏别的 agent 文件 → 逐条带回 collateralSkipped；复核不是目标状态 → ok=false + offTarget（review RR-3）', async () => {
   const dir = home('collateral', ['.claude', '.cursor'])
   fs.writeFileSync(path.join(dir, '.claude/settings.json'), JSON.stringify({ hooks: { PreToolUse: [] } }))
-  const result = await service.setRTKGlobal(true, { home: dir, confirm: true, ...offline })
+  const result = await service.setRTKGlobal(true, { home: dir, confirm: true })
   assert.deepEqual(result.results.map(item => [item.agent, item.ok]), [['claude', true], ['cursor', true]])
   assert.equal(result.on, null, '复核：claude 的文件被 cursor 的 CLI 写坏 → 混合')
   assert.equal(result.ok, false, '每个写入都成功但复核不是目标状态，不能报 ok')
@@ -121,14 +119,14 @@ test('找不到 rtk 时全局视图带手动安装命令；可写时不带（rev
   const saved = process.env.RTK_BIN
   process.env.RTK_BIN = path.join(workspace, 'no-such-rtk')
   try {
-    const view = await service.readRTKGlobal({ home: dir, fresh: true, ...offline })
+    const view = await service.readRTKGlobal({ home: dir, fresh: true })
     assert.equal(view.writable, false)
     assert.equal(view.reason, 'rtk_binary_missing')
     assert.match(view.installHint ?? '', /^curl -fsSL https:\/\/\S+\/install\.sh \| sh$/)
   } finally {
     process.env.RTK_BIN = saved
   }
-  const ok = await service.readRTKGlobal({ home: dir, fresh: true, ...offline })
+  const ok = await service.readRTKGlobal({ home: dir, fresh: true })
   assert.equal(ok.writable, true)
   assert.equal(ok.installHint ?? null, null)
 })
@@ -138,67 +136,24 @@ test('本机 rtk --version / gain 结果缓存 30s；fresh 读取跳过缓存', 
   service.resetRtkStatsCache()
   fs.writeFileSync(counter, '')
   const count = () => fs.readFileSync(counter, 'utf8').split('\n').filter(Boolean).length
-  await service.readRTKStatus({ home: dir, ...offline })
-  await service.readRTKStatus({ home: dir, ...offline })
-  await Promise.all([service.readRTKStatus({ home: dir, ...offline }), service.readLocalPayload(cli, dir)])
+  await service.readRTKStatus({ home: dir })
+  await service.readRTKStatus({ home: dir })
+  await Promise.all([service.readRTKStatus({ home: dir }), service.readLocalPayload(cli, dir)])
   assert.equal(count(), 2, '一次 --version + 一次 gain')
-  await service.readRTKStatus({ home: dir, fresh: true, ...offline })
+  await service.readRTKStatus({ home: dir, fresh: true })
   assert.equal(count(), 4)
 })
 
 /* ────────────────────────── review-sync-balance ────────────────────────── */
 
-test('SB-10 RTK_WRITE_MODE=off 是全只读：远端/内核开关打开了也不可写', async () => {
-  const plane = await import('./rtkPlane.js')
-  const policy = { mode: 'off' as const, remoteWriteEnabled: true, kernelWriteEnabled: true, installEnabled: false, source: 'env' as const }
-  assert.throws(() => plane.assertRemoteWrite(true, 'kernel', policy), (error: Error & { reason?: string }) => error.reason === 'write_disabled')
-  assert.throws(() => plane.assertRemoteWrite(true, 'relay', policy), (error: Error & { reason?: string }) => error.reason === 'write_disabled')
-  const kernelStatus = {
-    plane: 'kernel', agents: [{ id: 'codex', supported: true, blocked: false, on: false, installed: true }], localAgents: [],
+test('SB-10 RTK_WRITE_MODE=off 是全只读：rtk 已装、agent 可控也不可写', () => {
+  const policy = { mode: 'off' as const, installEnabled: false, source: 'env' as const }
+  const status = {
+    plane: 'local', localAgents: [{ id: 'codex', supported: true, on: false, installed: true }],
     local: { connected: true }, gain: null,
   } as unknown as Parameters<typeof service.rtkGlobalView>[0]
-  const view = service.rtkGlobalView(kernelStatus, policy)
+  const view = service.rtkGlobalView(status, policy)
   assert.equal(view.writable, false)
   assert.equal(view.reason, 'write_disabled')
-  assert.equal(service.rtkGlobalView(kernelStatus, { ...policy, mode: 'local' }).writable, true, '只有 mode 不同时可写')
-})
-
-test('SB-18 内核写入后复核读不到内核（回落到本机）：on=null + degraded，不拿本机状态冒充内核结果', async () => {
-  const http = await import('node:http')
-  const socket = path.join(workspace, `kernel-${Math.random().toString(16).slice(2)}.sock`)
-  let writes = 0
-  const server = http.createServer((req, res) => {
-    if (req.method === 'POST') {
-      writes += 1
-      req.resume()
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end('{}')
-      return
-    }
-    if (writes > 0) {
-      res.writeHead(500)
-      res.end('kernel crashed')
-      return
-    }
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ path: '/srv/rtk', version: '0.50.0', agents: [{ id: 'codex', name: 'Codex', icon: 'openai', on: false }] }))
-  })
-  await new Promise<void>(resolve => server.listen(socket, resolve))
-  const dir = home('verify-plane', ['.codex'])
-  process.env.RTK_ALLOW_KERNEL_WRITE = '1'
-  process.env.RTK_ALLOW_REMOTE_WRITE = '1'
-  try {
-    const result = await service.setRTKGlobal(true, { home: dir, confirm: true, kernel: { engine: 'magpie', socket }, relay: { baseUrl: '', key: '' } })
-    assert.equal(writes, 1)
-    assert.equal(result.plane, 'kernel')
-    assert.equal(result.readPlane, 'local')
-    assert.equal(result.on, null)
-    assert.equal(result.degraded, 'verify_plane_unavailable')
-    assert.equal(result.ok, false)
-    assert.deepEqual(result.results.map(item => [item.agent, item.ok]), [['codex', true]], '逐 agent 的写入结果照实保留')
-  } finally {
-    delete process.env.RTK_ALLOW_KERNEL_WRITE
-    delete process.env.RTK_ALLOW_REMOTE_WRITE
-    await new Promise<void>(resolve => server.close(() => resolve()))
-  }
+  assert.equal(service.rtkGlobalView(status, { ...policy, mode: 'local' }).writable, true, '只有 mode 不同时可写')
 })

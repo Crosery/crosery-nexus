@@ -367,7 +367,7 @@ export function byProviderLine(byProvider: Record<string, number>): string {
 
 export type AccountGroup = { provider: string; label: string; rows: ProxyAccountRow[] }
 
-/** Accounts by provider (credential rows only; CPA 全局 is the 默认出口 action, Magpie rows are read-only here). */
+/** Accounts by provider (credential rows only; CPA 全局 is the 默认出口 action). */
 export function accountGroups(rows: ProxyAccountRow[], filter: { entryId?: string | null; query?: string } = {}): AccountGroup[] {
   const q = (filter.query ?? '').trim().toLowerCase()
   const groups = new Map<string, AccountGroup>()

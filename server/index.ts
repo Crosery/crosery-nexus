@@ -23,11 +23,9 @@ import { registerPerfRoutes } from './perfReports.js'
 import { registerCacheSummaryRoutes } from './cacheSummary.js'
 import { registerOverviewRoutes } from './overviewRoutes.js'
 import { registerUsageWorkspaceRoutes } from './usageWorkspaceRoutes.js'
-import { registerMagpieVersionRoutes } from './magpieVersion.js'
 import { registerAutoupdateRoutes } from './autoupdate.js'
 import { kernelPaths, registerKernelRoutes } from './kernels.js'
 import { accountsService, registerAccountsRoutes } from './accountsRoutes.js'
-import { createGatewaySettingsService, registerGatewaySettingsRoutes } from './gatewaySettings.js'
 import { proxyService, registerProxyRoutes } from './proxyRoutes.js'
 import { installCredentialProxyHook, registerProxyPoolJobs } from './proxyPoolJobs.js'
 import { installProxyChecks } from './proxyCheckPool.js'
@@ -53,7 +51,6 @@ const errorStatusOr = (error: unknown, fallback: number): number => {
   const status = Number((error as { status?: unknown })?.status)
   return Number.isInteger(status) && status >= 400 && status < 600 ? status : fallback
 }
-import { assertAuthFileName, authFilePath } from './magpieControl.js'
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync, withKeyAccessLock } from './sync.js'
 import { modelAvailabilityEnabled, probeChatModel, runModelAvailabilityRound } from './modelAvailability.js'
@@ -69,7 +66,7 @@ import { buildCacheAnalytics, type CacheEventRow } from './cacheAnalytics.js'
 import { addBufferedClient, clientCount, hasClientCapacity, heartbeat, sseClientLimit } from './liveStream.js'
 import { clientTypeSql } from './clientAgent.js'
 import { isMonitoredAccountType, normalizeAccountQuota } from './accountQuota.js'
-import { accountQuotaSupport, clearAccountQuota, readAccountQuota, summarizeAccountQuota } from './accountQuotaReader.js'
+import { clearAccountQuota, readAccountQuota, summarizeAccountQuota } from './accountQuotaReader.js'
 import { maskProxyUserinfo, projectMonitorAccount } from './accountProjection.js'
 import { normalizeResetCredits, resolveChatgptAccountId } from './codexAccount.js'
 import { allowFreshInvalidation, mapWithConcurrency, syncRegistry } from './syncRegistry.js'
@@ -96,10 +93,12 @@ import { pricingSourceStatus } from './pricing.js'
 import { CredentialUploadError, prepareCredentialUpload } from './credentialUpload.js'
 import { uploadCredentialBatch } from './credentialUploadBatch.js'
 import { mergeCredentialUploadItems } from './credentialUploadMerge.js'
+import { credentialFileName } from './credentials.js'
 import { MultipartUploadError, receiveUploadFile } from './multipartUpload.js'
 import { UploadGate, UploadGateBusyError } from './uploadGate.js'
 import { startNativeResponsesServer } from './nativeResponses.js'
 import { parseRtkCompress, registerRtkRelayRoutes, setKeyRtkCompress } from './rtkRelay.js'
+import type { RtkPlaneId } from './rtkPlane.js'
 import { alignedCutoffMs, rollupHealthV2Operations, summarizeRollupHealthV2 } from './usageRollup.js'
 
 const app = express()
@@ -220,10 +219,8 @@ registerPerfRoutes(app, { reader: latencyReader, groups: listGroupsForReporting,
 registerCacheSummaryRoutes(app, { reader: usageReader, groups: listGroupsForReporting, timeZone: config.quotaTimeZone, retentionDays: config.usageRetentionDays })
 registerOverviewRoutes(app, { reader: usageReader, groups: listGroupsForReporting })
 registerUsageWorkspaceRoutes(app, { usageReader, latencyReader, reportingContext, retentionDays: config.usageRetentionDays, timeZone: config.quotaTimeZone })
-// 账号（ACCOUNTS-ALIGN）：magpie + local 下是 Magpie 内核的账号与登录；CPA 模式下这些路由只列目录，账号仍走下面的旧入口。
+// 账号（ACCOUNTS-ALIGN）：这些路由只列 CPA 的服务目录，账号走下面的 CPA 入口。
 registerAccountsRoutes(app, accountsService())
-// 网关功能（#gateway-features）：Magpie 的脱敏 / 识图 / 生图设置，经内核 /internal/settings 读写；CPA 模式如实返回不可用。
-registerGatewaySettingsRoutes(app, createGatewaySettingsService())
 // 代理池（PROXY-SPEC）：/api/proxies/* 仅管理员（默认拒绝守卫），响应全部脱敏；账号的 proxy_url 仍是唯一事实来源。
 registerProxyRoutes(app, proxyService())
 // RTK 中转压缩（docs/ops/rtk-relay.md）：全局开关、节省统计与中转进程状态；中转本身是独立进程 server/rtkRelayMain.ts。
@@ -365,11 +362,10 @@ app.get('/v1/usage/requests', (req, res) => {
 })
 
 /*
- * Bulk credential import (JSON or ZIP of CPA auth files). CPA engine only: under Magpie, accounts sign in from the
- * accounts page instead. The relay console has used it for xAI batches of ~200 files.
+ * Bulk credential import (JSON or ZIP of CPA auth files). The relay console has used it for xAI batches of ~200 files.
  */
 const credentialUploadGate = new UploadGate()
-if (config.gatewayEngine === 'cpa') app.post('/api/credentials/upload', async (req, res) => {
+app.post('/api/credentials/upload', async (req, res) => {
   const traceId = crypto.randomUUID()
   const startedAt = Date.now()
   res.setHeader('Cache-Control', 'no-store')
@@ -840,7 +836,7 @@ const loadMonitorPayload = async () => {
   })
   // 本机控制面读不了额度时整页给一个能力标记（账号的 normalizedQuota 也带 unsupported:true），页面据此整体提示。
   // 出口按字段白名单投影：凭据文件/网关记录里的 token、cookie、key 一律不进响应（也不进整页缓存）。
-  return { accounts: accounts.map(projectMonitorAccount), quotaShare, quotaSupport: accountQuotaSupport() }
+  return { accounts: accounts.map(projectMonitorAccount), quotaShare }
 }
 
 app.get('/api/monitor', async (_req, res) => {
@@ -1198,24 +1194,18 @@ app.get('/api/model-index', async (req, res) => {
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取模型失败' }) }
 })
 
-/* ────────── task-79 ②：magpie 内核更新的服务端代跑 + 「网关 Magpie」版本模型（server/magpieVersion.ts） ────────── */
-registerMagpieVersionRoutes(app, {
-  getCpaVersion, getConsoleVersion, wantsFresh, addAudit,
-  // 仓库根 = server/ 的上一级（之前少了这一层，脚本路径被解析成 server/scripts/…，端点永远 capability:false）
-  repoRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+app.get('/api/version', async (req, res) => {
+  try {
+    res.json({ cpa: await getCpaVersion(wantsFresh(req)), console: getConsoleVersion() })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '获取版本失败' })
+  }
 })
 
-/* 「自动更新」开关与状态（server/autoupdate.ts）：只写开关、读定时任务记下的结果；替换内核只在 launchd 任务里做。 */
+/* 「自动更新」rtk 开关与状态（server/autoupdate.ts）：只写开关、读定时任务记下的结果。 */
 registerAutoupdateRoutes(app, {
   addAudit,
   repoRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-  magpieLocal: () => config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local',
-  running: async () => {
-    if (config.gatewayEngine !== 'magpie') return null
-    const { kernelJSON } = await import('./magpieEngine.js')
-    const health = await kernelJSON(config.magpieKernelSocket, '/internal/health') as { revision?: unknown }
-    return typeof health.revision === 'string' && /^[a-f0-9]{40}$/.test(health.revision) ? health.revision : null
-  },
   rtkLocal: async () => {
     const { findRTKBinary, readLocalPayload } = await import('./rtkService.js')
     const binary = findRTKBinary()
@@ -1223,11 +1213,11 @@ registerAutoupdateRoutes(app, {
   },
 })
 
-/* 「网关内核」（server/kernels.ts，中转站）：CPA 接流量 + Magpie 备用；只写开关、排队回滚，替换由 crosery-kernel-update 定时任务做。 */
+/* 「网关内核」（server/kernels.ts，中转站）：CPA 的版本与自动更新；只写开关、排队回滚，替换由 crosery-kernel-update 定时任务做。 */
 registerKernelRoutes(app, {
   addAudit,
   paths: () => kernelPaths(config.dataDir),
-  available: () => process.platform === 'linux' && config.gatewayEngine !== 'magpie',
+  available: () => process.platform === 'linux',
   cpaRunning: async () => {
     // fresh-ish (≤15 s): right after the applier swaps CPA the panel should not show the old version for a minute
     const info = await getCpaVersion(true)
@@ -1252,22 +1242,11 @@ app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
 })
 
-/**
- * 路由层入参校验（task-61，纵深防御）：`:name` 必须是 auth-files 目录下的**单段文件名**。
- * 真正的单点校验在 `magpieControl.ts:authFilePath()`；这里先拦一道，给出明确的 400 reason。
- */
+/** 路由层入参校验（task-61，纵深防御）：`:name` 必须是**单段文件名**，否则 400。 */
 const requireCredentialName = (req: express.Request, res: express.Response): string | null => {
-  try {
-    const safe = assertAuthFileName(req.params.name)
-    // 提前跑一遍单点校验（归属 + realpath + nlink），好把 400 的 reason 说清楚；
-    // 真正的强制点仍在 magpieControl.ts 内部，任何调用方都绕不过去。
-    authFilePath(safe)
-    return safe
-  } catch (error) {
-    const code = error instanceof Error && /^credential_/.test(error.message) ? error.message : 'credential_name_invalid'
-    res.status(400).json({ error: '凭据名不合法或指向 auth-files 目录之外', reason: code })
-    return null
-  }
+  const safe = credentialFileName(req.params.name)
+  if (!safe) res.status(400).json({ error: '凭据名不合法或指向 auth-files 目录之外', reason: 'credential_name_invalid' })
+  return safe
 }
 
 app.patch('/api/credentials/:name', async (req, res) => {
@@ -1385,13 +1364,6 @@ app.delete('/api/shared-models/:modelId', async (req, res) => {
  * 修前 `/callback` 是 400、`/start` 是 500 —— 同一份非法输入两条路径状态码不一致，
  * 5xx 会让监控误判成服务端故障，也可能被客户端重试放大。
  */
-/**
- * magpie + local：本机 OAuth 模拟器已退役（它不换 token，回调只会写出伪造的凭据）。
- * 登录改走 Magpie 内核：POST /api/accounts/signin。CPA 模式（含 magpie + cpa 控制面）不经过这里，行为不变。
- */
-const LOCAL_OAUTH_RETIRED = { error: '本机 magpie 模式请在「账号」里登录（Magpie 真实登录）', code: 'use_accounts_signin' } as const
-const localOAuthRetired = () => config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local'
-
 const requireOAuthProvider = async (res: express.Response, provider: string): Promise<string | null> => {
   const { isSupportedOAuthProvider, supportedOAuthProviders } = await import('./cpa.js')
   if (isSupportedOAuthProvider(provider)) return provider
@@ -1409,7 +1381,6 @@ app.post('/api/cpa/oauth/start', async (req, res) => {
     // 与 /callback 同一个出口：非法 provider 是 400，不是 500
     const supported = await requireOAuthProvider(res, provider)
     if (!supported) return
-    if (localOAuthRetired()) return res.status(410).json(LOCAL_OAUTH_RETIRED)
     const result = await startOAuthLogin(supported)
     res.json(result)
   } catch (error) {
@@ -1418,7 +1389,6 @@ app.post('/api/cpa/oauth/start', async (req, res) => {
 })
 
 app.get('/api/cpa/oauth/status', async (req, res) => {
-  if (localOAuthRetired()) return res.status(404).json({ status: 'error', error: '会话已过期或不存在', code: 'signin_not_found' })
   try {
     const state = String(req.query.state || '').trim()
     if (!state) return res.status(400).json({ error: '缺少 state 参数' })
@@ -1443,8 +1413,6 @@ app.post('/api/cpa/oauth/callback', async (req, res) => {
     // task-73 R26-A：与 /start 共用**同一个校验出口**，两条路径状态码不会再分叉。
     const supported = await requireOAuthProvider(res, provider)
     if (!supported) return
-    // 先校验入参（400），再报能力（410）：非法输入在两种模式下得到同一个答复
-    if (localOAuthRetired()) return res.status(410).json(LOCAL_OAUTH_RETIRED)
     const result = await submitOAuthCallback(supported, redirectUrl, state)
     invalidateControlPlaneCaches()
     addAudit('oauth_callback_submit', `provider=${provider}`)
@@ -1469,7 +1437,6 @@ app.post('/api/cpa/credentials/api-key', async (req, res) => {
 })
 
 app.post('/api/cpa/oauth/cancel', async (req, res) => {
-  if (localOAuthRetired()) return res.status(404).json({ error: '会话已过期或不存在', code: 'signin_not_found' })
   try {
     const state = String(req.body?.state || '').trim()
     if (state) {
@@ -1539,7 +1506,7 @@ app.get('/api/usage/rollup-health', async (req, res) => {
 app.get('/api/rtk/planes', async (_req, res) => {
   try {
     const { resolveRtkPlane } = await import('./rtkPlane.js')
-    res.json(await resolveRtkPlane({ fresh: true }))
+    res.json(resolveRtkPlane())
   } catch (error) {
     const failure = (await import('./rtkService.js')).rtkFailure(error)
     res.status(failure.status).json({ error: failure.error, ...(failure.plane ? { plane: failure.plane } : {}), ...(failure.reason ? { reason: failure.reason } : {}), ...(failure.lockLost ? { lockLost: true } : {}), ...(failure.lockLostReason ? { lockLostReason: failure.lockLostReason } : {}) })
@@ -1554,7 +1521,7 @@ app.post('/api/rtk/toggle', async (req, res) => {
   if (!agent) return res.status(400).json({ error: '缺少 agent 参数' })
   try {
     const { setRTKAgentHook } = await import('./rtkService.js')
-    const result = await setRTKAgentHook(agent, on, { plane: plane as 'kernel' | 'relay' | 'local', confirm })
+    const result = await setRTKAgentHook(agent, on, { plane: plane as RtkPlaneId, confirm })
     // 连带改动必须进审计：事后能追责「这次操作顺带撤回/修回了哪些别的客户端」。
     const collateralParts = [
       ...(result.collateralReverted?.length ? [`reverted:${result.collateralReverted.join('+')}`] : []),
@@ -1587,9 +1554,9 @@ app.post('/api/rtk/rollback', async (req, res) => {
 // install/upgrade：平面不支持时必须 501，不能静默假装成功。
 const rtkBinaryRoute = (
   action: 'install' | 'upgrade',
-  run: (options: { plane?: 'kernel' | 'relay' | 'local'; confirm: boolean }) => Promise<unknown>,
+  run: (options: { plane?: RtkPlaneId; confirm: boolean }) => Promise<unknown>,
 ) => async (req: express.Request, res: express.Response) => {
-  const plane = req.body?.plane ? String(req.body.plane).trim() as 'kernel' | 'relay' | 'local' : undefined
+  const plane = req.body?.plane ? String(req.body.plane).trim() as RtkPlaneId : undefined
   const confirm = req.body?.confirm === true
   try {
     const result = await run({ plane, confirm })
@@ -1612,18 +1579,11 @@ app.post('/api/rtk/upgrade', async (req, res) => {
   await rtkBinaryRoute('upgrade', upgradeRTK)(req, res)
 })
 // 同步中心（契约 C3）与 RTK 全局开关（C4）：任务登记与路由在 server/syncRoutes.ts。
-const magpieAccountQuota = () => accountsService().magpieReady()
 const syncCenter = installSyncCenter(app, {
   refreshAccountQuota: async () => {
-    // magpie + local：额度来自 Magpie 账号（到期的服务才读，5 分钟下限照旧）；内核不可用时回落到原路径（报不支持）
-    if (config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local') {
-      const magpie = await accountsService().refreshForSync()
-      if (magpie) return magpie
-    }
     monitorCoordinator.clear('monitor')
     return monitorCoordinator.run('monitor', loadMonitorPayload)
   },
-  magpieAccountQuota,
   onModelsChanged: invalidateControlPlaneCaches,
   dataPlaneStatus: () => readDataPlaneRelayStatus(db, config.dataPlaneEnabled),
   addAudit,
@@ -1713,10 +1673,6 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     try { syncRegistry.flush() } catch { /* 落盘失败不能挡住退出 */ }
     process.kill(process.pid, signal)
   })
-}
-if (config.gatewayEngine === 'magpie') {
-  const { startMagpieServer } = await import('./magpieRuntime.js')
-  await startMagpieServer()
 }
 if (config.nativeResponsesEnabled) startNativeResponsesServer()
 // nginx 默认 60s 空闲即断开代理连接，25s 心跳保证 SSE 长连接不被切断

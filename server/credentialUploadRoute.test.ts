@@ -63,7 +63,7 @@ test('CPA engine: a ZIP of auth files is uploaded to CPA, existing names are ski
       ...process.env,
       DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1',
       CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: 'correct-horse-battery', SESSION_SECRET: 'upload-route-secret',
-      COOKIE_SECURE: 'false', GATEWAY_ENGINE: 'cpa',
+      COOKIE_SECURE: 'false',
       CPA_BASE_URL: `http://127.0.0.1:${cpaPort}`, CPA_MANAGEMENT_KEY: 'upload-test-key',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

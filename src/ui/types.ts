@@ -166,7 +166,7 @@ export type ShellStatus = {
   sync?: SyncChip[] | null
   /** pre-composed sync words, e.g. "价格元数据 退避 → 16:00 · 账号额度 同步中 7/20" */
   syncText?: string | null
-  /** e.g. "magpie 3fe2ff9" */
+  /** e.g. "cpa v8.0.21" */
   kernel?: string | null
   rtk?: boolean | null
   /** key-user facts; `masked` is the stored tail (`sk-cr…7f3a`), `state` / `stateLabel` the key's status mark */

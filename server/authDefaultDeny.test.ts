@@ -146,12 +146,10 @@ test('端到端：未认证时白名单内可访问、白名单外 401、SPA 深
       HOST: '127.0.0.1',
       CPA_BASE_URL: 'http://127.0.0.1:9',
       CPA_MANAGEMENT_KEY: 'test-management-key',
-      MAGPIE_CONTROL_PLANE: 'local',
       CONSOLE_USERNAME: 'admin',
       CONSOLE_PASSWORD: 'default-deny-password',
       SESSION_SECRET: 'default-deny-session-secret',
       COOKIE_SECURE: 'false',
-      GATEWAY_ENGINE: 'cpa',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

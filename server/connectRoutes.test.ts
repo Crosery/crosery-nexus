@@ -8,13 +8,11 @@ const { config } = await import('./config.js')
 const { gatewayBaseUrl } = await import('./meRoutes.js')
 const { connectInfo, registerConnectRoutes } = await import('./connectRoutes.js')
 
-function withGateway(url: string, engine: typeof config.gatewayEngine, run: () => void | Promise<void>) {
-  const original = { url: config.publicGatewayBaseUrl, engine: config.gatewayEngine }
+function withGateway(url: string, run: () => void | Promise<void>) {
+  const original = config.publicGatewayBaseUrl
   config.publicGatewayBaseUrl = url
-  config.gatewayEngine = engine
   const restore = () => {
-    config.publicGatewayBaseUrl = original.url
-    config.gatewayEngine = original.engine
+    config.publicGatewayBaseUrl = original
   }
   try {
     const result = run()
@@ -28,7 +26,7 @@ function withGateway(url: string, engine: typeof config.gatewayEngine, run: () =
 }
 
 test('connect: configured public base → same URL the key user sees, Anthropic base without /v1', () => {
-  withGateway('https://gateway.example.test', 'magpie', () => {
+  withGateway('https://gateway.example.test', () => {
     assert.deepEqual(connectInfo(), {
       baseUrl: 'https://gateway.example.test/v1',
       anthropicBaseUrl: 'https://gateway.example.test',
@@ -39,20 +37,16 @@ test('connect: configured public base → same URL the key user sees, Anthropic 
 })
 
 test('connect: unset public base → local gateway fallback, flagged as not configured', () => {
-  withGateway('', 'magpie', () => {
+  withGateway('', () => {
     const info = connectInfo()
-    assert.equal(info.baseUrl, `http://127.0.0.1:${config.magpiePort}/v1`)
-    assert.equal(info.anthropicBaseUrl, `http://127.0.0.1:${config.magpiePort}`)
+    assert.equal(info.baseUrl, `${config.cpaBaseUrl}/v1`)
+    assert.equal(info.anthropicBaseUrl, config.cpaBaseUrl)
     assert.equal(info.configured, false)
-  })
-  withGateway('', 'cpa', () => {
-    assert.equal(connectInfo().baseUrl, `${config.cpaBaseUrl}/v1`)
-    assert.equal(connectInfo().configured, false)
   })
 })
 
 test('connect: a non-/v1 base has no Anthropic base (never guessed)', () => {
-  withGateway('https://gateway.example.test/v2', 'magpie', () => {
+  withGateway('https://gateway.example.test/v2', () => {
     assert.equal(connectInfo().baseUrl, 'https://gateway.example.test/v2')
     assert.equal(connectInfo().anthropicBaseUrl, null)
   })
@@ -64,7 +58,7 @@ test('GET /api/connect: JSON body, no-store, nothing but the three fields', asyn
   const server = app.listen(0, '127.0.0.1')
   await new Promise((resolve) => server.once('listening', resolve))
   try {
-    await withGateway('https://gateway.example.test/v1', 'magpie', async () => {
+    await withGateway('https://gateway.example.test/v1', async () => {
       const { port } = server.address() as AddressInfo
       const response = await fetch(`http://127.0.0.1:${port}/api/connect`)
       assert.equal(response.status, 200)

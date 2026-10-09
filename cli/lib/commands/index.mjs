@@ -5,9 +5,7 @@ import { login, logout, whoami } from './auth.mjs'
 import channels from './channels.mjs'
 import config from './config.mjs'
 import doctor from './doctor.mjs'
-import gateway from './gateway.mjs'
 import keys from './keys.mjs'
-import magpie from './magpie.mjs'
 import models from './models.mjs'
 import proxy from './proxy.mjs'
 import rtk from './rtk.mjs'
@@ -17,7 +15,7 @@ import sync from './sync.mjs'
 import usage from './usage.mjs'
 import version from './version.mjs'
 
-export const COMMANDS = [status, channels, models, keys, accounts, proxy, usage, sync, rtk, magpie, gateway, settings, config, audit, login, logout, whoami, doctor, version]
+export const COMMANDS = [status, channels, models, keys, accounts, proxy, usage, sync, rtk, settings, config, audit, login, logout, whoami, doctor, version]
 
 export function findCommand(name) {
   const key = String(name || '').toLowerCase()

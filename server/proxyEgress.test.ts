@@ -7,21 +7,16 @@ import path from 'node:path'
 import test from 'node:test'
 import cookieParser from 'cookie-parser'
 import express from 'express'
-import { countingServer, FakeCpa } from './testing/proxyFakeCpa.js'
+import { FakeCpa } from './testing/proxyFakeCpa.js'
 
 /**
- * Account egress (PROXY-SPEC §7, §12 accounts page): the /accounts read model, the authoritative per-account read,
- * and Magpie kernel accounts written through the registry + kernel push (fake control plane, temp registry).
+ * Account egress (PROXY-SPEC §7, §12 accounts page): the /accounts read model and the authoritative per-account read
+ * (fake CPA control plane).
  */
 
 const fake = await new FakeCpa().start()
-const bridge = await countingServer()
-const registry = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-egress-reg-')), 'magpie-channels.json')
-process.env.GATEWAY_ENGINE = 'cpa'
 process.env.CPA_BASE_URL = fake.base
 process.env.CPA_MANAGEMENT_KEY = fake.key
-process.env.MAGPIE_SOURCE_CPA_BASE_URL = bridge.base
-process.env.MAGPIE_CHANNELS_FILE = registry
 process.env.SESSION_SECRET ||= 'proxy-egress-unit-secret'
 process.env.PROXY_PRESETS = '住宅=http://u1:pw1@203.0.113.10:8080;东京=socks5://pre:PRESET-PW@198.51.100.70:1080'
 delete process.env.PROXY_CPA_SAME_HOST
@@ -31,8 +26,7 @@ const { ProxyPoolStore } = await import('./proxyPoolStore.js')
 const { createProxyService, registerProxyRoutes, EGRESS_READ_TTL_MS } = await import('./proxyRoutes.js')
 const { attachProxyKernel } = await import('./proxyPoolHooks.js')
 const { clearScanCacheForTests } = await import('./proxyMigrate.js')
-const { defaultControlPlane, resetControlPlaneCacheForTests, readMagpieAccountsSection } = await import('./proxyPoolControl.js')
-const { accountPicks, accountProxyWriter, readAccountProxy } = await import('./magpieAccountProxies.js')
+const { defaultControlPlane, resetControlPlaneCacheForTests } = await import('./proxyPoolControl.js')
 const { serviceOf } = await import('./proxyEgress.js')
 type Control = import('./proxyPoolControl.js').ProxyControlPlane
 
@@ -56,7 +50,6 @@ type Options = { control?: (base: Control) => Control; now?: () => number }
 
 async function harness(options: Options = {}) {
   seed()
-  fs.rmSync(registry, { force: true })
   clearScanCacheForTests()
   resetControlPlaneCacheForTests()
   attachProxyKernel(null)
@@ -109,24 +102,7 @@ function assertMasked(h: { bodies: string[]; audits: Array<[string, string, stri
   for (const [, target, details] of h.audits) assert.equal(/:\/\/|\d+\.\d+\.\d+\.\d+|example\.test/.test(`${target} ${details}`), false, `audit leaks: ${target} ${details}`)
 }
 
-/** The Magpie backend: no CPA credentials, kernel accounts written to the temp registry, pushes recorded. */
-const magpieControl = (supported: boolean, pushes: unknown[][], fail = { push: false }) => (base: Control): Control => ({
-  ...base,
-  backend: () => 'magpie',
-  cpaSameHost: () => true,
-  listCredentials: async () => [],
-  readMagpieAccountProxies: () => readMagpieAccountsSection(),
-  magpieAccounts: {
-    support: async () => (supported ? { supported: true, reason: null } : { supported: false, reason: '当前内核不会让账号走单独的出口，需要重新构建内核' }),
-    read: (agent, user) => readAccountProxy(agent, user),
-    write: accountProxyWriter(async () => {
-      if (fail.push) throw new Error('kernel down')
-      pushes.push(accountPicks())
-    }),
-  },
-})
-
-test.after(async () => { await fake.stop(); await bridge.stop() })
+test.after(async () => { await fake.stop() })
 
 test('service of an account: the probe that tells whether its exit reaches the vendor', () => {
   assert.equal(serviceOf('claude'), 'claude')
@@ -216,72 +192,7 @@ test('CPA: the per-account read asks CPA once per TTL, never returns the URL, ke
     assert.equal(after.body.preset, null)
     assert.equal((await h.send('GET', '/api/proxies/egress/account?ref=cpa:channel:x')).status, 409)
     assert.equal((await h.send('GET', '/api/proxies/egress/account?ref=nope')).status, 400)
-    assertMasked(h)
-  } finally { await h.close() }
-})
-
-test('Magpie: a kernel without account-proxy refuses the write (501 + reason) and the page says why', async () => {
-  const pushes: unknown[][] = []
-  const h = await harness({ control: magpieControl(false, pushes) })
-  try {
-    const id = await h.importText('http://u9:pw9@203.0.113.90:8080')
-    const view = await h.send('GET', '/api/proxies/egress')
-    assert.equal(view.body.backend, 'magpie')
-    assert.equal(view.body.accountProxy.supported, false)
-    assert.match(view.body.accountProxy.reason, /重新构建内核/)
-    assert.equal(view.body.signin.via, 'direct')
-    const refused = await h.send('POST', '/api/proxies/assign', { target: id, accounts: ['magpie:codex:A@example.test'], confirm: true })
-    assert.equal(refused.body.failed, 1)
-    assert.equal(refused.body.results[0].code, 'accounts_proxy_unavailable')
-    assert.match(refused.body.results[0].error, /重新构建内核/)
-    assert.equal(fs.existsSync(registry), false, 'nothing written')
-    assert.equal(pushes.length, 0)
-  } finally { await h.close() }
-})
-
-test('Magpie: assign writes the registry and pushes the pick; links by entry id; a url edit re-applies; restore puts it back', async () => {
-  const pushes: unknown[][] = []
-  const h = await harness({ control: magpieControl(true, pushes) })
-  try {
-    const id = await h.importText('http://u9:pw9@203.0.113.90:8080')
-    const ok = await h.send('POST', '/api/proxies/assign', { target: id, accounts: ['magpie:codex:A@example.test'], confirm: true })
-    assert.equal(ok.body.updated, 1, JSON.stringify(ok.body))
-    assert.equal(readAccountProxy('codex', 'a@example.test'), 'http://u9:pw9@203.0.113.90:8080')
-    assert.deepEqual(pushes.at(-1), [{ id: 'codex', name: '', key: '', accountProxies: { 'a@example.test': 'http://u9:pw9@203.0.113.90:8080' } }])
-    assert.equal(h.store.read().links['magpie:codex:a@example.test'].entryId, id)
-    assert.equal(h.store.read().links['magpie:codex:a@example.test'].prev, '')
-    assert.deepEqual(h.audits.at(-1), ['proxy-assign', `codex:${(await import('./accountProjection.js')).maskIdentity('a@example.test')}`, `to=${id}`])
-
-    const view = await h.send('GET', '/api/proxies/egress')
-    assert.equal(view.body.accounts['magpie:codex:a@example.test'].entryId, id)
-    assert.equal(view.body.entries.find((item: any) => item.id === id).usedBy, 1)
-    const read = await h.send('GET', '/api/proxies/egress/account?ref=magpie:codex:a@example.test')
-    assert.equal(read.body.entryId, id)
-    assert.equal(read.body.masked, 'http://***@203.0.113.90:8080')
-
-    const edited = await h.send('PATCH', `/api/proxies/${id}`, { url: 'http://u9:pw9@203.0.113.91:8080', confirm: true })
-    assert.equal(edited.body.reapplied.updated, 1, JSON.stringify(edited.body))
-    assert.equal(readAccountProxy('codex', 'a@example.test'), 'http://u9:pw9@203.0.113.91:8080', 'the account follows its entry')
-
-    const restored = await h.send('POST', '/api/proxies/unassign', { accounts: ['magpie:codex:a@example.test'], restore: true, confirm: true })
-    assert.equal(restored.body.results[0].status, 'restored')
-    assert.equal(readAccountProxy('codex', 'a@example.test'), '')
-    assert.deepEqual(pushes.at(-1), [], 'the last pick is withdrawn')
-    assertMasked(h)
-  } finally { await h.close() }
-})
-
-test('Magpie: a failed kernel push leaves the registry as it was and reports the account as failed', async () => {
-  const pushes: unknown[][] = []
-  const fail = { push: true }
-  const h = await harness({ control: magpieControl(true, pushes, fail) })
-  try {
-    const id = await h.importText('http://u9:pw9@203.0.113.90:8080')
-    const result = await h.send('POST', '/api/proxies/assign', { target: id, accounts: ['magpie:claude:b@example.test'], confirm: true })
-    assert.equal(result.body.failed, 1)
-    assert.equal(result.body.results[0].code, 'control_plane_unavailable')
-    assert.equal(readAccountProxy('claude', 'b@example.test'), '')
-    assert.equal(h.store.read().links['magpie:claude:b@example.test'], undefined)
+    assert.equal((await h.send('GET', '/api/proxies/egress/account?ref=magpie:codex:a@example.test')).status, 400, 'a retired backend\'s ref is not an account here')
     assertMasked(h)
   } finally { await h.close() }
 })

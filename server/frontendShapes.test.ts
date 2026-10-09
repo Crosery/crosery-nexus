@@ -121,12 +121,6 @@ test('管理员会话：主要页面的读接口与前端类型一致', async (t
     fits(TYPES, 'MonitorData', monitor)
   })
 
-  await t.test('账号 /api/accounts → AccountsData，/api/accounts/catalog → AccountsCatalog', async () => {
-    fits(TYPES, 'AccountsData', await api.accounts.list())
-    const catalog = await api.accounts.catalog()
-    fits(TYPES, 'AccountsCatalog', catalog)
-  })
-
   await t.test('模型页 /api/model-index、/api/usage-overview、/api/models/insights', async () => {
     const index = await request<{ models: unknown[] }>('/api/model-index')
     nonEmpty(index.models, 'model-index.models')
@@ -195,14 +189,12 @@ test('管理员会话：主要页面的读接口与前端类型一致', async (t
     fits('src/features/overview/model.ts', 'CacheSummaryLike', await request('/api/cache-summary?days=1'))
   })
 
-  await t.test('帮助与设置：/api/connect → ConnectInfo（页面内类型），版本、网关功能、内核、RTK 全局、自动更新、Magpie 更新状态', async () => {
+  await t.test('帮助与设置：/api/connect → ConnectInfo（页面内类型），版本、内核、RTK 全局、自动更新', async () => {
     fits('src/features/help/HelpPage.vue', 'ConnectInfo', await request('/api/connect'))
     fits(TYPES, 'VersionsData', await api.version())
-    fits(TYPES, 'GatewaySettings', await api.gatewaySettings())
     fits(TYPES, 'KernelsView', await api.kernels.get())
     fits(TYPES, 'RtkGlobalStatus', await api.rtkGlobal.get())
     fits(TYPES, 'AutoupdateView', await api.autoupdate.get())
-    fits(TYPES, 'MagpieUpdateStatus', await api.getMagpieUpdateStatus())
   })
 
   await t.test('代理：/api/proxies、options、accounts、egress（只读本机状态）', async () => {

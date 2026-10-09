@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 网关内核（中转站）：CPA 接流量、Magpie 备用，各自的版本、上游、候选、自动更新开关、上次结果和一键回滚。
+ * 网关内核（中转站）：CPA 的版本、上游、候选、自动更新开关、上次结果和一键回滚。
  *
  * 读 `/api/kernels`（server/kernels.ts，只读中转站定时任务记下的状态）；开关和时段写 `PUT /api/kernels`，回滚只是排队
  * （`POST /api/kernels/rollback`，确认后才发），真正的替换和回滚都由 crosery-kernel-update 定时任务经安装脚本完成。
@@ -33,7 +33,7 @@ const mark = (tone: string) => (tone === 'bad' ? '◆ ' : tone === 'warn' ? '◇
 async function toggle(kernel: KernelView, on: boolean) {
   busy.value = `switch-${kernel.id}`
   try {
-    live.data.value = await api.kernels.set({ [kernel.id]: { enabled: on } })
+    live.data.value = await api.kernels.set({ cpa: { enabled: on } })
   } catch (error) {
     notify(`◆ 没保存 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-kernels' })
   } finally {
@@ -48,11 +48,11 @@ async function rollback(kernel: KernelView) {
     facts: [
       { k: '当前', v: kernel.version ?? '未知' },
       { k: '回到', v: kernel.rollback.to },
-      { k: '方式', v: kernel.role === 'serving' ? '经安装脚本：先过兼容检查，失败再换回来' : '切回上一个备用内核，不影响流量' },
+      { k: '方式', v: '经安装脚本：先过兼容检查，失败再换回来' },
     ],
-    consequence: kernel.role === 'serving' ? 'CPA 会重启 · 正在进行的请求可能中断 · 这个版本之后不再自动换上' : '这个版本之后不再自动换上',
+    consequence: 'CPA 会重启 · 正在进行的请求可能中断 · 这个版本之后不再自动换上',
     confirmText: '回滚',
-    danger: kernel.role === 'serving',
+    danger: true,
   })
   if (!ok) return
   busy.value = `rollback-${kernel.id}`
@@ -93,14 +93,14 @@ async function saveWindow() {
         <b class="set-krn__name">{{ k.name }}</b>
         <span class="set-krn__role" :class="`is-${k.role}`">{{ k.roleText }}</span>
         <span class="num set-krn__ver">{{ k.version ?? '—' }}</span>
-        <StatusMark v-if="k.role === 'serving'" :state="k.online ? 'run' : 'bad'" :label="k.online ? '运行中' : '离线'" />
+        <StatusMark :state="k.online ? 'run' : 'bad'" :label="k.online ? '运行中' : '离线'" />
       </header>
       <dl class="set-krn__facts">
         <dt>上游</dt>
         <dd>
           <template v-if="k.upstream">
             <span class="num">{{ k.upstream.latest ?? '—' }}</span>
-            <span v-if="k.id === 'cpa'" class="dim">跟随最新正式版</span>
+            <span class="dim">跟随最新正式版</span>
             <span v-if="k.upstream.heldNewer" class="set-krn__warn">◇ {{ k.upstream.heldNewer }} 要人工合并补丁</span>
             <span v-if="k.upstream.checkedAt" class="dim">检查于 {{ fmtTime(k.upstream.checkedAt) }}</span>
           </template>
@@ -162,7 +162,7 @@ async function saveWindow() {
       <span v-else-if="data.scheduler === 'stale'" class="set-krn__warn">◇ 定时任务超过 30 分钟没跑</span>
     </p>
   </div>
-  <!-- not the relay (the Mac's Magpie, or an older server): whatever the caller showed before -->
+  <!-- not the relay (a local console, or an older server): whatever the caller showed before -->
   <slot v-else-if="data || live.error.value" name="fallback" />
 
   <Sheet v-if="reasonsOf" :model-value="Boolean(reasonsOf)" :title="`为什么没替换 · ${reasonsOf.name}`" @update:model-value="reasonsOf = null">
@@ -175,7 +175,7 @@ async function saveWindow() {
     <form class="set-krn__form" @submit.prevent="saveWindow">
       <label>开始 <input v-model="draft.start" type="time" required></label>
       <label>结束 <input v-model="draft.end" type="time" required></label>
-      <p class="set-diff__note">按{{ zoneWord }}算 · 只在这段时间替换接流量的 CPA · 备用的 Magpie 随时换</p>
+      <p class="set-krn__note">按{{ zoneWord }}算 · 只在这段时间替换接流量的 CPA</p>
       <TxButton type="submit" size="sm" :loading="busy === 'window'" :disabled="busy !== null || draft.start === draft.end">保存</TxButton>
     </form>
   </Sheet>
@@ -205,6 +205,10 @@ async function saveWindow() {
 .set-krn__form { display: grid; gap: 12px; justify-items: start; }
 .set-krn__form label { display: flex; gap: 10px; align-items: center; font-size: var(--fs-sm); color: var(--ink-2); }
 .set-krn__form input { font: inherit; font-family: var(--font-mono); padding: 4px 8px; border: 1px solid var(--rule); border-radius: 6px; background: transparent; color: var(--ink); }
+.set-krn__note { margin: 6px 0 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.set-why { margin: 0 0 12px; padding: 0; list-style: none; display: grid; gap: 8px; }
+.set-why li { font-size: var(--fs-sm); line-height: 1.5; color: var(--ink); overflow-wrap: anywhere; padding-bottom: 8px; border-bottom: 1px solid var(--rule); }
+.set-why li:last-child { border-bottom: 0; }
 
 @media (max-width: 599px) {
   .set-krn__facts { grid-template-columns: minmax(0, 1fr); }

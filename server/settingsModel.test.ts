@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  contractDiffCount, fmtSpan, gapMark, gatewayIndex, jobAction, jobMark, jobRow, lanePulses, policyFigures, rtkApplyNotice, rtkConfirmFacts,
-  rtkDailySeries, rtkDirections, rtkTargets, rtkWords, shortRev, splitEmails, syncHeadline, syncTally, type SyncJobLike,
+  fmtSpan, jobAction, jobMark, jobRow, lanePulses, policyFigures, splitEmails, syncHeadline, syncTally, type SyncJobLike,
 } from '../src/features/settings/settingsModel.js'
 
-/** /settings page model (DESIGN §6.8): sync rows (C3), the RTK global switch (C4), the kernel diff count. */
+/** /settings page model (DESIGN §6.8): sync rows (C3). */
 
 const NOW = Date.parse('2026-10-02T06:00:00Z')
 const iso = (ms: number) => new Date(NOW + ms).toISOString()
@@ -126,134 +125,7 @@ test('lanePulses: duration sets the width (min 2px), runs outside the window dro
   assert.deepEqual(lanePulses([], from, to, 0), [])
 })
 
-test('rtkWords: mixed is not "on", savings percent is the server percent, blocked reasons are words', () => {
-  const mixed = rtkWords({ on: null, plane: 'local', agents: { supported: 9, on: 4 }, savings: { pct: 58.2, tokens: 2_227_051 }, writable: true, reason: null })
-  assert.equal(mixed.state, 'mixed')
-  assert.equal(mixed.word, '部分开启')
-  assert.equal(mixed.coverage, '4 / 9')
-  assert.equal(mixed.plane, '本机')
-  assert.equal(mixed.savings, '2.2M')
-  assert.equal(mixed.savingsPct, '58.2%')
-  assert.equal(mixed.blocked, null)
-  const blocked = rtkWords({ on: true, plane: 'kernel', agents: { supported: 3, on: 3 }, savings: null, writable: false, reason: 'kernel_write_disabled' })
-  assert.equal(blocked.state, 'on')
-  assert.equal(blocked.savings, null)
-  assert.equal(blocked.blocked, '内核平面写入未开启')
-  assert.equal(rtkWords({ on: null, plane: null, agents: { supported: 0, on: 0 }, savings: null, writable: false, reason: 'no_supported_agents' }).state, 'unknown')
-})
-
-test('rtk confirm facts name exactly the clients the server will touch', () => {
-  const agents = [
-    { id: 'codex', name: 'Codex CLI', on: true, supported: true, installed: true },
-    { id: 'cursor', name: 'Cursor', on: false, supported: true, installed: true },
-    { id: 'trae', name: 'Trae IDE', on: false, supported: true, installed: false },
-    { id: 'windsurf', name: 'Windsurf', on: false, supported: false, installed: false, blocked: 'project_scoped_only' },
-  ]
-  assert.deepEqual(rtkTargets(agents, 'local').map((a) => a.id), ['codex', 'cursor'])
-  assert.deepEqual(rtkTargets(agents, 'kernel').map((a) => a.id), ['codex', 'cursor', 'trae'])
-  const g = { on: null, plane: 'local' as const, agents: { supported: 2, on: 1 }, savings: null, writable: true, reason: null }
-  const on = rtkConfirmFacts(g, true, agents)
-  assert.deepEqual(on.map((f) => f.k), ['平面', '范围', '将挂载', '保护'])
-  assert.equal(on[2].v, 'Cursor')
-  assert.equal(rtkConfirmFacts(g, false, agents)[2].v, 'Codex CLI')
-  assert.equal(rtkConfirmFacts({ ...g, on: true, agents: { supported: 2, on: 2 } }, true, agents.map((a) => ({ ...a, on: true })))[2].v, '无 · 已是目标状态')
-  // without the diagnostics list the sheet still states counts, never a guess at names
-  assert.equal(rtkConfirmFacts(g, true, null)[2].v, '1 个')
-})
-
-test('rtk apply notice never hides a partial failure', () => {
-  assert.equal(rtkApplyNotice({ ok: true, on: true, results: [{ agent: 'codex', ok: true, error: null, unchanged: true }, { agent: 'cursor', ok: true, error: null }] }, true).title, '✓ RTK 已全部开启 · 改动 1 · 未变 1')
-  const partial = rtkApplyNotice({ ok: false, on: null, results: [{ agent: 'codex', ok: true, error: null }, { agent: 'cursor', ok: false, error: 'EACCES' }] }, false)
-  assert.equal(partial.tone, 'warn')
-  assert.match(partial.title, /失败 1 · 成功 1/)
-  assert.equal(partial.description, 'cursor：EACCES')
-  assert.equal(rtkApplyNotice({ ok: false, on: false, results: [{ agent: 'cursor', ok: false, error: null }] }, true).tone, 'bad')
-})
-
-test('rtkDailySeries zero-fills days without rtk runs and stays inside the window', () => {
-  const series = rtkDailySeries([
-    { date: '2026-09-30', saved: 75, input: 200 },
-    { date: '2026-10-01', saved: 2150, input: 3600 },
-    { date: '2026-08-16', saved: 999, input: 999 },
-  ], '2026-10-02', 3)
-  assert.deepEqual(series.dates, ['2026-09-30', '2026-10-01', '2026-10-02'])
-  assert.deepEqual(series.values, [75, 2150, 0])
-  assert.equal(series.saved, 2225)
-  assert.equal(series.input, 3800)
-})
-
-test('splitEmails and contractDiffCount', () => {
+test('splitEmails', () => {
   assert.deepEqual(splitEmails('no email here'), [{ text: 'no email here', email: false }])
   assert.equal(splitEmails('x@example.com and z+1@w.example.com').filter((p) => p.email).length, 2)
-  assert.equal(contractDiffCount(null), 0)
-  assert.equal(contractDiffCount({ addedRoutes: ['a', 'b'], removedRoutes: [], changedRoutes: ['c'], addedLoginAgents: [], removedLoginAgents: ['d'] }), 4)
-})
-
-/* ── review removals-regressions ── */
-
-test('RR-1: a mixed RTK switch offers both 全部开启 and 全部关闭; on/off keep the one switch', () => {
-  const base = { plane: 'local' as const, savings: null, writable: true, reason: null }
-  const mixed = rtkWords({ ...base, on: null, agents: { supported: 9, on: 4 } })
-  assert.deepEqual(rtkDirections(mixed, true), [{ target: true, label: '全部开启' }, { target: false, label: '全部关闭' }])
-  // nothing to offer when the plane is not writable: the switch is disabled with the reason
-  assert.deepEqual(rtkDirections(mixed, false), [])
-  assert.deepEqual(rtkDirections(rtkWords({ ...base, on: true, agents: { supported: 9, on: 9 } }), true), [])
-  assert.deepEqual(rtkDirections(rtkWords({ ...base, on: false, agents: { supported: 9, on: 0 } }), true), [])
-})
-
-test('RR-3: every write ok but the re-read is not the target, or a collateral file was left alone → warn with the files', () => {
-  const drift = rtkApplyNotice({
-    ok: false,
-    on: null,
-    offTarget: ['claude'],
-    results: [
-      { agent: 'claude', ok: true, error: null },
-      { agent: 'cursor', ok: true, error: null, collateralSkipped: [{ agent: 'claude', file: '.claude/settings.json', reason: 'unparsable_or_unknown_shape' }] },
-    ],
-  }, true)
-  assert.equal(drift.tone, 'warn')
-  assert.doesNotMatch(drift.title, /已全部开启/)
-  assert.match(drift.title, /部分开启/)
-  assert.match(drift.description ?? '', /未到位 claude/)
-  assert.match(drift.description ?? '', /未自动还原（请人工确认）：\.claude\/settings\.json（claude）/)
-
-  // the re-read reached the target, yet a file was not restored: still a warning, never ✓
-  const skipped = rtkApplyNotice({ ok: true, on: true, results: [{ agent: 'cursor', ok: true, error: null, collateralSkipped: [{ agent: 'claude', file: '.claude/RTK.md', reason: 'concurrent_modification' }] }] }, true)
-  assert.equal(skipped.tone, 'warn')
-  assert.match(skipped.description ?? '', /\.claude\/RTK\.md/)
-
-  // the re-read fell back to another plane: nothing was verified, so it is not called 部分开启
-  const unverified = rtkApplyNotice({ ok: false, on: null, offTarget: [], degraded: 'verify_plane_unavailable', results: [{ agent: 'codex', ok: true, error: null }] }, true)
-  assert.equal(unverified.tone, 'warn')
-  assert.match(unverified.title, /没能复核/)
-  assert.doesNotMatch(unverified.title, /部分开启|已全部开启/)
-  assert.match(unverified.description ?? '', /不是写入的平面/)
-
-  // an older server without offTarget: `on` alone still decides
-  assert.equal(rtkApplyNotice({ ok: true, on: null, results: [{ agent: 'codex', ok: true, error: null }] }, true).tone, 'warn')
-  // per-agent failures keep their own wording and also list the skipped files
-  const failed = rtkApplyNotice({ ok: false, on: null, results: [{ agent: 'codex', ok: false, error: 'EACCES' }, { agent: 'cursor', ok: true, error: null, collateralSkipped: [{ agent: 'claude', file: '.claude/settings.json', reason: 'x' }] }] }, true)
-  assert.match(failed.title, /失败 1 · 成功 1/)
-  assert.match(failed.description ?? '', /codex：EACCES/)
-  assert.match(failed.description ?? '', /\.claude\/settings\.json/)
-})
-
-test('RR-9: rtk_binary_missing carries the manual install command; other reasons do not', () => {
-  const hint = 'curl -fsSL https://example.test/install.sh | sh'
-  const missing = rtkWords({ on: null, plane: 'local', agents: { supported: 2, on: 0 }, savings: null, writable: false, reason: 'rtk_binary_missing', installHint: hint })
-  assert.equal(missing.blocked, '找不到 rtk 程序')
-  assert.equal(missing.install, hint)
-  assert.equal(rtkWords({ on: true, plane: 'local', agents: { supported: 2, on: 2 }, savings: null, writable: false, reason: 'write_disabled', installHint: hint }).install, null)
-  assert.equal(rtkWords({ on: true, plane: 'local', agents: { supported: 2, on: 2 }, savings: null, writable: true, reason: null }).install, null)
-})
-
-test('网关 Magpie: one name per build, behind is a calm to-do, only an offline kernel is hot', () => {
-  assert.equal(shortRev('crosery-3fe2ff9'), '3fe2ff9')
-  assert.equal(shortRev('3fe2ff99587e17dfe0ea707ffd0eccc088824433'), '3fe2ff9')
-  assert.equal(shortRev(null), null)
-  assert.deepEqual(gapMark({ state: 'latest', label: '已是最新' }), { state: 'run', label: '已是最新' })
-  assert.deepEqual(gapMark({ state: 'behind', label: '落后 ≥66 个提交' }), { state: 'pause', label: '落后 ≥66 个提交' })
-  assert.deepEqual(gapMark({ state: 'unknown', label: '未知' }), { state: 'stale', label: '差距未知' })
-  assert.deepEqual(gatewayIndex({ current: { running: true }, gap: { state: 'behind', label: '落后 ≥66 个提交' } }), { value: '落后', hot: false })
-  assert.deepEqual(gatewayIndex({ current: { running: false }, gap: { state: 'latest', label: '已是最新' } }), { value: '◆ 离线', hot: true })
 })

@@ -18,9 +18,8 @@ const HELP = `cradmin channels <动作> [参数]
       --disable p,…          停用匹配的模型
       --only p,…             只启用匹配的模型，其余全部停用
   enable|disable <渠道>      启用 / 停用兼容渠道（停用后网关立即下线该渠道，可 enable 恢复）
-  add <名称> --base-url <url> --api-key-env <NAME> --models id[=别名],…
-                             新建 OpenAI 兼容渠道；上游 Key 用环境变量引用（env:NAME）
-      --api-key-stdin        改从 stdin 读原始上游 Key（只有远程 CPA 控制面接受明文）
+  add <名称> --base-url <url> --api-key-stdin --models id[=别名],…
+                             新建 OpenAI 兼容渠道；上游 Key 从 stdin 读（终端里隐藏输入）
       --protocol openai|claude|responses
   rm <渠道>                  删除渠道（连停用快照一起删，不可撤销）
   prune                      清理失效渠道（不可撤销）
@@ -33,7 +32,7 @@ const HELP = `cradmin channels <动作> [参数]
 示例：
   cradmin channels models codex --only 'gpt-5*'
   cradmin channels models <渠道> --disable 'm*' --dry-run
-  cradmin channels add <名称> --base-url https://api.example.com/v1 --api-key-env EXAMPLE_KEY --models gpt-4o,gpt-4o-mini=mini
+  cradmin channels add <名称> --base-url https://api.example.com/v1 --api-key-stdin --models gpt-4o,gpt-4o-mini=mini < key.txt
 `
 
 const levelFor = changes => (changes.some(change => change.to === false) ? 'C' : 'A')
@@ -151,24 +150,16 @@ async function readAllStdin(stdin) {
 
 async function addChannel(ctx, name) {
   const { values } = ctx
-  if (!name) throw new UsageError('缺少渠道名称', '用法：cradmin channels add <名称> --base-url <url> --api-key-env <NAME> --models …')
+  if (!name) throw new UsageError('缺少渠道名称', '用法：cradmin channels add <名称> --base-url <url> --api-key-stdin --models …')
   if (!/^[A-Za-z0-9._-]{1,48}$/.test(name)) throw new UsageError('渠道名称只能用字母、数字、. _ -，最长 48 个字符')
   const protocol = values.protocol || 'openai'
   if (!['openai', 'claude', 'responses'].includes(protocol)) throw new UsageError('--protocol 只能是 openai、claude 或 responses')
   let baseUrl
   try { baseUrl = new URL(String(values['base-url'] || '')) } catch { throw new UsageError('缺少或无效的 --base-url') }
   if (!['http:', 'https:'].includes(baseUrl.protocol)) throw new UsageError('--base-url 必须是 http(s)')
-  if (values['api-key-env'] && values['api-key-stdin']) throw new UsageError('--api-key-env 与 --api-key-stdin 只能选一个')
-  let apiKey
-  if (values['api-key-env']) {
-    if (!/^[A-Z][A-Z0-9_]*$/.test(values['api-key-env'])) throw new UsageError('--api-key-env 只能是大写环境变量名，如 EXAMPLE_KEY')
-    apiKey = `env:${values['api-key-env']}`
-  } else if (values['api-key-stdin']) {
-    apiKey = ctx.io.stdin.isTTY ? await ctx.prompter.secret('上游 API Key：') : await readAllStdin(ctx.io.stdin)
-    if (!apiKey) throw new UsageError('stdin 里没有读到上游 Key')
-  } else {
-    throw new UsageError('需要 --api-key-env <NAME>（推荐）或 --api-key-stdin；不接受命令行里的明文 Key')
-  }
+  if (!values['api-key-stdin']) throw new UsageError('需要 --api-key-stdin；不接受命令行里的明文 Key')
+  const apiKey = ctx.io.stdin.isTTY ? await ctx.prompter.secret('上游 API Key：') : await readAllStdin(ctx.io.stdin)
+  if (!apiKey) throw new UsageError('stdin 里没有读到上游 Key')
   const models = parseModelList(values.models)
   const payload = await getChannels(ctx)
   if ((payload.channels || []).some(channel => channel.name === name)) throw new UsageError(`渠道 ${name} 已存在`)
@@ -189,7 +180,6 @@ export default {
     disable: { type: 'string', multiple: true },
     only: { type: 'string', multiple: true },
     'base-url': { type: 'string' },
-    'api-key-env': { type: 'string' },
     'api-key-stdin': { type: 'boolean' },
     models: { type: 'string', multiple: true },
     protocol: { type: 'string' },

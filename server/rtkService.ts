@@ -4,26 +4,17 @@ import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { config } from './config.js'
 import {
-  RELAY_RTK_PATHS,
   RTK_AGENT_SPECS,
   RTK_URL,
   RtkPlaneError,
   assertLocalWrite,
-  assertRemoteWrite,
   findRTKBinary,
-  kernelRtkRequest,
-  probeRelayPlane,
-  normalizePlanePayload,
   probeLocalPlane,
   readRtkWritePolicy,
   redact,
-  relayRtkRequest,
   resolveRtkPlane,
   rtkAgentSpec,
-  type KernelTarget,
-  type RelayTarget,
   type RtkAgentSpec,
   type RtkAgentView,
   type RtkDay,
@@ -31,13 +22,14 @@ import {
   type RtkPlaneId,
   type RtkPlanePayload,
   type RtkPlaneProbe,
+  type RtkPlaneResolution,
   type RtkWriteMode,
   type RtkWritePolicy,
 } from './rtkPlane.js'
 
 const execFileAsync = promisify(execFile)
 
-export type { KernelTarget, RelayTarget, RtkAgentView, RtkDay, RtkGain, RtkPlaneId, RtkPlaneProbe, RtkWriteMode } from './rtkPlane.js'
+export type { RtkAgentView, RtkDay, RtkGain, RtkPlaneId, RtkPlaneProbe, RtkWriteMode } from './rtkPlane.js'
 export { RtkPlaneError, RTK_AGENT_SPECS, RTK_URL, findRTKBinary } from './rtkPlane.js'
 
 const RTK_INSTALL_HINT = `curl -fsSL ${RTK_URL}/install.sh | sh`
@@ -60,7 +52,7 @@ export type RTKStatusView = {
   latest: string | null
   agents: RtkAgentView[]
   localAgents: RtkAgentView[]
-  /** 控制台所在机器的 RTK 安装情况（与权威平面无关）。 */
+  /** 控制台所在机器的 RTK 安装情况。 */
   local: { connected: boolean; path: string | null; version: string | null }
   /** 最近的本机写入备份（紧凑摘要，供一键回退）。 */
   backups: RtkBackupSummary[]
@@ -75,11 +67,7 @@ export type RTKStatusView = {
   install?: string
   url: string
   writeMode: RtkWriteMode
-  remoteWriteEnabled: boolean
-  /** 内核平面写入开关（默认关闭：内核跑在沙箱 HOME）。 */
-  kernelWriteEnabled: boolean
   installEnabled: boolean
-  error?: string
 }
 
 export type RtkCliAttempt = { command: string; exitCode: number | null; stderr: string; ok: boolean }
@@ -108,7 +96,7 @@ export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
   /** 被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
   preservedBak?: string[]
-  /** 跨进程写入锁：等锁时长（毫秒，0 = 一次拿到；远端平面恒为 0）。 */
+  /** 跨进程写入锁：等锁时长（毫秒，0 = 一次拿到）。 */
   lockWaitMs: number
   /** 本次接管了陈旧锁（持锁进程已死或超时）。 */
   lockStolen?: boolean
@@ -124,7 +112,6 @@ export type RTKToggleResult = Omit<RTKStatusView, 'backups'> & {
   lockRenewLastError?: string
   lock?: RtkLockInfo
 }
-export type RTKInstallResult = RTKStatusView & { ok: true; plane: RtkPlaneId; readPlane: RtkPlaneId }
 export type RTKRollbackResult = RTKStatusView & { ok: true; plane: RtkPlaneId; backupId: string; restored: string[] }
 
 /* 兼容旧引用（server/cpa.ts:369 仍按 RTKView 取类型），值形状是超集。 */
@@ -134,15 +121,12 @@ export type RTKGainStats = RtkGain
 export type RTKDayStats = RtkDay
 
 export type RtkToggleOptions = {
-  /** 写入目标平面；默认 local —— 只有本机才有用户的 agent 配置。 */
+  /** 写入目标平面；只有 local。 */
   plane?: RtkPlaneId
   confirm?: boolean
   home?: string
   bin?: string | null
   timeoutMs?: number
-  /** 仅测试注入：覆盖内核 / 中转站的探测与请求目标。 */
-  kernel?: KernelTarget
-  relay?: RelayTarget
 }
 
 export type RTKFailure = {
@@ -792,7 +776,7 @@ function samePath(left: string, right: string): boolean {
 
 export function rtkBackupRoot(home: string, env: NodeJS.ProcessEnv = process.env): string {
   const override = String(env.RTK_BACKUP_DIR || '').trim()
-  return override ? path.resolve(override) : path.join(home, '.agents/crosery/magpie-console/backups')
+  return override ? path.resolve(override) : path.join(home, '.agents/crosery/rtk/backups')
 }
 
 const backupFileName = (rel: string) => rel.replace(/[\\/]/g, '__')
@@ -1182,86 +1166,38 @@ export async function readLocalPayload(binPath: string | null, home: string = re
 }
 
 /* ------------------------------------------------------------------ */
-/* 权威平面读取（回退必须可见）                                        */
+/* 平面读取                                                            */
 /* ------------------------------------------------------------------ */
 
-function degradeProbe(probe: RtkPlaneProbe, reason: string, detail?: string): RtkPlaneProbe {
-  return { ...probe, available: false, state: 'unreachable', reason, ...(detail ? { detail } : {}) }
-}
+export type RtkRead = RtkPlaneResolution & { local: RtkPlanePayload }
 
-export type AuthoritativeRead = {
-  plane: RtkPlaneId
-  planes: RtkPlaneProbe[]
-  /** 权威平面（plane）的视图。 */
-  payload: RtkPlanePayload
-  /** 控制台所在机器的本机视图，独立于权威平面，供 C 层开关使用。 */
-  local: RtkPlanePayload
-  fellBack: boolean
-  error?: string
-}
+export type RtkReadOptions = { home?: string; fresh?: boolean }
 
-export type AuthoritativeReadOptions = { home?: string; fresh?: boolean; kernel?: KernelTarget; relay?: RelayTarget }
-
-export async function readAuthoritativeRtk(options: AuthoritativeReadOptions = {}): Promise<AuthoritativeRead> {
+export async function readRtk(options: RtkReadOptions = {}): Promise<RtkRead> {
   const home = options.home || resolveHome()
   const bin = findRTKBinary()
   const local = await readLocalPayload(bin, home, { fresh: options.fresh })
-  const resolution = await resolveRtkPlane({ fresh: options.fresh, kernel: options.kernel, relay: options.relay })
-  const planes = resolution.planes.map(probe => ({ ...probe }))
-  const errors: string[] = []
-
-  for (const plane of ['kernel', 'relay'] as const) {
-    const probe = planes.find(item => item.id === plane)
-    if (!probe?.available) continue
-    try {
-      const payload = plane === 'kernel'
-        ? await kernelRtkRequest(options.kernel?.socket ?? config.magpieKernelSocket, '/internal/rtk')
-        : await relayRtkRequest(RELAY_RTK_PATHS.view, 'GET', undefined, options.relay)
-      if (payload.status < 200 || payload.status >= 300) throw new Error(`HTTP ${payload.status}`)
-      return {
-        plane,
-        planes,
-        payload: normalizePlanePayload(payload.json, plane),
-        local,
-        fellBack: plane !== 'kernel',
-      }
-    } catch (error) {
-      const message = redact(error instanceof Error ? error.message : String(error))
-      errors.push(`${plane}: ${message}`)
-      Object.assign(probe, degradeProbe(probe, `${plane}_read_failed`, message))
-    }
-  }
-
-  return {
-    plane: 'local',
-    planes,
-    payload: local,
-    local,
-    fellBack: true,
-    ...(errors.length ? { error: `权威平面读取失败，已回退本机：${errors.join('; ')}` } : {}),
-  }
+  return { ...resolveRtkPlane({ localBinFound: bin !== null }), local }
 }
 
 function policyFields(policy: RtkWritePolicy) {
   return {
     writeMode: policy.mode,
-    remoteWriteEnabled: policy.remoteWriteEnabled,
-    kernelWriteEnabled: policy.kernelWriteEnabled,
     installEnabled: policy.installEnabled,
   }
 }
 
-export function toStatusView(read: AuthoritativeRead, policy: RtkWritePolicy = readRtkWritePolicy(), home: string = resolveHome()): RTKStatusView {
+export function toStatusView(read: RtkRead, policy: RtkWritePolicy = readRtkWritePolicy(), home: string = resolveHome()): RTKStatusView {
   return {
     plane: read.plane,
     planes: read.planes,
-    connected: read.payload.connected,
-    path: read.payload.path,
-    version: read.payload.version,
-    gain: read.payload.gain,
-    days: read.payload.days,
-    latest: read.payload.latest,
-    agents: read.payload.agents,
+    connected: read.local.connected,
+    path: read.local.path,
+    version: read.local.version,
+    gain: read.local.gain,
+    days: read.local.days,
+    latest: read.local.latest,
+    agents: read.local.agents,
     localAgents: read.local.agents,
     local: { connected: read.local.connected, path: read.local.path, version: read.local.version },
     backups: listRtkBackups(home, Math.min(rtkBackupKeep(), 10)),
@@ -1269,16 +1205,15 @@ export function toStatusView(read: AuthoritativeRead, policy: RtkWritePolicy = r
     backupGraceMs: rtkBackupGraceMs(),
     backupOrphans: countRtkBackupOrphans(home),
     backupForeign: countRtkBackupForeign(home),
-    ...(read.payload.install ? { install: read.payload.install } : {}),
-    url: read.payload.url,
+    ...(read.local.install ? { install: read.local.install } : {}),
+    url: read.local.url,
     ...policyFields(policy),
-    ...(read.error ? { error: read.error } : {}),
   }
 }
 
-export async function readRTKStatus(options: AuthoritativeReadOptions = {}): Promise<RTKStatusView> {
+export async function readRTKStatus(options: RtkReadOptions = {}): Promise<RTKStatusView> {
   const home = options.home || resolveHome()
-  return toStatusView(await readAuthoritativeRtk({ ...options, home }), readRtkWritePolicy(), home)
+  return toStatusView(await readRtk({ ...options, home }), readRtkWritePolicy(), home)
 }
 
 /* ------------------------------------------------------------------ */
@@ -1945,38 +1880,7 @@ export async function applyLocalAgentHook(
 /* 平面写入与编排                                                      */
 /* ------------------------------------------------------------------ */
 
-async function writeRelay(agent: string, on: boolean, target?: RelayTarget): Promise<void> {
-  let result
-  try {
-    result = await relayRtkRequest(RELAY_RTK_PATHS.view, 'POST', { agent, on }, target)
-  } catch (error) {
-    if (error instanceof RtkPlaneError) throw error
-    throw new RtkPlaneError(502, 'relay', 'relay_unreachable', redact(error instanceof Error ? error.message : String(error)))
-  }
-  if (result.status < 200 || result.status >= 300) {
-    throw new RtkPlaneError(result.status, 'relay', `relay_http_${result.status}`, redact(result.raw))
-  }
-}
-
-async function writeKernel(agent: string, on: boolean, target?: KernelTarget): Promise<void> {
-  let result
-  try {
-    result = await kernelRtkRequest(target?.socket ?? config.magpieKernelSocket, '/internal/rtk', 'POST', { agent, on })
-  } catch (error) {
-    throw new RtkPlaneError(502, 'kernel', 'kernel_unreachable', redact(error instanceof Error ? error.message : String(error)))
-  }
-  if (result.status < 200 || result.status >= 300) {
-    throw new RtkPlaneError(result.status || 502, 'kernel', `kernel_http_${result.status}`, redact(result.raw))
-  }
-}
-
-/**
- * 开关 agent 钩子。
- *
- * `plane` 默认 `local`：只有控制台这台机器才有用户的 agent 配置；kernel 平面是
- * 「内核那台机器上的 RTK」，必须显式指定并满足远端写入闸门（默认只读）。
- * relay 平面按红队 T13 保持只读：本实现不对中转站发起任何写请求。
- */
+/** 开关 agent 钩子：只写控制台这台机器上用户的 agent 配置。 */
 export async function setRTKAgentHook(agent: string, on: boolean, options: RtkToggleOptions = {}): Promise<RTKToggleResult> {
   const policy = readRtkWritePolicy()
   const plane: RtkPlaneId = options.plane || 'local'
@@ -2013,32 +1917,11 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
     collateralSkipped = result.collateralSkipped
     preservedBak = result.preservedBak
     lockInfo = result.lock
-  } else if (plane === 'kernel') {
-    // 内核由 scripts/magpie-console.mjs:91-93 以 HOME=<runtime>/home 启动，它的 agent
-    // 配置在沙箱 HOME 里，写内核不会影响用户真实的 ~/.codex / ~/.claude。
-    // 因此内核平面默认只读，只有运维显式打开 RTK_ALLOW_KERNEL_WRITE=1 才允许下发。
-    if (!policy.kernelWriteEnabled) {
-      throw new RtkPlaneError(501, 'kernel', 'kernel_write_not_supported',
-        '内核运行在沙箱 HOME（不含本机 agent 配置），默认只读；确需下发请显式设置 RTK_ALLOW_KERNEL_WRITE=1')
-    }
-    assertRemoteWrite(Boolean(options.confirm), 'kernel', policy)
-    await writeKernel(agent, on, options.kernel)
-  } else if (plane === 'relay') {
-    // 规则（与 install/upgrade 一致）：中转站根本没有 RTK 管理面 → 501（平面不支持）；
-    // 有面但没开远程写 → 403（默认只读）；两者齐备才下发。
-    // 当前 ai.crosery.com 实测 404，因此这里永远不会真的发出写请求（有测试断言）。
-    const probe = await probeRelayPlane(options.relay)
-    if (!probe.available) {
-      throw new RtkPlaneError(501, 'relay', 'relay_write_not_supported',
-        `中转站没有可用的 RTK 写入面（${probe.reason}），控制台不发起写请求`)
-    }
-    assertRemoteWrite(Boolean(options.confirm), 'relay', policy)
-    await writeRelay(agent, on, options.relay)
   } else {
     throw new RtkPlaneError(400, 'local', 'unknown_plane', `未知平面: ${String(plane)}`)
   }
 
-  const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
+  const read = await readRtk({ home, fresh: true })
   // 不回传备份历史：只有本次备份的必要摘要。
   const { backups: _history, ...status } = toStatusView(read, policy, home)
   void _history
@@ -2070,48 +1953,19 @@ export async function setRTKAgentHook(agent: string, on: boolean, options: RtkTo
   }
 }
 
-export type RtkInstallOptions = { plane?: RtkPlaneId; confirm?: boolean; home?: string; kernel?: KernelTarget; relay?: RelayTarget }
+export type RtkInstallOptions = { plane?: RtkPlaneId }
 
-async function installOrUpgrade(action: 'install' | 'upgrade', options: RtkInstallOptions): Promise<RTKInstallResult> {
-  const policy = readRtkWritePolicy()
-  const home = options.home || resolveHome()
-  const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
-  const plane: RtkPlaneId = options.plane || read.plane
-
-  // 本机：控制台不代为下载执行安装脚本，这是需要人工批准的可执行文件变更。
-  if (plane === 'local') {
-    throw new RtkPlaneError(501, 'local', `local_${action}_not_supported`,
-      `控制台不代为${action === 'install' ? '安装' : '升级'}本机 rtk，请人工执行：${RTK_INSTALL_HINT}`)
-  }
-  if (plane === 'kernel') {
-    throw new RtkPlaneError(501, 'kernel', `kernel_${action}_not_supported`,
-      '内核 overlay 只暴露 GET/POST /internal/rtk，没有 install/upgrade 缝')
-  }
-  // 中转站：没有 RTK 管理面 → 501；有面但没开远程写 → 403；两者齐备才下发。
-  const probe = await probeRelayPlane(options.relay)
-  if (!probe.available) {
-    throw new RtkPlaneError(501, 'relay', `relay_${action}_not_supported`,
-      `中转站没有可用的 RTK 管理面（${probe.reason}），控制台不发起写请求`)
-  }
-  assertRemoteWrite(Boolean(options.confirm), 'relay', policy)
-  let result
-  try {
-    result = await relayRtkRequest(RELAY_RTK_PATHS[action], 'POST', {}, options.relay)
-  } catch (error) {
-    if (error instanceof RtkPlaneError) throw error
-    throw new RtkPlaneError(502, 'relay', 'relay_unreachable', redact(error instanceof Error ? error.message : String(error)))
-  }
-  if (result.status < 200 || result.status >= 300) {
-    throw new RtkPlaneError(result.status, 'relay', `relay_http_${result.status}`, redact(result.raw))
-  }
-  const after = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
-  return { ...toStatusView(after, readRtkWritePolicy(), home), ok: true, plane, readPlane: after.plane }
+/** 控制台不代为下载执行安装脚本：这是需要人工批准的可执行文件变更。 */
+async function installOrUpgrade(action: 'install' | 'upgrade', options: RtkInstallOptions): Promise<never> {
+  if (options.plane && options.plane !== 'local') throw new RtkPlaneError(400, 'local', 'unknown_plane', `未知平面: ${String(options.plane)}`)
+  throw new RtkPlaneError(501, 'local', `local_${action}_not_supported`,
+    `控制台不代为${action === 'install' ? '安装' : '升级'}本机 rtk，请人工执行：${RTK_INSTALL_HINT}`)
 }
 
 export const installRTK = (options: RtkInstallOptions = {}) => installOrUpgrade('install', options)
 export const upgradeRTK = (options: RtkInstallOptions = {}) => installOrUpgrade('upgrade', options)
 
-export type RtkRollbackOptions = { backup?: string; confirm?: boolean; home?: string; kernel?: KernelTarget; relay?: RelayTarget }
+export type RtkRollbackOptions = { backup?: string; confirm?: boolean; home?: string }
 
 /** 一键回退：把备份里的 agent 配置原地恢复。 */
 export async function rollbackRTK(options: RtkRollbackOptions = {}): Promise<RTKRollbackResult> {
@@ -2129,7 +1983,7 @@ export async function rollbackRTK(options: RtkRollbackOptions = {}): Promise<RTK
       // 提交点 fencing（R11-C）：回滚也是一次写入，锁被接管就不能再动文件
       lock.assertOwned()
       const { id, restored } = restoreRtkBackup(home, options.backup)
-      const read = await readAuthoritativeRtk({ home, fresh: true, kernel: options.kernel, relay: options.relay })
+      const read = await readRtk({ home, fresh: true })
       return {
         ...toStatusView(read, policy, home),
         ok: true as const, plane: 'local' as const, backupId: id, restored,
@@ -2169,7 +2023,7 @@ export function rtkFailure(error: unknown): RTKFailure {
 export { probeLocalPlane }
 
 /* ------------------------------------------------------------------ */
-/* 全局开关（CONTRACTS C4）：在权威平面上批量套用逐 agent 开关          */
+/* 全局开关（CONTRACTS C4）：在本机批量套用逐 agent 开关              */
 /* ------------------------------------------------------------------ */
 
 export type RtkGlobalView = {
@@ -2189,9 +2043,6 @@ export type RtkGlobalResult = {
   ok: boolean
   on: boolean | null
   plane: RtkPlaneId
-  /** 写后复核实际读到的平面；与 plane 不同时 on=null、degraded 说明原因（不拿别的平面的状态冒充写入结果）。 */
-  readPlane?: RtkPlaneId
-  degraded?: 'verify_plane_unavailable'
   /** 写后复核仍不在目标状态的 agent（可能是被别的 agent 的 rtk CLI 连带改坏，或并发改动）。 */
   offTarget: string[]
   results: Array<{
@@ -2208,28 +2059,19 @@ export type RtkGlobalResult = {
 }
 
 /**
- * 全局开关只作用于「权威平面上可控的 agent」：远端平面取远端视图；本机平面只取已安装且支持全局钩子的
- * agent——给没装的工具建配置目录不是「打开 RTK」，而是凭空改用户的 HOME。
+ * 全局开关只作用于已安装且支持全局钩子的 agent——给没装的工具建配置目录不是「打开 RTK」，
+ * 而是凭空改用户的 HOME。
  */
 function globalTargets(status: RTKStatusView): RtkAgentView[] {
-  const agents = status.plane === 'local' ? status.localAgents : status.agents
-  return agents.filter(agent => agent.supported && !agent.blocked && (status.plane !== 'local' || agent.installed))
+  return status.localAgents.filter(agent => agent.supported && !agent.blocked && agent.installed)
 }
 
 function globalWriteBlocker(status: RTKStatusView, policy: RtkWritePolicy, supported: number): { status: number; reason: string; message: string } | null {
-  if (!supported) return { status: 409, reason: 'no_supported_agents', message: '权威平面上没有可统一开关的 agent' }
-  // RTK_WRITE_MODE=off 是「全只读」：先于任何平面的远端/内核开关判定。
+  if (!supported) return { status: 409, reason: 'no_supported_agents', message: '本机没有可统一开关的 agent' }
+  // RTK_WRITE_MODE=off 是「全只读」：先于 rtk 是否安装判定。
   if (policy.mode === 'off') return { status: 403, reason: 'write_disabled', message: 'RTK_WRITE_MODE=off：RTK 写入已关闭' }
-  if (status.plane === 'local') {
-    if (!status.local.connected) return { status: 503, reason: 'rtk_binary_missing', message: `本机未安装 rtk：${RTK_INSTALL_HINT}` }
-    return null
-  }
-  if (status.plane === 'kernel') {
-    return policy.kernelWriteEnabled && policy.remoteWriteEnabled ? null
-      : { status: 403, reason: 'kernel_write_disabled', message: '内核平面写入默认关闭（RTK_ALLOW_KERNEL_WRITE + RTK_ALLOW_REMOTE_WRITE）' }
-  }
-  return policy.remoteWriteEnabled ? null
-    : { status: 403, reason: 'remote_write_disabled', message: '远端写入默认关闭，需显式设置 RTK_ALLOW_REMOTE_WRITE=1' }
+  if (!status.local.connected) return { status: 503, reason: 'rtk_binary_missing', message: `本机未安装 rtk：${RTK_INSTALL_HINT}` }
+  return null
 }
 
 export function rtkGlobalView(status: RTKStatusView, policy: RtkWritePolicy = readRtkWritePolicy()): RtkGlobalView {
@@ -2249,7 +2091,7 @@ export function rtkGlobalView(status: RTKStatusView, policy: RtkWritePolicy = re
   }
 }
 
-export async function readRTKGlobal(options: AuthoritativeReadOptions = {}): Promise<RtkGlobalView> {
+export async function readRTKGlobal(options: RtkReadOptions = {}): Promise<RtkGlobalView> {
   return rtkGlobalView(await readRTKStatus(options))
 }
 
@@ -2268,7 +2110,7 @@ export async function setRTKGlobal(on: boolean, options: Omit<RtkToggleOptions, 
   globalApplying = true
   try {
     const home = options.home || resolveHome()
-    const readOptions = { home, fresh: true, kernel: options.kernel, relay: options.relay }
+    const readOptions = { home, fresh: true }
     const status = await readRTKStatus(readOptions)
     const targets = globalTargets(status)
     const blocker = globalWriteBlocker(status, readRtkWritePolicy(), targets.length)
@@ -2295,10 +2137,6 @@ export async function setRTKGlobal(on: boolean, options: Omit<RtkToggleOptions, 
       }
     }
     const afterStatus = await readRTKStatus(readOptions)
-    // 复核必须读写入的那个平面：权威读取回落到别的平面时，它的开关状态不能冒充写入结果。
-    if (afterStatus.plane !== status.plane) {
-      return { ok: false, on: null, plane: status.plane, readPlane: afterStatus.plane, degraded: 'verify_plane_unavailable', offTarget: [], results }
-    }
     const after = rtkGlobalView(afterStatus)
     // 复核以写后的真实文件为准：别的 agent 的 CLI 可能把先写好的 agent 连带改坏（结果仍是 ok:true）
     const offTarget = globalTargets(afterStatus).filter(agent => agent.on !== on).map(agent => agent.id)

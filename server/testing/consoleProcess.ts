@@ -1,6 +1,6 @@
 /**
  * The real console (`server/index.ts`) as a child process for contract tests, with the route-table preload
- * (`routeTableDump.ts`): CPA engine, a throwaway DATA_DIR/HOME, no native responses server, admin login ready.
+ * (`routeTableDump.ts`): a throwaway DATA_DIR/HOME, no native responses server, admin login ready.
  */
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -34,7 +34,7 @@ export async function launchConsole(env: Record<string, string>) {
     cwd: REPO,
     env: {
       PATH: process.env.PATH ?? '', HOME: dataDir, TMPDIR: os.tmpdir(), DATA_DIR: dataDir,
-      PORT: String(port), HOST: '127.0.0.1', GATEWAY_ENGINE: 'cpa', NATIVE_RESPONSES_ENABLED: 'false',
+      PORT: String(port), HOST: '127.0.0.1', NATIVE_RESPONSES_ENABLED: 'false',
       CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: ADMIN_PASSWORD, SESSION_SECRET: 'contract-session-secret',
       COOKIE_SECURE: 'false', ROUTE_TABLE_FILE: tableFile, ...env,
     },

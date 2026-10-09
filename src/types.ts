@@ -134,15 +134,11 @@ export type ModelIndexData = {
 export type GatewayModelAccess = 'unknown' | 'available' | 'unavailable'
 
 export type CpaVersionInfo = {
-  engine?: 'cpa' | 'magpie'
   version: string
   commit: string
   buildDate: string
   latestVersion?: string
   hasUpdate?: boolean
-  upstream?: import('../packages/contracts/magpie-upstream.js').MagpieUpstreamStatus
-  /** 「网关 Magpie」合成模型（server/magpieVersion.ts）；只在 magpie 引擎下出现 */
-  gateway?: MagpieGatewayInfo
   rtk?: {
     connected: boolean
     path?: string | null
@@ -172,23 +168,6 @@ export type CpaVersionInfo = {
   }
 }
 
-/** `GET /api/version` → `cpa.gateway`：运行版本、上游最新、差距、跟随策略、待评审（server/magpieVersion.ts）。 */
-export type MagpieGatewayInfo = {
-  current: { label: string; commit: string | null; release: string | null; releaseNote: string | null; buildTime: string | null; running: boolean }
-  upstream: {
-    status: 'not_checked' | 'unchanged' | 'review_required' | 'error' | 'baseline_mismatch'
-    latestRelease: string | null
-    latestCommit: string | null
-    checkedAt: string | null
-    nextCheckAt: string | null
-    overdue: boolean
-    failed: boolean
-  }
-  gap: { state: 'latest' | 'behind' | 'unknown'; label: string; commitsAtLeast: number | null; note: string | null }
-  policy: { scheduled: boolean; intervalMs: number | null; autoApply: boolean; text: string }
-  review: { pending: boolean; changes: number; schemaCount: number; implementationFileCount: number }
-}
-
 export type ConsoleVersionInfo = {
   version: string
   releaseId?: string
@@ -212,104 +191,6 @@ export type ModelSyncResult = {
 }
 
 export type RtkPlaneId = 'kernel' | 'relay' | 'local'
-
-/** 可用 / 可用但降级（本机未装 rtk）/ 未配置 / 不可达 / 未授权 / 路由不存在 —— UI 必须如实区分。 */
-export type RtkPlaneState = 'available' | 'degraded' | 'not_configured' | 'unreachable' | 'unauthorized' | 'not_supported'
-
-export type RtkPlaneProbe = {
-  id: RtkPlaneId
-  available: boolean
-  configured: boolean
-  state: RtkPlaneState
-  reason: string
-  detail?: string
-}
-
-export type RtkAgentStatus = {
-  id: string
-  name: string
-  icon: string
-  on: boolean
-  supported: boolean
-  plane: RtkPlaneId
-  installed?: boolean
-  blocked?: string
-}
-
-/** 备份摘要：只有必要信息，不含完整文件清单。 */
-export type RtkBackupSummary = { id: string; at: string; fileCount: number }
-
-export type RTKStatusResponse = {
-  /** 权威读取平面：kernel → relay → local，第一个真正应答的。 */
-  plane: RtkPlaneId
-  planes: RtkPlaneProbe[]
-  connected: boolean
-  path: string | null
-  version: string | null
-  gain: {
-    commands: number
-    input: number
-    saved: number
-    pct: number
-  } | null
-  days: Array<{
-    date: string
-    commands: number
-    input: number
-    saved: number
-    pct: number
-  }>
-  latest: string | null
-  agents: RtkAgentStatus[]
-  /** 本机（控制台所在机器）的 agent 开关状态，独立于权威平面。 */
-  localAgents: RtkAgentStatus[]
-  local: { connected: boolean; path: string | null; version: string | null }
-  backups: RtkBackupSummary[]
-  /** 备份保留份数（RTK_BACKUP_KEEP），超出自动轮转。 */
-  backupKeep: number
-  /** 保护窗口（RTK_BACKUP_GRACE_MS）：窗口内的备份不轮转，避免删掉在飞请求刚返回的 backupId。 */
-  backupGraceMs: number
-  /** 没有 manifest 的孤儿备份目录数量。 */
-  backupOrphans: number
-  /** 备份根目录里不认识的目录数量（只计数不删）。 */
-  backupForeign: number
-  writeMode: 'local' | 'confirm' | 'off'
-  remoteWriteEnabled: boolean
-  kernelWriteEnabled: boolean
-  installEnabled: boolean
-  install?: string
-  url: string
-  /** 权威平面读取失败并回退时的原因，如实展示。 */
-  error?: string
-}
-
-export type RtkCollateralAction = 'reverted' | 'restored' | 'skipped'
-/** 连带改动的确定性最终态：每个 agent 一条，UI 与 audit 用同一份数据。 */
-export type RtkCollateralEntry = { agent: string; action: RtkCollateralAction; files: string[]; reason?: string }
-
-/** toggle 响应不带备份历史，只给本次备份摘要。 */
-export type RTKToggleResponse = Omit<RTKStatusResponse, 'backups'> & {
-  ok: true
-  mechanism?: 'rtk-cli' | 'hooks-json'
-  backup?: string
-  backupId?: string
-  backupFileCount?: number
-  fallbackReason?: string
-  /** 被 rtk CLI 连带关掉、已修回的其他 agent（与 collateralReverted 互斥）。 */
-  collateralRestored?: string[]
-  /** 被 rtk CLI 连带打开、已撤回的其他 agent（与 collateralRestored 互斥）。 */
-  collateralReverted?: string[]
-  /** 本次连带动到的文件。 */
-  collateralFiles?: string[]
-  /** 连带改动明细（唯一真源）。 */
-  collateral?: RtkCollateralEntry[]
-  /** 检测到并发修改/结构不认识，未自动还原、需人工确认。 */
-  collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
-  /** 被 rtk CLI 覆写后已还原回用户原件的 .bak。 */
-  preservedBak?: string[]
-}
-
-export type RTKRollbackResponse = RTKStatusResponse & { ok: true; backupId: string; restored: string[] }
 
 export type OAuthStartResult = {
   status: string
@@ -694,23 +575,6 @@ export type MonitorData = {
 export type AutoTone = 'ok' | 'warn' | 'bad' | 'idle'
 export type AutoReason = { code: string; text: string }
 export type AutoSchedulerMode = 'auto' | 'check-only' | 'missing' | 'unsupported'
-export type MagpieAutoView = {
-  available: boolean
-  enabled: boolean
-  scheduler: AutoSchedulerMode
-  window: { start: string; end: string }
-  state: 'cpa' | 'off' | 'no-scheduler' | 'check-only' | 'up-to-date' | 'pending' | 'held' | 'eligible' | 'applied' | 'rolled-back' | 'error' | 'blocked'
-  tone: AutoTone
-  line: string
-  brief: string
-  candidate: string | null
-  release: string | null
-  reasons: AutoReason[]
-  applied: { revision: string; release: string | null; at: string } | null
-  lastApply: { revision: string; at: string; result: string } | null
-  nextWindowAt: string | null
-  checkedAt: string | null
-}
 export type RtkAutoView = {
   available: boolean
   enabled: boolean
@@ -726,14 +590,14 @@ export type RtkAutoView = {
   lastUpgrade: { from: string | null; to: string; at: string; result: string } | null
   checkedAt: string | null
 }
-export type AutoupdateView = { magpie: MagpieAutoView; rtk: RtkAutoView }
+export type AutoupdateView = { rtk: RtkAutoView }
 
-/** 「网关内核」（`GET/PUT /api/kernels`，server/kernels.ts，中转站）：CPA 接流量 + Magpie 备用，各自的上游、候选、自动更新与回滚。 */
+/** 「网关内核」（`GET/PUT /api/kernels`，server/kernels.ts，中转站）：CPA 的上游、候选、自动更新与回滚。 */
 export type KernelWindow = { start: string; end: string; tz: string; label: string }
 export type KernelView = {
-  id: 'cpa' | 'magpie'
+  id: 'cpa'
   name: string
-  role: 'serving' | 'standby'
+  role: 'serving'
   roleText: string
   env: 'preview' | 'production' | null
   version: string | null
@@ -754,24 +618,6 @@ export type KernelView = {
   error: { text: string; at: string | null } | null
 }
 export type KernelsView = { available: boolean; reason: string | null; env: 'preview' | 'production' | null; scheduler: 'installed' | 'missing' | 'stale'; window: KernelWindow; kernels: KernelView[] }
-
-/** magpie 内核更新状态（`GET /api/magpie/update-status`，task-79）。 */
-export type MagpieUpdateStatus = {
-  capability: boolean
-  reason?: string
-  script?: string
-  root?: string
-  currentVersion?: string | null
-  latestVersion?: string | null
-  lastCheckedAt?: string | null
-  lastResult?: string | null
-  backupPath?: string | null
-  error?: string | null
-  /** 更新脚本能用的发布源类别；null = 没配置，三步一定失败；缺字段 = 旧服务端，不知道 */
-  releaseSource?: 'release' | 'build' | null
-  /** 上游检查器的结果（更新脚本自己没检查过时的回退） */
-  tracker?: { checkedAt: string | null; latestRelease: string | null; latestCommit: string | null } | null
-}
 
 /* ── C1 session & login (CONTRACTS.md) ─────────────────────────────────────────────────────────── */
 
@@ -966,29 +812,6 @@ export type RtkGlobalStatus = {
   installHint?: string
 }
 
-export type RtkGlobalApplyResult = {
-  /** every write succeeded and the post-apply re-read equals the target */
-  ok: boolean
-  on: boolean | null
-  plane?: RtkPlaneId | null
-  /** agents the re-read still finds off the target (absent on older servers) */
-  offTarget?: string[]
-  /** the post-apply re-read fell back to another plane (`readPlane`): `on` is null = not verified */
-  readPlane?: RtkPlaneId
-  degraded?: 'verify_plane_unavailable'
-  results: Array<{
-    agent: string
-    ok: boolean
-    error: string | null
-    reason?: string
-    unchanged?: boolean
-    backupId?: string
-    collateral?: RtkCollateralEntry[]
-    /** collateral files the server did not restore: a person has to check them */
-    collateralSkipped?: Array<{ agent: string; file: string; reason: string }>
-  }>
-}
-
 /* ── C6 gateway pulse (header live edge + statusline) ───────────────────────────────────────────── */
 
 export type PulseData = {
@@ -1002,153 +825,6 @@ export type PulseData = {
   successRate: number | null
   generatedAt: string
 }
-
-/* ── /api/accounts: Magpie accounts and sign-in (ACCOUNTS-ALIGN; server/accountsRoutes.ts) ─────────── */
-
-/** `cpa`: the page keeps /api/channels + /api/monitor + /api/cpa/oauth/*; `magpie`: everything below. */
-export type AccountsBackend = 'cpa' | 'magpie' | 'magpie-unavailable'
-export type AccountsUnavailableReason = 'kernel_unavailable' | 'kernel_outdated' | 'kernel_timeout' | 'kernel_bad_response' | 'catalog_missing'
-
-export type MagpieAccountQuota = {
-  asOf: string | null
-  /** the last read failed or is cooling down: these are the previous numbers */
-  stale: boolean
-  error: string | null
-  errorCode: 'signed_out' | 'unavailable' | null
-  windows: QuotaWindow[]
-  balance: string | null
-  until: string | null
-  renew: 'auto' | 'off' | null
-  resets: { count: number; until: string | null } | null
-  /** a Codex reset was used; the windows refresh on the next allowed read (≤ 1 per 5 min) */
-  resetPending: boolean
-}
-
-export type MagpieAccount = {
-  /** stable: sha256(agent NUL lower(user)), 16 hex — actions take this, not the email */
-  id: string
-  agent: string
-  /** the vendor account (usually an email): render it through <Pii> */
-  user: string
-  userMasked: string
-  plan: string | null
-  active: boolean
-  on: boolean
-  /** active while other accounts are on: Magpie's 首选 */
-  first: boolean
-  own: boolean
-  needsRelogin: boolean
-  seen: string | null
-  status: 'in_use' | 'first' | 'on' | 'off' | 'relogin'
-  quota: MagpieAccountQuota | null
-  canReset: boolean
-}
-
-export type MagpieAccountProvider = {
-  agent: string
-  name: string
-  icon: string
-  single: boolean
-  accounts: MagpieAccount[]
-  counts: { total: number; on: number; attention: number }
-}
-
-export type AccountsData = {
-  backend: AccountsBackend
-  available: boolean
-  reason: AccountsUnavailableReason | null
-  /** zh line for an unavailable backend */
-  message: string | null
-  revision?: string
-  /** do signed-in accounts serve the gateway? false in the magpie backend this round */
-  routing: boolean
-  routingNote?: string
-  providers: MagpieAccountProvider[]
-  excluded: Array<{ agent: string; name: string; state: 'removed' | 'signed_out'; note: string; quiet: boolean }>
-  signingIn?: Array<{ id: string; agent: string; state: SignInState }>
-  counts: { accounts: number; providers: number; attention: number } | null
-  quotaAsOf?: string | null
-}
-
-export type SignInCompletion = 'poll' | 'relay' | 'paste' | 'cli' | 'local'
-
-export type MagpieCatalogItem = {
-  agent: string
-  name: string
-  shortName: string
-  icon: string
-  vendor: string
-  plans: string
-  own: boolean
-  single: boolean
-  /** Magpie's ban-risk card; the server refuses a risky sign-in without `confirmRisk: true` */
-  risk: { title: string; note: string } | null
-  /** a site to pick first (ZCode) */
-  sites: Array<{ id: string; label: string; host: string }>
-  completion: SignInCompletion
-  deviceCode: boolean
-  pasteCallback: boolean
-  /** runs a vendor CLI or installer on the server: off */
-  gated: boolean
-  signedIn: number
-}
-
-/** The CPA backend's providers (the legacy OAuth routes serve them). */
-export type CpaCatalogItem = { agent: string; name: string; vendor: string; flow: string; pasteCallback: boolean; risk: boolean }
-
-export type AccountsCatalog = {
-  backend: AccountsBackend
-  available: boolean
-  reason: AccountsUnavailableReason | null
-  message?: string
-  revision?: string
-  catalogRevision?: string
-  /** the catalog came from another Magpie revision than the running kernel */
-  stale?: boolean
-  routing?: boolean
-  routingNote?: string
-  /** Magpie's own zh strings (riskTitle, riskConfirm, sitePrompt, waitingTitle, callbackHint, …) */
-  copy: Record<string, string>
-  items: Array<MagpieCatalogItem | CpaCatalogItem>
-}
-
-export type SignInState = 'installing' | 'waiting' | 'done' | 'failed' | 'canceled'
-
-export type SignInView = {
-  id: string
-  agent: string
-  state: SignInState
-  completion: SignInCompletion
-  url: string | null
-  code: string | null
-  installing: string | null
-  pasteCallback: boolean
-  callbackLocked: boolean
-  user: string | null
-  userMasked: string | null
-  plan: string | null
-  using: boolean
-  error: string | null
-  errorCode: string | null
-  detail: string | null
-  /** Kiro's AWS hop: open this next, then paste the address it returns to */
-  next: string | null
-  startedAt: string
-  deadline: string
-}
-
-export type AccountLoginAction = 'on' | 'off' | 'first' | 'forget'
-
-export type MagpieCodexReset = {
-  ok: boolean
-  outcome: 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_redeemed'
-  windows: number
-  message: string
-  /** null: these accounts don't serve the gateway yet, there is no gateway cooldown to clear */
-  cooldownCleared: null
-}
-
-export type AccountsQuotaRefresh = { results: Array<{ agent: string; refreshed: boolean; nextAllowedAt: string | null }> }
 
 /* ─────────────── Proxy pool (/api/proxies, PROXY-SPEC). Every value is masked server-side. ─────────────── */
 
@@ -1228,7 +904,7 @@ export type ProxySubscriptionView = {
 }
 
 export type ProxyPoolData = {
-  backend: 'cpa' | 'magpie'
+  backend: 'cpa'
   cpaSameHost: boolean
   kernel: ProxyKernelView
   ports: { base: number; count: number; last: number; listenerAuth: boolean }
@@ -1258,9 +934,9 @@ export type ProxyOption = {
 export type ProxyOptionsData = { builtins: Array<{ id: 'inherit' | 'direct'; name: string }>; options: ProxyOption[] }
 
 export type ProxyAccountRow = {
-  /** `cpa:<credential>`, `cpa:global`, `magpie:<agent>[:<user>]` */
+  /** `cpa:<credential>`, `cpa:global` */
   ref: string
-  kind: 'credential' | 'global' | 'magpie'
+  kind: 'credential' | 'global'
   provider: string
   name: string
   label: string
@@ -1275,7 +951,7 @@ export type ProxyAccountRow = {
   restorable: boolean
 }
 
-export type ProxyAccountsData = { backend: 'cpa' | 'magpie'; cpaSameHost: boolean; signinNote: string; accounts: ProxyAccountRow[] }
+export type ProxyAccountsData = { backend: 'cpa'; cpaSameHost: boolean; signinNote: string; accounts: ProxyAccountRow[] }
 
 export type ProxyPreviewRow = {
   key: string
@@ -1352,7 +1028,7 @@ export type ProxyMigrationExit = {
   source: 'migrated' | 'preset'
   entryId: string | null
   accounts: { total: number; byProvider: Record<string, number> }
-  /** non-account references: global / channel / key / magpie */
+  /** non-account references: global / channel / key */
   others: string[]
 }
 
@@ -1393,59 +1069,22 @@ export type EgressEntry = {
 /** an account's exit as the pool knows it; `masked` = `scheme://***@host:port` for addresses */
 export type EgressAccount = { mode: EgressMode; entryId: string | null; masked: string | null; at: string | null }
 export type EgressData = {
-  backend: 'cpa' | 'magpie'
+  backend: 'cpa'
   cpaSameHost: boolean
   kernel: { state: ProxyKernelState }
-  /** whether accounts here can take their own exit (Magpie: the kernel must route them) */
+  /** whether accounts here can take their own exit */
   accountProxy: { supported: boolean; reason: string | null }
-  /** what 继承 resolves to: CPA's global proxy / the Magpie kernel's (direct) */
+  /** what 继承 resolves to: CPA's global proxy */
   default: { mode: EgressMode; entryId: string | null }
-  /** Magpie: a service's own proxy, which its accounts without one follow */
-  services: Record<string, EgressAccount>
-  signin: { via: 'cpa-global' | 'direct'; exit: { mode: EgressMode | 'unsupported'; entryId: string | null }; perSignin: false; note: string }
+  signin: { via: 'cpa-global'; exit: { mode: EgressMode | 'unsupported'; entryId: string | null }; perSignin: false; note: string }
   entries: EgressEntry[]
-  /** `cpa:<credential>` · `magpie:<agent>:<user lower>` */
+  /** `cpa:<credential>` */
   accounts: Record<string, EgressAccount>
   /** index-aligned with /api/channels proxyPresets: the pool entry holding the same address, if any */
   presets: Array<{ label: string; entryId: string | null }>
 }
 /** the authoritative one-account read: never the URL itself */
 export type EgressRead = EgressAccount & { ref: string; entryName: string | null; preset: number | null }
-
-/* ───── 网关功能 (#gateway-features): GET/PUT /api/gateway/settings, server/gatewaySettings.ts ───── */
-export type Localized = { en: string; zh: string }
-export type GatewaySettingItem = {
-  key: string; group: string; control: 'switch' | 'words' | 'rules' | 'model' | 'forced-off'; class: string
-  default: unknown; name: Localized; sub: Localized; subOff?: Localized; placeholder?: Localized
-}
-export type GatewayRedactRule = { kind: string; prefix?: string; regex?: string }
-export type GatewaySettingValues = {
-  redact: boolean; redactPersonal: boolean; redactWords: string[]; redactRules: GatewayRedactRule[]; vision: string; imageGen: string
-}
-export type GatewayModelChoice = {
-  auto: string; effective: string; stale: boolean
-  options: Array<{ id: string; label: string; provider: string; kind: string }>
-}
-export type GatewaySettings = {
-  available: boolean
-  reason: string | null
-  message: string | null
-  revision: string
-  catalog: {
-    groups: Array<{ id: string; title: Localized }>
-    items: GatewaySettingItem[]
-    copy: Record<string, Localized>
-    limits: {
-      rules: { maxRules: number; minPrefix: number; maxPrefix: number; maxRegex: number; maxKind: number; minMatch: number }
-      words: { maxWords: number; minBytes: number; maxBytes: number }
-    }
-  } | null
-  values: GatewaySettingValues | null
-  models: { vision: GatewayModelChoice; imageGen: GatewayModelChoice & { admitted: boolean } } | null
-  telemetry: { off: boolean; forced: boolean } | null
-  applies: string | null
-  upstream: { candidateRevision: string | null; added: string[]; changed: string[]; removed: string[] }
-}
 
 /** POST /api/credentials/upload (CPA engine): one row per file in the upload; credential contents never come back. */
 export type CredentialUploadResult = {

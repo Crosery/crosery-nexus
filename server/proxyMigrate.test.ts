@@ -4,16 +4,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { countingServer, FakeCpa } from './testing/proxyFakeCpa.js'
+import { FakeCpa } from './testing/proxyFakeCpa.js'
 
-// env before config.ts is evaluated: the console's own control plane is the fake CPA; the bridge is a trap
+// env before config.ts is evaluated: the console's own control plane is the fake CPA
 const fake = await new FakeCpa().start()
-const bridge = await countingServer()
-process.env.GATEWAY_ENGINE = 'cpa'
 process.env.CPA_BASE_URL = fake.base
 process.env.CPA_MANAGEMENT_KEY = fake.key
-process.env.MAGPIE_SOURCE_CPA_BASE_URL = bridge.base
-process.env.MAGPIE_SOURCE_CPA_KEY = 'bridge-key-should-never-be-used'
 process.env.PROXY_PRESETS = '美国住宅=socks5://pre:prepw@203.0.113.50:1080;http://198.51.100.60:3128'
 
 const { ProxyPoolStore } = await import('./proxyPoolStore.js')
@@ -52,7 +48,7 @@ function noSecrets(value: unknown) {
   for (const secret of SECRETS) assert.equal(text.includes(secret), false, `leaked ${secret}`)
 }
 
-test.after(async () => { await fake.stop(); await bridge.stop() })
+test.after(async () => { await fake.stop() })
 
 test('dry-run: groups exits, counts inherit/direct/invalid, reads each credential once, shows no secret', async () => {
   seed()
@@ -81,7 +77,6 @@ test('dry-run: groups exits, counts inherit/direct/invalid, reads each credentia
   assert.equal(byMasked['socks5://***@203.0.113.50:1080'].source, 'preset')
   assert.equal(view.exits.find(exit => exit.key === 'invalid')?.action, 'skip')
   assert.equal(fake.writes().length, 0)
-  assert.equal(bridge.hits(), 0)
 })
 
 test('first run applies: entries + links, zero account writes; a re-run changes nothing', async () => {
@@ -116,7 +111,6 @@ test('first run applies: entries + links, zero account writes; a re-run changes 
   assert.deepEqual([...new Set(again.plan.exits.map(exit => exit.action))].sort(), ['skip', 'unchanged'])
   assert.equal(store.read().entries.length, 8)
   assert.equal(fake.writes().length, 0)
-  assert.equal(bridge.hits(), 0)
 })
 
 test('weekly scan: new exits become pending (banner), not entries; drifted links are dropped; deleted credentials leave the index', async () => {
@@ -193,6 +187,5 @@ test('proxy-migrate job: registered in the sync registry, first run summary, no 
   const applied = await service.migrate({ dryRun: false, scanId: dry.scanId }) as Record<string, unknown>
   assert.equal(applied.created, 0)
   assert.equal(fake.writes().length, 0)
-  assert.equal(bridge.hits(), 0)
   for (const [, , details] of audits) assert.equal(/\d+\.\d+\.\d+\.\d+|example\.test|:\/\//.test(details), false)
 })

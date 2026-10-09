@@ -2,12 +2,10 @@
  * Migration from the existing console (PROXY-SPEC §8): build the pool from the exits accounts already use,
  * without changing any account.
  *
- * Sources are read through the console's own control plane only (never the sandbox bridge):
+ * Sources are read through the console's own control plane only:
  *   - CPA: `listAuthFiles()` names, then each credential's `proxy_url` (CPA's list does not carry it, so one
  *     `auth-files/download` per credential at concurrency 2; the body is reduced to `proxy_url` at once), the
- *     global proxy, channel and key `proxy-url`, and `PROXY_PRESETS`;
- *   - Magpie local: the same calls answered by the local shim (auth-files + auth-files-meta.json, magpie-channels.json),
- *     plus the registry's optional `accounts` section.
+ *     global proxy, channel and key `proxy-url`, and `PROXY_PRESETS`.
  * A plan groups accounts by distinct exit: inherit/direct are counted only; a remote URL becomes a `url` entry;
  * a loopback URL of another program becomes an `external` entry; a managed port links to its entry. Apply writes
  * `pool.json` only (zero account writes) and is idempotent: a re-run reports everything `unchanged`.
@@ -23,7 +21,7 @@ import {
 } from './proxyPoolStore.js'
 import { mapWithConcurrency } from './syncRegistry.js'
 
-export type SourceKind = 'credential' | 'global' | 'channel' | 'key' | 'magpie'
+export type SourceKind = 'credential' | 'global' | 'channel' | 'key'
 
 export type SourceRow = { ref: string; url: string; provider: string; kind: SourceKind }
 
@@ -60,7 +58,7 @@ export type MigrationPlan = {
   directByProvider: Record<string, number>
 }
 
-const ACCOUNT_KINDS: ReadonlySet<SourceKind> = new Set(['credential', 'magpie'])
+const ACCOUNT_KINDS: ReadonlySet<SourceKind> = new Set(['credential'])
 
 /** Read every proxy value the console's control plane holds. Account bodies are reduced to `proxy_url` at once. */
 export async function collectMigrationSources(control: ProxyControlPlane, options: { concurrency?: number; now?: () => number } = {}): Promise<MigrationSources> {
@@ -82,15 +80,11 @@ export async function collectMigrationSources(control: ProxyControlPlane, option
     rows.push({ ref: `cpa:${credential.name}`, url: String(value ?? '').trim(), provider: credential.provider || 'other', kind: 'credential' })
   })
   if (credentials.length && readErrors === credentials.length) throw new ProxyError(502, 'scan_failed', '读取账号代理全部失败，稍后再试')
-  if (control.backend() === 'cpa') {
-    const global = await control.readGlobalProxy()
-    rows.push({ ref: 'cpa:global', url: global, provider: 'global', kind: 'global' })
-  }
+  rows.push({ ref: 'cpa:global', url: await control.readGlobalProxy(), provider: 'global', kind: 'global' })
   let channelError = false
   let channelRefs: ControlProxyRef[] = []
   try { channelRefs = await control.readChannelProxies() } catch { channelError = true }
   for (const item of channelRefs) rows.push({ ref: item.ref, url: item.url, provider: 'channel', kind: item.ref.startsWith('cpa:channel:') ? 'channel' : 'key' })
-  for (const item of control.readMagpieAccountProxies()) rows.push({ ref: item.ref, url: item.url, provider: item.provider || 'magpie', kind: 'magpie' })
   return { rows, presets: control.presets(), credentials: credentials.length, readErrors, channelError, at: options.now?.() ?? Date.now() }
 }
 

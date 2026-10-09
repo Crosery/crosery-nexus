@@ -2,11 +2,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
-import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { AddressInfo } from 'node:net'
 import test, { after, before } from 'node:test'
 
 /**
@@ -18,15 +16,9 @@ import test, { after, before } from 'node:test'
  * - rtkService 在 NODE_TEST_CONTEXT 下对真实 home 有硬闸门（专门用例覆盖）。
  */
 
-// 必须在动态 import 服务模块之前清干净，避免环境里的真实中转站配置被带进测试。
-delete process.env.MAGPIE_SOURCE_CPA_BASE_URL
-delete process.env.MAGPIE_SOURCE_CPA_KEY
-delete process.env.MAGPIE_SOURCE_CPA_KEY_FILE
-delete process.env.MAGPIE_KERNEL_SOCKET
-delete process.env.GATEWAY_ENGINE
+// 必须在动态 import 服务模块之前清干净，避免环境里的真实配置被带进测试。
 delete process.env.RTK_BIN
 delete process.env.RTK_WRITE_MODE
-delete process.env.RTK_ALLOW_REMOTE_WRITE
 delete process.env.RTK_ALLOW_INSTALL
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'rtk-plane-test-'))
@@ -55,7 +47,6 @@ const { RtkPlaneError } = plane
 
 const rtkBinary = service.findRTKBinary()
 const execFileAsync = promisify(execFile)
-const offlineTargets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
 const missingBinary = path.join(workspace, 'no-such-rtk')
 const tempHome = (name: string): string => {
   const dir = path.join(workspace, `home-${name}`)
@@ -63,46 +54,6 @@ const tempHome = (name: string): string => {
   return dir
 }
 const readJson = (filePath: string): Record<string, unknown> => JSON.parse(fs.readFileSync(filePath, 'utf8'))
-
-type FakeServer = { server: http.Server; url: string; requests: Array<{ method: string; url: string; auth?: string; body: string }> }
-
-async function startHttp(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<FakeServer> {
-  const requests: FakeServer['requests'] = []
-  const server = http.createServer((req, res) => {
-    const chunks: Buffer[] = []
-    req.on('data', chunk => chunks.push(Buffer.from(chunk)))
-    req.on('end', () => {
-      requests.push({ method: req.method || '', url: req.url || '', auth: req.headers.authorization, body: Buffer.concat(chunks).toString('utf8') })
-      handler(req, res)
-    })
-  })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, requests }
-}
-
-async function startSocket(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<{ server: http.Server; socket: string }> {
-  const socket = path.join(workspace, `kernel-${Math.random().toString(16).slice(2)}.sock`)
-  const server = http.createServer(handler)
-  await new Promise<void>(resolve => server.listen(socket, resolve))
-  return { server, socket }
-}
-
-const closeAll = async (servers: http.Server[]) => {
-  for (const server of servers) await new Promise<void>(resolve => server.close(() => resolve()))
-}
-
-const json = (res: http.ServerResponse, status: number, payload: unknown) => {
-  res.writeHead(status, { 'content-type': 'application/json' })
-  res.end(JSON.stringify(payload))
-}
-
-const kernelView = {
-  path: '/srv/rtk/bin/rtk', version: '0.50.0',
-  gain: { commands: 12, input: 900, saved: 300, pct: 33.3 },
-  days: [{ date: '2026-09-30', commands: 12, input: 900, saved: 300, pct: 33.3 }],
-  latest: 'v0.50.0', url: 'https://www.rtk-ai.app',
-  agents: [{ id: 'codex', name: 'Codex', icon: 'openai', on: true }],
-}
 
 type PlaneFailure = Error & { status: number; reason: string; backup?: string; plane?: string }
 
@@ -119,181 +70,32 @@ const expectPlaneError = async (run: () => Promise<unknown>, status: number, rea
 }
 
 /* ------------------------------------------------------------------ */
-/* 1. 平面探测                                                         */
+/* 1. 平面                                                             */
 /* ------------------------------------------------------------------ */
 
-test('T1 内核平面：非 magpie 引擎 / socket 不存在都如实报未配置', async () => {
-  const byEngine = await plane.probeKernelPlane({ engine: 'cpa', socket: '/tmp/does-not-exist.sock' })
-  assert.equal(byEngine.available, false)
-  assert.equal(byEngine.configured, false)
-  assert.equal(byEngine.state, 'not_configured')
-  assert.equal(byEngine.reason, 'gateway_engine_not_magpie')
+test('T1 只有本机平面：rtk 装没装只影响 state/reason，平面始终可用且不报回退', () => {
+  const found = plane.resolveRtkPlane({ localBinFound: true })
+  assert.equal(found.plane, 'local')
+  assert.equal(found.fellBack, false)
+  assert.deepEqual(found.planes.map(item => [item.id, item.available, item.configured, item.state, item.reason]), [['local', true, true, 'available', 'local_host']])
 
-  const bySocket = await plane.probeKernelPlane({ engine: 'magpie', socket: path.join(workspace, 'missing.sock') })
-  assert.equal(bySocket.available, false)
-  assert.equal(bySocket.state, 'not_configured')
-  assert.equal(bySocket.reason, 'kernel_socket_missing')
+  const missing = plane.resolveRtkPlane({ localBinFound: false })
+  assert.deepEqual(missing.planes.map(item => [item.id, item.available, item.state, item.reason]), [['local', true, 'degraded', 'local_rtk_missing']])
 })
 
-test('内核平面：默认不读隔离 HOME 里的内核 RTK（RTK_KERNEL_PLANE 未开）', async () => {
-  const probe = await plane.probeKernelPlane({ engine: 'magpie' })
-  assert.equal(probe.available, false)
-  assert.equal(probe.state, 'not_configured')
-  assert.equal(probe.reason, 'kernel_rtk_sandboxed')
-})
-
-test('T1/T2 内核 socket 不可用时 status 仍可用，plane=local 且数据来自本机', async () => {
-  const status = await service.readRTKStatus({
-    home: tempHome('t1-local'),
-    fresh: true,
-    kernel: { engine: 'magpie', socket: path.join(workspace, 'definitely-missing.sock') },
-    relay: { baseUrl: '', key: '' },
-  })
+test('T1/T2 readRTKStatus：plane=local，数据与开关都来自本机', async () => {
+  const status = await service.readRTKStatus({ home: tempHome('t1-local'), fresh: true })
   assert.equal(status.plane, 'local')
-  assert.equal(status.planes[0].state, 'not_configured')
-  // 不允许把「内核不可用」表述成「RTK 未安装」
-  assert.equal(status.planes[0].reason, 'kernel_socket_missing')
+  assert.deepEqual(status.planes.map(item => item.id), ['local'])
   assert.equal(status.local.connected, Boolean(rtkBinary))
-})
-
-test('内核平面：/internal/rtk 正常应答时可用', async () => {
-  const fake = await startSocket((_req, res) => json(res, 200, kernelView))
-  try {
-    const probe = await plane.probeKernelPlane({ engine: 'magpie', socket: fake.socket })
-    assert.equal(probe.available, true)
-    assert.equal(probe.state, 'available')
-  } finally {
-    await closeAll([fake.server])
-  }
-})
-
-test('T2 内核平面：旧构建没有 /internal/rtk 缝时报 not_supported 并带状态码', async () => {
-  // 运行中的内核是旧构建：请求落到推理 handler 的兜底分支，返回 400。
-  const fake = await startSocket((_req, res) => { res.writeHead(400); res.end('request id required') })
-  try {
-    const probe = await plane.probeKernelPlane({ engine: 'magpie', socket: fake.socket })
-    assert.equal(probe.available, false)
-    assert.equal(probe.configured, true)
-    assert.equal(probe.state, 'not_supported')
-    assert.equal(probe.reason, 'kernel_rtk_seam_missing')
-    assert.match(String(probe.detail), /HTTP 400/)
-  } finally {
-    await closeAll([fake.server])
-  }
-})
-
-test('中转站平面：未配置 / 缺密钥分开上报', async () => {
-  const none = await plane.probeRelayPlane({ baseUrl: '', key: '' })
-  assert.equal(none.state, 'not_configured')
-  assert.equal(none.reason, 'relay_base_url_missing')
-  const noKey = await plane.probeRelayPlane({ baseUrl: 'https://relay.example', key: '' })
-  assert.equal(noKey.state, 'not_configured')
-  assert.equal(noKey.reason, 'relay_credential_missing')
-})
-
-test('中转站平面：404 与 401 分别上报为「路由不存在」和「未授权」', async () => {
-  const fake404 = await startHttp((_req, res) => { res.writeHead(404); res.end('') })
-  const fake401 = await startHttp((_req, res) => json(res, 401, { error: 'unauthorized' }))
-  try {
-    const missing = await plane.probeRelayPlane({ baseUrl: fake404.url, key: 'test-key' })
-    assert.equal(missing.state, 'not_supported')
-    assert.equal(missing.reason, 'relay_route_missing')
-    assert.equal(missing.configured, true)
-
-    const denied = await plane.probeRelayPlane({ baseUrl: fake401.url, key: 'test-key' })
-    assert.equal(denied.state, 'unauthorized')
-    assert.equal(denied.reason, 'relay_http_401')
-    assert.equal(fake401.requests[0].auth, 'Bearer test-key')
-  } finally {
-    await closeAll([fake404.server, fake401.server])
-  }
-})
-
-test('中转站平面：远端错误正文里的密钥被脱敏', async () => {
-  const fake = await startHttp((_req, res) => { res.writeHead(500); res.end('upstream said Bearer super-secret-key is invalid') })
-  try {
-    const probe = await plane.probeRelayPlane({ baseUrl: fake.url, key: 'super-secret-key' })
-    assert.equal(probe.available, false)
-    assert.ok(!JSON.stringify(probe).includes('super-secret-key'), `detail 泄露了密钥: ${JSON.stringify(probe)}`)
-  } finally {
-    await closeAll([fake.server])
-  }
+  assert.equal(status.connected, status.local.connected)
+  assert.equal(status.localAgents.length, plane.RTK_AGENT_SPECS.length)
+  assert.deepEqual(status.agents, status.localAgents)
+  assert.ok(status.localAgents.every(agent => agent.plane === 'local'))
 })
 
 /* ------------------------------------------------------------------ */
-/* 2. 平面解析与回退                                                   */
-/* ------------------------------------------------------------------ */
-
-test('权威平面：内核可用时走内核', async () => {
-  const fake = await startSocket((_req, res) => json(res, 200, kernelView))
-  try {
-    const resolution = await plane.resolveRtkPlane({ kernel: { engine: 'magpie', socket: fake.socket }, relay: { baseUrl: '', key: '' } })
-    assert.equal(resolution.plane, 'kernel')
-    assert.equal(resolution.fellBack, false)
-    assert.deepEqual(resolution.planes.map(item => item.id), ['kernel', 'relay', 'local'])
-  } finally {
-    await closeAll([fake.server])
-  }
-})
-
-test('权威平面：内核旧构建 + 中转站可用时回退到中转站并保留内核原因', async () => {
-  const stale = await startSocket((_req, res) => { res.writeHead(400); res.end('request id required') })
-  const relay = await startHttp((_req, res) => json(res, 200, kernelView))
-  try {
-    const resolution = await plane.resolveRtkPlane({
-      kernel: { engine: 'magpie', socket: stale.socket },
-      relay: { baseUrl: relay.url, key: 'test-key' },
-    })
-    assert.equal(resolution.plane, 'relay')
-    assert.equal(resolution.fellBack, true)
-    assert.equal(resolution.planes[0].reason, 'kernel_rtk_seam_missing')
-    assert.equal(resolution.planes[1].available, true)
-  } finally {
-    await closeAll([stale.server, relay.server])
-  }
-})
-
-test('权威平面：都不可用时回退 local，且不假装已同步', async () => {
-  const stale = await startSocket((_req, res) => { res.writeHead(400); res.end('request id required') })
-  const relay404 = await startHttp((_req, res) => { res.writeHead(404); res.end('') })
-  try {
-    const resolution = await plane.resolveRtkPlane({
-      kernel: { engine: 'magpie', socket: stale.socket },
-      relay: { baseUrl: relay404.url, key: 'test-key' },
-    })
-    assert.equal(resolution.plane, 'local')
-    assert.equal(resolution.fellBack, true)
-    assert.equal(resolution.planes[2].available, true)
-  } finally {
-    await closeAll([stale.server, relay404.server])
-  }
-})
-
-test('readRTKStatus：权威平面取内核视图，本机开关数据单独给 localAgents', async () => {
-  const fake = await startSocket((_req, res) => json(res, 200, kernelView))
-  try {
-    const status = await service.readRTKStatus({
-      home: tempHome('status-home'),
-      fresh: true,
-      kernel: { engine: 'magpie', socket: fake.socket },
-      relay: { baseUrl: '', key: '' },
-    })
-    assert.equal(status.plane, 'kernel')
-    assert.equal(status.path, '/srv/rtk/bin/rtk')
-    assert.equal(status.gain?.saved, 300)
-    assert.deepEqual(status.agents.map(agent => agent.id), ['codex'])
-    assert.equal(status.agents[0].plane, 'kernel')
-    // 权威平面与本机平面必须分开：内核说 codex 已挂载，本机临时 home 里并没有。
-    assert.equal(status.localAgents.length, plane.RTK_AGENT_SPECS.length)
-    assert.equal(status.localAgents.find(agent => agent.id === 'codex')?.on, false)
-    assert.equal(status.localAgents.find(agent => agent.id === 'codex')?.plane, 'local')
-  } finally {
-    await closeAll([fake.server])
-  }
-})
-
-/* ------------------------------------------------------------------ */
-/* 3. 写入闸门与「平面不支持」                                         */
+/* 2. 写入闸门与「平面不支持」                                         */
 /* ------------------------------------------------------------------ */
 
 test('T3 rtk 未安装时拒绝写入并给安装指引，绝不返回成功', async () => {
@@ -301,11 +103,11 @@ test('T3 rtk 未安装时拒绝写入并给安装指引，绝不返回成功', a
   try {
     assert.equal(service.findRTKBinary(), null, 'RTK_BIN 显式指向不存在的路径时必须返回 null，不得回落到别的候选')
     const error = await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'local', home: tempHome('t3'), ...offlineTargets }),
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home: tempHome('t3') }),
       503, 'rtk_binary_missing',
     )
     assert.match(error.message, /install\.sh/)
-    const status = await service.readRTKStatus({ home: tempHome('t3'), fresh: true, ...offlineTargets })
+    const status = await service.readRTKStatus({ home: tempHome('t3'), fresh: true })
     assert.equal(status.connected, false)
     assert.equal(status.install?.includes('install.sh'), true)
   } finally {
@@ -313,97 +115,26 @@ test('T3 rtk 未安装时拒绝写入并给安装指引，绝不返回成功', a
   }
 })
 
-test('install/upgrade：三个平面都不支持时返回 501，不静默成功', async () => {
-  await expectPlaneError(() => service.installRTK({ plane: 'kernel' }), 501, 'kernel_install_not_supported')
+test('install/upgrade：本机不代装返回 501，不静默成功；未知平面 400', async () => {
+  await expectPlaneError(() => service.installRTK(), 501, 'local_install_not_supported')
   await expectPlaneError(() => service.installRTK({ plane: 'local' }), 501, 'local_install_not_supported')
-  await expectPlaneError(() => service.installRTK({ plane: 'relay' }), 501, 'relay_install_not_supported')
-  await expectPlaneError(() => service.upgradeRTK({ plane: 'kernel' }), 501, 'kernel_upgrade_not_supported')
   await expectPlaneError(() => service.upgradeRTK({ plane: 'local' }), 501, 'local_upgrade_not_supported')
-  await expectPlaneError(() => service.upgradeRTK({ plane: 'relay' }), 501, 'relay_upgrade_not_supported')
-})
-
-test('T13 中转站：没有 RTK 管理面 → 501，有面但未开远程写 → 403，两种情况都不发写请求', async () => {
-  const noRoute = await startHttp((_req, res) => { res.writeHead(404); res.end('') })
-  const withRoute = await startHttp((_req, res) => json(res, 200, kernelView))
-  const home = tempHome('t13')
-  try {
-    // 1) 当前中转站的真实形态：/api/library/rtk → 404
-    await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'relay', home, confirm: true,
-        kernel: { engine: 'cpa' as const }, relay: { baseUrl: noRoute.url, key: 'test-key' } }),
-      501, 'relay_write_not_supported',
-    )
-    assert.deepEqual(noRoute.requests.filter(item => item.method !== 'GET'), [], '未支持的平面不允许发写请求')
-
-    // 2) 假设未来中转站真的暴露了该面：默认仍是只读，403 且不发写请求
-    await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'relay', home, confirm: true,
-        kernel: { engine: 'cpa' as const }, relay: { baseUrl: withRoute.url, key: 'test-key' } }),
-      403, 'remote_write_disabled',
-    )
-    assert.deepEqual(withRoute.requests.filter(item => item.method !== 'GET'), [], '默认只读时不允许发写请求')
-
-    // 3) 开关 + 确认齐备才下发（当前部署永远不会走到这里）
-    process.env.RTK_ALLOW_REMOTE_WRITE = '1'
-    try {
-      const result = await service.setRTKAgentHook('codex', true, { plane: 'relay', home, confirm: true,
-        kernel: { engine: 'cpa' as const }, relay: { baseUrl: withRoute.url, key: 'test-key' } })
-      assert.equal(result.plane, 'relay')
-      assert.equal(withRoute.requests.filter(item => item.method === 'POST').length, 1)
-    } finally {
-      delete process.env.RTK_ALLOW_REMOTE_WRITE
-    }
-  } finally {
-    await closeAll([noRoute.server, withRoute.server])
-  }
-})
-
-test('内核写入默认 501（沙箱 HOME，不影响本机 agent 配置），显式打开后才走闸门', async () => {
-  const fake = await startSocket((_req, res) => json(res, 200, kernelView))
-  const home = tempHome('kernel-gate')
-  try {
-    const targets = { kernel: { engine: 'magpie' as const, socket: fake.socket }, relay: { baseUrl: '', key: '' } }
-    await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'kernel', home, confirm: true, ...targets }),
-      501, 'kernel_write_not_supported',
-    )
-    process.env.RTK_ALLOW_KERNEL_WRITE = '1'
-    try {
-      await expectPlaneError(
-        () => service.setRTKAgentHook('codex', true, { plane: 'kernel', home, confirm: true, ...targets }),
-        403, 'remote_write_disabled',
-      )
-      process.env.RTK_ALLOW_REMOTE_WRITE = '1'
-      try {
-        await expectPlaneError(
-          () => service.setRTKAgentHook('codex', true, { plane: 'kernel', home, ...targets }),
-          403, 'confirmation_required',
-        )
-        const result = await service.setRTKAgentHook('codex', true, { plane: 'kernel', home, confirm: true, ...targets })
-        assert.equal(result.plane, 'kernel')
-      } finally {
-        delete process.env.RTK_ALLOW_REMOTE_WRITE
-      }
-    } finally {
-      delete process.env.RTK_ALLOW_KERNEL_WRITE
-    }
-  } finally {
-    await closeAll([fake.server])
-  }
+  await expectPlaneError(() => service.installRTK({ plane: 'kernel' as 'local' }), 400, 'unknown_plane')
+  await expectPlaneError(() => service.upgradeRTK({ plane: 'relay' as 'local' }), 400, 'unknown_plane')
 })
 
 test('toggle：项目级 agent 与未知 agent 明确拒绝', async () => {
   const home = tempHome('toggle-unsupported')
   await expectPlaneError(
-    () => service.setRTKAgentHook('windsurf', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets }),
+    () => service.setRTKAgentHook('windsurf', true, { plane: 'local', home, bin: rtkBinary }),
     501, 'project_scoped_only',
   )
   await expectPlaneError(
-    () => service.setRTKAgentHook('ghost', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets }),
+    () => service.setRTKAgentHook('ghost', true, { plane: 'local', home, bin: rtkBinary }),
     404, 'unknown_agent',
   )
   await expectPlaneError(
-    () => service.setRTKAgentHook('codex', true, { plane: 'nope' as 'local', home, bin: rtkBinary, ...offlineTargets }),
+    () => service.setRTKAgentHook('codex', true, { plane: 'nope' as 'local', home, bin: rtkBinary }),
     400, 'unknown_plane',
   )
 })
@@ -413,7 +144,7 @@ test('本机写入闸门：RTK_WRITE_MODE=off 全只读，=confirm 需显式确�
   process.env.RTK_WRITE_MODE = 'off'
   try {
     await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets }),
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary }),
       403, 'write_disabled',
     )
   } finally {
@@ -422,7 +153,7 @@ test('本机写入闸门：RTK_WRITE_MODE=off 全只读，=confirm 需显式确�
   process.env.RTK_WRITE_MODE = 'confirm'
   try {
     await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets }),
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary }),
       403, 'confirmation_required',
     )
   } finally {
@@ -455,7 +186,7 @@ const HOOK_FILES: Record<string, string> = {
 
 test('T5/T10 本机开关：codex 经 rtk CLI 落地，形状与实测一致且 exitCode=0/stderr 为空', { skip: !rtkBinary }, async () => {
   const home = tempHome('cli-codex')
-  const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary })
   assert.equal(result.ok, true)
   assert.equal(result.plane, 'local')
   assert.equal(result.mechanism, 'rtk-cli')
@@ -473,13 +204,13 @@ test('T10 agent 覆盖矩阵：11 个全局 agent 各自 ON→OFF，退出码 0�
     // 每个 agent 独立 HOME：rtk 的 cursor 目标会连带写 Claude 的钩子（见下一条用例），
     // 共用 HOME 会互相污染，测不出「该 agent 自己的开关是否有效」。
     const home = tempHome(`matrix-${id}`)
-    const on = await service.setRTKAgentHook(id, true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+    const on = await service.setRTKAgentHook(id, true, { plane: 'local', home, bin: rtkBinary })
     assert.equal(on.mechanism, 'rtk-cli', `${id} ON 应走官方 CLI`)
     assert.equal(on.cli?.exitCode, 0, `${id} ON 退出码应为 0，实际 ${on.cli?.exitCode} (${on.cli?.stderr})`)
     assert.equal(on.cli?.stderr, '', `${id} ON stderr 应为空`)
     assert.equal(on.localAgents.find(agent => agent.id === id)?.on, true, `${id} ON 后应为已挂载`)
 
-    const off = await service.setRTKAgentHook(id, false, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+    const off = await service.setRTKAgentHook(id, false, { plane: 'local', home, bin: rtkBinary })
     assert.equal(off.mechanism, 'rtk-cli')
     assert.equal(off.cli?.exitCode, 0, `${id} OFF 退出码应为 0，实际 ${off.cli?.exitCode} (${off.cli?.stderr})`)
     assert.equal(off.cli?.stderr, '', `${id} OFF stderr 应为空`)
@@ -489,7 +220,7 @@ test('T10 agent 覆盖矩阵：11 个全局 agent 各自 ON→OFF，退出码 0�
 
 test('缺陷 1：cursor ON 连带打开的 Claude 配置必须按快照撤回，并如实回传', { skip: !rtkBinary }, async () => {
   const home = tempHome('cursor-claude-coupling')
-  const on = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const on = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary })
   assert.equal(on.localAgents.find(agent => agent.id === 'cursor')?.on, true, 'cursor 自己的钩子应已注册')
   // rtk 实测会连带在 .claude/settings.json 注册 claude 钩子、新建 .claude/RTK.md 与 .claude/CLAUDE.md
   assert.deepEqual(on.collateralReverted, ['claude'], '连带打开必须撤回并回传')
@@ -504,7 +235,7 @@ test('缺陷 1：cursor ON 连带打开的 Claude 配置必须按快照撤回，
   assert.match(fs.readFileSync(path.join(home, '.cursor/hooks.json'), 'utf8'), /rtk hook cursor/)
 
   // cursor OFF 后仍然没有 claude 残留（判据：ON→OFF 回到操作前状态）
-  const off = await service.setRTKAgentHook('cursor', false, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const off = await service.setRTKAgentHook('cursor', false, { plane: 'local', home, bin: rtkBinary })
   assert.equal(off.localAgents.find(agent => agent.id === 'cursor')?.on, false)
   assert.equal(off.localAgents.find(agent => agent.id === 'claude')?.on, false)
   assert.equal(fs.existsSync(path.join(home, '.claude/RTK.md')), false)
@@ -513,10 +244,10 @@ test('缺陷 1：cursor ON 连带打开的 Claude 配置必须按快照撤回，
 
 test('缺陷 1（反向，不许改坏）：claude OFF 连带删掉的 cursor 钩子仍要修回', { skip: !rtkBinary }, async () => {
   const home = tempHome('claude-off-collateral')
-  await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
-  const claudeOn = await service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary })
+  const claudeOn = await service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: rtkBinary })
   assert.equal(claudeOn.localAgents.find(agent => agent.id === 'claude')?.on, true)
-  const off = await service.setRTKAgentHook('claude', false, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const off = await service.setRTKAgentHook('claude', false, { plane: 'local', home, bin: rtkBinary })
   assert.equal(off.localAgents.find(agent => agent.id === 'claude')?.on, false)
   assert.equal(off.localAgents.find(agent => agent.id === 'cursor')?.on, true, '连带删掉的 cursor 钩子必须从备份修回')
   assert.deepEqual(off.collateralRestored, ['cursor'])
@@ -533,14 +264,14 @@ test('缺陷 1（既有 claude 已开启）：cursor ON 不得改动已有的 cl
     ] },
   }, null, 2)}\n`
   fs.writeFileSync(settingsPath, original)
-  await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: rtkBinary })
   assert.equal(fs.readFileSync(settingsPath, 'utf8'), original, 'claude 已开启时 cursor ON 不得改动该文件')
 })
 
 test('缺陷 2：rtk 未安装时 local 平面不再谎报「已安装」', async () => {
   process.env.RTK_BIN = missingBinary
   try {
-    const status = await service.readRTKStatus({ home: tempHome('defect2'), fresh: true, ...offlineTargets })
+    const status = await service.readRTKStatus({ home: tempHome('defect2'), fresh: true })
     const localPlane = status.planes.find(item => item.id === 'local')
     assert.ok(localPlane)
     assert.equal(localPlane?.state, 'degraded')
@@ -568,7 +299,7 @@ test('缺陷 3：CLI 把钩子文件写坏时必须按 CLI 之前的原文回填
   fs.writeFileSync(fakeBin, `#!/bin/sh\nprintf 'THIS IS NOT JSON' > "$HOME/.codex/hooks.json"\nexit 0\n`, { mode: 0o755 })
 
   const error = await expectPlaneError(
-    () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: fakeBin, ...offlineTargets }),
+    () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: fakeBin }),
     409, 'hook_file_unparsable',
   )
   assert.equal(fs.readFileSync(filePath, 'utf8'), pristine, '文件必须回到 CLI 运行之前的原文（字节一致）')
@@ -583,7 +314,7 @@ test('缺陷 3（附带）：目录不可写时返回结构化错误，不泄漏
   fs.chmodSync(dir, 0o500)
   try {
     const error = await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary }),
       500, 'hook_write_failed',
     )
     assert.equal(error.plane, 'local')
@@ -605,7 +336,7 @@ test('缺陷 4：备份按 RTK_BACKUP_KEEP 轮转，toggle 响应不回传备份
   try {
     let last: Awaited<ReturnType<typeof service.setRTKAgentHook>> | null = null
     for (let i = 0; i < 5; i += 1) {
-      last = await service.setRTKAgentHook('codex', i % 2 === 0, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+      last = await service.setRTKAgentHook('codex', i % 2 === 0, { plane: 'local', home, bin: missingBinary })
     }
     const ids = fs.readdirSync(keepRoot).filter(name => fs.existsSync(path.join(keepRoot, name, 'manifest.json')))
     assert.equal(ids.length, 3, `保留策略应只留 3 份，实际 ${ids.length}`)
@@ -613,7 +344,7 @@ test('缺陷 4：备份按 RTK_BACKUP_KEEP 轮转，toggle 响应不回传备份
     assert.ok(!('backups' in (last as object)), 'toggle 响应不得回传备份历史列表')
     assert.ok(last?.backupId && typeof last?.backupFileCount === 'number', 'toggle 只回传本次备份摘要')
 
-    const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+    const status = await service.readRTKStatus({ home, fresh: true })
     assert.equal(status.backupKeep, 3)
     assert.ok(status.backups.length <= 3)
     for (const item of status.backups) {
@@ -641,12 +372,12 @@ test('T7 关闭时只移除 rtk 自己那一条，第三方 hook 全部保留', 
     },
   }, null, 2)}\n`)
 
-  const on = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+  const on = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary })
   const afterOn = readJson(filePath) as { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } }
   assert.equal(afterOn.hooks.PreToolUse.length, 4, 'ON 之后第三方 3 条 + rtk 1 条')
   assert.equal(on.localAgents.find(agent => agent.id === 'codex')?.on, true)
 
-  const off = await service.setRTKAgentHook('codex', false, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+  const off = await service.setRTKAgentHook('codex', false, { plane: 'local', home, bin: missingBinary })
   const afterOff = readJson(filePath) as { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } }
   assert.equal(afterOff.hooks.PreToolUse.length, 3, 'OFF 之后只剩第三方 3 条（回归旧实现 3→1 的破坏）')
   assert.deepEqual(
@@ -663,8 +394,8 @@ test('T4/T6 并发与幂等：连续/并发 ON 之后 rtk 条目只有一条，�
   fs.writeFileSync(filePath, `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] }] } }, null, 2)}\n`)
 
   await Promise.all([
-    service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
-    service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+    service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: missingBinary }),
+    service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: missingBinary }),
   ])
   const once = fs.readFileSync(filePath, 'utf8')
   const parsedOnce = JSON.parse(once) as { hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> } }
@@ -672,14 +403,14 @@ test('T4/T6 并发与幂等：连续/并发 ON 之后 rtk 条目只有一条，�
   assert.equal(parsedOnce.hooks.PreToolUse.filter(item => item.hooks.some(hook => hook.command === 'rtk hook claude')).length, 1)
   assert.equal(parsedOnce.hooks.PreToolUse.filter(item => item.hooks.some(hook => hook.command === 'orca-hook')).length, 1)
 
-  await service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+  await service.setRTKAgentHook('claude', true, { plane: 'local', home, bin: missingBinary })
   assert.equal(fs.readFileSync(filePath, 'utf8'), once, '连续两次 ON 必须字节级一致')
 })
 
 test('已验证 schema 兜底：rtk CLI 不可用时六个 hook agent 形状仍与实测一致', async () => {
   for (const id of Object.keys(VERIFIED_HOOKS)) {
     const home = tempHome(`json-${id}`)
-    const result = await service.setRTKAgentHook(id, true, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+    const result = await service.setRTKAgentHook(id, true, { plane: 'local', home, bin: missingBinary })
     assert.equal(result.mechanism, 'hooks-json', `${id} 应走 JSON 兜底`)
     assert.ok(result.fallbackReason, '兜底必须记录 CLI 失败原因，禁止空 catch')
     assert.deepEqual(readJson(path.join(home, HOOK_FILES[id])), VERIFIED_HOOKS[id], `${id} 形状与 rtk 0.50.0 实测不一致`)
@@ -694,7 +425,7 @@ test('T9 坏 JSON 不覆盖：返回 409、原文件字节不变、备份存在'
   const broken = '{ this is not json'
   fs.writeFileSync(filePath, broken)
   const error = await expectPlaneError(
-    () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+    () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary }),
     409, 'hook_file_unparsable',
   )
   assert.equal(fs.readFileSync(filePath, 'utf8'), broken, '解析失败时必须原样保留用户文件')
@@ -703,9 +434,9 @@ test('T9 坏 JSON 不覆盖：返回 409、原文件字节不变、备份存在'
 
 test('T8 关得掉：CLI ON 之后走控制台 OFF，条目移除且状态回到 on=false', { skip: !rtkBinary }, async () => {
   const home = tempHome('t8-off')
-  const on = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const on = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: rtkBinary })
   assert.equal(on.localAgents.find(agent => agent.id === 'codex')?.on, true)
-  const off = await service.setRTKAgentHook('codex', false, { plane: 'local', home, bin: rtkBinary, ...offlineTargets })
+  const off = await service.setRTKAgentHook('codex', false, { plane: 'local', home, bin: rtkBinary })
   assert.equal(off.localAgents.find(agent => agent.id === 'codex')?.on, false, '旧实现这里永远 true')
   const written = readJson(path.join(home, HOOK_FILES.codex)) as { hooks: { PreToolUse: unknown[] } }
   assert.deepEqual(written.hooks.PreToolUse, [])
@@ -718,7 +449,7 @@ test('一键回退：从备份原地恢复 agent 配置', async () => {
   const original = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] }] } }, null, 2)}\n`
   fs.writeFileSync(filePath, original)
 
-  const on = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+  const on = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary })
   assert.notEqual(fs.readFileSync(filePath, 'utf8'), original)
   assert.ok(on.backup)
 
@@ -830,7 +561,7 @@ test('P0-1 轮转不得删掉在飞/刚创建的备份：并发 toggle 后每个
     // 只用有已核实 JSON 兜底 schema 的 agent，保证并发用例聚焦「轮转不误删」
     const agents = ['codex', 'claude', 'cursor', 'trae', 'droid', 'copilot']
     const results = await Promise.all(agents.map(agent =>
-      service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+      service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: missingBinary }),
     ))
     const ids = results.map(result => result.backupId as string)
     assert.equal(new Set(ids).size, ids.length, '每次操作都应拿到独立的 backupId')
@@ -839,7 +570,7 @@ test('P0-1 轮转不得删掉在飞/刚创建的备份：并发 toggle 后每个
       assert.ok(fs.existsSync(path.join(dir, 'manifest.json')), `响应里返回过的备份 ${id} 不该被轮转删掉`)
     }
     // 拿响应里的 id 真去 rollback，必须成功（不能 404）
-    const restored = await service.rollbackRTK({ home, confirm: true, backup: ids[0], ...offlineTargets })
+    const restored = await service.rollbackRTK({ home, confirm: true, backup: ids[0] })
     assert.equal(restored.backupId, ids[0])
     assert.ok(service.listRtkBackups(home, 20).length >= ids.length)
   } finally {
@@ -870,7 +601,7 @@ test('P0-1（次要）孤儿备份目录：过保护窗口后清理，status 期
     assert.deepEqual(removed.sort(), ['2020-01-01T00-00-00-000Z', 'zzz-orphan'], '过窗口的孤儿/空目录清理')
     assert.equal(fs.existsSync(path.join(root, 'someone-elses-dir', 'keep.txt')), true, '不认识的目录不能删')
     assert.equal(service.countRtkBackupOrphans(home), 1)
-    const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+    const status = await service.readRTKStatus({ home, fresh: true })
     assert.equal(status.backupOrphans, 1)
     assert.equal(status.backupForeign, 1)
     assert.ok(status.backupGraceMs > 0)
@@ -893,7 +624,7 @@ test('P0-2 OFF 与 ON 共用同一套写后校验：假 CLI 写坏文件时两�
     }, null, 2)}\n`
     fs.writeFileSync(filePath, pristine)
     const error = await expectPlaneError(
-      () => service.setRTKAgentHook('codex', on, { plane: 'local', home, bin: corrupt, ...offlineTargets }),
+      () => service.setRTKAgentHook('codex', on, { plane: 'local', home, bin: corrupt }),
       409, 'hook_file_unparsable',
     )
     assert.equal(error.plane, 'local')
@@ -916,7 +647,7 @@ test('P1-a CLI 窗口内的第三方改动必须保留（条目级最小差异�
   const before = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'orca-hook' }] }] } }, null, 2)}\n`
   fs.writeFileSync(path.join(home, '.claude/settings.json'), before)
 
-  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli })
   assert.equal(result.ok, true)
   const settings = JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8')) as {
     hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> }
@@ -937,7 +668,7 @@ test('P1-a 结构无法安全还原时不覆盖，如实上报 collateralSkipped
   const home = tempHome('p1a-skip')
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
   fs.writeFileSync(path.join(home, '.claude/settings.json'), `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
-  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli })
   assert.equal(result.ok, true)
   assert.equal(fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8'), 'not json at all', '无法安全还原时不许覆盖')
   assert.deepEqual(result.collateralSkipped?.map(item => item.agent), ['claude'])
@@ -958,7 +689,7 @@ test('P1-b 目标文件自己的 .bak 纳管：成功后还原用户原件，失
     'printf %s \'{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook codex"}]}]}}\' > "$HOME/.codex/hooks.json"',
     'exit 0',
   ].join('\n'))
-  const ok = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  const ok = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: cli })
   assert.equal(ok.ok, true)
   assert.equal(fs.readFileSync(bakPath, 'utf8'), 'USER-OWN-BAK\n', '成功路径也要把用户原有的 .bak 还回去')
   assert.deepEqual(ok.preservedBak, ['.codex/hooks.json.bak'])
@@ -974,7 +705,7 @@ test('P1-b 目标文件自己的 .bak 纳管：成功后还原用户原件，失
   fs.writeFileSync(path.join(home2, '.codex/hooks.json'), `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
   fs.writeFileSync(path.join(home2, '.codex/hooks.json.bak'), 'USER-OWN-BAK-2\n')
   await expectPlaneError(
-    () => service.setRTKAgentHook('codex', true, { plane: 'local', home: home2, bin: corrupt, ...offlineTargets }),
+    () => service.setRTKAgentHook('codex', true, { plane: 'local', home: home2, bin: corrupt }),
     409, 'hook_file_unparsable',
   )
   assert.equal(fs.readFileSync(path.join(home2, '.codex/hooks.json.bak'), 'utf8'), 'USER-OWN-BAK-2\n')
@@ -998,7 +729,7 @@ test('P2 同一 agent 不会同时出现在 reverted 与 restored，collateral �
     ] },
   }, null, 2)}\n`)
 
-  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli, ...offlineTargets })
+  const result = await service.setRTKAgentHook('cursor', true, { plane: 'local', home, bin: cli })
   const reverted = result.collateralReverted || []
   const restored = result.collateralRestored || []
   assert.deepEqual(reverted.filter(agent => restored.includes(agent)), [], '两个集合必须互斥')
@@ -1017,7 +748,7 @@ test('红队 ⑥ 宽并发下 rtk CLI 不再互相干扰：6 个 agent × 2 次�
   const home = tempHome('r3-wide-concurrency')
   const agents = ['codex', 'claude', 'cursor', 'gemini', 'copilot', 'pi']
   const requests = [...agents, ...agents].map(agent =>
-    service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: rtkBinary, ...offlineTargets }),
+    service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: rtkBinary }),
   )
   const results = await Promise.allSettled(requests)
   const failures = results
@@ -1026,7 +757,7 @@ test('红队 ⑥ 宽并发下 rtk CLI 不再互相干扰：6 个 agent × 2 次�
     .map(item => `${item.agent}: ${String((item.result as PromiseRejectedResult).reason).slice(0, 120)}`)
   assert.deepEqual(failures, [], `宽并发下不应有 502：${failures.join(' | ')}`)
   for (const agent of agents) {
-    const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+    const status = await service.readRTKStatus({ home, fresh: true })
     assert.equal(status.localAgents.find(item => item.id === agent)?.on, true, `${agent} 应已挂载`)
   }
 })
@@ -1140,7 +871,7 @@ test('锁：进程被杀留下的残留锁会被下一次写入自动清理，�
     fs.mkdirSync(path.dirname(lockPath), { recursive: true })
     fs.writeFileSync(lockPath, JSON.stringify({ token: 'killed', pid: deadPid, at: new Date().toISOString(), purpose: 'killed-mid-write', home }))
 
-    const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary, ...offlineTargets })
+    const result = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: missingBinary })
     assert.equal(result.ok, true)
     assert.equal(result.lockStolen, true, '接管残留锁必须如实上报')
     assert.equal(typeof result.lockWaitMs, 'number')
@@ -1161,7 +892,7 @@ test('锁：异常路径（409）也必须释放，不留残留锁', async () =>
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
     fs.writeFileSync(filePath, `${JSON.stringify({ hooks: { PreToolUse: [] } })}\n`)
     await expectPlaneError(
-      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: cli, ...offlineTargets }),
+      () => service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: cli }),
       409, 'hook_file_unparsable',
     )
     assert.equal(fs.existsSync(service.rtkLockPath(home)), false, '失败路径也要在 finally 释放锁')
@@ -1175,7 +906,7 @@ test('锁：同进程并发不退化（6 个 agent 并发仍全部完成且带 l
   const agents = ['codex', 'claude', 'cursor', 'trae', 'droid', 'copilot']
   const started = Date.now()
   const results = await Promise.all(agents.map(agent =>
-    service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: missingBinary, ...offlineTargets }),
+    service.setRTKAgentHook(agent, true, { plane: 'local', home, bin: missingBinary }),
   ))
   const elapsed = Date.now() - started
   assert.equal(results.length, 6)
@@ -1219,7 +950,6 @@ async function startInstance(options: { dir: string; home: string; backups: stri
       HOST: '127.0.0.1', PORT: String(port), COOKIE_SECURE: 'false',
       CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: 'lock-test-password', SESSION_SECRET: 'lock-test-session-secret',
       DATA_DIR: path.join(options.dir, 'data'), RTK_HOME: options.home, RTK_BACKUP_DIR: options.backups,
-      GATEWAY_ENGINE: 'cpa', MAGPIE_CHANNELS_FILE: path.join(options.dir, 'data/magpie-channels.json'),
       ...(options.lockDisabled ? { RTK_LOCK_DISABLED: '1' } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -1311,7 +1041,7 @@ async function runCrossProcessToggle(options: { lockDisabled?: boolean; rounds?:
   }
   const ok = results.filter(result => result.status === 200).sort((left, right) => left.completedAt - right.completedAt)
   const last = ok[ok.length - 1]
-  const status = await service.readRTKStatus({ home, fresh: true, ...offlineTargets })
+  const status = await service.readRTKStatus({ home, fresh: true })
   const finalOn = Boolean(status.localAgents.find(agent => agent.id === 'codex')?.on)
   const backupIdsAlive = ok.every(result => {
     const id = result.body?.backupId as string | undefined
@@ -1524,7 +1254,7 @@ test('安全：POST /api/rtk/rollback 的路径穿越利用链全部被拒（红
     process.env.RTK_BACKUP_DIR = secBackups
     let seeded: Awaited<ReturnType<typeof service.setRTKAgentHook>>
     try {
-      seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home: secHome, bin: path.join(dir, 'no-rtk'), ...offlineTargets })
+      seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home: secHome, bin: path.join(dir, 'no-rtk') })
     } finally {
       if (previousBackups === undefined) delete process.env.RTK_BACKUP_DIR
       else process.env.RTK_BACKUP_DIR = previousBackups

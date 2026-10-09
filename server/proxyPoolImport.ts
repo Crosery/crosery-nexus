@@ -536,7 +536,7 @@ export async function commitImport(store: ProxyPoolStore, preview: Preview, opti
     for (const assignment of preview.assignments) {
       const entryId = exportRefs.get(assignment.entryRef)
       if (!entryId) continue
-      const ref = assignment.account.backend === 'cpa' ? `cpa:${assignment.account.identity}` : `magpie:${assignment.account.provider}:${assignment.account.identity}`
+      const ref = `cpa:${assignment.account.identity}`
       out.assignPlan.push({ account: ref, entryId, status: pool.links[ref]?.entryId === entryId ? 'linked' : 'pending' })
     }
     return out

@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type express from 'express'
 import { config } from './config.js'
-import { accountQuotaSupport, summarizeAccountQuota } from './accountQuotaReader.js'
+import { summarizeAccountQuota } from './accountQuotaReader.js'
 import type { DataPlaneRelayStatus } from './dataPlane.js'
 import { gatewayPricingMap, gatewayPricingRequests, refreshGatewayPricingDetailed, refreshSharedPricingIfStale } from './modelCatalog.js'
 import {
@@ -13,7 +13,7 @@ import {
 import { pricingSourceStatus } from './pricing.js'
 import { isoOrNull, syncRegistry, type ExternalJobDef, type ExternalSnapshot, type SyncOutcome, type SyncRegistry, type SyncResult, type SyncRunContext } from './syncRegistry.js'
 import { PROBE_INTERVAL_MS } from './modelAvailability.js'
-import { autoRowWords, autoupdatePathsFor, buildMagpieAuto, buildRtkAuto, readAutoupdateFacts } from './autoupdate.js'
+import { rtkStateDir } from './autoupdate.js'
 import { CATALOG_INTERVAL_MS, runCpaCatalogSync, sanitizeCatalogData } from './cpaCatalog.js'
 import { PRICE_WATCH_INTERVAL_MS, gatewayPriceRead, priceWatcher, sharedPriceReads } from './priceWatch.js'
 import { DEFAULT_KERNEL_WINDOW, zonedClock } from './kernels.js'
@@ -75,30 +75,9 @@ const parseTime = (value: unknown): number | null => {
 
 const tag = (value: unknown): string | null => (typeof value === 'string' && /^v?\d+\.\d+\.\d+[-.a-zA-Z0-9]*$/.test(value) ? value : null)
 
-function compareVersions(left: string, right: string): number {
-  const parts = (value: string) => value.replace(/^v/i, '').split(/[.-]/).map(part => Number.parseInt(part, 10) || 0)
-  const [a, b] = [parts(left), parts(right)]
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    const diff = (a[index] ?? 0) - (b[index] ?? 0)
-    if (diff) return diff
-  }
-  return 0
-}
-
-/** 本机 rtk 版本：走 rtkService 的 30s 缓存，同步中心轮询不会每次都起子进程。 */
-async function defaultLocalRtkVersion(): Promise<string | null> {
-  const { findRTKBinary, readLocalPayload } = await import('./rtkService.js')
-  const binary = findRTKBinary()
-  return binary ? (await readLocalPayload(binary)).version : null
-}
-
 export type ExternalJobOptions = {
   catalogFile?: string
-  upstreamDir?: string
   launchAgentsDir?: string
-  localRtkVersion?: () => Promise<string | null>
-  /** a local Magpie kernel this host could auto-update (GATEWAY_ENGINE=magpie, local control plane) */
-  magpieLocal?: () => boolean
   platform?: NodeJS.Platform
   /** Linux: scripts/rtk-autoupdate.mjs 的状态目录（RTK_STATE_DIR，与 crosery-rtk-autoupdate.service 相同） */
   rtkStateDir?: string
@@ -132,27 +111,6 @@ export function parseModelsSyncLog(text: string): Array<{ at: number; result: Sy
 export function createExternalJobs(options: ExternalJobOptions = {}): ExternalJobDef[] {
   const catalogFile = options.catalogFile ?? sharedCatalogPath()
   const agentsRoot = path.dirname(catalogFile)
-  const upstreamDir = options.upstreamDir ?? (process.env.MAGPIE_UPSTREAM_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-upstream'))
-  const upstreamInterval = () => launchdIntervalMs('com.crosery.magpie-upstream-check', 30 * 60_000, options.launchAgentsDir)
-  const readUpstream = () => readJsonFile(path.join(upstreamDir, 'status.json'))
-  const magpieLocal = options.magpieLocal ?? (() => config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local')
-  /** auto-update facts from the same runtime dir; the running revision is not needed for the row words */
-  const autoFacts = (rtkLocal: string | null) => readAutoupdateFacts(autoupdatePathsFor(upstreamDir, options.launchAgentsDir), { magpieLocal: magpieLocal(), running: null, rtkLocal, platform: options.platform })
-  /**
-   * 检查脚本自己持久化的退避（scripts/magpie-upstream.mjs）：nextAttemptAt 之前的 launchd 轮次直接跳过、不发请求，
-   * retryNotBefore 是 GitHub 给的硬下限。同步中心照实显示成 backoff + 下次真正会检查的时间。
-   */
-  const upstreamSchedule = (status: Record<string, unknown>, checkedAt: number, intervalMs: number) => {
-    const deadline = Math.max(parseTime(status.nextAttemptAt) ?? 0, parseTime(status.retryNotBefore) ?? 0)
-    const backoffUntil = deadline > checkedAt ? deadline : null
-    const failures = Number(status.failures)
-    return {
-      nextRunAt: Math.max(checkedAt + intervalMs, backoffUntil ?? 0),
-      backoffUntil,
-      backoffLevel: backoffUntil && Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0,
-    }
-  }
-
   const catalogSync: ExternalJobDef = {
     id: 'catalog-sync',
     label: '共享模型目录',
@@ -185,68 +143,7 @@ export function createExternalJobs(options: ExternalJobOptions = {}): ExternalJo
     },
   }
 
-  const kernelUpstream: ExternalJobDef = {
-    id: 'kernel-upstream',
-    label: '内核上游',
-    kind: 'external',
-    read: (): ExternalSnapshot => {
-      const intervalMs = upstreamInterval()
-      const status = readUpstream()
-      const checkedAt = parseTime(status?.checkedAt)
-      if (!status || !checkedAt) return { intervalMs, lastRunAt: null, state: 'unknown', lastResult: null, summary: '尚未检查' }
-      const failed = status.status === 'error'
-      const candidate = typeof status.candidateRevision === 'string' ? status.candidateRevision.slice(0, 7) : ''
-      const release = tag(status.latestRelease)
-      const plain = status.status === 'review_required' ? `待复核 ${candidate}` : '无变化'
-      const words = autoRowWords(buildMagpieAuto(autoFacts(null), Date.now()), plain)
-      const summary = failed
-        ? `失败于 ${typeof status.errorStage === 'string' ? status.errorStage : '未知阶段'} · ${words}`
-        : [words, release].filter(Boolean).join(' · ')
-      return {
-        intervalMs,
-        lastRunAt: checkedAt,
-        ...upstreamSchedule(status, checkedAt, intervalMs),
-        state: failed ? 'error' : 'idle',
-        lastResult: failed ? 'error' : 'ok',
-        lastError: failed && typeof status.error === 'string' ? status.error : null,
-        summary,
-      }
-    },
-  }
-
-  const rtkVersion: ExternalJobDef = {
-    id: 'rtk-version',
-    label: 'RTK 版本',
-    kind: 'external',
-    read: async (): Promise<ExternalSnapshot> => {
-      const intervalMs = upstreamInterval()
-      const status = readUpstream()
-      const checkedAt = parseTime(status?.checkedAt)
-      const latest = tag(status?.rtkRelease)
-      const local = await (options.localRtkVersion ?? defaultLocalRtkVersion)().catch(() => null)
-      if (!status || !checkedAt) return { intervalMs, lastRunAt: null, state: 'unknown', lastResult: null, summary: local ? `本机 ${local}` : null }
-      const plain = !latest
-        ? ['未取到最新版本', local ? `本机 ${local}` : ''].filter(Boolean).join(' · ')
-        : local && compareVersions(latest, local) > 0
-          ? `可升级 ${latest} · 本机 ${local}`
-          : [`最新 ${latest}`, local ? `本机 ${local}` : ''].filter(Boolean).join(' · ')
-      const auto = buildRtkAuto(autoFacts(local), Date.now())
-      const summary = auto.state === 'off' || auto.state === 'no-scheduler' || auto.state === 'check-only' || auto.state === 'pending' || auto.state === 'up-to-date'
-        ? autoRowWords({ ...auto, brief: plain }, plain)
-        : autoRowWords(auto, plain)
-      return {
-        intervalMs,
-        lastRunAt: checkedAt,
-        ...upstreamSchedule(status, checkedAt, intervalMs),
-        state: latest ? 'idle' : 'unknown',
-        lastResult: latest ? 'ok' : status.status === 'error' ? 'error' : 'skipped',
-        lastError: null,
-        summary,
-      }
-    },
-  }
-
-  return [catalogSync, kernelUpstream, rtkVersion]
+  return [catalogSync]
 }
 
 const RTK_DAILY_MS = 24 * 60 * 60_000
@@ -257,7 +154,7 @@ const RTK_FAILED = new Set(['error', 'verify-failed', 'rolled-back', 'trial-fail
  * autoupdate-rtk.json。预发布先装上新版本试运行满时长，正式只装预发布验收过的版本。
  */
 export function rtkAutoupdateJob(options: ExternalJobOptions = {}): ExternalJobDef {
-  const dir = options.rtkStateDir ?? (process.env.RTK_STATE_DIR || process.env.MAGPIE_UPSTREAM_RUNTIME || path.join(os.homedir(), '.agents/crosery/magpie-upstream'))
+  const dir = options.rtkStateDir ?? rtkStateDir()
   return {
     id: 'rtk-autoupdate',
     label: 'RTK 自动升级',
@@ -313,8 +210,6 @@ export function rtkAutoupdateJob(options: ExternalJobOptions = {}): ExternalJobD
 export type SyncCenterDeps = {
   /** 丢掉 /api/monitor 的整页缓存后重新加载一次；上游请求仍受每账号 TTL/冷却约束。 */
   refreshAccountQuota: () => Promise<unknown>
-  /** magpie + local: allowances come from the kernel's Magpie accounts (magpieAccounts.ts), not /api-call */
-  magpieAccountQuota?: () => boolean
   /** 模型表有新增时清控制面缓存（渠道快照、模型索引）。 */
   onModelsChanged: () => void
   dataPlaneStatus: () => DataPlaneRelayStatus
@@ -466,9 +361,6 @@ export function registerSyncJobs(registry: SyncRegistry, deps: SyncCenterDeps): 
     manualCooldownMs: 2 * 60_000,
     // 每账号/每端点冷却在读取层生效（冷却中的账号不打上游），任务级退避从不设置（skipBackoff）。
     manualBypassesBackoff: true,
-    // 本机控制面（magpie+local）没有 /api-call：额度读取整体不可用，而不是每个账号各报一次错。
-    enabled: () => accountQuotaSupport().supported || Boolean(deps.magpieAccountQuota?.()),
-    overlay: () => (accountQuotaSupport().supported || deps.magpieAccountQuota?.() ? {} : { summary: '本机控制面不支持读取账号额度', lastError: null }),
     run: async () => {
       const payload = await deps.refreshAccountQuota()
       return { ...summarizeAccountQuota(payload as Parameters<typeof summarizeAccountQuota>[0]), value: payload }

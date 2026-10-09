@@ -1,6 +1,6 @@
-// e2e：一次性控制台实例（子进程 + 临时数据）上跑 CLI 的每条写路径。测试不碰真实钥匙串，也不连 8791。
+// e2e：一次性控制台实例（子进程 + 临时数据 + 假 CPA）上跑 CLI 的每条写路径。测试不碰真实钥匙串，也不连 8791。
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -55,16 +55,15 @@ const fullKeys = text => text.match(/sk-[a-z0-9-]+-[0-9a-f]{32}/g) || []
 const nonLoginAudit = async () => (await adminCall(server, 'GET', '/api/audit')).body.items.filter(item => item.action !== 'login').length
 const bootstrap = async () => (await adminCall(server, 'GET', '/api/bootstrap')).body
 const keyNamed = async name => (await bootstrap()).keys.find(key => key.name === name)
-const seedCredential = (dataDir, name, type) => {
-  const dir = path.join(dataDir, 'auth-files')
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  fs.writeFileSync(path.join(dir, name), JSON.stringify({ type, provider: type, email: 'fixture@example.test', access_token: 'fixture-token' }), { mode: 0o600 })
-}
+const UPSTREAM_KEY = 'upstream-e2e-secret-5d2c'
 const usageWith = async key => (await fetch(`${server.base}/v1/usage`, { headers: { authorization: `Bearer ${key}` } })).status
 
 before(async () => {
-  // 账号池凭据：本机 OAuth 模拟器已退役（410），临时 codex 凭据以夹具落盘
-  server = await startThrowawayServer({ password: PASSWORD, prepare: ({ dataDir }) => seedCredential(dataDir, 'codex-fixture.json', 'codex') })
+  // 账号池凭据：假 CPA 里先放一个 codex 账号
+  server = await startThrowawayServer({
+    password: PASSWORD,
+    prepare: ({ cpa }) => cpa.credentials.set('codex-fixture.json', { name: 'codex-fixture.json', type: 'codex', email: 'fixture@example.test' }),
+  })
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'cradmin-home-'))
   cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cradmin-cwd-'))
 })
@@ -107,11 +106,12 @@ test('401：密码不对 → 退出 3，写明凭据来源；不自动重试', a
   assert.ok(!result.stderr.includes('definitely-wrong-pass'))
 })
 
-test('channels add（env: 引用）→ models --only → GET 验证；--enable 恢复', async () => {
-  const add = await cli(['channels', 'add', 'tch', '--base-url', 'http://127.0.0.1:9/v1', '--api-key-env', 'CRADMIN_E2E_UP', '--models', 'm1,m2,gpt-x'])
+test('channels add（Key 从 stdin 读）→ models --only → GET 验证；--enable 恢复', async () => {
+  const add = await cli(['channels', 'add', 'tch', '--base-url', 'http://127.0.0.1:9/v1', '--api-key-stdin', '--models', 'm1,m2,gpt-x'], { stdin: UPSTREAM_KEY })
   assert.equal(add.code, 0, add.stderr)
+  assert.equal(server.cpa.compat.find(item => item.name === 'tch')['api-key-entries'][0]['api-key'], UPSTREAM_KEY)
   const raw = await cli(['channels', 'add', 'raw', '--base-url', 'http://127.0.0.1:9/v1', '--models', 'm1'])
-  assert.equal(raw.code, 2, '不给 --api-key-env / --api-key-stdin 时拒绝')
+  assert.equal(raw.code, 2, '不给 --api-key-stdin 时拒绝')
   const only = await cli(['channels', 'models', 'tch', '--only', 'm*', '--yes'])
   assert.equal(only.code, 0, only.stderr)
   const models = async () => Object.fromEntries((await adminCall(server, 'GET', '/api/channels')).body.channels.find(item => item.name === 'tch').models.map(model => [model.id, model.enabled]))
@@ -277,18 +277,17 @@ test('额度封禁的 Key：keys disable 显式发 enabled:false，清掉封禁�
 
 test('accounts：pause / resume / proxy', async () => {
   const credential = () => adminCall(server, 'GET', '/api/channels').then(result => result.body.credentials[0])
+  // CPA 的凭据列表不带 proxy_url；单条读取（编辑用）才给完整值
+  const proxyOf = async () => (await adminCall(server, 'GET', `/api/credentials/${encodeURIComponent((await credential()).name)}/proxy`)).body.proxyUrl
   assert.equal((await cli(['accounts', 'pause', 'codex', '--yes'])).code, 0)
   assert.equal((await credential()).disabled, true)
   assert.equal((await cli(['accounts', 'resume', 'codex'])).code, 0)
   assert.equal((await credential()).disabled, false)
   assert.equal((await cli(['accounts', 'proxy', 'codex', 'direct', '--yes'])).code, 0)
-  assert.equal((await credential()).proxyUrl, 'direct')
+  assert.equal(await proxyOf(), 'direct')
   const secretProxy = await cli(['accounts', 'proxy', 'codex', 'socks5h://bob:proxy-secret-9@127.0.0.1:1080', '--yes', '--json'])
   assert.equal(secretProxy.code, 0, secretProxy.stderr)
-  // 列表接口不回显代理口令；单条读取（编辑用）才给完整值
-  assert.equal((await credential()).proxyUrl, 'socks5h://***@127.0.0.1:1080')
-  const stored = await adminCall(server, 'GET', `/api/credentials/${encodeURIComponent((await credential()).name)}/proxy`)
-  assert.equal(stored.body.proxyUrl, 'socks5h://bob:proxy-secret-9@127.0.0.1:1080')
+  assert.equal(await proxyOf(), 'socks5h://bob:proxy-secret-9@127.0.0.1:1080')
   const shown = await cli(['accounts', 'ls', '--json'])
   const exported = await cli(['config', 'export'])
   assert.equal(exported.code, 0, exported.stderr)
@@ -297,7 +296,6 @@ test('accounts：pause / resume / proxy', async () => {
   assert.equal(roundtrip.code, 0, roundtrip.stderr)
   assert.match(roundtrip.stdout, /没有需要改动的配置/)
   for (const result of [secretProxy, shown, exported, roundtrip]) assert.doesNotMatch(result.stdout + result.stderr, /proxy-secret-9/)
-  assert.match(shown.stdout, /socks5h:\/\/\*\*\*@127\.0\.0\.1:1080/)
   assert.equal((await cli(['accounts', 'proxy', 'codex', 'direct', '--yes'])).code, 0)
   const ls = await cli(['accounts', 'ls', '--quota', '--json'])
   assert.equal(ls.code, 0)
@@ -372,7 +370,7 @@ test('无参数交互菜单：开 Key、开关渠道模型（确认）、导出�
   const lines = [
     '3', '2', 'menu-key', '1,2', '', '', 'y', '',   // API Key → 开通 → 名称 → 分组（多选）→ 并发默认 → 日额度不限 → 确认（菜单里永远确认）→ 回车返回
     '2', '2', '1', '-1', 'y', '',              // 渠道与模型 → 模型开关 → tch → 停用第 1 个（gpt-x）→ 确认 → 回车返回
-    '11', '1', 'menu.json', '',                // 导出/应用配置 → 导出 → 文件名 → 回车返回
+    '10', '1', 'menu.json', '',                // 导出/应用配置 → 导出 → 文件名 → 回车返回
     '0',
   ]
   const result = await cli([], { interactive: true, stdin: `${lines.join('\n')}\n`, label: ['menu', 'keys', 'create'] })
@@ -415,35 +413,39 @@ test('菜单里密码不对：只发一次登录就退出 3，不会每个动作
   assert.equal(logins, 1)
 })
 
-test('accounts add：本机模拟器已退役（410 → 退出 1，零落盘）；rm 删除凭据', async () => {
-  const count = async () => (await adminCall(server, 'GET', '/api/channels')).body.credentials.length
-  const before = await count()
+test('accounts add：CPA 授权（轮询到 ok / 两步回调 / 过期 state）；rm 删除凭据；reset 经 CPA 代发', async () => {
+  const credentials = async () => (await adminCall(server, 'GET', '/api/channels')).body.credentials
+  const before = (await credentials()).length
   const polled = await cli(['accounts', 'add', 'claude'])
-  assert.equal(polled.code, 1, polled.stderr)
-  assert.match(polled.stderr, /账号/)
-  const twoStep = await cli(['accounts', 'add', 'claude', '--callback-url', 'https://example.com/cb?code=def', '--state', 'any-state'])
-  assert.equal(twoStep.code, 1, twoStep.stderr)
-  assert.equal(await count(), before, '退役路径不落盘')
+  assert.equal(polled.code, 0, polled.stderr)
+  assert.match(polled.stdout + polled.stderr, /https:\/\/auth\.example\.test\/authorize/)
+  const state = (polled.stdout + polled.stderr).match(/fake-state-\d+/)[0]
+  const twoStep = await cli(['accounts', 'add', 'claude', '--callback-url', `https://example.com/cb?code=def&state=${state}`, '--state', state])
+  assert.equal(twoStep.code, 0, twoStep.stderr)
+  const expired = await cli(['accounts', 'add', 'claude', '--callback-url', 'https://example.com/cb?code=def', '--state', 'gone-state'])
+  assert.equal(expired.code, 1)
+  assert.match(expired.stderr, /不属于当前授权或已过期/)
   assert.equal((await cli(['accounts', 'add', 'nope'])).code, 2)
+  assert.equal((await cli(['accounts', 'add', 'antigravity'])).code, 0)
+  assert.equal((await credentials()).length, before + 2)
 
-  // 两个 anthropic 夹具凭据（原先由模拟器落盘）；PATCH 让控制面快照失效
-  seedCredential(server.dataDir, 'anthropic-fixture-1.json', 'anthropic')
-  seedCredential(server.dataDir, 'anthropic-fixture-2.json', 'anthropic')
-  assert.equal((await adminCall(server, 'PATCH', '/api/credentials/codex-fixture.json', { enabled: true })).status, 200)
-  assert.equal(await count(), before + 2)
-  const names = (await adminCall(server, 'GET', '/api/channels')).body.credentials.filter(item => item.type === 'anthropic').map(item => item.name)
-  assert.equal(names.length, 2)
-  assert.equal((await cli(['accounts', 'rm', names[0]])).code, 2, '不可撤销操作非交互缺 --yes')
-  const removed = await cli(['accounts', 'rm', names[0], '--yes'])
+  const claude = (await credentials()).find(item => item.type === 'claude').name
+  assert.equal((await cli(['accounts', 'rm', claude])).code, 2, '不可撤销操作非交互缺 --yes')
+  const removed = await cli(['accounts', 'rm', claude, '--yes'])
   assert.equal(removed.code, 0, removed.stderr)
-  assert.equal(await count(), before + 1)
-  assert.equal((await cli(['accounts', 'reset', names[1], '--yes'])).code, 2, '与服务端一致：只有 codex / claude 类型能重置')
+  assert.equal(server.cpa.credentials.has(claude), false)
+  assert.equal((await credentials()).length, before + 1)
+  const antigravity = (await credentials()).find(item => item.type === 'antigravity').name
+  assert.equal((await cli(['accounts', 'reset', antigravity, '--yes'])).code, 2, '与服务端一致：只有 codex / claude 类型能重置')
   const reset = await cli(['accounts', 'reset', 'codex', '--yes'])
-  assert.equal(reset.code, 1, '本机控制面没有 auth_index，重置额度不可用')
+  assert.equal(reset.code, 0, reset.stderr)
+  const consumed = server.cpa.requests.filter(item => item.method === 'POST' && item.path.endsWith('/api-call')).map(item => JSON.parse(item.body))
+    .find(body => body.url.endsWith('/rate-limit-reset-credits/consume'))
+  assert.equal(consumed?.auth_index, 'codex-fixture.json')
 })
 
-test('channels rm / prune、models sync、magpie check 在一次性实例上的结果', async () => {
-  assert.equal((await cli(['channels', 'add', 'tmp-ch', '--base-url', 'http://127.0.0.1:9/v1', '--api-key-env', 'CRADMIN_E2E_UP', '--models', 'z1'])).code, 0)
+test('channels rm / prune、models sync 在一次性实例上的结果', async () => {
+  assert.equal((await cli(['channels', 'add', 'tmp-ch', '--base-url', 'http://127.0.0.1:9/v1', '--api-key-stdin', '--models', 'z1'], { stdin: UPSTREAM_KEY })).code, 0)
   const rm = await cli(['channels', 'rm', 'tmp-ch', '--yes'])
   assert.equal(rm.code, 0, rm.stderr)
   assert.equal((await adminCall(server, 'GET', '/api/channels')).body.channels.some(item => item.name === 'tmp-ch'), false)
@@ -453,20 +455,27 @@ test('channels rm / prune、models sync、magpie check 在一次性实例上的�
   assert.match(prune.stdout, /没有失效渠道/)
   const sync = await cli(['models', 'sync'])
   assert.ok([0, 1, 4].includes(sync.code), `${sync.code} ${sync.stderr}`)
-  const magpie = await cli(['magpie', 'check'])
-  assert.equal(magpie.code, 1)
-  const status = await cli(['magpie', 'status', '--json'])
-  assert.equal(JSON.parse(status.stdout).update.capability, false)
 })
 
-test('真实子进程：非 TTY 写命令缺 --yes 退出 2；读命令 --json 可解析', () => {
+// 假 CPA 跑在本进程里：同步等子进程会卡住事件循环，控制台就等不到 CPA 应答
+const subprocess = (args, env) => new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [CLI, ...args], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', chunk => { stdout += chunk })
+  child.stderr.on('data', chunk => { stderr += chunk })
+  child.once('error', reject)
+  child.once('close', status => resolve({ status, stdout, stderr }))
+})
+
+test('真实子进程：非 TTY 写命令缺 --yes 退出 2；读命令 --json 可解析', async () => {
   const env = { ...process.env, CONSOLE_PASSWORD: PASSWORD, CRADMIN_SESSION_CACHE: 'off', CRADMIN_KEYCHAIN: 'off', CRADMIN_BASE: server.base, CRADMIN_HOME: home }
   delete env.CONSOLE_PASSWORD_FILE
   delete env.CI
-  const write = spawnSync(process.execPath, [CLI, 'channels', 'disable', 'tch'], { env, encoding: 'utf8', cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  const write = await subprocess(['channels', 'disable', 'tch'], env)
   assert.equal(write.status, 2, write.stderr)
   assert.match(write.stderr, /非交互环境执行此操作需要 --yes/)
-  const read = spawnSync(process.execPath, [CLI, 'keys', 'ls', '--json'], { env, encoding: 'utf8', cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+  const read = await subprocess(['keys', 'ls', '--json'], env)
   assert.equal(read.status, 0, read.stderr)
   assert.ok(Array.isArray(JSON.parse(read.stdout)))
   outputs.push({ argv: ['subprocess'], stdout: write.stdout + read.stdout, stderr: write.stderr + read.stderr })
@@ -476,6 +485,7 @@ test('输出扫描：密码、会话 token 从不出现；完整 Key 只在 crea
   assert.ok(issuedTokens.size > 5)
   const all = outputs.map(entry => entry.stdout + entry.stderr).join('\n')
   assert.ok(!all.includes(PASSWORD), '密码泄露')
+  assert.ok(!all.includes(UPSTREAM_KEY), '上游 Key 泄露')
   for (const token of issuedTokens) assert.ok(!all.includes(token), '会话 token 泄露')
   for (const key of shownKeys) {
     const hits = outputs.filter(entry => (entry.stdout + entry.stderr).includes(key))

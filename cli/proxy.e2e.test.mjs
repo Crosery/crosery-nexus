@@ -1,4 +1,4 @@
-// e2e：cradmin proxy 在一次性控制台实例（子进程 + 临时数据，Magpie 本机控制面）上跑每个子命令。
+// e2e：cradmin proxy 在一次性控制台实例（子进程 + 临时数据 + 假 CPA）上跑每个子命令。
 // mihomo 用 server/testing/fakeMihomoRelay.ts 写出的假内核；检测只打到关闭的本机端口，不连任何外部服务，也不连 8791。
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -68,11 +68,9 @@ before(async () => {
   server = await startThrowawayServer({
     password: PASSWORD,
     env: { PROXY_PORT_BASE: String(portBase), PROXY_PORT_COUNT: '10', MIHOMO_BIN: bin, PROXY_LISTENER_AUTH: 'on', PROXY_KERNEL_KEEPALIVE: '0' },
-    prepare: ({ dataDir }) => {
-      const dir = path.join(dataDir, 'auth-files')
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-      fs.writeFileSync(path.join(dir, 'codex-proxy.json'), JSON.stringify({ type: 'codex', provider: 'codex', email: 'proxy.fixture@example.test', access_token: 'fixture-token', proxy_url: 'http://legacy:url-secret-pw-71@198.51.100.50:8080' }), { mode: 0o600 })
-    },
+    prepare: ({ cpa }) => cpa.credentials.set('codex-proxy.json', {
+      name: 'codex-proxy.json', type: 'codex', email: 'proxy.fixture@example.test', proxy_url: 'http://legacy:url-secret-pw-71@198.51.100.50:8080',
+    }),
   })
 })
 
@@ -193,10 +191,15 @@ test('migrate --dry-run lists the account exits without writing; migrate --yes i
   assert.match(again.stdout, /代理池已包含这些出口/)
 })
 
-test('default is CPA-only (Magpie control plane → exit 1); rm with --reassign; subscriptions ls', async () => {
-  const def = await cli(['proxy', 'default', 'direct', '--yes'])
-  assert.equal(def.code, 1)
-  assert.match(def.stderr, /Magpie 模式/)
+test('default writes the CPA global proxy (an entry, then direct clears it); rm with --reassign; subscriptions ls', async () => {
+  const target = await entryNamed('远端 HTTP')
+  const def = await cli(['proxy', 'default', '远端 HTTP', '--yes'])
+  assert.equal(def.code, 0, def.stderr)
+  assert.equal((await pool()).default.entryId, target.id)
+  assert.notEqual(server.cpa.globalProxy, '')
+  const direct = await cli(['proxy', 'default', 'direct', '--yes'])
+  assert.equal(direct.code, 0, direct.stderr)
+  assert.equal(server.cpa.globalProxy, '')
   const victim = await entryNamed('203.0.113.30')
   assert.equal((await cli(['proxy', 'assign', 'codex-proxy', victim.id, '--yes'])).code, 0)
   const removed = await cli(['proxy', 'rm', victim.id, '--reassign', 'direct', '--yes'])

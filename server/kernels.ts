@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import type express from 'express'
 
 /**
- * 「网关内核」on the relay: the console's side of scripts/kernel-applier.mjs (CPA serving traffic, Magpie standby).
+ * 「网关内核」on the relay: the console's side of scripts/kernel-applier.mjs (CPA serving traffic).
  *
  * The console only writes the switches (<data>/kernel-autoupdate.json) and queues a rollback
  * (<data>/kernel-requests/rollback-<kernel>.json, picked up by crosery-kernel-request.path). It reads what the applier
@@ -12,22 +12,22 @@ import type express from 'express'
  * sandboxed and CPA is not its child. The words the panel shows are built here, once.
  */
 
-export type KernelId = 'cpa' | 'magpie'
+export type KernelId = 'cpa'
 export type KernelTone = 'ok' | 'warn' | 'bad' | 'idle'
 export type KernelReason = { code: string; text: string }
 export type KernelWindow = { start: string; end: string; tz: string }
-export type KernelConfig = { version: 1; cpa: { enabled: boolean }; magpie: { enabled: boolean }; window: KernelWindow; updatedAt?: string }
+export type KernelConfig = { version: 1; cpa: { enabled: boolean }; window: KernelWindow; updatedAt?: string }
 
 export type KernelEnv = 'preview' | 'production'
 
 export type KernelView = {
   id: KernelId
   name: string
-  role: 'serving' | 'standby'
+  role: 'serving'
   roleText: string
   /** which half of the CPA promotion this host is (the applier records it); null = not said yet */
   env: KernelEnv | null
-  /** what runs (CPA) / what is installed (Magpie standby); null = unknown */
+  /** what runs; null = unknown */
   version: string | null
   online: boolean | null
   /** upstream's latest release as the builder saw it, and a newer line it does not follow on its own */
@@ -117,7 +117,6 @@ export function readKernelConfig(file: string): KernelConfig {
   return {
     version: 1,
     cpa: { enabled: !isObject(raw.cpa) || raw.cpa.enabled !== false },
-    magpie: { enabled: !isObject(raw.magpie) || raw.magpie.enabled !== false },
     window: parseKernelWindow(raw.window) ?? { ...DEFAULT_KERNEL_WINDOW },
     ...(typeof raw.updatedAt === 'string' ? { updatedAt: raw.updatedAt } : {}),
   }
@@ -125,20 +124,19 @@ export function readKernelConfig(file: string): KernelConfig {
 
 export class KernelConfigError extends Error {}
 
-/** Strict PUT body: { cpa?: { enabled }, magpie?: { enabled }, window?: { start, end } } (the time zone stays). */
+/** Strict PUT body: { cpa?: { enabled }, window?: { start, end } } (the time zone stays). */
 export function writeKernelConfig(file: string, patch: unknown, now = Date.now()): KernelConfig {
   if (!isObject(patch)) throw new KernelConfigError('请求体必须是对象')
-  const unknown = Object.keys(patch).filter(key => !['cpa', 'magpie', 'window'].includes(key))
+  const unknown = Object.keys(patch).filter(key => !['cpa', 'window'].includes(key))
   if (unknown.length) throw new KernelConfigError(`不认识的字段：${unknown.join(', ')}`)
   const current = readKernelConfig(file)
-  const next: KernelConfig = { version: 1, cpa: { ...current.cpa }, magpie: { ...current.magpie }, window: { ...current.window } }
-  for (const id of ['cpa', 'magpie'] as const) {
-    const value = patch[id]
-    if (value === undefined) continue
+  const next: KernelConfig = { version: 1, cpa: { ...current.cpa }, window: { ...current.window } }
+  if (patch.cpa !== undefined) {
+    const value = patch.cpa
     if (!isObject(value) || Object.keys(value).some(key => key !== 'enabled') || typeof value.enabled !== 'boolean') {
-      throw new KernelConfigError(`${id} 只接受 {"enabled": 布尔值}`)
+      throw new KernelConfigError('cpa 只接受 {"enabled": 布尔值}')
     }
-    next[id].enabled = value.enabled
+    next.cpa.enabled = value.enabled
   }
   if (patch.window !== undefined) {
     if (isObject(patch.window) && patch.window.tz !== undefined) throw new KernelConfigError('时区不能在这里改')
@@ -179,7 +177,6 @@ export type KernelFacts = {
   config: KernelConfig
   scheduler: 'installed' | 'missing'
   cpa: Record<string, unknown> | null
-  magpie: Record<string, unknown> | null
   /** the CPA version answering now (x-cpa-version); null = offline / unknown */
   cpaRunning: string | null
 }
@@ -194,16 +191,16 @@ const BUILDER_WORD: Record<string, string> = {
   error: '构建出错',
 }
 
-function candidateLine(id: KernelId, builder: Record<string, unknown> | null, staged: Record<string, unknown> | null): KernelView['candidate'] {
+function candidateLine(builder: Record<string, unknown> | null, staged: Record<string, unknown> | null): KernelView['candidate'] {
   if (!builder) return null
   const status = str(builder.status)
   const list = reasons(builder.reasons)
   const candidate = isObject(builder.candidate) ? builder.candidate : null
-  const label = id === 'cpa' ? str(candidate?.version) : short(str(candidate?.revision))
+  const label = str(candidate?.version)
   if (status === 'built' || status === 'up-to-date') {
     const checks = Array.isArray(candidate?.checks) ? candidate.checks.filter(isObject) : []
     const failed = checks.filter(check => check.ok !== true).length
-    const word = id === 'cpa' ? `go test${checks.length ? ` · 冒烟 ${checks.length - failed}/${checks.length}` : ''} 通过` : 'Mac 上演练通过'
+    const word = `go test${checks.length ? ` · 冒烟 ${checks.length - failed}/${checks.length}` : ''} 通过`
     return { label: label || '—', tone: failed ? 'warn' : 'ok', text: `${word}${staged ? ' · 已暂存到中转站' : ''}` }
   }
   return { label: label || '—', tone: status === 'held' ? 'warn' : 'bad', text: first(list) || BUILDER_WORD[status ?? ''] || '构建机没给结果' }
@@ -227,7 +224,7 @@ export function probeWords(probes: unknown): string {
 }
 
 /** The one line under the switch, from the applier's last decision and last apply. */
-function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknown>, now: number): Pick<KernelView, 'state' | 'tone' | 'line' | 'reasons' | 'last'> {
+function autoLine(facts: KernelFacts, state: Record<string, unknown>, now: number): Pick<KernelView, 'state' | 'tone' | 'line' | 'reasons' | 'last'> {
   const window = windowLabel(facts.config.window)
   const tz = facts.config.window.tz
   const preview = state.env === 'preview'
@@ -249,7 +246,7 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
     'rollback-refused': [`${at} ${lastTarget} 在预发布没过，回滚没开始：${lastReasons[1]?.text ?? '安装脚本拒绝'} · 需要人工处理`, 'bad'],
     'rollback-failed': [`${at} ${lastTarget} 在预发布没过，回滚也没成功 · 需要人工处理`, 'bad'],
   } : {
-    applied: [id === 'cpa' ? [`${at} 替换到 ${lastTarget}`, probed].filter(Boolean).join(' · ') : `${at} 备用内核换成 ${lastTarget}（启动检查通过）`, 'ok'],
+    applied: [[`${at} 替换到 ${lastTarget}`, probed].filter(Boolean).join(' · '), 'ok'],
     'up-to-date': [`${at} 已是 ${lastTarget}`, 'ok'],
     adopted: [`${at} 把手工装上的 ${lastTarget} 接入预发布试运行`, 'ok'],
     'rolled-back': [`${at} 替换 ${lastTarget} 后验收没过，${restoreSeconds !== null ? `${restoreSeconds} 秒内换回旧版本` : '已自动回滚'}${probed ? ` · ${probed}` : ''}`, 'bad'],
@@ -260,17 +257,15 @@ function autoLine(id: KernelId, facts: KernelFacts, state: Record<string, unknow
   }
   const last = lastResult && lastAt && LAST[lastResult] ? { text: LAST[lastResult][0], tone: LAST[lastResult][1], at: lastAt } : null
   const out = (state: string, tone: KernelTone, line: string, list: KernelReason[] = []) => ({ state, tone, line, reasons: list, last })
-  const enabled = facts.config[id].enabled
-  if (!enabled) return out('off', 'idle', id === 'cpa' ? '已关闭 · 构建机照常跟上游构建、演练，这里不替换' : '已关闭 · 不再更新备用内核')
+  if (!facts.config.cpa.enabled) return out('off', 'idle', '已关闭 · 构建机照常跟上游构建、演练，这里不替换')
   if (facts.scheduler === 'missing') return out('no-scheduler', 'warn', '中转站没有安装内核更新定时任务 · 开着也不会替换')
   const checkedAt = Date.parse(str(state.checkedAt) ?? '')
   if (!Number.isFinite(checkedAt)) return out('pending', 'idle', '定时任务还没跑过')
   if (now - checkedAt > STALE_MS) return out('stale', 'warn', `定时任务 ${Math.round((now - checkedAt) / 60_000)} 分钟没跑了`)
   const decisionReasons = reasons(decision.reasons)
   switch (why) {
-    case 'up-to-date': return out('up-to-date', 'ok', id !== 'cpa' ? '已是最新 · 新版本先在 Mac 上演练，通过后换上'
-      : preview ? '已是最新候选 · 新版本构建通过就装到这里试运行' : `已是最新候选 · 新版本先在预发布验收，通过后在 ${window}替换`)
-    case 'no-candidate': return out('up-to-date', 'idle', id === 'cpa' ? '还没有演练通过的候选' : '还没有备用内核 · 等 Mac 发布第一个')
+    case 'up-to-date': return out('up-to-date', 'ok', preview ? '已是最新候选 · 新版本构建通过就装到这里试运行' : `已是最新候选 · 新版本先在预发布验收，通过后在 ${window}替换`)
+    case 'no-candidate': return out('up-to-date', 'idle', '还没有演练通过的候选')
     case 'trial-active': return out('eligible', 'ok', `${str(decision.trial) ?? '上一个候选'} 还在试运行 · ${target} 等它结束`)
     case 'not-promoted': {
       const list = reasons(decision.reasons)
@@ -372,7 +367,6 @@ function checksOf(state: Record<string, unknown>): KernelView['checks'] {
 
 export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsView {
   const cpaState = facts.cpa ?? {}
-  const magpieState = facts.magpie ?? {}
   const views: KernelView[] = []
   {
     const builder = isObject(cpaState.builder) ? cpaState.builder : null
@@ -385,34 +379,15 @@ export function buildKernelsView(facts: KernelFacts, now = Date.now()): KernelsV
       id: 'cpa', name: 'CPA', role: 'serving', roleText: env === 'preview' ? '接流量 · 预发布' : env === 'production' ? '接流量 · 正式' : '接流量', env,
       version: facts.cpaRunning ?? installed, online: facts.cpaRunning ? true : null,
       upstream: builder ? { latest: str(builder.upstreamLatest), line: str(builder.line), heldNewer, checkedAt: str(builder.checkedAt) } : null,
-      candidate: candidateLine('cpa', builder, isObject(cpaState.staged) ? cpaState.staged : null),
+      candidate: candidateLine(builder, isObject(cpaState.staged) ? cpaState.staged : null),
       enabled: facts.config.cpa.enabled,
-      ...autoLine('cpa', facts, cpaState, now),
+      ...autoLine(facts, cpaState, now),
       // across a major only while config.yaml is still legacy: an older major cannot start on a config the newer one migrated
       rollback: applied && previous && (versionMajor(previous) === versionMajor(str(applied.version)) || cpaState.configLayout === 'legacy') ? { to: previous } : null,
       checkedAt: str(cpaState.checkedAt),
       pipeline: pipelineLine(facts, cpaState, now),
       checks: checksOf(cpaState),
       error: lastError(cpaState),
-    })
-  }
-  {
-    const builder = isObject(magpieState.builder) ? magpieState.builder : null
-    const installed = isObject(magpieState.installed) ? magpieState.installed : null
-    const applied = isObject(magpieState.applied) ? magpieState.applied : null
-    const revision = str(installed?.revision)
-    views.push({
-      id: 'magpie', name: 'Magpie', role: 'standby', roleText: '备用 · 不接流量', env: null,
-      version: revision ? [short(revision), str(installed?.release)].filter(Boolean).join(' · ') : null, online: null,
-      upstream: builder ? { latest: str(builder.upstreamLatest) ?? short(str(builder.upstreamRevision)), line: null, heldNewer: null, checkedAt: str(builder.checkedAt) } : null,
-      candidate: candidateLine('magpie', builder, isObject(magpieState.staged) ? magpieState.staged : null),
-      enabled: facts.config.magpie.enabled,
-      ...autoLine('magpie', facts, magpieState, now),
-      rollback: applied && str(applied.previous) ? { to: short(str(applied.previousRevision)) || str(applied.previous)! } : null,
-      checkedAt: str(magpieState.checkedAt),
-      pipeline: null,
-      checks: checksOf(magpieState),
-      error: lastError(magpieState),
     })
   }
   const ticks = views.map(view => Date.parse(view.checkedAt ?? '')).filter(Number.isFinite)
@@ -425,7 +400,6 @@ export function readKernelFacts(paths: KernelPaths, cpaRunning: string | null): 
     config: readKernelConfig(paths.config),
     scheduler: fs.existsSync(paths.timerUnit) ? 'installed' : 'missing',
     cpa: readJson(path.join(paths.states, 'cpa.json')),
-    magpie: readJson(path.join(paths.states, 'magpie.json')),
     cpaRunning,
   }
 }
@@ -435,12 +409,12 @@ export function readKernelFacts(paths: KernelPaths, cpaRunning: string | null): 
 export type KernelRouteDeps = {
   addAudit: (action: string, target: string, detail?: string) => void
   paths: () => KernelPaths
-  /** this console manages the relay's kernels (Linux, CPA engine); otherwise the Mac's own Magpie panel applies */
+  /** this console manages the relay's kernels (Linux) */
   available: () => boolean
   cpaRunning: () => Promise<string | null>
 }
 
-const UNAVAILABLE = '只有中转站（Linux、CPA 网关）有内核更新定时任务；这台机器的内核更新在「自动更新」里'
+const UNAVAILABLE = '只有中转站（Linux）有内核更新定时任务'
 
 export function registerKernelRoutes(app: express.Express, deps: KernelRouteDeps): void {
   const view = async (): Promise<KernelsView> => {
@@ -460,7 +434,7 @@ export function registerKernelRoutes(app: express.Express, deps: KernelRouteDeps
     if (!deps.available()) return res.status(409).json({ error: UNAVAILABLE, code: 'kernels_unavailable' })
     try {
       const next = writeKernelConfig(deps.paths().config, req.body)
-      deps.addAudit('kernel_autoupdate_config', 'relay', `cpa=${next.cpa.enabled ? 'on' : 'off'} magpie=${next.magpie.enabled ? 'on' : 'off'} window=${next.window.start}-${next.window.end} ${next.window.tz}`)
+      deps.addAudit('kernel_autoupdate_config', 'relay', `cpa=${next.cpa.enabled ? 'on' : 'off'} window=${next.window.start}-${next.window.end} ${next.window.tz}`)
       res.json(await view())
     } catch (error) {
       if (error instanceof KernelConfigError) return res.status(400).json({ error: error.message, code: 'invalid_kernel_config' })
@@ -472,7 +446,7 @@ export function registerKernelRoutes(app: express.Express, deps: KernelRouteDeps
   app.post('/api/kernels/rollback', async (req, res) => {
     if (!deps.available()) return res.status(409).json({ error: UNAVAILABLE, code: 'kernels_unavailable' })
     const kernel = req.body?.kernel
-    if (kernel !== 'cpa' && kernel !== 'magpie') return res.status(400).json({ error: 'kernel 只能是 cpa / magpie', code: 'invalid_kernel' })
+    if (kernel !== 'cpa') return res.status(400).json({ error: 'kernel 只能是 cpa', code: 'invalid_kernel' })
     if (req.body?.confirm !== true) {
       deps.addAudit('kernel_rollback', kernel, 'refused:missing-confirm')
       return res.status(403).json({ error: '回滚需要显式确认（body 需要 {"confirm": true}）', code: 'confirm_required' })

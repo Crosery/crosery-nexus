@@ -55,20 +55,16 @@ test('模型行的未知值是 null：无定义的模型推理能力未知、无
 })
 
 test('网关地址：配置优先（缺 /v1 自动补），否则回退本机网关', () => {
-  const original = { url: config.publicGatewayBaseUrl, engine: config.gatewayEngine }
+  const original = config.publicGatewayBaseUrl
   try {
     config.publicGatewayBaseUrl = 'https://gateway.example.test/v1'
     assert.equal(gatewayBaseUrl(), 'https://gateway.example.test/v1')
     config.publicGatewayBaseUrl = 'https://gateway.example.test'
     assert.equal(gatewayBaseUrl(), 'https://gateway.example.test/v1')
     config.publicGatewayBaseUrl = ''
-    config.gatewayEngine = 'magpie'
-    assert.equal(gatewayBaseUrl(), `http://127.0.0.1:${config.magpiePort}/v1`)
-    config.gatewayEngine = 'cpa'
     assert.equal(gatewayBaseUrl(), `${config.cpaBaseUrl}/v1`)
   } finally {
-    config.publicGatewayBaseUrl = original.url
-    config.gatewayEngine = original.engine
+    config.publicGatewayBaseUrl = original
   }
 })
 

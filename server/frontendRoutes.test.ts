@@ -61,8 +61,8 @@ const calls = frontendCalls(REPO)
 const requests = calls.filter(call => call.kind !== 'reference')
 
 test('前端调用清单：解析器读到了全部 API 客户端，非请求字面量都在白名单里', () => {
-  assert.ok(requests.length >= 120, `应解析出全部前端请求（实际 ${requests.length} 条）——解析器失效会让后面的断言空转`)
-  for (const file of ['src/api/admin.ts', 'src/api/me.ts', 'src/api/proxy.ts', 'src/api/accounts.ts', 'src/api/sync.ts', 'src/features/models/ModelsPage.vue']) {
+  assert.ok(requests.length >= 100, `应解析出全部前端请求（实际 ${requests.length} 条）——解析器失效会让后面的断言空转`)
+  for (const file of ['src/api/admin.ts', 'src/api/me.ts', 'src/api/proxy.ts', 'src/api/sync.ts', 'src/features/models/ModelsPage.vue']) {
     assert.ok(requests.some(call => call.file === file), `${file} 里没解析到请求`)
   }
   assert.deepEqual(requests.filter(call => call.method === '?').map(label), [], '这些请求的 method 解析不出来（改成字面量 method，或扩展 frontendCalls.ts）')

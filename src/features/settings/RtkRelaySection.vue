@@ -13,7 +13,7 @@ import type { StatusKind } from '../../ui/types'
 
 /**
  * RTK 中转 (#rtk-relay, server/rtkRelay.ts): the relay process in front of the context guard (its own unit,
- * RTK_RELAY_PORT on the host), the global compression switch and what it saved. Shown for both engines.
+ * RTK_RELAY_PORT on the host), the global compression switch and what it saved.
  */
 const emit = defineEmits<{ index: [value: { value: string; hot: boolean } | null] }>()
 

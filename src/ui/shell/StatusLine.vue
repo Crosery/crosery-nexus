@@ -4,20 +4,15 @@ import { RouterLink } from 'vue-router'
 import { useNow } from '../composables/useNow'
 import { clockParts, fmtDuration, fmtInt } from '../fmt'
 import Kbd from '../form/Kbd.vue'
-import Tip from '../form/Tip.vue'
-import { useSharedAdminLive } from '../../shell/useAdminStatus'
 import type { ShellRole, ShellStatus } from '../types'
 
 /**
  * Statusline (DESIGN.md §4.1, desktop ≥960): 24px fixed bottom bar, paper-2, top rule, mono 11px ink-3 with
  * ink-2 values; segments split by │. Admin:
- *   ADMIN │ 网关 ● 94.8 rpm · p95 6.41s │ 同步 ▮▮▯▮▮ … │ magpie 3fe2ff9 · RTK 开 │ ⌘K 命令 · 1–7 跳转 · T 主题 · M 脱敏 │ 14:32:08 CST
+ *   ADMIN │ 网关 ● 94.8 rpm · p95 6.41s │ 同步 ▮▮▯▮▮ … │ cpa v8.0.21 · RTK 开 │ ⌘K 命令 · 1–7 跳转 · T 主题 · M 脱敏 │ 14:32:08 CST
  * Key: KEY │ name │ 今日 $38.20 / $50.00 · 本周 85% · 可用模型 24 │ 1–4 跳转 · T 主题 │ 14:32:11 CST
  * Sync squares: ok ink-3, running blinks, backoff orange, failed an orange diamond; each links to
  * /settings#sync and carries its detail as title.
- * Magpie: `magpie 3fe2ff9`, plus a hollow ring + 落后 when upstream is ahead (a to-do, never orange) or a diamond
- * + 离线; it links to /settings#magpie and the tooltip says what runs, what upstream has and how it follows.
- * Read from the admin shell's own /api/version poll (no second request); without it the plain kernel word stays.
  */
 const props = withDefaults(defineProps<{ role: ShellRole; status?: ShellStatus; syncTo?: string }>(), { status: () => ({}), syncTo: '/settings#sync' })
 const now = useNow()
@@ -26,28 +21,6 @@ const clock = computed(() => {
   return p ? `${p.hour}:${p.minute}:${p.second} CST` : ''
 })
 const gw = computed(() => props.status.gateway ?? null)
-
-const live = useSharedAdminLive()
-const magpie = computed(() => (props.role === 'admin' ? live?.versions.data.value?.cpa.gateway ?? null : null))
-const magpieMark = computed(() => {
-  const m = magpie.value
-  if (!m) return null
-  if (!m.current.running) return { kind: 'bad', word: '离线' }
-  if (m.gap.state === 'behind') return { kind: 'behind', word: m.review.pending ? '待评审' : '落后' }
-  return null
-})
-const magpieTip = computed(() => {
-  const m = magpie.value
-  if (!m) return ''
-  const upstream = [m.upstream.latestRelease, m.upstream.latestCommit?.slice(0, 7)].filter(Boolean).join(' / ')
-  return [
-    `运行 ${m.current.label}${m.current.running ? '' : '（离线）'}`,
-    upstream ? `上游 ${upstream}` : '',
-    m.gap.label === '未知' ? '差距未知' : m.gap.label,
-    m.review.pending ? `契约变化 ${m.review.changes} 项待评审` : '',
-    m.policy.scheduled && m.policy.intervalMs ? `每 ${Math.round(m.policy.intervalMs / 60_000)} 分钟检查 · 不自动替换` : '不自动替换',
-  ].filter(Boolean).join(' · ')
-})
 </script>
 
 <template>
@@ -65,15 +38,9 @@ const magpieTip = computed(() => {
         </span>
         <span v-if="status.syncText" class="ui-sl__txt">{{ status.syncText }}</span>
       </span>
-      <span v-if="magpie || status.kernel || status.rtk != null" class="ui-sl__seg">
-        <Tip v-if="magpie" :content="magpieTip">
-          <RouterLink to="/settings#magpie" class="ui-sl__mag" :aria-label="`网关 Magpie · ${magpieTip}`">
-            magpie <b>{{ magpie.current.label }}</b>
-            <template v-if="magpieMark"><i class="ui-sl__mk" :class="`is-${magpieMark.kind}`" aria-hidden="true" />{{ magpieMark.word }}</template>
-          </RouterLink>
-        </Tip>
-        <template v-else-if="status.kernel">{{ status.kernel }}</template>
-        <template v-if="(magpie || status.kernel) && status.rtk != null"> · </template><template v-if="status.rtk != null">RTK <b>{{ status.rtk ? '开' : '关' }}</b></template>
+      <span v-if="status.kernel || status.rtk != null" class="ui-sl__seg">
+        <template v-if="status.kernel">{{ status.kernel }}</template>
+        <template v-if="status.kernel && status.rtk != null"> · </template><template v-if="status.rtk != null">RTK <b>{{ status.rtk ? '开' : '关' }}</b></template>
       </span>
       <span class="ui-sl__seg ui-sl__keys"><Kbd keys="mod+k" /> 命令 · 1–7 跳转 · T 主题 · M 脱敏</span>
     </template>
@@ -113,10 +80,6 @@ const magpieTip = computed(() => {
 .ui-sl__sq:focus-visible { outline-offset: 1px; }
 .ui-sl__seg > .ui-sl__txt { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-sl__keys .ui-kbd { height: 15px; border-bottom-width: 1px; }
-.ui-sl__mag { display: inline-flex; align-items: center; gap: 5px; color: inherit; text-decoration: none; }
-.ui-sl__mag:hover b { color: var(--ink); }
-.ui-sl__mk { width: 6px; height: 6px; flex: none; border-radius: 50%; border: 1px solid var(--ink-3); }
-.ui-sl__mk.is-bad { border: 0; border-radius: 0; background: var(--signal); transform: rotate(45deg); }
 .ui-sl__clock { flex: none; margin-left: auto; border-right: 0; color: var(--ink-2); }
 :root[data-hidden] .ui-sl__sq.is-running { animation-play-state: paused; }
 @media (max-width: 1279px) { .ui-sl__keys { display: none; } }

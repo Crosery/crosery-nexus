@@ -9,8 +9,8 @@ export type ChannelView = {
   keyCount: number
   enabled: boolean
   /**
-   * 上游协议：'responses' = 渠道配了 Responses 原生中继（CPA 的 relay-mode /
-   * Magpie registry 的 protocol）；挂在 claude-api-key 等原生端点下的是 'claude'；
+   * 上游协议：'responses' = 渠道配了 Responses 原生中继（CPA 的 relay-mode）；
+   * 挂在 claude-api-key 等原生端点下的是 'claude'；
    * 其余兼容渠道是 'openai'。
    */
   protocol: ChannelProtocolView
@@ -54,8 +54,7 @@ export function mergeChannelView(
     .map((channel) => {
       const name = String(channel.name || '')
       const enabled = liveNames.has(name) && channel.disabled !== true
-      // Responses 中继有两个内核词汇：CPA 的 relay-mode 与 Magpie registry 的 protocol。
-      const relayMode = String(channel['relay-mode'] || '') === 'responses' || String(channel.protocol || '') === 'responses'
+      const relayMode = String(channel['relay-mode'] || '') === 'responses'
       const protocol: ChannelProtocolView = relayMode ? 'responses'
         : channel.__providerEndpoint === 'claude-api-key' ? 'claude'
         : 'openai'

@@ -5,8 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import {
-  accountTypes, adoptCpa, applierPaths, applyAcceptance, applyCpa, classifyInstall, configAuthDir, configLayout, decideCpa, decideMagpie, emptyState, ingestCpa,
-  normalizeConfig, parseAcceptance, parseCpaReport, parseMagpieReport, parseProbeModels, parsePromotion, pickProbeModel, probeCommand, promotionProblems,
+  accountTypes, adoptCpa, applierPaths, applyAcceptance, applyCpa, classifyInstall, configAuthDir, configLayout, decideCpa, emptyState, ingestCpa,
+  normalizeConfig, parseAcceptance, parseCpaReport, parseProbeModels, parsePromotion, pickProbeModel, probeCommand, promotionProblems,
   probeService, promotionRecord, readProbeKeys, readState, runAuto, runProbes, sameMajor, startTrial, trialTick, windowState, withLock,
 } from './kernel-applier.mjs'
 import { canonicalChannelName, ensureProbeKeys } from '../server/systemKeys.ts'
@@ -39,7 +39,6 @@ const staged = (version, over = {}) => ({ ...emptyState('cpa'), staged: { versio
 test('config: missing = on, default window 05:00–07:00 Asia/Shanghai; bad windows fall back', () => {
   const value = normalizeConfig(null)
   assert.equal(value.cpa.enabled, true)
-  assert.equal(value.magpie.enabled, true)
   assert.deepEqual(value.window, { start: '05:00', end: '07:00', tz: 'Asia/Shanghai' })
   assert.equal(normalizeConfig({ cpa: { enabled: false } }).cpa.enabled, false)
   assert.deepEqual(normalizeConfig({ window: { start: '05:00', end: '05:00' } }).window, value.window)
@@ -111,15 +110,6 @@ test('decideCpa: every reason not to apply, then apply only inside the window', 
   assert.deepEqual([inside.action, inside.version], ['apply', NEXT])
 })
 
-test('decideMagpie: standby needs no window, once per revision', () => {
-  const rev = 'b'.repeat(40)
-  const state = { ...emptyState('magpie'), staged: { revision: rev, sha256: 'a'.repeat(64) } }
-  assert.equal(decideMagpie({ config: config({ magpie: { enabled: false } }), state }).why, 'disabled')
-  assert.equal(decideMagpie({ config: config(), state }).action, 'apply')
-  assert.equal(decideMagpie({ config: config(), state: { ...state, installed: { revision: rev } } }).why, 'up-to-date')
-  assert.equal(decideMagpie({ config: config(), state: { ...state, attempts: { [rev]: 1 } } }).why, 'attempted')
-})
-
 test('reports: strict shapes; a "built" report needs a candidate', () => {
   const ok = { version: 1, kernel: 'cpa', status: 'built', checkedAt: '2026-10-03T00:00:00Z', upstreamLatest: 'v8.1.0', line: 'v8.0', base: 'v8.0.12',
     heldNewer: { tag: 'v8.1.0', text: '跨 minor' }, candidate: { version: MAJOR, sha256: 'c'.repeat(64), tag: 'v8.0.12', checks: [{ name: 'models', ok: true }] } }
@@ -134,7 +124,6 @@ test('reports: strict shapes; a "built" report needs a candidate', () => {
   assert.equal(parseCpaReport({ ...ok, status: 'rm -rf' }), null)
   assert.equal(parseCpaReport({ ...ok, candidate: { ...ok.candidate, version: '8.0.12; reboot' } }), null)
   assert.equal(parseCpaReport({ ...ok, status: 'held', candidate: null }).status, 'held')
-  assert.equal(parseMagpieReport({ version: 1, kernel: 'magpie', status: 'built', checkedAt: '2026-10-03T00:00:00Z', candidate: { revision: 'b'.repeat(40), sha256: 'c'.repeat(64) } }).candidate.revision, 'b'.repeat(40))
 })
 
 test('classifyInstall: cpa-install-binary.sh outcomes', () => {
@@ -165,11 +154,10 @@ test('lock: a live holder makes the second run busy; a dead holder is taken over
 async function relay({ running = RUNNING, install = { code: 0 }, role = 'production' } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kar-'))
   const env = { KERNEL_DATA_DIR: path.join(dir, 'data'), KERNEL_LIB_DIR: path.join(dir, 'lib'), CPA_BINARY: path.join(dir, 'cli-proxy-api'),
-    CPA_INSTALL: path.join(dir, 'install.sh'), CPA_HOLD_FILE: path.join(dir, 'hold'), CPA_CONFIG: path.join(dir, 'config.yaml'), MAGPIE_STANDBY_DIR: path.join(dir, 'magpie'),
+    CPA_INSTALL: path.join(dir, 'install.sh'), CPA_HOLD_FILE: path.join(dir, 'hold'), CPA_CONFIG: path.join(dir, 'config.yaml'),
     AUTOUPDATE_ROLE: role }
   const paths = applierPaths(env)
   await fs.mkdir(paths.cpa.inbox, { recursive: true })
-  await fs.mkdir(paths.magpie.inbox, { recursive: true })
   await fs.mkdir(paths.requests, { recursive: true })
   // `probe`: what the hook would have written for each phase (the real hook is tested on its own below)
   const world = { running, active: true, installs: [], install, probe: { baseline: true, verify: true } }
@@ -374,38 +362,26 @@ test('rollback request: back through the install script; across a major only whi
   await m.close()
 })
 
-test('magpie standby: staged → smoke → current; a failed smoke leaves current alone; rollback flips back', async () => {
+test('leftovers of the retired standby kernel are ignored: config key, state file, inbox, rollback request', async () => {
   const r = await relay()
-  const one = '1'.repeat(40)
-  const two = '2'.repeat(40)
-  const drop = async revision => {
-    await fs.writeFile(path.join(r.paths.magpie.inbox, `${revision}.bin`), `kernel ${revision}`)
-    await fs.writeFile(path.join(r.paths.magpie.inbox, 'report.json'), JSON.stringify({ version: 1, kernel: 'magpie', status: 'built', checkedAt: new Date(bj(1)).toISOString(), candidate: { revision, sha256: sha(`kernel ${revision}`) } }))
-  }
-  let smokeOk = true
-  const deps = { run: r.runner, now: () => bj(12), smoke: async () => ({ ok: smokeOk, checks: [{ name: 'health', ok: smokeOk }] }) }
-  await drop(one)
-  await runAuto({ paths: r.paths, deps })
-  assert.equal(await fs.readlink(path.join(r.paths.magpie.root, 'current')), path.join('releases', one.slice(0, 12)))
-  await drop(two)
-  smokeOk = false
-  await runAuto({ paths: r.paths, deps })
-  assert.equal(await fs.readlink(path.join(r.paths.magpie.root, 'current')), path.join('releases', one.slice(0, 12)))
-  assert.equal((await readState(r.paths, 'magpie')).lastApply.result, 'failed')
-  // a new build of the same revision is not retried automatically; a fixed one arrives as a new revision
-  const three = '3'.repeat(40)
-  smokeOk = true
-  await drop(three)
-  await runAuto({ paths: r.paths, deps })
-  let state = await readState(r.paths, 'magpie')
-  assert.deepEqual([state.installed.revision, state.applied.previous, state.applied.previousRevision], [three, one.slice(0, 12), one])
+  const legacy = { version: 1, kernel: 'magpie', role: 'standby', installed: { revision: '1'.repeat(40) } }
+  await fs.mkdir(r.paths.states, { recursive: true })
+  await fs.writeFile(r.paths.config, JSON.stringify({ version: 1, cpa: { enabled: true }, magpie: { enabled: true }, window: { start: '05:00', end: '07:00' } }))
+  await fs.writeFile(path.join(r.paths.states, 'magpie.json'), JSON.stringify(legacy))
+  const inbox = path.join(r.paths.lib, 'magpie/inbox')
+  await fs.mkdir(inbox, { recursive: true })
+  await fs.writeFile(path.join(inbox, 'report.json'), JSON.stringify({ version: 1, kernel: 'magpie', status: 'built' }))
   await fs.writeFile(path.join(r.paths.requests, 'rollback-magpie.json'), JSON.stringify({ confirm: true }))
-  await runAuto({ paths: r.paths, deps })
-  assert.equal(await fs.readlink(path.join(r.paths.magpie.root, 'current')), path.join('releases', one.slice(0, 12)))
-  state = await readState(r.paths, 'magpie')
-  assert.equal(state.lastApply.result, 'rolled-back-manually')
-  assert.equal(state.installed.revision, one)
-  assert.equal(state.decision.why, 'attempted')
+  await r.drop(NEXT)
+  const out = await runAuto({ paths: r.paths, deps: { run: r.runner, now: () => bj(5, 10) } })
+  assert.deepEqual(Object.keys(out).sort(), ['config', 'cpa', 'log', 'running'])
+  assert.deepEqual(Object.keys(out.config).sort(), ['cpa', 'version', 'window'])
+  assert.deepEqual(out.log, [`cpa: staged ${NEXT}`, { kernel: 'cpa', action: 'apply', version: NEXT, result: 'applied' }])
+  assert.deepEqual(await fs.readdir(r.paths.requests), [])
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(r.paths.states, 'magpie.json'), 'utf8')), legacy)
+  assert.deepEqual(await fs.readdir(inbox), ['report.json'])
+  const dry = await runAuto({ dryRun: true, paths: r.paths, deps: { run: r.runner, now: () => bj(5, 20) } })
+  assert.deepEqual(Object.keys(dry).sort(), ['config', 'cpa', 'dryRun', 'role', 'running'])
   await r.close()
 })
 

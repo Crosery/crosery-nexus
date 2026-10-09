@@ -2,12 +2,11 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { config, positiveInteger } from './config.js'
+import { fileBackedSecret, positiveInteger } from './config.js'
 import { CompatChannelsConflictError, compatChannelsFingerprint, getCompatChannels, getGlobalProxy, putCompatChannels, type CompatChannel } from './cpa.js'
 import { invalidateGatewaySnapshot } from './channels.js'
 import { modelDiscoveryUrls, normalizeDiscoveredModels, defaultModelAlias, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { db } from './db.js'
-import { readMagpieChannels, resolveMagpieCredential, resolveMagpieSecret, writeChannels } from './magpieControl.js'
 import { applySharedPricing, type PriceSourceId, type SourcePrice } from './pricing.js'
 import { SYNC_POLICY, upstreamLimiter } from './syncRegistry.js'
 
@@ -142,7 +141,7 @@ export const DISCOVERY_POLICY = {
   /** 一直拿不到模型列表的渠道：探测间隔逐次翻倍，最多 24h 一次。 */
   emptyMaxIntervalMs: 24 * 60 * MINUTE,
   timeoutMs: 6_000,
-  /** 与 `validateMagpieChannels` 的单渠道上限一致；超出会让整份渠道表写入失败。 */
+  /** applyAdditions 的单渠道默认上限：超出的不写入，如实报告。 */
   maxModelsPerChannel: 500,
 }
 
@@ -188,7 +187,7 @@ export type SyncChannel = {
   protocol?: ChannelProtocol
   /** 推理实际走的代理（非 direct 时才有值）。 */
   proxy?: string | null
-  /** 渠道自定义请求头：值是原文或 `env:NAME` 引用（Magpie 只允许引用）。 */
+  /** 渠道自定义请求头：值是原文或 `env:NAME` 引用。 */
   headers?: Record<string, string>
 }
 
@@ -487,7 +486,7 @@ export function applyAdditions<T extends { name?: string; disabled?: boolean; mo
 }
 
 const effectiveProxy = (keyProxy: unknown, channelProxy: unknown): string | null => {
-  // 与 magpieEngine.mapMagpieRoutes 相同的优先级：key 上的代理 > 渠道代理 > 直连。
+  // key 上的代理 > 渠道代理 > 直连。
   const value = String(keyProxy || channelProxy || '').trim()
   return value && value.toLowerCase() !== 'direct' ? value : null
 }
@@ -498,38 +497,13 @@ const stringRecord = (value: unknown): Record<string, string> | undefined => {
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
-function magpieStore(): ChannelStore {
-  return {
-    read: async () => readMagpieChannels().map((channel) => {
-      const entry = channel['api-key-entries']?.[0]
-      return {
-        name: channel.name,
-        baseUrl: channel['base-url'],
-        disabled: Boolean(channel.disabled),
-        keyRef: entry?.['api-key'],
-        protocol: channel.protocol === 'anthropic' ? 'claude' as const : 'openai' as const,
-        proxy: effectiveProxy(entry?.['proxy-url'], channel['proxy-url']),
-        headers: channel.headers,
-        models: channel.models.map(model => ({ name: model.name, ...(model.alias ? { alias: model.alias } : {}) })),
-      }
-    }),
-    // 读与写之间没有 await：同进程里的其它写入者不可能插进来。
-    commit: async (additions, guard) => {
-      const channels = readMagpieChannels()
-      const result = applyAdditions(channels, additions, DISCOVERY_POLICY.maxModelsPerChannel, guard?.blocked?.())
-      if (result.added.length) writeChannels(channels)
-      return result
-    },
-  }
-}
-
 const CPA_COMMIT_ATTEMPTS = 3
 
 /** 读不到 CPA 全局代理时的占位：出口未知，按「走代理」保守跳过，不直连探测。 */
 export const UNKNOWN_PROXY = 'unknown'
 
 /**
- * CPA 控制面的渠道：推理的出口是 key 代理 > 渠道代理 > **CPA 全局代理** > 直连（magpieRuntime 的 CPA 分支同一规则）。
+ * CPA 控制面的渠道：推理的出口是 key 代理 > 渠道代理 > **CPA 全局代理** > 直连。
  * `globalProxy` 为 null 表示全局代理读取失败：没有显式代理的渠道出口未知，标成 UNKNOWN_PROXY。
  */
 export function cpaSyncChannel(channel: CompatChannel, globalProxy: string | null): SyncChannel {
@@ -576,36 +550,29 @@ function cpaStore(): ChannelStore {
   }
 }
 
-async function pushKernelProviders(): Promise<void> {
-  if (!(config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local')) return
-  try {
-    const { magpieRoutes } = await import('./magpieRuntime.js')
-    const { kernelJSON } = await import('./magpieEngine.js')
-    const { accountPicks } = await import('./magpieAccountProxies.js')
-    const routes = await magpieRoutes()
-    // a push replaces the kernel's whole provider list: the per-account exit picks ride along
-    await kernelJSON(config.magpieKernelSocket, '/internal/providers', 'PUT', [...routes.map(route => route.provider), ...accountPicks()])
-  } catch {
-    // 内核没起时渠道已经落盘，下次请求自然读到
-  }
+/** `env:NAME` → that variable (or the file named by NAME_FILE); throws when it is not a reference or not set. */
+export function resolveEnvSecret(reference: string, env: NodeJS.ProcessEnv = process.env): string {
+  const match = /^env:([A-Z_][A-Z0-9_]*)$/.exec(reference)
+  if (!match) throw new Error('Channel credentials resolve only env:NAME references')
+  const value = fileBackedSecret(match[1], env[match[1]], env[`${match[1]}_FILE`])
+  if (!value || /[\r\n]/.test(value)) throw new Error('Referenced channel credential is unavailable')
+  return value
 }
 
 function defaultDeps(): Required<ModelSyncDeps> {
-  const local = config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local'
   return {
     now: Date.now,
     random: Math.random,
     fetch: (input, init) => globalThis.fetch(input, init),
-    resolveCredential: resolveMagpieCredential,
-    resolveSecret: (reference) => resolveMagpieSecret(reference),
+    resolveCredential: async (reference) => resolveEnvSecret(reference),
+    resolveSecret: (reference) => resolveEnvSecret(reference),
     countRequest: () => undefined,
     readCatalog: readSharedCatalog,
-    store: local ? magpieStore() : cpaStore(),
+    store: cpaStore(),
     disabledModels: readDisabledModels,
     limit: (task) => upstreamLimiter.run(task),
     afterWrite: async () => {
       invalidateGatewaySnapshot()
-      await pushKernelProviders()
     },
     catalogTarget: process.env.MODEL_SYNC_CATALOG_TARGET || '',
   }

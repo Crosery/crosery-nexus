@@ -121,12 +121,10 @@ test('静态文本压缩：三态协商 / 完整性 / 边界不被破坏', { tim
       HOST: '127.0.0.1',
       CPA_BASE_URL: 'http://127.0.0.1:9',
       CPA_MANAGEMENT_KEY: 'test-management-key',
-      MAGPIE_CONTROL_PLANE: 'local',
       CONSOLE_USERNAME: 'admin',
       CONSOLE_PASSWORD: 'test-password',
       SESSION_SECRET: 'test-session-secret',
       COOKIE_SECURE: 'false',
-      GATEWAY_ENGINE: 'cpa',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

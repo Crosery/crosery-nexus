@@ -3,22 +3,8 @@ import { CliError } from '../args.mjs'
 import { channelState, providersOf } from '../ops.mjs'
 import { count, percent, time, tokens, usd } from '../ui.mjs'
 
-export function magpieSummary(cpa) {
-  const gateway = cpa?.gateway
-  if (!gateway) return cpa ? { engine: cpa.engine || 'cpa', version: cpa.version || '', commit: cpa.commit || '' } : null
-  return {
-    engine: cpa.engine,
-    label: gateway.current?.label ?? null,
-    commit: gateway.current?.commit ?? null,
-    release: gateway.current?.release ?? null,
-    running: Boolean(gateway.current?.running),
-    latestRelease: gateway.upstream?.latestRelease ?? null,
-    gap: gateway.gap?.label ?? null,
-    commitsBehindAtLeast: gateway.gap?.commitsAtLeast ?? null,
-    checkedAt: gateway.upstream?.checkedAt ?? null,
-    overdue: Boolean(gateway.upstream?.overdue),
-    checkFailed: Boolean(gateway.upstream?.failed),
-  }
+export function gatewaySummary(cpa) {
+  return cpa ? { version: cpa.version || '', commit: cpa.commit || '' } : null
 }
 
 export function keyStats(bootstrap) {
@@ -61,10 +47,10 @@ const settle = async promise => {
 export default {
   name: 'status',
   aliases: ['st'],
-  summary: '总览：网关与 Magpie 版本、同步、渠道、Key、账号、今日用量',
+  summary: '总览：控制台与网关版本、同步、渠道、Key、账号、今日用量',
   help: `cradmin status [--json]
 
-一屏总览：控制台与 Magpie 内核版本、Key 统计、渠道与账号池、同步任务、今日用量。
+一屏总览：控制台与网关版本、Key 统计、渠道与账号池、同步任务、今日用量。
 每一节独立读取，某节失败只显示「! 读取失败」，不影响其它节。
 `,
   options: {},
@@ -81,7 +67,7 @@ export default {
     const pick = (result, map) => (result.ok ? map(result.value) : { error: result.error })
     const data = {
       target: { profile: ctx.target.profile, base: ctx.target.base, remote: ctx.target.remote },
-      version: pick(version, value => ({ console: value.console || null, magpie: magpieSummary(value.cpa) })),
+      version: pick(version, value => ({ console: value.console || null, gateway: gatewaySummary(value.cpa) })),
       keys: pick(bootstrap, keyStats),
       channels: pick(channels, channelStats),
       accounts: pick(channels, accountStats),
@@ -103,17 +89,8 @@ function render(ctx, data) {
   else {
     const consoleVersion = data.version.console
     ui.kv('控制台', consoleVersion ? `${consoleVersion.version || '-'}${consoleVersion.releaseId ? `（${consoleVersion.releaseId}）` : ''}` : '-')
-    const magpie = data.version.magpie
-    if (magpie?.label !== undefined) {
-      const parts = [magpie.label || '未知', magpie.running ? '运行中' : '未运行']
-      if (magpie.latestRelease) parts.push(`上游最新 ${magpie.latestRelease}`)
-      if (magpie.gap) parts.push(magpie.commitsBehindAtLeast ? `${magpie.gap}（落后至少 ${magpie.commitsBehindAtLeast} 个提交）` : magpie.gap)
-      if (magpie.checkFailed) parts.push('上次检查失败')
-      if (magpie.overdue) parts.push('检查已逾期')
-      ui.kv('Magpie', parts.join(' · '))
-    } else if (magpie) {
-      ui.kv('网关', `${magpie.engine} ${magpie.version || ''}`.trim())
-    }
+    const gateway = data.version.gateway
+    if (gateway) ui.kv('网关', `cpa ${gateway.version || ''}`.trim())
   }
 
   ui.section('API Key')

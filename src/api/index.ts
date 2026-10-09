@@ -3,7 +3,6 @@ import { request } from './http'
 import { adminApi } from './admin'
 import { meApi } from './me'
 import { rtkGlobalApi, rtkRelayApi, syncApi } from './sync'
-import { accountsApi } from './accounts'
 import { proxyApi } from './proxy'
 
 export { ApiError, setAuthHooks } from './http'
@@ -25,6 +24,5 @@ export const api = {
   sync: syncApi,
   rtkGlobal: rtkGlobalApi,
   rtkRelay: rtkRelayApi,
-  accounts: accountsApi,
   proxies: proxyApi,
 }

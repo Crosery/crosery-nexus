@@ -5,7 +5,7 @@ import { fmtReset, HOT_RATIO, type WindowView } from './model'
 
 /**
  * One quota window inline: `5H ▮▮▮▮▮▯▯ 88% ↻ 15:10`. The meter always draws USED (one redline language
- * everywhere); 已用 | 剩余 only switches the figure, as Magpie's Used/Left toggle does.
+ * everywhere); 已用 | 剩余 only switches the figure.
  */
 const props = withDefaults(defineProps<{ win: WindowView; mode: 'used' | 'left'; width?: number; now: number; full?: boolean }>(), {
   width: 56,

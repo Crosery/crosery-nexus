@@ -88,8 +88,6 @@ async function startHarness(stubPort: number): Promise<Harness> {
       HOST: '127.0.0.1',
       CPA_BASE_URL: `http://127.0.0.1:${stubPort}`,
       CPA_MANAGEMENT_KEY: 'test-management-key',
-      MAGPIE_CONTROL_PLANE: 'local',
-      MAGPIE_PORT: String(stubPort),
       CONSOLE_USERNAME: 'admin',
       CONSOLE_PASSWORD: 'test-password',
       SESSION_SECRET: 'test-session-secret',

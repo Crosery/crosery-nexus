@@ -1,10 +1,7 @@
 import './testDataDir.js'
 
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
 import test from 'node:test'
-import { testDataDir } from './testDataDir.js'
 import { config } from './config.js'
 import { db } from './db.js'
 import {
@@ -215,39 +212,6 @@ test('Retry-After 支持秒数与 HTTP 日期', () => {
 })
 
 /* ────────────────────────── 写入：重读后追加，不覆盖并发改动 ────────────────────────── */
-
-test('真实 magpie 渠道表：探测期间管理员的改动不会被旧快照覆盖', async () => {
-  const file = path.join(testDataDir, 'magpie-channels-race.json')
-  const original = { engine: config.gatewayEngine, plane: config.magpieControlPlane, file: config.magpieChannelsFile }
-  config.gatewayEngine = 'magpie'
-  config.magpieControlPlane = 'local'
-  config.magpieChannelsFile = file
-  const write = (channels: unknown) => fs.writeFileSync(file, `${JSON.stringify({ version: 1, channels }, null, 2)}\n`)
-  write([
-    { name: 'up', 'base-url': 'https://up.example.test/v1', 'api-key-entries': [{ 'api-key': 'env:GOOD_KEY' }], models: [{ name: 'old-model' }] },
-    { name: 'other', 'base-url': 'https://other.example.test/v1', 'api-key-entries': [{ 'api-key': 'env:OTHER_KEY' }], models: [{ name: 'keep' }], disabled: true },
-  ])
-  try {
-    const { fetch } = fakeFetch(() => {
-      // 探测进行中，管理员启用了 other 并给 up 加了一个模型
-      write([
-        { name: 'up', 'base-url': 'https://up.example.test/v1', 'api-key-entries': [{ 'api-key': 'env:GOOD_KEY' }], models: [{ name: 'old-model' }, { name: 'admin-added' }] },
-        { name: 'other', 'base-url': 'https://other.example.test/v1', 'api-key-entries': [{ 'api-key': 'env:OTHER_KEY' }], models: [{ name: 'keep' }] },
-      ])
-      return modelsResponse('old-model', 'new-model')
-    })
-    const result = await syncUpstreamModels({ state: {}, deps: deps({ fetch }) })
-    assert.deepEqual(result.addedModels, ['new-model'])
-    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { channels: Array<{ name: string; disabled?: boolean; models: Array<{ name: string }> }> }
-    const up = saved.channels.find(item => item.name === 'up')!
-    assert.deepEqual(up.models.map(model => model.name), ['old-model', 'admin-added', 'new-model'])
-    assert.equal(saved.channels.find(item => item.name === 'other')!.disabled, undefined)
-  } finally {
-    config.gatewayEngine = original.engine
-    config.magpieControlPlane = original.plane
-    config.magpieChannelsFile = original.file
-  }
-})
 
 test('单渠道模型数受 500 上限保护：超出部分不写入并如实报告', () => {
   const channels = [{ name: 'big', models: Array.from({ length: 499 }, (_, index) => ({ name: `m-${index}` })) }]
@@ -504,30 +468,6 @@ test('SB-25 走代理的渠道不直连探测；自定义请求头按引用解�
   assert.match(result.summary, /代理 1 未探测/)
 })
 
-test('SB-25 magpie 渠道表的代理/请求头/协议进入探测视图（key 上的代理优先，direct 视为直连）', async () => {
-  const file = path.join(testDataDir, 'magpie-channels-proxy.json')
-  const original = { engine: config.gatewayEngine, plane: config.magpieControlPlane, file: config.magpieChannelsFile }
-  config.gatewayEngine = 'magpie'
-  config.magpieControlPlane = 'local'
-  config.magpieChannelsFile = file
-  fs.writeFileSync(file, `${JSON.stringify({ version: 1, channels: [
-    { name: 'keyproxy', 'base-url': 'https://a.example.test/v1', 'api-key-entries': [{ 'api-key': 'env:GOOD_KEY', 'proxy-url': 'http://127.0.0.1:7890' }], models: [{ name: 'a' }] },
-    { name: 'direct', 'base-url': 'https://b.example.test', 'proxy-url': 'http://127.0.0.1:7890', 'api-key-entries': [{ 'api-key': 'env:GOOD_KEY', 'proxy-url': 'direct' }], models: [{ name: 'b' }], protocol: 'anthropic' },
-  ] }, null, 2)}\n`)
-  try {
-    const { fetch, calls } = fakeFetch(() => modelsResponse('b', 'b2'))
-    const result = await syncUpstreamModels({ state: {}, deps: deps({ fetch }) })
-    assert.equal(result.proxied, 1)
-    assert.deepEqual(calls.map(call => call.url), ['https://b.example.test/v1/models'])
-    assert.equal(calls[0].headers.get('x-api-key'), 'resolved-secret')
-    assert.deepEqual(result.addedModels, ['b2'])
-  } finally {
-    config.gatewayEngine = original.engine
-    config.magpieControlPlane = original.plane
-    config.magpieChannelsFile = original.file
-  }
-})
-
 test('SB-19 状态文件里的坏条目：null 渠道/主机、离谱时间都被清洗，运行与同步中心视图不抛错', async () => {
   const clock = { now: 90_000_000 }
   const state = {
@@ -556,8 +496,7 @@ test('SB-19 状态文件里的坏条目：null 渠道/主机、离谱时间都�
 })
 
 test('SB-03 CPA 渠道表：写入前复读比对，管理员在探测期间的改动不会被整表 PUT 覆盖；持续冲突就放弃本轮', async () => {
-  const original = { fetch: globalThis.fetch, engine: config.gatewayEngine, key: config.cpaManagementKey, base: config.cpaBaseUrl }
-  config.gatewayEngine = 'cpa'
+  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl }
   config.cpaManagementKey = 'fixture-management-key'
   config.cpaBaseUrl = 'https://cpa.example.test'
   let table: Array<Record<string, unknown>> = [
@@ -603,7 +542,6 @@ test('SB-03 CPA 渠道表：写入前复读比对，管理员在探测期间的�
     assert.ok(conflicted.errors.some(error => error.includes('反复被修改')))
   } finally {
     globalThis.fetch = original.fetch
-    config.gatewayEngine = original.engine
     config.cpaManagementKey = original.key
     config.cpaBaseUrl = original.base
   }

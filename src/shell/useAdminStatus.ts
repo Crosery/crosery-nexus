@@ -4,7 +4,7 @@
  * - /api/pulse     2s   header trace + 网关 rpm · p95 · 成功率 (the trace redraws once per sample)
  * - /api/sync/status 30s sync squares, backoff text, 立即同步 cooldowns
  * - /api/rtk/global  60s `RTK 开/关`
- * - /api/version     5m  `magpie 3fe2ff9`
+ * - /api/version     5m  `cpa v8.0.21`
  * None of these reach an upstream: they read console state only.
  */
 import { computed, inject, provide, ref, watch, type InjectionKey } from 'vue'
