@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-root=/home/crosery/cpe-console-shadow
-release=/home/crosery/cpe-console-releases/20260831T195446Z-low-latency-v2
+root=$HOME/cpe-console-shadow
+release=$HOME/cpe-console-releases/20260831T195446Z-low-latency-v2
 envfile=$root/data-plane.env
 compose=$release/deploy/data-plane/compose.yaml
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)

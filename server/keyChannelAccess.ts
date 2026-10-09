@@ -16,7 +16,7 @@ import type { KeyAccessRow } from './keyModelAccess.js'
  * `SanitizeAPIKeyChannelAccess` 会删掉不在 `api-keys` 里的条目，而额度超限停用
  * （quotaEnforcer 把 Key 从 api-keys 摘掉）或人工停用都会触发这一步。若只接管已有条目，
  * 这把 Key 恢复启用后条目再也回不来，就退化成「无条目 = 不限渠道」——
- * 2026-09-07 非雨被额度停用又恢复后，gpt-6-astra 有 460 次绕过 codex 打到了
+ * 2026-09-07 某个 Key 被额度停用又恢复后，gpt-6-astra 有 460 次绕过 codex 打到了
  * priority 更高的 mox-aigw 上，就是这么来的。**失效方向必须是拒绝，不能是放开。**
  *
  * 两条边界仍然保留：

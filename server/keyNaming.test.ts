@@ -20,7 +20,7 @@ test('extracts semantic names but ignores legacy random-only keys', () => {
 })
 
 test('derives a valid key slug from a display name', () => {
-  assert.equal(deriveKeySlug('伊吹 Production API'), 'production-api')
+  assert.equal(deriveKeySlug('示例 Production API'), 'production-api')
   assert.equal(deriveKeySlug('Grok 用户'), 'grok')
   assert.equal(deriveKeySlug('中文名称'), 'api-key')
   assert.equal(deriveKeySlug(''), 'api-key')

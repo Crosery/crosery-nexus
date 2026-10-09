@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-root=/home/crosery/cpe-console-shadow
-release=/home/crosery/cpe-console-releases/20260831T195446Z-low-latency-v2
+root=$HOME/cpe-console-shadow
+release=$HOME/cpe-console-releases/20260831T195446Z-low-latency-v2
 exec 9>"$root/.wal-webdav.lock"
 flock -n 9 || exit 0
 
