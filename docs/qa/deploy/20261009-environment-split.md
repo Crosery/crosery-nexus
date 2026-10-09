@@ -7,9 +7,10 @@
 | 阶段 | 状态 |
 |---|---|
 | 1 仓库与发布方式 | 完成 [verified] |
-| 2 预发布环境 | 主机、CPA、控制台、账号、RTK 中转完成 [verified]；预发布 API 域名 DNS、控制台 CDN 回源、外网验收未完成 |
-| 3 自动更新 | 六项都已合入并在预发布运行 [verified]；CPA 程序首个候选在预发布浸泡中 |
-| 4 功能 | 供应商页、CLI 树形输出、契约测试、Antigravity 调优已合入；其余见文末 |
+| 2 预发布环境 | 完成 [verified]：独立主机、CPA、控制台、账号、RTK 中转、API 域名 DNS、控制台 CDN 回源、外网验收 `api=passed` |
+| 3 自动更新 | 六项都已合入；预发布与正式都按角色运行 [verified]；CPA 程序首个候选在预发布浸泡中，正式等晋级记录 |
+| 4 功能 | 供应商页、CLI 树形输出、契约测试、Antigravity 调优、按钮逐个验证已合入并随 `v0.2.0` 上正式；其余见文末 |
+| 正式发布 | `v0.2.0`（与 `v0.2.0-rc.10` 同一提交）已上正式，RTK 中转接入正式 API [verified] |
 
 ## 阶段 1：仓库与发布方式
 
@@ -30,6 +31,8 @@
 | 21:29 | deploy rc.7 | success | 供应商页、CLI 树形输出、契约测试、CPA 流水线与 RTK 自动升级 |
 | 21:38 | deploy rc.8 | success | RTK 中转独立进程；中转 unit 未装，发布脚本判定 `skip` |
 | 21:51 | deploy rc.9 | success | 可复现构建、验收三态；中转代码未变，判定 `keep`，没有重启中转 |
+| 23:29 | deploy rc.10 | success | 按钮逐个验证的 14 个修复；中转 `keep` |
+| 10-09 01:36 | accept preview | `api=passed` | 公网：控制台身份、页面与静态资源、登录态；网关 `/v1/models` 41 个；两个模型各 JSON / SSE / 工具往返 |
 
 每次切换后 4 秒内健康（`/api/public/release` 的提交号一致，`/api/session` 与 `/` 均 200）。
 
@@ -72,9 +75,22 @@
 
 | 时间 (Asia/Shanghai) | 改动 | 方式 | 结果 |
 |---|---|---|---|
+| 10-09 09:37 | 删除正式机上旧的预发布站点（两个 vhost）与证书 | 先备份站点文件与证书目录到归档；`nginx -t` 通过后 reload | 正式控制台与 API 应答不变 [verified] |
+| 10-09 09:39 | 主机角色 `/etc/crosery/autoupdate.env`（production）、`/etc/cli-proxy-api/install.env`（沿用原安装脚本的 AGY 门禁与被监视凭据）、新控制台 unit | 原 unit 备份到归档；只 `daemon-reload`，没有重启 | 控制台继续运行 [verified] |
+| 10-09 09:51 | 控制台库备份 | `VACUUM INTO`（低优先级 IO，不停服务），`quick_check` ok，Key 数与线上一致 | [verified] |
+| 10-09 09:55 | 控制台 `v0.2.0` | `release deploy production v0.2.0`；门禁核对了预发布部署与 `api=passed` 验收 | 3 秒内健康；CPA 的 14 把用户 Key 与改前快照逐把比对，模型与渠道权限没有变化；首轮可用性：5 个服务在线、无告警，新增 5 把只钉在本服务的探测 Key [verified] |
+| 10-09 10:03 | CPA/RTK 自动更新 unit、安装脚本、构建机网关（`production` 角色）、CPA 停止超时 drop-in | 原文件备份到归档；不重启 CPA（drop-in 只在下次停止时生效） | applier：`up-to-date`、角色 production、下个窗口 05:00；RTK 已是最新；构建机经网关 `cpa-version` / `cpa-state` 正常，任意命令 `denied` [verified] |
+| 10-09 10:05 | RTK 中转 unit 上线（端口 8792，指向 8316） | 先只监听，不接流量；回环金丝雀：模型列表、JSON、SSE 与直连 guard 结果一致 | [verified] |
+| 10-09 10:06 | API 站点 `location /` 改为中转在前、guard 后备 | 改前站点文件备份到归档；`nginx -t` 通过后 reload | 见下方观察 |
 | 10-09 06:09 | 重试参数：`max-retry-credentials` 4 → 0，`max-retry-interval` 180 → 8（与预发布调优结论一致，见 `20261009-antigravity-tuning.md`） | 管理接口写入，配置文件仍是旧布局，只有这两行变化；改前备份在 `<正式机>` 归档目录 | 改前 30 分钟 `/v1*` 626 个请求、失败 4 个（0.64%）；改后 12 分钟 239 个、失败 0 [verified] |
 
-正式 CPA 程序、控制台版本、nginx 未改动。
+正式 CPA 程序没有替换，仍是 `8.0.13-patched.7b53aee6`。它要等预发布候选浸泡期满、写出晋级记录后，才会在 05:00–07:00 自动替换。
+
+正式回滚入口：
+
+- 控制台：`release rollback production`，回到 `20261006-responses-relay`。
+- 中转：把 API 站点 `proxy_pass` 改回 `http://127.0.0.1:8316` 并 reload，或 `systemctl stop crosery-rtk-relay`（新请求自动走 guard 后备）。
+- 主机部件：都在 `<正式机>` 的归档目录里。
 
 ## 回滚入口
 
@@ -82,9 +98,15 @@
 - 预发布 CPA：`/usr/local/bin/cli-proxy-api.<版本>` 为上一版二进制，`/etc/cli-proxy-api/config.yaml.before-*` 为改前配置；替换后 `systemctl restart cli-proxy-api`。
 - 模型目录：删除 `config.yaml` 的 `models:` 段并重启 CPA，即回到 CPA 自带的官方来源。
 
+## 预发布对外入口（10-09）
+
+- 预发布 API 域名 DNS 改指 `<预发布机>`。Caddy 首次签证书时 DNS 还没生效，验证打到了 `<正式机>`，失败后进入 30 分钟退避；DNS 生效后 reload Caddy，证书立即签出。
+- 预发布控制台：CDN 回源改到 `<预发布机>`（HTTPS 443，回源 Host 为控制台域名）。
+- CDN 规则引擎新增「控制台静态资源-遵循源站」：两个控制台域名的 `/assets/*` 按源站 `Cache-Control` 缓存，实测第二次起命中。`/api/*` 与 `/` 不缓存（源站 `no-store` / `no-cache`），沿用原「API 不缓存」规则，实测都未命中 [verified]。
+- API 域名不在 CDN 上。
+
 ## 未完成
 
-- 预发布 API 域名 DNS 改指 `<预发布机>`、控制台域名 CDN 回源切到 `<预发布机>`：等 DNS 服务商的二次验证。
-- 外网验收 `release accept preview`（控制台 + 网关 JSON/SSE/工具往返）：依赖上一条。
-- `<正式机>` 上旧的预发布站点与证书：外网验收通过后删除。
-- 正式发布：预发布验收通过后，同一提交打 `v0.2.0`。
+- CPA `8.0.21` 上正式：等预发布浸泡与两次验收后自动晋级，在 05:00–07:00 替换。
+- 正式 Antigravity 的 `antigravity-credits false`（预发布调优结论）：随这次 CPA 换装一起做。
+- qoder/zcode 桥接：qoder 在 `<正式机>` 已有本机桥接（`qoder-cn` 渠道）；zcode 没有，需要所有者决定接入方式。

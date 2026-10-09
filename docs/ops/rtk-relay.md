@@ -26,7 +26,7 @@
    - `RTK_RELAY_PORT`：中转监听端口，例如 `8792`；`0` 或不设 = 不启用（默认；中转进程写状态 off 后以 0 退出）。
    - `RTK_RELAY_TARGET`：转发目标，默认 `http://127.0.0.1:8316`。必须是本机回环 HTTP 地址，否则控制台与中转都拒绝启动。
    - 端口不能与 `PORT` 或目标端口相同。
-   - 当前只有 `deploy/env/preview.env` 设了 `RTK_RELAY_PORT=8792`；正式不设。
+   - 预发布与正式的 env 文件都设了 `RTK_RELAY_PORT=8792`。正式在 2026-10-09 先用主机 drop-in 开启（控制台 `rtk-relay.conf`、中转 `20-relay-port.conf`，值相同）；带这一行的版本上正式后，这两个 drop-in 里的 `RTK_RELAY_PORT` 可以删掉。
 2. 发布一次，让 current 里有中转代码，然后安装 unit（每台机器一次）：
 
    ```bash
