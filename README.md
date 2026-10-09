@@ -168,7 +168,6 @@ npm run build          # TypeScript 检查 + 前端构建
 | `COOKIE_SECURE` | `true` | 本地用 HTTP 调试时设为 `false` |
 | `PROXY_PRESETS` | 空 | 账号出口代理候选，格式 `标签=地址`，多条用分号分隔 |
 | `MIHOMO_BIN` | 空 | 代理池使用的 mihomo 可执行文件（≥ 1.19）；为空时在 `PATH` 上查找 `mihomo` / `clash-meta` |
-| `GATEWAY_ENGINE` | `cpa` | 网关内核；`magpie` 为实验选项，见 [`deploy/magpie/CONSOLE-KERNEL.md`](deploy/magpie/CONSOLE-KERNEL.md) |
 
 其余变量（额度查询缓存、凭据上传限制、nginx 不限速同步等）见 [`server/config.ts`](server/config.ts)。不要把任何密钥写进仓库。
 

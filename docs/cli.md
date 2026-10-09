@@ -52,15 +52,15 @@ rm ~/.local/bin/cradmin                                        # 卸载
 | 级别 | 例子 | 本地目标 | 远程目标 |
 |---|---|---|---|
 | 只读 | ls / show / status / usage | 直接执行 | 直接执行 |
-| 增加能力 | 启用、新建、同步、magpie check | 直接执行 | 先确认 |
-| 收缩能力 / 改策略 | 停用、关模型、改 Key、改代理、RTK、magpie auto on/off、rtk upgrade、config apply | 先确认 | 先确认 |
-| 不可撤销 / 消耗额度 | 删除、prune、rotate、账号重置、magpie apply | 先确认（红字「不可撤销」） | 先确认 |
+| 增加能力 | 启用、新建、同步 | 直接执行 | 先确认 |
+| 收缩能力 / 改策略 | 停用、关模型、改 Key、改代理、RTK、rtk upgrade、config apply | 先确认 | 先确认 |
+| 不可撤销 / 消耗额度 | 删除、prune、rotate、账号重置 | 先确认（红字「不可撤销」） | 先确认 |
 
 - 确认默认「否」；`--yes`（`-y`）跳过确认。交互菜单里每个写动作都要确认；`cradmin --dry-run` 进菜单时所有动作只预览。
 - **非交互环境需要确认却没给 `--yes`：退出 2，不发任何写请求。**
 - 每个写命令都支持 `--dry-run`：照常读取、计算差异，打印计划和将调用的 `METHOD /path`，不写。
 - 批量写按顺序执行，遇到第一个失败就停，汇报「已完成 n / 失败 1 / 未执行 m」。重跑会重新计算差异，幂等。
-- 写请求超时报「结果未知」而不是「连不上」：服务端可能仍在执行，先用读命令确认再决定是否重试。`magpie check/rehearse/apply` 最长等 200 秒；`models sync` 触发后台任务 `model-discovery` 后轮询结果（最多 10 分钟）。
+- 写请求超时报「结果未知」而不是「连不上」：服务端可能仍在执行，先用读命令确认再决定是否重试。`models sync` 触发后台任务 `model-discovery` 后轮询结果（最多 10 分钟）。
 
 ## 命令速查
 
@@ -69,7 +69,7 @@ cradmin status                                   总览
 cradmin channels ls | show <渠道>
 cradmin channels models <渠道> [--enable p,…] [--disable p,…] [--only p,…]   模型开关（精确 id 或 * ? 通配）
 cradmin channels enable|disable <渠道>
-cradmin channels add <名称> --base-url <url> --api-key-env <NAME> --models id[=别名],… [--api-key-stdin] [--protocol openai|claude|responses]
+cradmin channels add <名称> --base-url <url> --api-key-stdin --models id[=别名],… [--protocol openai|claude|responses]   上游 Key 从 stdin 读
 cradmin channels rm <渠道> | prune
 cradmin models ls [--channel X] [--search s] [--unpriced] [--type chat|image|video|audio|embedding|rerank|other] [--all] | show <模型> | sync
                                                  类型按输出分（看图的对话模型仍是 chat），非对话模型带类型标签
@@ -86,10 +86,7 @@ cradmin proxy rm <出口> [--reassign <出口|inherit|direct|keep>] | migrate [-
 cradmin proxy kernel status|start|stop|restart | subscriptions ls|refresh <订阅>|rm <订阅> [--keep-nodes]
 cradmin usage [--days 1|7|30|90] [--key k] [--model m] [--channel c] [--top N]
 cradmin sync ls | run <任务> [--wait]
-cradmin rtk status | on | off | upgrade [--dry-run] [--accept-breaking]
-cradmin magpie status | check [--from <ref>] | rehearse [--from <ref>] | apply
-cradmin magpie auto status | on | off | run --dry-run          自动更新（只在定时任务里替换内核）
-cradmin gateway settings | set <key> <value>     网关功能：脱敏 / 识图 / 生图（Magpie 内核；CPA 网关只读出原因）
+cradmin rtk status | on | off | auto | upgrade [--dry-run] [--accept-breaking]
 cradmin settings | audit [--limit N --action x --grep s]
 cradmin config export [--out f] | apply <文件> [--dry-run] [--yes] [--create-keys]
 cradmin login [--save] | logout | whoami | doctor | version
@@ -125,30 +122,13 @@ cradmin proxy export --with-secrets --out pool.json   # 迁移到另一台控制
 - 账号自己的 `proxy_url` 始终是事实来源，代理池只是索引；只有 `assign` / `unassign` / `default` / `rm --reassign` 改账号，都要确认。
 - 加密节点（ss / vmess / trojan / vless / hysteria2 / tuic / wireguard）由控制台自己托管的 mihomo 开成 `127.0.0.1` 上带认证的 socks5 端口（`PROXY_PORT_BASE`，默认 27890 起），不碰 Clash Party 的配置和端口；内核 `未安装` 时这类出口能导入、不能分配。CPA 不在本机时，本机端口类出口不能分配给 CPA 账号。
 - 所有输出（含 `--json`）都是脱敏的；只有 `export --with-secrets` 的文件里有密码，终端只打印路径和数量。在另一台控制台 `proxy import <文件>` 即可导入，端口由目标控制台重新分配；文件里记着的「哪个账号走哪个出口」会列出来，确认（或加 `--yes`）后按文件恢复，目标控制台没有的账号跳过。网页「添加代理」粘贴同一个文件也会在导入后询问是否恢复。
-- `default` 只在 CPA 控制面可用（改 CPA 全局代理）。
-
-## 网关功能
-
-`cradmin gateway settings` 按 Magpie 设置页的分组（图像、隐私）列出网关在用的值，文案来自 `deploy/magpie/catalog.json`（随 Magpie 版本生成）。`cradmin gateway set <key> <value>` 改一项，属于「改策略」：先确认，脚本里加 `--yes`；改动从下一个请求生效，不重启内核。
-
-| key | value |
-|---|---|
-| `redact` / `redactPersonal` | `on` / `off` |
-| `redactWords` | 逗号分隔的词（最多 100 个，每个 2–64 字节）；`''` 清空 |
-| `redactRules` | JSON 数组 `[{"kind":"GW","prefix":"oc_sk_"}]` 或 `{"kind":…,"regex":…}`（最多 32 条，正则走 RE2 校验）；`'[]'` 清空 |
-| `vision` / `imageGen` | `auto` / `off` / `<provider/model>`（候选见 `settings --json` 的 `models`） |
-
-「计入用户数」在内核里强制关闭，不可改。生图模型目前只影响 `/v1/images/*`，而控制台网关尚未开放这组接口。CPA 网关没有内核：`settings` 显示「仅 Magpie 网关可用」，`set` 退出 1。
+- `default` 改 CPA 全局代理，继承全局的账号都跟着改。
 
 ## 自动更新
 
-`cradmin magpie auto status` 列出 Magpie 内核与 RTK 两项：开关、定时任务是否已是「检查后自动更新」版本、上次结果、下次窗口、停下的原因。`on` / `off` 改 `~/.agents/crosery/magpie-upstream/autoupdate.json`，属于「改策略」；关掉后定时任务只检查上游。
-
-`cradmin magpie auto run --dry-run` 只算这一轮会做什么（演练 / 等窗口 / 替换 / 停在待复核），不构建、不替换。没有不带 `--dry-run` 的 `run`：替换会重启内核，只在 launchd 定时任务进程里做，控制台进程不执行。
+`cradmin rtk auto` 只读：列出 RTK 自动升级的开关和定时任务记下的上次结果。
 
 `cradmin rtk upgrade --dry-run` 读 GitHub release，把资产下载到临时目录并校验，打印资产、sha256 来源、目标路径和备份位置，不替换。去掉 `--dry-run` 立即升级（先确认）：校验 sha256 → 备份 → 原子替换 → `rtk --version` 核对，失败自动换回。只有真的升到最新才算成功；停住（BREAKING，HTTP 409）或失败、回滚（HTTP 502）都以非零退出并打印原因。新版本声明 BREAKING 时停下，确认看过说明再加 `--accept-breaking`。Homebrew 装的 rtk 走 `brew upgrade rtk`。
-
-CPA 网关没有本机内核：Magpie 一项显示「仅本机 Magpie 网关」。
 
 ## 退出码
 
@@ -168,4 +148,3 @@ CPA 网关没有本机内核：Magpie 一项显示「仅本机 Magpie 网关」�
 - 系统设置的写入：都是部署环境变量，`settings` 只读，改完重启控制台（CPA 全局代理可用 `proxy default` 改）。
 - 修改管理员密码、会话列表或批量吊销。
 - 审计只能拿到最近 100 条，没有操作者字段（CLI 与网页操作无法区分）。
-- 本机控制面（magpie + local）上：渠道模型扫描、claude 协议渠道、账号额度读取与重置都不可用，`channels add` 必须给 `--models`。
