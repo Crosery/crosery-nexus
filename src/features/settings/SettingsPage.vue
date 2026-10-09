@@ -14,21 +14,19 @@ import { useThemePref } from '../../ui/composables/prefs'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { notify } from '../../ui/feedback/toast'
 import { errorMessage } from '../../lib/errors'
-import type { AutoupdateView, RtkGlobalStatus, SyncStatus, VersionsData } from '../../types'
+import type { SyncStatus, VersionsData } from '../../types'
 import SyncCenter from './SyncCenter.vue'
-import RtkSection from './RtkSection.vue'
 import RtkRelaySection from './RtkRelaySection.vue'
 import VersionSection from './VersionSection.vue'
 import PrefsSection from './PrefsSection.vue'
 import ProxySection from './ProxySection.vue'
-import GatewayFeaturesSection from './GatewayFeaturesSection.vue'
-import { gatewayIndex, rtkWords, syncTally } from './settingsModel'
+import { syncTally } from './settingsModel'
 
 /**
  * 设置 (DESIGN §6.8, BRIEF IA 系统): every background job and global switch in one place —
- * 同步中心 #sync · 网关 Magpie #magpie (#version lands there too) · 网关功能 #gateway-features · 代理 #proxy · RTK #rtk · RTK 中转 #rtk-relay · 偏好 #prefs · 会话 #session.
- * Sources are the shell's (sync 30s, RTK 60s, versions 5m): no second poll, and a write here (RTK apply, run-now,
- * re-check) refreshes the statusline with the same read. Outside the shell the page polls its own.
+ * 同步中心 #sync · 网关 #gateway (#version lands there too) · 代理 #proxy · RTK 中转 #rtk-relay · 偏好 #prefs · 会话 #session.
+ * Sources are the shell's (sync 30s, versions 5m): no second poll, and a write here (run-now, re-check) refreshes
+ * the statusline with the same read. Outside the shell the page polls its own.
  */
 const logout = useLogout()
 const route = useRoute()
@@ -37,31 +35,7 @@ const theme = useThemePref()
 
 const shared = useSharedAdminLive()
 const sync = shared?.sync ?? useLive<SyncStatus>((signal) => api.sync.status(signal), { intervalMs: 15_000 })
-const rtk = shared?.rtk ?? useLive<RtkGlobalStatus>((signal) => api.rtkGlobal.get(signal), { intervalMs: 60_000 })
 const versions = shared?.versions ?? useLive<VersionsData>(() => api.version(), { intervalMs: 0 })
-
-/** 「自动更新」 (Magpie section + RTK section): read once a minute; a toggle writes the switch and re-reads the
- *  rows that word it (sync center, the gateway policy line). */
-const auto = useLive<AutoupdateView>(() => api.autoupdate.get(), { intervalMs: 60_000 })
-const autoBusy = ref<'magpie' | 'rtk' | null>(null)
-async function toggleAuto(target: 'magpie' | 'rtk', on: boolean) {
-  if (autoBusy.value) return
-  autoBusy.value = target
-  const noun = target === 'magpie' ? 'Magpie 自动更新' : 'rtk 自动升级'
-  try {
-    const next = await api.autoupdate.set(target === 'magpie' ? { magpie: { enabled: on } } : { rtk: { enabled: on } })
-    auto.data.value = next
-    auto.error.value = null
-    auto.lastAt.value = Date.now()
-    notify(`✓ ${noun}已${on ? '开' : '关'}`, { tone: 'ok', description: next[target].line, id: 'cx-auto' })
-    void sync.refresh()
-    if (target === 'magpie') void versions.refresh()
-  } catch (error) {
-    notify(`◆ ${noun}没改成 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-auto' })
-  } finally {
-    autoBusy.value = null
-  }
-}
 
 const checking = ref(false)
 async function recheck() {
@@ -79,17 +53,9 @@ async function recheck() {
 }
 
 const tally = computed(() => syncTally(sync.data.value?.jobs ?? []))
-/** Magpie engine (this Mac): 网关功能 and RTK have something to manage. Under CPA (the relay) both are hidden. */
-const magpieEngine = computed(() => versions.data.value?.cpa?.engine === 'magpie')
-const rtkW = computed(() => (rtk.data.value ? rtkWords(rtk.data.value) : null))
-/** Magpie word for the head and the index: 最新 / 落后 / 离线 (from the same model the section shows) */
-const gateway = computed(() => versions.data.value?.cpa.gateway ?? null)
-const magpieShort = computed(() => (gateway.value ? gatewayIndex(gateway.value) : null))
 
 /** 代理 section's own read (it polls /api/proxies itself): its index word and status-line part */
 const proxyIndex = ref<{ value: string; hot: boolean; status: string } | null>(null)
-/** 网关功能's own read (/api/gateway/settings): its index word */
-const featuresIndex = ref<{ value: string; hot: boolean } | null>(null)
 /** RTK 中转's own read (/api/rtk/relay): its index word */
 const relayIndex = ref<{ value: string; hot: boolean } | null>(null)
 
@@ -100,8 +66,6 @@ const statusLine = computed(() => {
     const attn = [t.bad ? `失败 ${t.bad}` : '', t.warn ? `注意 ${t.warn}` : '', t.busy ? `运行 ${t.busy}` : ''].filter(Boolean)
     parts.push(t.total ? `${t.total} 个同步任务 · ${attn.length ? attn.join(' · ') : '全部正常'}` : '没有同步任务')
   }
-  if (rtkW.value && magpieEngine.value) parts.push(`RTK ${rtkW.value.state === 'mixed' ? rtkW.value.coverage : rtkW.value.word}`)
-  if (magpieShort.value) parts.push(`Magpie ${magpieShort.value.value}`)
   if (proxyIndex.value?.status) parts.push(proxyIndex.value.status)
   return parts.join(' · ')
 })
@@ -109,21 +73,17 @@ const statusLine = computed(() => {
 const THEME_WORD = { light: '浅色', dark: '深色', system: '跟随' } as const
 const toc = computed(() => [
   { id: 'sync', label: '同步中心', value: sync.data.value ? (tally.value.bad + tally.value.warn ? `◇ ${tally.value.bad + tally.value.warn}` : `${tally.value.total} 任务`) : '', hot: tally.value.bad + tally.value.warn > 0 },
-  { id: 'magpie', label: magpieEngine.value ? '网关 Magpie' : '网关', value: magpieShort.value?.value ?? '', hot: magpieShort.value?.hot ?? false },
-  { id: 'gateway-features', label: '网关功能', value: featuresIndex.value?.value ?? '', hot: featuresIndex.value?.hot ?? false },
+  { id: 'gateway', label: '网关', value: '', hot: false },
   { id: 'proxy', label: '代理', value: proxyIndex.value?.value ?? '', hot: proxyIndex.value?.hot ?? false },
-  { id: 'rtk', label: 'RTK', value: rtkW.value ? (rtkW.value.state === 'on' ? '开' : rtkW.value.state === 'off' ? '关' : rtkW.value.coverage) : '', hot: false },
   { id: 'rtk-relay', label: 'RTK 中转', value: relayIndex.value?.value ?? '', hot: relayIndex.value?.hot ?? false },
   { id: 'prefs', label: '偏好', value: THEME_WORD[theme.pref.value], hot: false },
   { id: 'session', label: '会话', value: session.user?.name ?? 'admin', hot: false },
-].filter((item) => magpieEngine.value || !MAGPIE_ONLY.includes(item.id)))
+])
 
 /* scroll spy: the index marks the last section whose head has passed a line just under the header */
-const ALL_SECTIONS = ['sync', 'magpie', 'gateway-features', 'proxy', 'rtk', 'rtk-relay', 'prefs', 'session']
-const MAGPIE_ONLY = ['gateway-features', 'rtk']
-const sections = () => ALL_SECTIONS.filter((id) => magpieEngine.value || !MAGPIE_ONLY.includes(id))
+const SECTIONS = ['sync', 'gateway', 'proxy', 'rtk-relay', 'prefs', 'session']
 /** old anchors that now live inside another section */
-const ALIASES: Record<string, string> = { version: 'magpie' }
+const ALIASES: Record<string, string> = { version: 'gateway', magpie: 'gateway' }
 const sectionOf = (hash: string) => {
   const id = hash.slice(1)
   return ALIASES[id] ?? id
@@ -136,13 +96,12 @@ function spy() {
   frame = 0
   if (pinned) return
   const line = 140
-  const list = sections()
-  let current = list[0]
-  for (const id of list) {
+  let current = SECTIONS[0]
+  for (const id of SECTIONS) {
     const el = document.getElementById(id)
     if (el && el.getBoundingClientRect().top <= line) current = id
   }
-  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = list[list.length - 1]
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = SECTIONS[SECTIONS.length - 1]
   active.value = current
 }
 const onScroll = () => { if (!frame) frame = requestAnimationFrame(spy) }
@@ -176,12 +135,12 @@ onMounted(async () => {
   window.addEventListener('scroll', onScroll, { passive: true })
   for (const type of USER_SCROLL_EVENTS) window.addEventListener(type, unpin, { passive: true })
   const id = sectionOf(route.hash)
-  if (!sections().includes(id)) return spy()
+  if (!SECTIONS.includes(id)) return spy()
   active.value = id
   pinned = true
-  // deep link (#rtk, #session …): the plates above print their data late and push the target down — wait for
+  // deep link (#rtk-relay, #session …): the plates above print their data late and push the target down — wait for
   // the first answers (max 4 s), then place it once
-  const settled = () => [sync.state.value, rtk.state.value, versions.state.value].every((s) => s !== 'loading')
+  const settled = () => [sync.state.value, versions.state.value].every((s) => s !== 'loading')
   if (!settled()) {
     await new Promise<void>((resolve) => {
       const stop = watch(settled, (ready) => {
@@ -213,7 +172,7 @@ watch(
   () => route.hash,
   async (hash) => {
     const id = sectionOf(hash)
-    if (!sections().includes(id)) return
+    if (!SECTIONS.includes(id)) return
     active.value = id
     pinned = true
     await nextTick()
@@ -277,28 +236,10 @@ async function signOut() {
           :error="versions.error.value"
           :last-at="versions.lastAt.value"
           :checking="checking"
-          :auto="auto.data.value?.magpie ?? null"
-          :auto-busy="autoBusy === 'magpie'"
           @retry="versions.refresh"
           @recheck="recheck"
-          @auto="toggleAuto('magpie', $event)"
         />
-        <GatewayFeaturesSection v-if="magpieEngine" class="c-12" @index="featuresIndex = $event" />
         <ProxySection class="c-12" @index="proxyIndex = $event" />
-        <RtkSection
-          v-if="magpieEngine"
-          class="c-12"
-          :global="rtk.data.value"
-          :state="rtk.state.value"
-          :error="rtk.error.value"
-          :last-at="rtk.lastAt.value"
-          :versions="versions.data.value"
-          :auto="auto.data.value?.rtk ?? null"
-          :auto-busy="autoBusy === 'rtk'"
-          @retry="rtk.refresh"
-          @refresh="rtk.refresh"
-          @auto="toggleAuto('rtk', $event)"
-        />
         <RtkRelaySection class="c-12" @index="relayIndex = $event" />
         <PrefsSection class="c-8" />
         <Plate id="session" title="会话" class="set-sec c-4">

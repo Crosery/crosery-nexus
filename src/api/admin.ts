@@ -1,19 +1,12 @@
 import type {
   AutoupdateView,
   CredentialUploadResult,
-  GatewaySettings,
   KernelsView,
-  GatewaySettingValues,
-  MagpieUpdateStatus,
   ModelSyncResult,
   OAuthStartResult,
   OAuthStatusResult,
   PulseData,
   RtkPlaneId,
-  RtkPlaneProbe,
-  RTKRollbackResponse,
-  RTKStatusResponse,
-  RTKToggleResponse,
   VersionsData,
 } from '../types'
 import { ApiError, request } from './http'
@@ -32,9 +25,6 @@ export class RtkApiError extends ApiError {
     this.backup = typeof body.backup === 'string' ? body.backup : undefined
   }
 }
-
-const rtkRequest = <T>(url: string, init: RequestInit = {}) =>
-  request<T>(url, init, (status, message, body, retryAfterSec) => new RtkApiError(status, message, body, retryAfterSec))
 
 const scoped = (path: string, days: number, keyId = '') => `${path}?days=${days}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}`
 
@@ -98,48 +88,25 @@ export const adminApi = {
   /** fresh=true is honoured at most once per 60s per endpoint server-side. */
   version: (fresh = false) => request<VersionsData>(`/api/version${fresh ? '?fresh=1' : ''}`),
   syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
-  /**
-   * magpie 内核更新（task-79 端点）。状态只读；`apply` 必须显式 `confirm: true`，
-   * 服务端缺确认会 403 `confirm_required` 且**一次脚本调用都不发生**。
-   */
-  getMagpieUpdateStatus: () => request<MagpieUpdateStatus>('/api/magpie/update-status'),
-  runMagpieUpdate: (action: 'check' | 'rehearse' | 'apply', confirm = false) =>
-    request<Record<string, unknown>>('/api/magpie/update', { method: 'POST', body: JSON.stringify({ action, confirm }) }),
-  /** 「自动更新」开关与状态；只写开关，替换由 launchd 定时任务做（server/autoupdate.ts）。 */
+  /** 「自动更新」状态；升级由定时任务做（server/autoupdate.ts）。 */
   autoupdate: {
     get: () => request<AutoupdateView>('/api/autoupdate'),
-    set: (patch: { magpie?: { enabled?: boolean; window?: { start: string; end: string } }; rtk?: { enabled?: boolean } }) =>
-      request<AutoupdateView>('/api/autoupdate', { method: 'PUT', body: JSON.stringify(patch) }),
   },
   /** 「网关内核」（中转站）：只写开关/时段、排队回滚；替换由 crosery-kernel-update 定时任务做（server/kernels.ts）。 */
   kernels: {
     get: () => request<KernelsView>('/api/kernels'),
-    set: (patch: { cpa?: { enabled: boolean }; magpie?: { enabled: boolean }; window?: { start: string; end: string } }) =>
+    set: (patch: { cpa?: { enabled: boolean }; window?: { start: string; end: string } }) =>
       request<KernelsView>('/api/kernels', { method: 'PUT', body: JSON.stringify(patch) }),
-    rollback: (kernel: 'cpa' | 'magpie') =>
+    rollback: (kernel: 'cpa') =>
       request<{ queued: boolean; kernel: string; to: string }>('/api/kernels/rollback', { method: 'POST', body: JSON.stringify({ kernel, confirm: true }) }),
   },
-  getRTKStatus: () => rtkRequest<RTKStatusResponse>('/api/rtk/status'),
-  getRTKPlanes: () => rtkRequest<{ plane: RtkPlaneId; planes: RtkPlaneProbe[]; fellBack: boolean }>('/api/rtk/planes'),
-  /** plane 默认 local：只有本机才有用户的 agent 配置；远端下发需显式指定并确认。 */
-  toggleRTK: (agent: string, on: boolean, options: { plane?: RtkPlaneId; confirm?: boolean } = {}) =>
-    rtkRequest<RTKToggleResponse>('/api/rtk/toggle', {
-      method: 'POST',
-      body: JSON.stringify({ agent, on, plane: options.plane || 'local', confirm: options.confirm === true }),
-    }),
-  installRTK: (options: { plane?: RtkPlaneId; confirm?: boolean } = {}) =>
-    rtkRequest<RTKStatusResponse>('/api/rtk/install', { method: 'POST', body: JSON.stringify(options) }),
-  upgradeRTK: (options: { plane?: RtkPlaneId; confirm?: boolean } = {}) =>
-    rtkRequest<RTKStatusResponse>('/api/rtk/upgrade', { method: 'POST', body: JSON.stringify(options) }),
-  rollbackRTK: (backup?: string) =>
-    rtkRequest<RTKRollbackResponse>('/api/rtk/rollback', { method: 'POST', body: JSON.stringify({ backup, confirm: true }) }),
   startOAuth: (provider: string) => request<OAuthStartResult>('/api/cpa/oauth/start', { method: 'POST', body: JSON.stringify({ provider }) }),
   getOAuthStatus: (state: string) => request<OAuthStatusResult>(`/api/cpa/oauth/status?state=${encodeURIComponent(state)}`),
   submitOAuthCallback: (provider: string, redirectUrl: string, state?: string) =>
     request<{ ok: boolean }>('/api/cpa/oauth/callback', { method: 'POST', body: JSON.stringify({ provider, redirectUrl, state }) }),
   cancelOAuth: (state: string) => request<{ ok: boolean }>('/api/cpa/oauth/cancel', { method: 'POST', body: JSON.stringify({ state }) }),
   /**
-   * Bulk import of CPA auth files (one JSON, or a ZIP of them); CPA engine only. Multipart, so not `request()`:
+   * Bulk import of CPA auth files (one JSON, or a ZIP of them). Multipart, so not `request()`:
    * its JSON content type would replace the browser's boundary.
    */
   uploadCredentials: async (file: File): Promise<CredentialUploadResult> => {
@@ -153,10 +120,6 @@ export const adminApi = {
   },
   addApiKey: (provider: string, apiKey: string) =>
     request<{ ok: boolean }>('/api/cpa/credentials/api-key', { method: 'POST', body: JSON.stringify({ provider, apiKey }) }),
-  /** 网关功能：Magpie 内核的脱敏 / 识图 / 生图设置（CPA 模式 available:false）。PUT 只带要改的键。 */
-  gatewaySettings: (signal?: AbortSignal) => request<GatewaySettings>('/api/gateway/settings', { signal }),
-  setGatewaySettings: (patch: Partial<GatewaySettingValues>) =>
-    request<GatewaySettings>('/api/gateway/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   /** Header live edge + statusline gateway figures (see CONTRACTS "C6 gateway pulse"). */
   pulse: (signal?: AbortSignal) => request<PulseData>('/api/pulse', { signal }),
 }

@@ -1,5 +1,5 @@
 /**
- * Helpers shared by the scheduled updaters (CPA kernel applier, RTK, and the retired Magpie scripts that re-export them).
+ * Helpers shared by the scheduled updaters (CPA kernel applier, RTK).
  * No I/O here except hostEnv (one small file read): everything takes its inputs, so each updater stays testable with an
  * injected clock.
  */

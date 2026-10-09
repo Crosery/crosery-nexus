@@ -4,13 +4,10 @@
  *
  * A target is `inherit` (''), `direct` or a pool entry id; raw URLs stay on the existing credential route.
  * Each write records the account's previous value on its link (`prev`), so `unassign --restore` can put it back.
- * Guards: a console-host (mihomo) entry is refused for a remote CPA and while the kernel is unavailable;
- * Magpie kernel accounts (`magpie:<agent>:<user>`) are written to the registry's per-account exits and pushed to
- * the kernel, and answer 501 while the kernel does not route them (no `account-proxy` capability).
+ * Guards: a console-host (mihomo) entry is refused for a remote CPA and while the kernel is unavailable.
  */
 
 import { maskIdentity } from './accountProjection.js'
-import { magpieAccountRef, parseMagpieAccountRef } from './magpieAccountProxies.js'
 import type { ProxyControlPlane } from './proxyPoolControl.js'
 import type { ProxyKernelView } from './proxyPoolHooks.js'
 import {
@@ -21,13 +18,11 @@ import { assignability } from './proxyPoolView.js'
 
 export type AssignTarget = { mode: 'inherit' } | { mode: 'direct' } | { mode: 'entry'; entry: ProxyEntry }
 
-export type AssignContext = { backend: 'cpa' | 'magpie'; cpaSameHost: boolean; kernel: ProxyKernelView }
+export type AssignContext = { cpaSameHost: boolean; kernel: ProxyKernelView }
 
 export type AccountRef =
   | { kind: 'credential'; ref: string; name: string }
   | { kind: 'global'; ref: string }
-  /** `agent`/`user` for one kernel account; absent for a service-level `magpie:<agent>` (read-only) */
-  | { kind: 'magpie'; ref: string; agent?: string; user?: string }
   | { kind: 'readonly'; ref: string }
 
 export const MAX_ASSIGN = 500
@@ -38,10 +33,6 @@ export function parseAccountRef(raw: unknown): AccountRef {
   if (!ref || ref.length > 300 || /[\u0000-\u001f]/.test(ref)) throw new ProxyError(400, 'invalid_request', '账号标识无效')
   if (ref === 'cpa:global') return { kind: 'global', ref }
   if (ref.startsWith('cpa:channel:') || ref.startsWith('cpa:key:')) return { kind: 'readonly', ref }
-  if (ref.startsWith('magpie:')) {
-    const account = parseMagpieAccountRef(ref)
-    return account ? { kind: 'magpie', ref: magpieAccountRef(account.agent, account.user), ...account } : { kind: 'magpie', ref }
-  }
   if (ref.startsWith('cpa:')) {
     const name = ref.slice(4)
     if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) throw new ProxyError(400, 'invalid_request', '账号标识无效')
@@ -99,43 +90,30 @@ export type AssignDeps = {
   now?: () => string
 }
 
-const accountLabel = (ref: AccountRef) => (ref.kind === 'credential'
-  ? maskIdentity(ref.name)
-  : ref.kind === 'global' ? 'cpa:global' : ref.kind === 'magpie' && ref.agent && ref.user ? `${ref.agent}:${maskIdentity(ref.user)}` : 'account')
-
-/** The control plane's per-account exits for a kernel account, when this kernel routes them. */
-async function magpieWriter(deps: AssignDeps, ref: AccountRef) {
-  if (ref.kind !== 'magpie' || !ref.agent || !ref.user) throw new ProxyError(409, 'account_read_only', '服务级的代理只能在网关里修改')
-  const accounts = deps.control.magpieAccounts
-  const support = accounts ? await accounts.support() : { supported: false, reason: null }
-  if (!accounts || !support.supported) throw new ProxyError(501, 'accounts_proxy_unavailable', support.reason ?? undefined)
-  const { agent, user } = ref
-  return { read: () => accounts.read(agent, user), write: (url: string) => accounts.write(agent, user, url), provider: agent }
-}
+const accountLabel = (ref: AccountRef) => (ref.kind === 'credential' ? maskIdentity(ref.name) : ref.kind === 'global' ? 'cpa:global' : 'account')
 
 async function readCurrent(deps: AssignDeps, ref: AccountRef): Promise<string> {
   if (ref.kind === 'global') return deps.control.readGlobalProxy()
   if (ref.kind === 'credential') return deps.control.readCredentialProxy(ref.name)
-  return (await magpieWriter(deps, ref)).read()
+  throw new ProxyError(409, 'account_read_only')
 }
 
 async function writeCurrent(deps: AssignDeps, ref: AccountRef, url: string): Promise<void> {
   if (ref.kind === 'global') return deps.control.writeGlobalProxy(url)
   if (ref.kind === 'credential') return deps.control.writeCredentialProxy(ref.name, url)
-  return (await magpieWriter(deps, ref)).write(url)
+  throw new ProxyError(409, 'account_read_only')
 }
 
 async function writeOne(deps: AssignDeps, ref: AccountRef, url: string, entryForLink: string | null, via: 'assign'): Promise<AssignOutcome> {
   const now = deps.now?.() ?? new Date().toISOString()
   try {
     if (ref.kind === 'readonly') throw new ProxyError(409, 'account_read_only')
-    if (ref.kind === 'global' && deps.context.backend !== 'cpa') throw new ProxyError(501, 'accounts_proxy_unavailable')
     const prev = await readCurrent(deps, ref)
     const written = ref.kind === 'global' && url === 'direct' ? '' : url
     const changed = prev.trim() !== written
     if (changed) await writeCurrent(deps, ref, written)
     deps.store.update((pool) => {
-      const provider = pool.observed[ref.ref]?.provider ?? pool.links[ref.ref]?.provider ?? (ref.kind === 'magpie' ? ref.agent : undefined)
+      const provider = pool.observed[ref.ref]?.provider ?? pool.links[ref.ref]?.provider
       const entry = observeAccount(pool, ref.ref, written, provider, via, now)
       const link = pool.links[ref.ref]
       if (entry && link && entryForLink === entry.id && changed) {
@@ -195,7 +173,7 @@ export function linkedRefs(pool: PoolFile, entryId: string): { writable: Account
   for (const [ref, link] of Object.entries(pool.links)) {
     if (link.entryId !== entryId) continue
     const parsed = (() => { try { return parseAccountRef(ref) } catch { return null } })()
-    if (parsed && (parsed.kind === 'credential' || parsed.kind === 'global' || (parsed.kind === 'magpie' && parsed.agent))) writable.push(parsed)
+    if (parsed && (parsed.kind === 'credential' || parsed.kind === 'global')) writable.push(parsed)
     else readOnly.push(ref)
   }
   return { writable, readOnly }

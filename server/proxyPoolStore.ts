@@ -125,7 +125,6 @@ export const PROXY_MESSAGES: Record<string, string> = {
   proxy_in_use: '这个出口还有账号在用，先把它们换到别的出口',
   proxy_scope_mismatch: 'CPA 不在本机，本机端口对它不可用',
   kernel_unavailable: 'mihomo 内核不可用：加密节点暂时不能分配',
-  accounts_proxy_unavailable: 'Magpie 账号的代理设置还没有接入',
   cooldown: '操作太频繁，请稍后再试',
   preview_expired: '预览已过期，请重新解析',
   unsupported_format: '无法识别的格式',
@@ -181,16 +180,8 @@ export function proxySettings(env: NodeJS.ProcessEnv = process.env): ProxySettin
   }
 }
 
-export type ProxyBackend = 'cpa' | 'magpie'
-
-/** `cpa` when the console's control plane is CPA (GATEWAY_ENGINE=cpa or MAGPIE_CONTROL_PLANE=cpa), else `magpie`. */
-export function proxyBackend(): ProxyBackend {
-  return config.gatewayEngine === 'cpa' || config.magpieControlPlane === 'cpa' ? 'cpa' : 'magpie'
-}
-
 /** Whether the CPA that consumes account exits runs on this host (managed 127.0.0.1 ports reach it). */
 export function cpaSameHost(settings = proxySettings()): boolean {
-  if (proxyBackend() === 'magpie') return true
   if (settings.cpaSameHostOverride !== null) return settings.cpaSameHostOverride
   try {
     const host = new URL(config.cpaBaseUrl).hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase()
@@ -240,6 +231,8 @@ export function emptyPool(): PoolFile {
 
 const isMap = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
+const cpaRefs = (map: Record<string, unknown>) => Object.fromEntries(Object.entries(map).filter(([ref]) => ref.startsWith('cpa:')))
+
 /** Fill missing optional sections of a stored pool (older writers, hand edits) without inventing secrets. */
 function normalizePool(raw: Record<string, unknown>): PoolFile {
   const pool = emptyPool()
@@ -254,8 +247,9 @@ function normalizePool(raw: Record<string, unknown>): PoolFile {
     if (!['ok', 'invalid', 'unverified'].includes(entry.validity)) entry.validity = 'unverified'
   }
   if (Array.isArray(raw.subscriptions)) pool.subscriptions = raw.subscriptions.filter(item => isMap(item) && typeof item.id === 'string' && typeof item.url === 'string') as ProxySubscription[]
-  if (isMap(raw.links)) pool.links = raw.links as Record<string, ProxyLink>
-  if (isMap(raw.observed)) pool.observed = raw.observed as Record<string, ObservedProxy>
+  // every account ref this console manages is `cpa:…`; anything else is a retired backend's leftover
+  if (isMap(raw.links)) pool.links = cpaRefs(raw.links) as Record<string, ProxyLink>
+  if (isMap(raw.observed)) pool.observed = cpaRefs(raw.observed) as Record<string, ObservedProxy>
   if (typeof raw.defaultEntryId === 'string') pool.defaultEntryId = raw.defaultEntryId
   if (isMap(raw.migration)) {
     pool.migration = { ...(raw.migration as PoolMigration), ignored: Array.isArray(raw.migration.ignored) ? raw.migration.ignored.filter((item): item is string => typeof item === 'string') : [] }

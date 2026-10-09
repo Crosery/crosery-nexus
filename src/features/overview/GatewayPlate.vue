@@ -11,8 +11,7 @@ import Segmented from '../../ui/form/Segmented.vue'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { clockParts, fmtDuration, fmtInt, fmtNum, fmtPct, NONE } from '../../ui/fmt'
 import type { DataState, RowColumn, SegmentItem } from '../../ui/types'
-import type { MagpieGatewayInfo, PulseData } from '../../types'
-import MagpieStrip from './MagpieStrip.vue'
+import type { PulseData } from '../../types'
 import type { ChannelHealthRow } from './model'
 import type { OverviewPayload, ScopeRange } from './types'
 
@@ -34,8 +33,6 @@ const props = defineProps<{
   health: ChannelHealthRow[]
   healthState: 'ready' | 'pending' | 'missing'
   kernel: string | null
-  /** 网关 Magpie (`cpa.gateway`): replaces the bare kernel word with version · gap · 待评审 → 设置 */
-  magpie?: MagpieGatewayInfo | null
   enabledKeys: number | null
 }>()
 const emit = defineEmits<{ 'update:range': [ScopeRange]; retry: [] }>()
@@ -141,8 +138,7 @@ const healthEmpty = computed(() => (props.healthState === 'missing' ? '渠道健
 <template>
   <Plate title="网关" class="ov-gw" :state="state" :error="error" :stale-at="staleAt" :rows="6" @retry="emit('retry')">
     <template #meta>
-      <MagpieStrip v-if="magpie" :info="magpie" />
-      <span v-else-if="kernel" class="num">{{ kernel }}</span>
+      <span v-if="kernel" class="num">{{ kernel }}</span>
     </template>
     <template #actions>
       <Segmented v-model="rangeModel" :items="rangeItems" label="网关时间范围" />

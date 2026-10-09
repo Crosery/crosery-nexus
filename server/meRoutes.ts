@@ -232,7 +232,7 @@ export function meDailyView(daily: UsageWorkspaceDaily) {
 export function gatewayBaseUrl(): string {
   const configured = config.publicGatewayBaseUrl
   if (configured) return /\/v\d+$/.test(configured) ? configured : `${configured}/v1`
-  return config.gatewayEngine === 'magpie' ? `http://127.0.0.1:${config.magpiePort}/v1` : `${config.cpaBaseUrl}/v1`
+  return `${config.cpaBaseUrl}/v1`
 }
 
 /** 价格来源：与某个外部来源的报价一致才标注，否则 null（静态核定价/网关价无法逐条溯源，不猜）。 */

@@ -9,11 +9,6 @@ test('网关状态文案不会在不可用时声称在线', () => {
   assert.doesNotMatch(gatewayStatusCopy('unavailable').title, /正常|在线/)
 })
 
-test('Magpie mode names the kernel rather than claiming CPA is the inference engine', () => {
-  assert.match(gatewayStatusCopy('online', 'magpie').detail, /Magpie/)
-  assert.doesNotMatch(gatewayStatusCopy('unavailable', 'magpie').detail, /可访问|CPA/)
-})
-
 test('筛选条件变化后不会把旧统计误标成新范围', () => {
   const result = { requests: 12 }
   const keyAScope = analyticsScopeKey(7, 'key-a')

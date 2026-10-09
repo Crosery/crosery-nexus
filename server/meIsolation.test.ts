@@ -140,11 +140,26 @@ function seed(dataDir: string): number {
   }
 }
 
-type Harness = { base: string; dataDir: string; magpiePort: number; stop: () => Promise<void>; logs: () => string }
+type Harness = { base: string; dataDir: string; cpaBaseUrl: string; stop: () => Promise<void>; logs: () => string }
+
+/** A CPA management API that accepts every write and lists no keys (the key PATCH syncs its key list there). */
+async function startCpaStub() {
+  const server = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify((req.url || '').startsWith('/v0/management/api-keys') ? { 'api-keys': [] } : {}))
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  return { server, base: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}` }
+}
 
 async function startHarness(): Promise<Harness> {
   const port = await freePort()
-  const magpiePort = await freePort()
+  const cpa = await startCpaStub()
+  const cpaBaseUrl = cpa.base
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crosery-me-isolation-'))
   const child: ChildProcess = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
     cwd: REPO,
@@ -157,11 +172,8 @@ async function startHarness(): Promise<Harness> {
       CONSOLE_PASSWORD: 'me-isolation-password',
       SESSION_SECRET: SECRET,
       COOKIE_SECURE: 'false',
-      GATEWAY_ENGINE: 'magpie',
-      MAGPIE_CONTROL_PLANE: 'local',
-      MAGPIE_PORT: String(magpiePort),
-      CPA_BASE_URL: 'http://127.0.0.1:9',
-      CPA_MANAGEMENT_KEY: '',
+      CPA_BASE_URL: cpaBaseUrl,
+      CPA_MANAGEMENT_KEY: 'me-isolation-management-key',
       PUBLIC_GATEWAY_BASE_URL: '',
       LOGIN_MAX_FAILURES: '3',
       LOGIN_WINDOW_MS: '60000',
@@ -184,12 +196,13 @@ async function startHarness(): Promise<Harness> {
   return {
     base,
     dataDir,
-    magpiePort,
+    cpaBaseUrl,
     logs: () => buffer,
     stop: async () => {
       child.kill('SIGTERM')
       await new Promise(resolve => setTimeout(resolve, 300))
       if (child.exitCode === null) child.kill('SIGKILL')
+      cpa.server.close()
       fs.rmSync(dataDir, { recursive: true, force: true })
     },
   }
@@ -392,8 +405,8 @@ test('API Key 用户：登录、角色裁决、跨 Key 隔离、限流与生命�
       assert.equal((await get('/api/me/requests?before=not-a-date', cookieA)).status, 400)
 
       const connect = JSON.parse(bodies.get('/api/me/connect')!) as { baseUrl: string; anthropicBaseUrl: string | null; masked: string; configured?: boolean }
-      assert.equal(connect.baseUrl, `http://127.0.0.1:${harness.magpiePort}/v1`, '未配置公网地址时回退本机网关')
-      assert.equal(connect.anthropicBaseUrl, `http://127.0.0.1:${harness.magpiePort}`)
+      assert.equal(connect.baseUrl, `${harness.cpaBaseUrl}/v1`, '未配置公网地址时回退本机网关')
+      assert.equal(connect.anthropicBaseUrl, harness.cpaBaseUrl)
       assert.equal(connect.configured, false, 'AI-17：回退地址必须标明「未配置」，页面据此提示外部不可用')
 
       // 对称：B 只看到 B

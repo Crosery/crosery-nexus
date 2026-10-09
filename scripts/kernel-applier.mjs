@@ -1,26 +1,25 @@
 #!/usr/bin/env node
 /**
- * Gateway-kernel applier (root, systemd) on both hosts: the installing half of「网关内核自动更新」for CPA (serving
- * traffic) and Magpie (standby, serves nothing).
+ * Gateway-kernel applier (root, systemd) on both hosts: the installing half of「网关内核自动更新」for CPA.
  *
  *   node scripts/kernel-applier.mjs status                     config + state + what `auto` would do now (read-only)
  *   node scripts/kernel-applier.mjs auto [--dry-run]           crosery-kernel-update.service (timer, path unit, gates)
- *   node scripts/kernel-applier.mjs rollback --kernel cpa|magpie --confirm
+ *   node scripts/kernel-applier.mjs rollback --kernel cpa --confirm
  *   node scripts/kernel-applier.mjs adopt --version <v> --sha256 <hex> [--previous <v> --backup <file>]
  *                                                              preview: the binary installed by hand becomes the trial
  *   node scripts/kernel-applier.mjs probe --out <dir> --phase baseline|verify|restored --budget <s>
  *                                                              the install script's hook: one real request per OAuth type
  *
  * Builders never install. The CPA builder (upstream tag + our patches, go test, smoke; its coordinator
- * scripts/cpa-coordinator.mjs) and the Magpie builder drop binaries, reports and records through forced-command gates
- * into <lib>/<kernel>/inbox. AUTOUPDATE_ROLE (/etc/crosery/autoupdate.env) says which half of the CPA promotion this
+ * scripts/cpa-coordinator.mjs) drops binaries, reports and records through a forced-command gate
+ * into <lib>/cpa/inbox. AUTOUPDATE_ROLE (/etc/crosery/autoupdate.env) says which half of the CPA promotion this
  * host is; anything but `preview` is production:
  * - preview installs a new candidate right away (one trial at a time), keeps it ≥ AUTOUPDATE_SOAK_HOURS, takes the
  *   coordinator's two acceptance runs, rolls back and rejects it on any failure, and writes the promotion record;
  * - production installs only a binary whose promotion record matches it (sha256, version, soak, both acceptance runs,
  *   age), only inside the quiet window, once per version, never while the hold file is set.
  * Both install only through /usr/local/sbin/cpa-install-binary.sh (gates, backup, swap, real requests per OAuth type,
- * restore within 30 s). Magpie goes into a new release dir, boots once in the console's sandbox, then flips `current`.
+ * restore within 30 s).
  * The console writes only <data>/kernel-autoupdate.json and <data>/kernel-requests/*.json, and reads
  * <data>/kernels/<kernel>.json, which only this job writes.
  */
@@ -29,7 +28,6 @@ import { createReadStream, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { request } from 'node:http'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { hostEnv, promotionPolicy, updateRole } from './autoupdate-common.mjs'
@@ -38,13 +36,11 @@ import { SYSTEM_KEYS_FILE, canonicalChannelName, readSystemKeys } from '../serve
 
 export const DEFAULT_WINDOW = Object.freeze({ start: '05:00', end: '07:00', tz: 'Asia/Shanghai' })
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
-const SHA40 = /^[a-f0-9]{40}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const CPA_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/
 const TAG = /^v\d+\.\d+\.\d+$/
 const ACCOUNT_TYPE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const KEEP_STAGED = 2
-const KEEP_MAGPIE = 3
 const KEEP_PROBE_RUNS = 10
 const RETRY_MS = 30 * 60_000
 const DAY_GAP_MS = 20 * 3_600_000
@@ -76,11 +72,6 @@ export function applierPaths(env = process.env) {
       authDir: env.CPA_AUTH_DIR || null,
       probeBase: env.CPA_PROBE_BASE_URL || 'http://127.0.0.1:8317',
       probeModels: parseProbeModels(env.CPA_PROBE_MODELS),
-    },
-    magpie: {
-      inbox: path.join(lib, 'magpie/inbox'),
-      root: path.resolve(env.MAGPIE_STANDBY_DIR || '/opt/crosery-magpie-kernel'),
-      smoke: path.join(lib, 'magpie/smoke'),
     },
   }
 }
@@ -129,13 +120,12 @@ export function parseWindow(value) {
   return { start, end, tz }
 }
 
-/** Missing file or field = ON (the same default as the Mac's Magpie auto-update); the window is in its own time zone. */
+/** Missing file or field = ON; the window is in its own time zone. Keys this job does not know are ignored. */
 export function normalizeConfig(raw) {
   const value = isObject(raw) ? raw : {}
   return {
     version: 1,
     cpa: { enabled: value.cpa?.enabled !== false },
-    magpie: { enabled: value.magpie?.enabled !== false },
     window: parseWindow(value.window) ?? { ...DEFAULT_WINDOW },
     ...(typeof value.updatedAt === 'string' ? { updatedAt: value.updatedAt } : {}),
   }
@@ -197,7 +187,6 @@ function checkList(value) {
 }
 
 const CPA_BUILDER_STATUS = new Set(['built', 'up-to-date', 'held', 'merge-conflict', 'build-failed', 'smoke-failed', 'fetch-failed', 'upload-failed'])
-const MAGPIE_BUILDER_STATUS = new Set(['built', 'up-to-date', 'held', 'build-failed', 'error'])
 
 /**
  * The CPA builder's report: what upstream has, which line it follows, what it built and how the build went.
@@ -286,28 +275,14 @@ export function promotionProblems({ record, staged, now, policy }) {
   return problems
 }
 
-/** The Magpie builder's report: the revision its own pipeline proved (rehearsed + applied on the Mac) and the linux build of it. */
-export function parseMagpieReport(raw) {
-  if (!isObject(raw) || raw.version !== 1 || raw.kernel !== 'magpie' || !MAGPIE_BUILDER_STATUS.has(raw.status) || !when(raw.checkedAt)) return null
-  const candidate = isObject(raw.candidate) && SHA40.test(String(raw.candidate.revision)) && SHA256.test(String(raw.candidate.sha256))
-    ? { revision: raw.candidate.revision, sha256: raw.candidate.sha256, release: text(raw.candidate.release, 40), checks: checkList(raw.candidate.checks) }
-    : null
-  if (raw.status === 'built' && !candidate) return null
-  return {
-    version: 1, kernel: 'magpie', status: raw.status, checkedAt: raw.checkedAt,
-    upstreamLatest: text(raw.upstreamLatest, 40), upstreamRevision: SHA40.test(String(raw.upstreamRevision)) ? raw.upstreamRevision : null,
-    candidate, reasons: reasonList(raw.reasons),
-  }
-}
-
 /* ── state (the console reads it) ───────────────────────────────────── */
 
 export function emptyState(kernel) {
   return {
-    version: 1, kernel, role: kernel === 'cpa' ? 'serving' : 'standby',
+    version: 1, kernel, role: 'serving',
     builder: null, staged: null, installed: null, decision: null,
     attempts: {}, applied: null, lastApply: null, failures: 0, nextAttemptAt: null, checkedAt: null,
-    ...(kernel === 'cpa' ? { env: null, trial: null, promotion: null } : {}),
+    env: null, trial: null, promotion: null,
   }
 }
 
@@ -419,20 +394,6 @@ export function promotionRecord(trial) {
     version: 1, kind: 'cpa-promotion', candidate: { version: trial.version, sha256: trial.sha256 }, installedAt: trial.installedAt,
     soakMs: trial.soakMs, acceptance: { first: trial.acceptance.first, soak: trial.acceptance.soak }, acceptedAt: trial.acceptedAt,
   }
-}
-
-/** Magpie standby: no window (it serves nothing), once per revision. */
-export function decideMagpie({ config, state }) {
-  if (!config.magpie.enabled) return { action: 'none', why: 'disabled' }
-  const staged = state.staged
-  if (!staged) {
-    const builder = state.builder
-    if (builder && builder.status !== 'built' && builder.status !== 'up-to-date') return { action: 'none', why: 'held', reasons: builder.reasons }
-    return { action: 'none', why: state.installed ? 'up-to-date' : 'no-candidate' }
-  }
-  if (state.installed?.revision === staged.revision) return { action: 'none', why: 'up-to-date', revision: staged.revision }
-  if ((state.attempts[staged.revision] || 0) >= 1) return { action: 'none', why: 'attempted', revision: staged.revision }
-  return { action: 'apply', why: 'apply', revision: staged.revision }
 }
 
 /* ── processes ──────────────────────────────────────────────────────── */
@@ -558,40 +519,6 @@ export async function ingestCpa(paths, state, deps = {}) {
   }
   for (const name of await fs.readdir(inbox).catch(() => [])) if (name.endsWith('.bin')) await fs.rm(path.join(inbox, name), { force: true })
   return { state: next, notes, acceptance: taken }
-}
-
-export async function ingestMagpie(paths, state, deps = {}) {
-  const notes = []
-  const reportFile = path.join(paths.magpie.inbox, 'report.json')
-  const raw = await readJSON(reportFile, MAX_REPORT_BYTES)
-  if (!raw) {
-    if (await exists(reportFile)) { notes.push('magpie: unreadable report dropped'); await fs.rm(reportFile, { force: true }) }
-    return { state, notes }
-  }
-  await fs.rm(reportFile, { force: true })
-  const report = parseMagpieReport(raw)
-  if (!report) { notes.push('magpie: invalid report ignored'); return { state, notes } }
-  let next = { ...state, builder: report }
-  const candidate = report.candidate
-  if (candidate && state.staged?.revision !== candidate.revision && state.installed?.revision !== candidate.revision) {
-    const drop = path.join(paths.magpie.inbox, `${candidate.revision}.bin`)
-    if (await exists(drop)) {
-      const sha = await sha256File(drop)
-      if (sha !== candidate.sha256) {
-        notes.push(`magpie: ${candidate.revision.slice(0, 7)} rejected (sha256 mismatch)`)
-        next = { ...next, builder: { ...report, status: 'error', reasons: [{ code: 'verify', text: `生产机校验 ${candidate.revision.slice(0, 7)} 的 sha256 没过，没有暂存` }] } }
-      } else {
-        const staged = path.join(paths.magpie.root, 'staged')
-        await fs.mkdir(staged, { recursive: true, mode: 0o700 })
-        await fs.rename(drop, path.join(staged, candidate.revision))
-        next = { ...next, staged: { revision: candidate.revision, sha256: sha, release: candidate.release, at: iso((deps.now ?? Date.now)()) } }
-        notes.push(`magpie: staged ${candidate.revision.slice(0, 7)}`)
-        await prune(staged, KEEP_STAGED, [candidate.revision])
-      }
-    }
-  }
-  for (const name of await fs.readdir(paths.magpie.inbox).catch(() => [])) if (name.endsWith('.bin')) await fs.rm(path.join(paths.magpie.inbox, name), { force: true })
-  return { state: next, notes }
 }
 
 /* ── real requests per OAuth account type (the install script's hook) ── */
@@ -772,94 +699,6 @@ export async function applyCpa({ paths, state, version, deps = {} }) {
   return outcome
 }
 
-/* ── Magpie standby install ─────────────────────────────────────────── */
-
-function socketHealth(socket, timeoutMs = 3_000) {
-  return new Promise(resolve => {
-    const req = request({ socketPath: socket, path: '/internal/health', method: 'GET', timeout: timeoutMs }, res => {
-      const chunks = []
-      res.on('data', chunk => chunks.push(chunk))
-      res.once('end', () => {
-        let body = null
-        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { /* not JSON */ }
-        resolve({ status: res.statusCode || 0, body })
-      })
-    })
-    req.once('timeout', () => req.destroy(new Error('timeout')))
-    req.once('error', () => resolve({ status: 0, body: null }))
-    req.end()
-  })
-}
-
-const SANDBOX = ['NoNewPrivileges=yes', 'CapabilityBoundingSet=', 'PrivateTmp=yes', 'PrivateDevices=yes', 'ProtectSystem=strict', 'ProtectHome=yes',
-  'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6', 'RestrictNamespaces=yes', 'SystemCallArchitectures=native', 'TasksMax=128', 'UMask=0077']
-
-/** Boot the standby once in the console unit's sandbox (empty HOME), read /internal/health, stop it. */
-export async function smokeMagpie({ paths, binary, revision, deps = {} }) {
-  const runner = deps.run ?? run
-  const dir = path.join(paths.magpie.smoke, `${revision.slice(0, 12)}-${randomBytes(3).toString('hex')}`)
-  await fs.mkdir(path.join(dir, 'home'), { recursive: true, mode: 0o700 })
-  const socket = path.join(dir, 'kernel.sock')
-  const unit = `crosery-magpie-standby-smoke-${randomBytes(3).toString('hex')}`
-  const props = [...SANDBOX, `ReadWritePaths=${dir}`, `Environment=HOME=${dir}/home`, `Environment=XDG_CONFIG_HOME=${dir}/home/.config`,
-    `Environment=XDG_CACHE_HOME=${dir}/home/.cache`, `Environment=MAGPIE_KERNEL_SOCKET=${socket}`, 'Environment=MAGPIE_NO_STATS=1', 'Environment=DO_NOT_TRACK=1']
-  const started = await runner('systemd-run', ['--quiet', `--unit=${unit}`, ...props.flatMap(prop => ['-p', prop]), binary], { timeoutMs: 20_000 })
-  const checks = []
-  try {
-    if (started.code !== 0) return { ok: false, checks: [{ name: 'start', ok: false, detail: started.stderr.trim().slice(0, 200) }] }
-    const deadline = (deps.now ?? Date.now)() + 20_000
-    let health = { status: 0, body: null }
-    while ((deps.now ?? Date.now)() < deadline) {
-      if (await exists(socket)) { health = await (deps.health ?? socketHealth)(socket); if (health.status === 200) break }
-      await new Promise(resolve => setTimeout(resolve, 250))
-    }
-    const body = health.body ?? {}
-    checks.push({ name: 'health', ok: health.status === 200 && body.ok === true, detail: `HTTP ${health.status}` })
-    checks.push({ name: 'revision', ok: body.revision === revision, detail: String(body.revision ?? '').slice(0, 12) })
-    checks.push({ name: 'keychain-off', ok: body.keychain === false })
-    return { ok: checks.every(check => check.ok), checks }
-  } finally {
-    await runner('systemctl', ['stop', unit], { timeoutMs: 30_000 })
-    await runner('systemctl', ['reset-failed', unit], { timeoutMs: 10_000 })
-    await fs.rm(dir, { recursive: true, force: true })
-  }
-}
-
-const releaseName = revision => revision.slice(0, 12)
-
-async function currentMagpie(paths) {
-  try { return path.basename(await fs.readlink(path.join(paths.magpie.root, 'current'))) } catch { return null }
-}
-
-async function pointCurrent(paths, name) {
-  const link = path.join(paths.magpie.root, 'current')
-  const temporary = `${link}.${process.pid}.tmp`
-  await fs.rm(temporary, { force: true })
-  await fs.symlink(path.join('releases', name), temporary)
-  await fs.rename(temporary, link)
-}
-
-export async function applyMagpie({ paths, state, revision, deps = {} }) {
-  const staged = path.join(paths.magpie.root, 'staged', revision)
-  if (!await exists(staged) || await sha256File(staged) !== state.staged?.sha256) return { result: 'refused', reason: '暂存的内核不见了或被改过', checks: [] }
-  const name = releaseName(revision)
-  const release = path.join(paths.magpie.root, 'releases', name)
-  await fs.rm(release, { recursive: true, force: true })
-  await fs.mkdir(release, { recursive: true, mode: 0o755 })
-  const binary = path.join(release, 'magpie-kernel')
-  await fs.copyFile(staged, binary)
-  await fs.chmod(binary, 0o755)
-  const smoke = await (deps.smoke ?? smokeMagpie)({ paths, binary, revision, deps })
-  if (!smoke.ok) {
-    await fs.rm(release, { recursive: true, force: true })
-    return { result: 'failed', checks: smoke.checks, reason: `备用内核单独启动没过：${smoke.checks.filter(check => !check.ok).map(check => `${check.name} ${check.detail ?? ''}`.trim()).join('、')}` }
-  }
-  const previous = await currentMagpie(paths)
-  await pointCurrent(paths, name)
-  await prune(path.join(paths.magpie.root, 'releases'), KEEP_MAGPIE, [name, ...(previous ? [previous] : [])])
-  return { result: 'applied', checks: smoke.checks, previous }
-}
-
 /* ── rollback ───────────────────────────────────────────────────────── */
 
 /**
@@ -881,22 +720,6 @@ export async function rollbackCpa({ paths, state, deps = {} }) {
   if (!applied.backup || !await exists(applied.backup)) throw new Error('替换前的备份不在了')
   const out = await (deps.run ?? run)(paths.cpa.install, [applied.backup, applied.previous], { timeoutMs: 15 * 60_000 })
   return classifyInstall(out)
-}
-
-export async function rollbackMagpie({ paths, state, deps = {} }) {
-  const applied = state.applied
-  if (!applied?.revision || !applied.previous) throw new Error('没有可回滚的备用内核版本')
-  const current = await currentMagpie(paths)
-  if (current !== releaseName(applied.revision)) throw new Error('当前备用内核不是自动更新装的那个；不覆盖')
-  const binary = path.join(paths.magpie.root, 'releases', applied.previous, 'magpie-kernel')
-  if (!await exists(binary)) throw new Error('上一个备用内核已被清理')
-  const previousRevision = applied.previousRevision
-  if (previousRevision) {
-    const smoke = await (deps.smoke ?? smokeMagpie)({ paths, binary, revision: previousRevision, deps })
-    if (!smoke.ok) return { result: 'failed', checks: smoke.checks, reason: '上一个备用内核启动没过，没有切回' }
-  }
-  await pointCurrent(paths, applied.previous)
-  return { result: 'rolled-back-manually', checks: [] }
 }
 
 /* ── lock (timer, path unit and a manual run never overlap) ─────────── */
@@ -927,7 +750,7 @@ export async function takeRequests(paths) {
   const taken = []
   for (const name of names) {
     const file = path.join(paths.requests, name)
-    const match = /^rollback-(cpa|magpie)\.json$/.exec(name)
+    const match = /^rollback-(cpa)\.json$/.exec(name)
     const body = match ? await readJSON(file, 4096) : null
     await fs.rm(file, { force: true })
     if (match && body?.confirm === true) taken.push({ action: 'rollback', kernel: match[1], at: when(body.at) })
@@ -941,18 +764,17 @@ async function rollbackKernel({ paths, kernel, deps, now }) {
   let state = await readState(paths, kernel)
   let outcome
   try {
-    outcome = kernel === 'cpa' ? await rollbackCpa({ paths, state, deps }) : await rollbackMagpie({ paths, state, deps })
+    outcome = await rollbackCpa({ paths, state, deps })
   } catch (error) {
     outcome = { result: 'refused', reason: String(error?.message || error).slice(0, 200) }
   }
   const at = iso(now())
-  const ok = kernel === 'cpa' ? outcome.result === 'applied' : outcome.result === 'rolled-back-manually'
-  const target = kernel === 'cpa' ? state.applied?.version : state.applied?.revision
+  const ok = outcome.result === 'applied'
   state = {
     ...state,
-    lastApply: { [kernel === 'cpa' ? 'version' : 'revision']: target ?? null, at, action: 'rollback', result: ok ? 'rolled-back-manually' : outcome.result,
+    lastApply: { version: state.applied?.version ?? null, at, action: 'rollback', result: ok ? 'rolled-back-manually' : outcome.result,
       reasons: outcome.reason ? [{ code: 'rollback', text: outcome.reason }] : [], backup: outcome.backup ?? null },
-    ...(ok ? { applied: null, ...(kernel === 'magpie' ? { installed: { revision: state.applied.previousRevision ?? null, at } } : {}) } : {}),
+    ...(ok ? { applied: null } : {}),
   }
   await saveState(paths, state)
   return { kernel, action: 'rollback', ...outcome }
@@ -1028,8 +850,8 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
   const policy = paths.policy ?? promotionPolicy({})
   const decide = (state, running, hold) => decideCpa({ now: now(), config, state, running, hold, role, policy })
   if (dryRun) {
-    const [cpaState, magpieState, running, hold] = await Promise.all([readState(paths, 'cpa'), readState(paths, 'magpie'), runningCpa(paths, deps), readHold(paths.cpa.hold)])
-    return { dryRun: true, role, config, running, cpa: decide(cpaState, running, hold), magpie: decideMagpie({ config, state: magpieState }) }
+    const [cpaState, running, hold] = await Promise.all([readState(paths, 'cpa'), runningCpa(paths, deps), readHold(paths.cpa.hold)])
+    return { dryRun: true, role, config, running, cpa: decide(cpaState, running, hold) }
   }
   return withLock(paths.lock, async () => {
     const log = []
@@ -1097,33 +919,7 @@ export async function runAuto({ dryRun = false, paths = applierPaths(), deps = {
     }
     await saveState(paths, cpa)
 
-    /* Magpie standby */
-    let magpie = await readState(paths, 'magpie')
-    const dropped = await ingestMagpie(paths, magpie, deps)
-    magpie = { ...dropped.state, checkedAt: iso(now()) }
-    log.push(...dropped.notes)
-    const current = await currentMagpie(paths)
-    if (current && magpie.installed?.revision && releaseName(magpie.installed.revision) !== current) magpie.installed = null
-    const standby = decideMagpie({ config, state: magpie })
-    magpie.decision = { ...standby, at: iso(now()) }
-    if (standby.action === 'apply') {
-      await saveState(paths, magpie)
-      const outcome = await applyMagpie({ paths, state: magpie, revision: standby.revision, deps })
-      const at = iso(now())
-      magpie = {
-        ...magpie,
-        attempts: outcome.result === 'refused' ? magpie.attempts : { ...magpie.attempts, [standby.revision]: (magpie.attempts[standby.revision] || 0) + 1 },
-        lastApply: { revision: standby.revision, at, action: 'apply', result: outcome.result, checks: outcome.checks ?? [], reasons: outcome.reason ? [{ code: outcome.result, text: outcome.reason }] : [] },
-        ...(outcome.result === 'applied' ? {
-          applied: { revision: standby.revision, previous: outcome.previous, previousRevision: magpie.installed?.revision ?? null, at },
-          installed: { revision: standby.revision, release: magpie.staged?.release ?? null, at },
-        } : {}),
-      }
-      log.push({ kernel: 'magpie', action: 'apply', revision: standby.revision, result: outcome.result })
-      magpie.decision = { ...decideMagpie({ config, state: magpie }), at: iso(now()) }
-    }
-    await saveState(paths, magpie)
-    return { config, running, cpa: cpa.decision, magpie: magpie.decision, log }
+    return { config, running, cpa: cpa.decision, log }
   })
 }
 
@@ -1133,18 +929,18 @@ async function main() {
   // by hand from a root shell: the host's role file, as the unit loads it
   const paths = applierPaths(hostEnv(process.env))
   if (action === 'status') {
-    const [cpa, magpie] = await Promise.all([readState(paths, 'cpa'), readState(paths, 'magpie')])
+    const cpa = await readState(paths, 'cpa')
     const dry = await runAuto({ dryRun: true, paths })
-    console.log(json({ ...dry, state: { cpa, magpie } }))
+    console.log(json({ ...dry, state: { cpa } }))
   } else if (action === 'auto') {
     console.log(json(await runAuto({ dryRun: process.argv.includes('--dry-run'), paths })))
   } else if (action === 'rollback') {
     const kernel = arg('--kernel')
-    if (kernel !== 'cpa' && kernel !== 'magpie') throw new Error('--kernel cpa|magpie')
+    if (kernel !== 'cpa') throw new Error('--kernel cpa')
     if (!process.argv.includes('--confirm')) throw new Error('rollback restarts the gateway kernel; pass --confirm')
     const outcome = await withLock(paths.lock, () => rollbackKernel({ paths, kernel, deps: {}, now: Date.now }))
     console.log(json(outcome))
-    if (!['applied', 'rolled-back-manually'].includes(outcome.result)) process.exitCode = 1
+    if (outcome.result !== 'applied') process.exitCode = 1
   } else if (action === 'adopt') {
     const outcome = await withLock(paths.lock, () => adoptCpa({ paths, version: arg('--version'), sha256: arg('--sha256'), previous: arg('--previous') ?? null, backup: arg('--backup') ?? null }))
     console.log(json(outcome))
@@ -1156,7 +952,7 @@ async function main() {
     console.log(probeSummary(record))
     if (!record.ok) process.exitCode = 1
   } else {
-    throw new Error('Use status, auto [--dry-run], rollback --kernel cpa|magpie --confirm, adopt --version <v> --sha256 <hex> [--previous <v> --backup <file>], or probe --out <dir> --phase <phase> --budget <s>')
+    throw new Error('Use status, auto [--dry-run], rollback --kernel cpa --confirm, adopt --version <v> --sha256 <hex> [--previous <v> --backup <file>], or probe --out <dir> --phase <phase> --budget <s>')
   }
 }
 

@@ -17,7 +17,7 @@ export type JobLike = {
   lastError: string | null
 }
 
-export type VersionsLike = { cpa?: { engine?: string; version?: string; commit?: string } | null } | null | undefined
+export type VersionsLike = { cpa?: { version?: string; commit?: string } | null } | null | undefined
 
 export function chipState(job: JobLike): ChipState {
   if (job.state === 'running') return 'running'
@@ -50,8 +50,7 @@ export function syncWords(jobs: JobLike[], now: number): string | null {
 export function kernelWord(versions: VersionsLike): string | null {
   const cpa = versions?.cpa
   if (!cpa) return null
-  const engine = cpa.engine === 'magpie' ? 'magpie' : 'cpa'
-  if (cpa.version === 'offline') return `${engine} 离线`
+  if (cpa.version === 'offline') return 'cpa 离线'
   const ref = cpa.commit && cpa.commit !== 'unknown' ? cpa.commit.slice(0, 7) : cpa.version
-  return ref ? `${engine} ${ref}` : engine
+  return ref ? `cpa ${ref}` : 'cpa'
 }

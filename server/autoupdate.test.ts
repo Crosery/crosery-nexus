@@ -5,102 +5,55 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import express from 'express'
-import { MAGPIE_API_REVISION } from '../packages/contracts/magpie-upstream.generated.js'
 import {
-  AutoConfigError, autoRowWords, autoupdatePathsFor, buildAutoupdateView, readAutoConfig, readScheduler, registerAutoupdateRoutes,
-  writeAutoConfig, writeSigninLease, type AutoupdateFacts,
+  AutoConfigError, autoupdatePathsFor, buildAutoupdateView, readAutoConfig, readScheduler, registerAutoupdateRoutes, rtkStateDir,
+  writeAutoConfig, type AutoupdateFacts,
 } from './autoupdate.js'
-import { readMagpieUpstreamStatus } from './magpieUpstream.js'
-import { readMagpieGateway } from './magpieVersion.js'
 
 const repo = path.resolve(import.meta.dirname, '..')
-const CAND = 'c'.repeat(40)
-const NEXT = 'e'.repeat(40)
 const NOW = new Date(2026, 9, 3, 2, 14).getTime()
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'autoupdate-'))
 
 const facts = (over: Partial<AutoupdateFacts> = {}): AutoupdateFacts => ({
-  config: readAutoConfig('/nonexistent/autoupdate.json'), scheduler: 'auto', magpieLocal: true, running: MAGPIE_API_REVISION, rtkLocal: '0.50.0',
-  magpieState: null, rtkState: null,
-  upstream: { version: 1, status: 'review_required', candidateRevision: CAND, latestRelease: 'v0.1.679', rtkRelease: 'v0.51.0' }, ...over,
+  config: readAutoConfig('/nonexistent/autoupdate.json'), scheduler: 'auto', rtkLocal: '0.50.0',
+  rtkState: { latest: 'v0.51.0' }, ...over,
 })
-const magpie = (over: Partial<AutoupdateFacts> = {}) => buildAutoupdateView(facts(over), NOW).magpie
 const rtk = (over: Partial<AutoupdateFacts> = {}) => buildAutoupdateView(facts(over), NOW).rtk
 
-test('config: missing = ON with 03:00–06:00; writes validate strictly and land 0600', () => {
+test('state dir: RTK_STATE_DIR, else ~/.agents/crosery/rtk', () => {
+  assert.equal(rtkStateDir({ RTK_STATE_DIR: '/srv/rtk' }, '/home/x'), '/srv/rtk')
+  assert.equal(rtkStateDir({}, '/home/x'), '/home/x/.agents/crosery/rtk')
+})
+
+test('config: missing = ON; writes validate strictly and land 0600; a leftover key from older releases is ignored', () => {
   const dir = temp()
   try {
     const file = path.join(dir, 'autoupdate.json')
-    assert.deepEqual(readAutoConfig(file), { version: 1, magpie: { enabled: true, window: { start: '03:00', end: '06:00' } }, rtk: { enabled: true } })
-    const next = writeAutoConfig(file, { magpie: { enabled: false, window: { start: '01:00', end: '04:30' } } }, NOW)
-    assert.equal(next.magpie.enabled, false)
-    assert.equal(next.rtk.enabled, true, 'an omitted switch keeps its value')
+    assert.deepEqual(readAutoConfig(file), { version: 1, rtk: { enabled: true } })
+    fs.writeFileSync(file, JSON.stringify({ version: 1, magpie: { enabled: false, window: { start: '01:00', end: '04:30' } }, rtk: { enabled: true } }))
+    assert.deepEqual(readAutoConfig(file), { version: 1, rtk: { enabled: true } })
+    const next = writeAutoConfig(file, { rtk: { enabled: false } }, NOW)
+    assert.equal(next.rtk.enabled, false)
     assert.equal(fs.statSync(file).mode & 0o777, 0o600)
-    assert.deepEqual(readAutoConfig(file).magpie.window, { start: '01:00', end: '04:30' })
-    for (const bad of [null, [], { magpie: { enabled: 'yes' } }, { rtk: { enabled: 1 } }, { magpie: { window: { start: '3:00', end: '06:00' } } }, { other: true }, { magpie: { enabled: true, extra: 1 } }]) {
+    assert.equal(readAutoConfig(file).rtk.enabled, false)
+    for (const bad of [null, [], { rtk: { enabled: 1 } }, { rtk: { enabled: true, extra: 1 } }, { magpie: { enabled: true } }, { other: true }]) {
       assert.throws(() => writeAutoConfig(file, bad), AutoConfigError, JSON.stringify(bad))
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the scheduled job reads what the console wrote (same file, same defaults)', () => {
+test('the scheduled job reads what the console wrote (same dir, same file)', () => {
   const dir = temp()
   try {
-    writeAutoConfig(path.join(dir, 'autoupdate.json'), { magpie: { enabled: false, window: { start: '02:00', end: '05:00' } }, rtk: { enabled: false } })
-    const out = execFileSync(process.execPath, [path.join(repo, 'scripts/magpie-autoupdate.mjs'), 'status'], {
-      encoding: 'utf8', env: { ...process.env, MAGPIE_UPSTREAM_RUNTIME: dir, MAGPIE_CONSOLE_RUNTIME: path.join(dir, 'console') },
+    writeAutoConfig(path.join(dir, 'autoupdate.json'), { rtk: { enabled: false } })
+    const out = execFileSync(process.execPath, [path.join(repo, 'scripts/rtk-autoupdate.mjs'), 'auto'], {
+      encoding: 'utf8', env: { ...process.env, RTK_STATE_DIR: dir, RTK_BIN: path.join(dir, 'none'), AUTOUPDATE_ROLE: 'preview' },
     })
-    const status = JSON.parse(out)
-    assert.deepEqual(status.config.magpie, { enabled: false, window: { start: '02:00', end: '05:00' } })
-    assert.equal(status.config.rtk.enabled, false)
-    assert.equal(status.decision.why, 'disabled')
+    assert.equal(JSON.parse(out).why, 'disabled')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the sign-in lease the console writes is what the job checks; an empty list removes it', () => {
-  const dir = temp()
-  try {
-    const lease = path.join(dir, 'signin-active.json')
-    writeSigninLease(lease, [{ deadline: Date.now() + 600_000 }])
-    const check = () => execFileSync(process.execPath, ['--input-type=module', '-e',
-      `import { signinActive } from ${JSON.stringify(path.join(repo, 'scripts/magpie-autoupdate.mjs'))}; console.log(await signinActive(${JSON.stringify(lease)}))`], { encoding: 'utf8' }).trim()
-    assert.equal(check(), 'true')
-    writeSigninLease(lease, [])
-    assert.equal(fs.existsSync(lease), false)
-    assert.equal(check(), 'false')
-  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
-})
-
-test('magpie line: one honest sentence per state', () => {
-  assert.equal(magpie({ magpieLocal: false }).line, '仅本机 Magpie 网关 · 这里的网关是 CPA，没有内核可更新')
-  assert.equal(magpie({ magpieLocal: false }).available, false)
-  assert.equal(magpie({ config: { ...facts().config, magpie: { ...facts().config.magpie, enabled: false } } }).line, '已关闭 · 只检查上游，不演练、不替换')
-  assert.equal(magpie({ scheduler: 'check-only' }).line, '定时任务还是只检查的旧版本 · 重装后才会自动更新')
-  assert.equal(magpie({ scheduler: 'missing' }).state, 'no-scheduler')
-  assert.equal(magpie().line, `候选 ${CAND.slice(0, 7)} 等下一轮定时任务演练`)
-  const held = magpie({ magpieState: { candidate: CAND, why: 'held', reasons: [{ code: 'catalog-drift', text: '账号目录有变化：新增 qoder-cn' }, { code: 'settings-drift', text: '网关设置有变化：新增 25 项' }] } })
-  assert.equal(held.line, '停在待复核：账号目录有变化：新增 qoder-cn（另有 1 项）')
-  assert.equal(held.tone, 'warn')
-  assert.equal(magpie({ magpieState: { candidate: CAND, why: 'window', result: 'eligible' } }).line, 'ccccccc 演练通过 · 等 03:00–06:00 窗口替换')
-  assert.equal(magpie({ magpieState: { candidate: CAND, why: 'signin', result: 'eligible' } }).line, 'ccccccc 演练通过 · 等登录结束再替换')
-  const applied = magpie({ running: CAND, magpieState: { candidate: CAND, why: 'applied', applied: { revision: CAND, release: 'v0.1.679', at: new Date(NOW - 3600_000).toISOString() } } })
-  assert.equal(applied.line, '上次 01:14 自动替换到 ccccccc · v0.1.679 · 下次窗口 03:00–06:00')
-  const rolled = magpie({ magpieState: { candidate: CAND, why: 'attempted', reasons: [{ code: 'health', text: '替换后 60 秒内没通过健康检查：gateway HTTP 502' }],
-    lastApply: { revision: CAND, at: new Date(NOW - 600_000).toISOString(), result: 'rolled-back' } } })
-  assert.equal(rolled.line, '02:04 替换 ccccccc 失败已回滚：替换后 60 秒内没通过健康检查：gateway HTTP 502 · 不再自动重试这个版本')
-  assert.equal(rolled.tone, 'bad')
-  const manual = magpie({ magpieState: { candidate: CAND, why: 'attempted', reasons: [], lastApply: { revision: CAND, at: new Date(NOW - 600_000).toISOString(), result: 'rolled-back-manually' } } })
-  assert.equal(manual.line, '02:04 已手动回滚 ccccccc · 不再自动替换这个版本')
-  assert.equal(manual.tone, 'warn')
-  assert.equal(magpie({ upstream: { status: 'unchanged', candidateRevision: MAGPIE_API_REVISION } }).state, 'up-to-date')
-  // a newer candidate after an auto-apply: the newer one's state wins
-  const moved = magpie({ running: CAND, upstream: { status: 'review_required', candidateRevision: NEXT }, magpieState: { candidate: NEXT, why: 'held', reasons: [{ code: 'x', text: '登录方式变了：移除 dimagent' }], applied: { revision: CAND, at: new Date(NOW).toISOString() } } })
-  assert.equal(moved.state, 'held')
-  assert.equal(autoRowWords(held, '待复核 ccccccc'), '检查 · 自动更新开 · ccccccc 停在待复核')
-  assert.equal(autoRowWords(magpie({ scheduler: 'check-only' }), '待复核 ccccccc'), '检查 · 自动更新未生效 · 待复核 ccccccc')
-})
-
-test('rtk line: off, brew, held for breaking, upgraded, pending, failed verification', () => {
+test('rtk line: off, brew, held for breaking, upgraded, pending, failed verification, no scheduler', () => {
   assert.equal(rtk({ config: { ...facts().config, rtk: { enabled: false } } }).line, '已关闭 · 只检查新版本，不下载、不替换')
   assert.equal(rtk({ rtkState: { method: 'homebrew' } }).line, 'Homebrew 安装的 rtk · 自动升级走 brew upgrade rtk')
   assert.equal(rtk().line, '可升级 v0.51.0 · 本机 0.50.0 · 下一轮定时任务升级')
@@ -111,48 +64,23 @@ test('rtk line: off, brew, held for breaking, upgraded, pending, failed verifica
   const failed = rtk({ rtkState: { latest: 'v0.51.0', why: 'verify-failed', reasons: [{ code: 'checksum-mismatch', text: 'v0.51.0 没通过校验：sha256 不符' }] } })
   assert.equal(failed.tone, 'bad')
   assert.match(failed.line, /^v0\.51\.0 没通过校验，不再自动重试/)
-  assert.equal(rtk({ scheduler: 'check-only' }).line, '定时任务还是只检查的旧版本 · 重装后才会自动升级')
+  assert.equal(rtk({ rtkState: null }).line, '还没取到 rtk 最新版本')
+  assert.equal(rtk({ scheduler: 'missing' }).line, '没有安装定时任务 · 开着也不会自动升级')
+  assert.equal(rtk({ scheduler: 'unsupported' }).state, 'no-scheduler')
 })
 
-test('scheduler mode comes from the installed plist, read-only', () => {
+test('scheduler mode: the installed systemd timer on Linux, read-only', () => {
   const dir = temp()
   try {
-    assert.equal(readScheduler(dir, 'darwin'), 'missing')
-    assert.equal(readScheduler(dir, 'linux'), 'unsupported')
-    fs.writeFileSync(path.join(dir, 'com.crosery.magpie-upstream-check.plist'), '<array><string>node</string><string>check</string></array>')
-    assert.equal(readScheduler(dir, 'darwin'), 'check-only')
-    fs.writeFileSync(path.join(dir, 'com.crosery.magpie-upstream-check.plist'), '<array><string>node</string><string>scheduled</string></array>')
-    assert.equal(readScheduler(dir, 'darwin'), 'auto')
+    const unit = path.join(dir, 'crosery-rtk-autoupdate.timer')
+    assert.equal(readScheduler(unit, 'darwin'), 'unsupported')
+    assert.equal(readScheduler(unit, 'linux'), 'missing')
+    fs.writeFileSync(unit, '[Timer]\n')
+    assert.equal(readScheduler(unit, 'linux'), 'auto')
   } finally { fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('an auto-applied kernel is not a baseline mismatch; the gateway policy says auto-update is on', () => {
-  const dir = temp()
-  try {
-    const statusFile = path.join(dir, 'status.json')
-    fs.writeFileSync(statusFile, JSON.stringify({ version: 1, status: 'review_required', baselineRevision: MAGPIE_API_REVISION, candidateRevision: CAND, checkedAt: new Date(NOW).toISOString(),
-      diff: { addedRoutes: [], removedRoutes: [], changedRoutes: [], changedSchemas: [], implementationFiles: [], addedLoginAgents: [], removedLoginAgents: [] } }), { mode: 0o600 })
-    assert.equal(readMagpieUpstreamStatus(CAND, statusFile).status, 'baseline_mismatch')
-    fs.writeFileSync(path.join(dir, 'autoupdate-magpie.json'), JSON.stringify({ version: 1, applied: { revision: CAND, at: new Date(NOW).toISOString() } }))
-    assert.equal(readMagpieUpstreamStatus(CAND, statusFile).status, 'review_required')
-
-    const agents = path.join(dir, 'agents')
-    fs.mkdirSync(agents)
-    fs.writeFileSync(path.join(agents, 'com.crosery.magpie-upstream-check.plist'), '<dict><key>ProgramArguments</key><array><string>scheduled</string></array><key>StartInterval</key><integer>1800</integer></dict>')
-    const paths = { upstreamDir: dir, updateRoot: path.join(dir, 'bin'), launchAgentsDir: agents, binary: 'magpie-kernel' }
-    const on = readMagpieGateway({ engine: 'magpie', version: CAND.slice(0, 7), commit: CAND, buildDate: '' }, paths, NOW)
-    if (process.platform === 'darwin') {
-      assert.equal(on.policy.autoApply, true)
-      assert.equal(on.policy.text, '每 30 分钟检查上游 · 新候选自动演练，契约兼容才在 03:00–06:00 自动替换 · 替换前备份，失败自动回滚')
-    }
-    writeAutoConfig(path.join(dir, 'autoupdate.json'), { magpie: { enabled: false } })
-    const off = readMagpieGateway({ engine: 'magpie', version: CAND.slice(0, 7), commit: CAND, buildDate: '' }, paths, NOW)
-    assert.equal(off.policy.autoApply, false)
-    assert.match(off.policy.text, /只出候选，不自动替换/)
-  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
-})
-
-test('routes: GET view, PUT audited and validated, a real magpie run is refused, an rtk upgrade needs confirm', async () => {
+test('routes: GET view, PUT audited and validated, a non-rtk target is refused, an rtk upgrade needs confirm', async () => {
   const dir = temp()
   const app = express()
   app.use(express.json())
@@ -161,12 +89,12 @@ test('routes: GET view, PUT audited and validated, a real magpie run is refused,
   let upgradeOutcome: Record<string, unknown> = { why: 'upgraded', reasons: [] }
   registerAutoupdateRoutes(app, {
     addAudit: (action, target, detail) => audits.push(`${action} ${target} ${detail ?? ''}`),
-    repoRoot: repo, magpieLocal: () => true, running: async () => MAGPIE_API_REVISION, rtkLocal: async () => '0.50.0',
-    paths: () => autoupdatePathsFor(dir, path.join(dir, 'agents')),
+    repoRoot: repo, rtkLocal: async () => '0.50.0',
+    paths: () => autoupdatePathsFor(dir, path.join(dir, 'none.timer')),
     runScript: async (script, args) => {
       runs.push({ script: path.basename(script), args })
       if (args[0] === 'upgrade') return { code: upgradeOutcome.why === 'upgraded' ? 0 : 1, stdout: JSON.stringify(upgradeOutcome), stderr: '' }
-      return { code: 0, stdout: JSON.stringify({ dryRun: true, magpie: { why: 'rehearse' }, why: 'ready' }), stderr: '' }
+      return { code: 0, stdout: JSON.stringify({ why: 'ready' }), stderr: '' }
     },
   })
   const server = app.listen(0, '127.0.0.1')
@@ -179,22 +107,20 @@ test('routes: GET view, PUT audited and validated, a real magpie run is refused,
   try {
     const view = await call('GET', '/api/autoupdate')
     assert.equal(view.status, 200)
-    assert.equal(view.body.magpie.enabled, true)
+    assert.deepEqual(Object.keys(view.body), ['rtk'])
     assert.equal(view.body.rtk.enabled, true)
-    assert.equal((await call('PUT', '/api/autoupdate', { magpie: { enabled: 'no' } })).status, 400)
+    assert.equal((await call('PUT', '/api/autoupdate', { magpie: { enabled: false } })).status, 400)
     const put = await call('PUT', '/api/autoupdate', { rtk: { enabled: false } })
     assert.equal(put.status, 200)
     assert.equal(put.body.rtk.state, 'off')
-    assert.match(audits.at(-1) ?? '', /^autoupdate_config local magpie=on window=03:00-06:00 rtk=off/)
-    const refused = await call('POST', '/api/autoupdate/run', { target: 'magpie', dryRun: false })
-    assert.equal(refused.status, 409)
-    assert.equal(refused.body.code, 'scheduled_only')
+    assert.equal(audits.at(-1), 'autoupdate_config local rtk=off')
+    assert.equal((await call('POST', '/api/autoupdate/run', { target: 'magpie', dryRun: true })).status, 400)
     assert.equal((await call('POST', '/api/autoupdate/run', { target: 'rtk', dryRun: false })).status, 403)
     assert.equal((await call('POST', '/api/autoupdate/run', { target: 'x' })).status, 400)
     assert.equal(runs.length, 0, 'nothing ran for a refused request')
-    const dry = await call('POST', '/api/autoupdate/run', { target: 'magpie', dryRun: true })
+    const dry = await call('POST', '/api/autoupdate/run', { target: 'rtk', dryRun: true })
     assert.equal(dry.status, 200)
-    assert.deepEqual(runs.at(-1), { script: 'magpie-autoupdate.mjs', args: ['auto', '--dry-run'] })
+    assert.deepEqual(runs.at(-1), { script: 'rtk-autoupdate.mjs', args: ['plan'] })
     const upgraded = await call('POST', '/api/autoupdate/run', { target: 'rtk', dryRun: false, confirm: true })
     assert.deepEqual(runs.at(-1), { script: 'rtk-autoupdate.mjs', args: ['upgrade', '--confirm'] })
     assert.equal(upgraded.status, 200)

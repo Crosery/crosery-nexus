@@ -11,7 +11,6 @@ import { CHECK_WORD, isReachable } from '../proxy/proxyModel.js'
 /* ── accounts ↔ refs ↔ services ───────────────────────────────────── */
 
 export const cpaRef = (credential: string) => `cpa:${credential}`
-export const magpieRef = (agent: string, user: string) => `magpie:${agent}:${user.trim().toLowerCase()}`
 
 const SERVICE_OF: Record<string, EgressService> = {
   claude: 'claude', anthropic: 'claude',
@@ -94,12 +93,8 @@ export type EgressBadge = {
 
 const entryById = (data: EgressData, id: string | null | undefined) => (id ? data.entries.find(entry => entry.id === id) ?? null : null)
 
-/** What 继承 means here: CPA's global proxy, or (Magpie) the service's own proxy, else the kernel's: direct. */
-function inherited(data: EgressData, ref: string): EgressAccount {
-  if (data.backend === 'magpie') {
-    const agent = ref.split(':')[1] ?? ''
-    return data.services[agent] ?? { mode: 'direct', entryId: null, masked: null, at: null }
-  }
+/** What 继承 means here: CPA's global proxy. */
+function inherited(data: EgressData): EgressAccount {
   return { mode: data.default.mode, entryId: data.default.entryId, masked: null, at: null }
 }
 
@@ -109,7 +104,7 @@ function inherited(data: EgressData, ref: string): EgressAccount {
  */
 export function egressBadge(data: EgressData | null | undefined, ref: string, service: EgressService | null, read?: EgressRead | EgressAccount | null): EgressBadge | null {
   if (!data) return null
-  const own = read ?? data.accounts[ref] ?? (data.backend === 'magpie' ? { mode: 'inherit' as const, entryId: null, masked: null, at: null } : null)
+  const own = read ?? data.accounts[ref] ?? null
   if (!own || own.mode === 'unknown') return null
   if (own.mode === 'invalid') return { kind: 'invalid', label: '地址无效', country: null, mark: { ok: false, text: '', title: '' }, title: '账号里的代理地址无法解析' }
   if (own.mode === 'direct') return { kind: 'direct', label: '直连', country: null, mark: { ok: null, text: '', title: '' }, title: '不经过代理' }
@@ -119,15 +114,14 @@ export function egressBadge(data: EgressData | null | undefined, ref: string, se
     const mark = checkMark(entry, service)
     return { kind: 'entry', label: exitLabel(entry), country: entry.country, mark, title: [exitLabel(entry), mark.title].filter(Boolean).join(' · ') }
   }
-  const base = inherited(data, ref)
-  const scope = data.backend === 'cpa' ? '全局' : '服务'
+  const base = inherited(data)
   if (base.mode === 'url') {
     const entry = entryById(data, base.entryId)
-    if (!entry) return { kind: 'inherit', label: `${scope} · 自定义地址`, country: null, mark: { ok: null, text: '', title: '' }, title: `继承${scope}出口（不在代理池）` }
+    if (!entry) return { kind: 'inherit', label: '全局 · 自定义地址', country: null, mark: { ok: null, text: '', title: '' }, title: '继承全局出口（不在代理池）' }
     const mark = checkMark(entry, service)
-    return { kind: 'inherit', label: `${scope} · ${exitLabel(entry)}`, country: entry.country, mark, title: `继承${scope}出口 ${exitLabel(entry)}${mark.title ? ` · ${mark.title}` : ''}` }
+    return { kind: 'inherit', label: `全局 · ${exitLabel(entry)}`, country: entry.country, mark, title: `继承全局出口 ${exitLabel(entry)}${mark.title ? ` · ${mark.title}` : ''}` }
   }
-  if (base.mode === 'direct' || base.mode === 'inherit') return { kind: 'inherit', label: `${scope} · 直连`, country: null, mark: { ok: null, text: '', title: '' }, title: `继承${scope}设置：不经过代理` }
+  if (base.mode === 'direct' || base.mode === 'inherit') return { kind: 'inherit', label: '全局 · 直连', country: null, mark: { ok: null, text: '', title: '' }, title: '继承全局设置：不经过代理' }
   return { kind: 'inherit', label: '继承全局', country: null, mark: { ok: null, text: '', title: '' }, title: '继承 CPA 的全局代理（还没读到它的值）' }
 }
 
@@ -144,16 +138,15 @@ export function entryOptionLabel(entry: EgressEntry, service: EgressService | nu
   return [exitLabel(entry), entry.assignable ? check : entry.reason].filter(Boolean).join(' · ')
 }
 
-export function inheritLabel(data: EgressData | null | undefined, ref: string): string {
+export function inheritLabel(data: EgressData | null | undefined, _ref: string): string {
   if (!data) return '继承全局'
-  const base = inherited(data, ref)
-  const scope = data.backend === 'cpa' ? '继承全局' : '不单独设置'
+  const base = inherited(data)
   if (base.mode === 'url') {
     const entry = entryById(data, base.entryId)
-    return `${scope} · ${entry ? exitLabel(entry) : '自定义地址'}`
+    return `继承全局 · ${entry ? exitLabel(entry) : '自定义地址'}`
   }
-  if (base.mode === 'direct' || base.mode === 'inherit') return `${scope} · 直连`
-  return scope
+  if (base.mode === 'direct' || base.mode === 'inherit') return '继承全局 · 直连'
+  return '继承全局'
 }
 
 /** a picker row (the kit's SegmentItem shape; declared here so node tests never load the kit's Vue types) */
@@ -219,10 +212,9 @@ export function choiceName(data: EgressData | null | undefined, ref: string, cho
   return entry ? exitLabel(entry) : '出口'
 }
 
-/** What a sign-in itself goes through (no backend can send one sign-in through a chosen exit). */
+/** What a sign-in itself goes through (CPA cannot send one sign-in through a chosen exit). */
 export function signinVia(data: EgressData | null | undefined): { label: string; note: string } {
   if (!data) return { label: '', note: '' }
-  if (data.signin.via === 'direct') return { label: '本机直连', note: data.signin.note }
   const entry = entryById(data, data.signin.exit.entryId)
   const exit = entry ? exitLabel(entry) : data.signin.exit.mode === 'inherit' || data.signin.exit.mode === 'direct' ? '直连' : null
   return { label: exit ? `CPA 全局代理 · ${exit}` : 'CPA 全局代理', note: data.signin.note }

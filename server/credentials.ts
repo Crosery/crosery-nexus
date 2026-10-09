@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { maskProxyUserinfo } from './accountProjection.js'
 
 export type CredentialSummary = {
@@ -9,6 +10,14 @@ export type CredentialSummary = {
   modelCount: number
   models: string[]
   proxyUrl: string
+}
+
+/** A credential file name is one path segment: non-empty, no separator or NUL, not `.`/`..`, not absolute; else null. */
+export function credentialFileName(name: unknown): string | null {
+  if (typeof name !== 'string' || !name.trim()) return null
+  const value = name.trim()
+  if (value === '.' || value === '..' || value.includes('/') || value.includes('\\') || value.includes('\0') || path.isAbsolute(value)) return null
+  return value
 }
 
 export function summarizeCredentialFiles(files: Array<Record<string, unknown>>): CredentialSummary[] {

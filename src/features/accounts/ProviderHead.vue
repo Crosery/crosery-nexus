@@ -7,7 +7,7 @@ import { flowLabel, type ProviderGroup, type ProviderInfo } from './model'
 
 /**
  * Provider head (DESIGN §6.5, 46px / 44px mobile, one hairline under it): logo, name, vendor, the 登录风控
- * tag for the providers Magpie flags, the routing facts, and the in-place `+ 添加账号` (its flow is the title).
+ * tag for providers that can ban a shared subscription, the routing facts, and the in-place `+ 添加账号` (its flow is the title).
  */
 const props = withDefaults(defineProps<{ group?: ProviderGroup | null; provider: ProviderInfo | null; name: string; vendor: string; compact?: boolean; headingId: string }>(), {
   group: null,

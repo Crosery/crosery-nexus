@@ -255,7 +255,7 @@ export function faqItems(base: string, usageUrl: string): FaqItem[] {
     { id: 'apps', q: 'Cursor / Cline / Cherry Studio 怎么填', a: `服务商选「OpenAI 兼容」· Base URL 填 \`${base}\` · 模型名用 \`/v1/models\` 返回的 id` },
     { id: 'stream', q: '流式输出', a: '请求体加 `"stream": true`，按 SSE 逐段读 `data:` 行 · chat/completions 与 responses 都支持' },
     { id: 'image', q: '生图超时', a: '客户端超时设到 120 秒以上 · 超时后先查用量再决定重试，避免重复生成' },
-    { id: 'rtk', q: '怎么省 token', a: 'RTK 先压缩命令输出再交给模型 · 全局开关与诊断在设置页', link: { label: '设置 · RTK →', to: '/settings#rtk' } },
+    { id: 'rtk', q: '怎么省 token', a: 'RTK 先压缩命令输出再交给模型 · 全局开关与节省统计在设置页', link: { label: '设置 · RTK 中转 →', to: '/settings#rtk-relay' } },
   ]
 }
 

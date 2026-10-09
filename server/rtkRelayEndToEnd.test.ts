@@ -48,7 +48,6 @@ function start(entry: string, env: Record<string, string>, dataDir: string): Chi
       DATA_DIR: dataDir,
       HOST: '127.0.0.1',
       CPA_MANAGEMENT_KEY: 'test-management-key',
-      MAGPIE_CONTROL_PLANE: 'local',
       CONSOLE_USERNAME: 'admin',
       CONSOLE_PASSWORD: 'test-password',
       SESSION_SECRET: 'test-session-secret',
@@ -91,7 +90,7 @@ test('console API switches what the relay process compresses and reports what it
   const relayPort = await freePort()
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crosery-rtk-e2e-'))
   const relayEnv = { PORT: String(port), RTK_RELAY_PORT: String(relayPort), RTK_RELAY_TARGET: `http://127.0.0.1:${guardPort}` }
-  const child = start('server/index.ts', { ...relayEnv, CPA_BASE_URL: `http://127.0.0.1:${cpaPort}`, MAGPIE_PORT: String(cpaPort) }, dataDir)
+  const child = start('server/index.ts', { ...relayEnv, CPA_BASE_URL: `http://127.0.0.1:${cpaPort}` }, dataDir)
   let relay: ChildProcess | undefined
   t.after(async () => {
     relay?.kill('SIGKILL')

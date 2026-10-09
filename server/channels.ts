@@ -286,9 +286,8 @@ export async function createChannel(input: {
       'base-url': baseUrl,
       'api-key-entries': [{ 'api-key': apiKey }],
       models: models.map((model) => ({ name: model.id, alias: model.alias })),
-      // Responses 中继：CPA 内核（补丁 0008）按 relay-mode 把请求直发上游 /responses；
-      // Magpie 控制面不认 relay-mode，靠 registry 的 protocol 键选 responses 槽位。
-      ...(input.protocol === 'responses' ? { 'relay-mode': 'responses', protocol: 'responses' } : {}),
+      // Responses 中继：CPA 内核（补丁 0008）按 relay-mode 把请求直发上游 /responses。
+      ...(input.protocol === 'responses' ? { 'relay-mode': 'responses' } : {}),
     }])
   }
 

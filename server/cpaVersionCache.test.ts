@@ -5,21 +5,18 @@ import path from 'node:path'
 import test from 'node:test'
 import { testDataDir } from './testDataDir.js'
 
-// 版本读取会先读 RTK 状态：指向不存在的二进制、远端平面不配置，避免起子进程或打真实主机。
+// 版本读取会先读 RTK 状态：指向不存在的二进制，避免起子进程。
 process.env.RTK_BIN = path.join(testDataDir, 'no-rtk')
 process.env.RTK_HOME = testDataDir
-delete process.env.MAGPIE_SOURCE_CPA_BASE_URL
-delete process.env.MAGPIE_SOURCE_CPA_KEY
 
 const { config } = await import('./config.js')
 const { getCpaVersion, resetCpaVersionCache } = await import('./cpa.js')
 
 test('/api/version 不再每次强刷：60s 缓存；fresh 也至少隔 15s；失败结果缓存 30s', async () => {
-  const original = { fetch: globalThis.fetch, now: Date.now, engine: config.gatewayEngine, key: config.cpaManagementKey, base: config.cpaBaseUrl }
+  const original = { fetch: globalThis.fetch, now: Date.now, key: config.cpaManagementKey, base: config.cpaBaseUrl }
   let clock = 5_000_000
   let calls = 0
   let healthy = true
-  config.gatewayEngine = 'cpa'
   config.cpaManagementKey = 'fixture-management-key'
   config.cpaBaseUrl = 'https://cpa.example.test'
   Date.now = () => clock
@@ -56,7 +53,6 @@ test('/api/version 不再每次强刷：60s 缓存；fresh 也至少隔 15s；�
   } finally {
     globalThis.fetch = original.fetch
     Date.now = original.now
-    config.gatewayEngine = original.engine
     config.cpaManagementKey = original.key
     config.cpaBaseUrl = original.base
     resetCpaVersionCache()
@@ -64,12 +60,11 @@ test('/api/version 不再每次强刷：60s 缓存；fresh 也至少隔 15s；�
 })
 
 test('SB-20 冷读单飞：并发首次读取只发一次 get-auth-status + latest-version；reset 之前发出的慢读取不能回写缓存', async () => {
-  const original = { fetch: globalThis.fetch, engine: config.gatewayEngine, key: config.cpaManagementKey, base: config.cpaBaseUrl }
+  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl }
   let calls = 0
   let release: () => void = () => undefined
   let gate = new Promise<void>((resolve) => { release = resolve })
   let version = 'v7.2.0'
-  config.gatewayEngine = 'cpa'
   config.cpaManagementKey = 'fixture-management-key'
   config.cpaBaseUrl = 'https://cpa.example.test'
   globalThis.fetch = (async (input: string | URL | Request) => {
@@ -105,7 +100,6 @@ test('SB-20 冷读单飞：并发首次读取只发一次 get-auth-status + late
     assert.equal((await getCpaVersion()).version, 'v7.4.0', '旧读取晚到也不回写')
   } finally {
     globalThis.fetch = original.fetch
-    config.gatewayEngine = original.engine
     config.cpaManagementKey = original.key
     config.cpaBaseUrl = original.base
     resetCpaVersionCache()

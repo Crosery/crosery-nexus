@@ -33,8 +33,10 @@ function freePort(): Promise<number> {
   })
 }
 
-async function startCpaStub(): Promise<{ server: Server; port: number }> {
+async function startCpaStub(): Promise<{ server: Server; port: number; paths: () => string[] }> {
+  const seen: string[] = []
   const server = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url ?? ''}`)
     res.setHeader('content-type', 'application/json')
     if ((req.url ?? '').startsWith('/api-keys')) {
       if (req.method === 'PUT') {
@@ -49,7 +51,7 @@ async function startCpaStub(): Promise<{ server: Server; port: number }> {
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
-  return { server, port: typeof address === 'object' && address ? address.port : 0 }
+  return { server, port: typeof address === 'object' && address ? address.port : 0, paths: () => [...seen] }
 }
 
 type Harness = {
@@ -72,8 +74,6 @@ async function startHarness(stubPort: number, extraEnv: Record<string, string> =
       HOST: '127.0.0.1',
       CPA_BASE_URL: `http://127.0.0.1:${stubPort}`,
       CPA_MANAGEMENT_KEY: 'test-management-key',
-      MAGPIE_CONTROL_PLANE: 'local',
-      MAGPIE_PORT: String(stubPort),
       CONSOLE_USERNAME: 'admin',
       CONSOLE_PASSWORD: 'correct-horse-battery',
       SESSION_SECRET: 'e2e-session-secret',
@@ -257,23 +257,17 @@ test('③ 会话加固：HTTPS 下发带 Secure；登出后原 cookie 立即 401
 })
 
 /**
- * task-61（红队第十七轮 F1/F2）：凭据名/provider 的路径穿越在 **HTTP 层**被拒。
- *
- * 与红队同构的生产参数：`GATEWAY_ENGINE=magpie` + `MAGPIE_CONTROL_PLANE=local`
- * （这样 `/api/credentials/*` 才会走 `magpieControl` 的本地实现，也就是漏洞所在的那条链）。
+ * task-61（红队第十七轮 F1/F2）：凭据名/provider 的路径穿越在 **HTTP 层**被拒，越界的名字到不了 CPA 管理面。
+ * （当年漏洞所在的本机凭据目录实现已随 Magpie 下线；软/硬链接变体只对那条链有意义，一并移除。）
  */
 test('凭据名穿越（越界删/读）与 provider 穿越（越界写）在 HTTP 层被拒，合法路径仍可用', { timeout: 90_000 }, async () => {
   const stub = await startCpaStub()
   let harness: Harness | null = null
   const cleanup: string[] = []
   try {
-    // GATEWAY_ENGINE=magpie 才会走 magpieControl 的本地实现（cpa.ts:56 的 local 分支），
-    // 同时必须给它一个**独立的** MAGPIE_PORT（不能用 stub 的端口，否则引擎起不来 → EADDRINUSE）。
-    harness = await startHarness(stub.port, { GATEWAY_ENGINE: 'magpie', MAGPIE_PORT: String(await freePort()) })
+    harness = await startHarness(stub.port)
     const base = harness.base
     const dataDir = path.resolve(harness.dataDir)
-    const authDir = path.join(dataDir, 'auth-files')
-    fs.mkdirSync(authDir, { recursive: true })
 
     // 未认证也要先 401（守卫没被放宽）
     assert.equal((await fetch(`${base}/api/credentials/x.json`, { method: 'DELETE' })).status, 401)
@@ -312,27 +306,7 @@ test('凭据名穿越（越界删/读）与 provider 穿越（越界写）在 HT
     assert.ok(abs.status >= 400, `绝对路径必须被拒：${abs.status}`)
     assert.ok(!JSON.stringify(await abs.json()).includes('localhost'), '不得返回 /etc/hosts 内容')
 
-    // ④ symlink 变体：名字是单段，但文件指向 DATA_DIR 之外
-    const linkName = `cac-wp-e2e-link-${process.pid}.json`
-    const linkPath = path.join(authDir, linkName)
-    fs.rmSync(linkPath, { force: true })
-    fs.symlinkSync(probe, linkPath)
-    const linked = await fetch(`${base}/api/credentials/${encodeURIComponent(linkName)}/proxy`, { headers: { cookie } })
-    assert.equal(linked.status, 400, `软链接逃逸必须 400：${linked.status}`)
-    assert.equal((await linked.json() as { reason?: string }).reason, 'credential_path_escape')
-    assert.equal(fs.existsSync(probe), true, '软链接目标不得被删除或改写')
-
-    // ⑤ 硬链接变体（F3）：路径在目录内但 inode 属于目录外的文件
-    const hardName = `cac-wp-e2e-hard-${process.pid}.json`
-    const hardPath = path.join(authDir, hardName)
-    fs.rmSync(hardPath, { force: true })
-    fs.linkSync(probe, hardPath)
-    const hard = await fetch(`${base}/api/credentials/${encodeURIComponent(hardName)}/proxy`, { headers: { cookie } })
-    assert.equal(hard.status, 400, `硬链接必须 400：${hard.status}`)
-    assert.equal((await hard.json() as { reason?: string }).reason, 'credential_hardlink_rejected')
-    assert.equal(fs.existsSync(probe), true)
-
-    // ⑥ F2：OAuth 回调的 provider 穿越（越界写）
+    // ④ F2：OAuth 回调的 provider 穿越（越界写）
     const canaryWrite = `/tmp/cac-wp-e2e-oauth-${process.pid}`
     const callback = await fetch(`${base}/api/cpa/oauth/callback`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json' },
@@ -345,31 +319,17 @@ test('凭据名穿越（越界删/读）与 provider 穿越（越界写）在 HT
     const strays = fs.readdirSync('/tmp').filter(name => name.startsWith(path.basename(canaryWrite)))
     assert.deepEqual(strays, [], `DATA_DIR 之外不得落盘：${strays.join(', ')}`)
 
-    // ⑦ 合法 provider 在 magpie + local 下走「账号」页的真实登录：模拟器 start/callback 410，且不落盘
-    const before = new Set(fs.readdirSync(authDir))
-    const start = await fetch(`${base}/api/cpa/oauth/start`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude' }),
-    })
-    assert.equal(start.status, 410, `本机模拟器已退役，合法 provider 的 oauth/start 必须 410：${start.status}`)
-    assert.equal((await start.json() as { code?: string }).code, 'use_accounts_signin')
-    const retiredCallback = await fetch(`${base}/api/cpa/oauth/callback`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
-      body: JSON.stringify({ provider: 'claude', redirectUrl: 'https://example.com/cb?code=xyz', state: 'any' }),
-    })
-    assert.equal(retiredCallback.status, 410, `退役的回调必须 410：${retiredCallback.status}`)
-    assert.deepEqual(fs.readdirSync(authDir).filter(name => !before.has(name)), [], '退役路径不得落盘')
     const created = [`anthropic-${process.pid}.json`]
-    fs.writeFileSync(path.join(authDir, created[0]), JSON.stringify({ type: 'claude', provider: 'claude', email: 'fixture@example.test', access_token: 'fixture-token' }), { mode: 0o600 })
-    cleanup.push(path.join(authDir, created[0]))
 
-    // ⑧ 合法凭据的读取/删除仍然可用（同一路由，合法名字必须 200 —— 与越界名字的 400 成对照）
+    // ⑤ 合法凭据的读取/删除仍然可用（同一路由，合法名字必须 200 —— 与越界名字的 400 成对照）
     const legitRead = await fetch(`${base}/api/credentials/${encodeURIComponent(created[0])}/proxy`, { headers: { cookie } })
     const legitText = await legitRead.text()
     assert.equal(legitRead.status, 200, `合法凭据的 /proxy 必须 200：${legitRead.status} ${legitText}`)
     const removed = await fetch(`${base}/api/credentials/${encodeURIComponent(created[0])}`, { method: 'DELETE', headers: { cookie } })
     assert.equal(removed.status, 200, `合法凭据删除必须成功：${removed.status} ${await removed.text()}`)
-    assert.equal(fs.existsSync(path.join(authDir, created[0])), false, '合法删除必须真的删掉')
+    const names = stub.paths().filter(item => item.includes('/auth-files'))
+    assert.ok(names.some(item => item.includes(encodeURIComponent(created[0]))), `合法名字到达 CPA：${names.join(', ')}`)
+    assert.ok(names.every(item => !item.includes('cac-wp-e2e')), `越界名字不得到达 CPA：${names.join(', ')}`)
   } finally {
     for (const file of cleanup) fs.rmSync(file, { force: true })
     if (harness) await stopHarness(harness)

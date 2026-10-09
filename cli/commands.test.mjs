@@ -159,48 +159,15 @@ test('models ls --type：按服务端给的类型筛选，树里非对话模型�
   assert.equal(JSON.parse(legacyTable.stdout)[0].kind, null)
 })
 
-/* ── 自动更新：magpie auto / rtk upgrade ── */
+/* ── 自动升级：rtk auto / rtk upgrade ── */
 
-const autoView = (magpieOn = true) => ({
-  magpie: { available: true, enabled: magpieOn, window: { start: '03:00', end: '06:00' }, nextWindowAt: new Date(NOW + 3_600_000).toISOString(), line: '停在待复核：登录方式变了：移除 dimagent（另有 4 项）',
-    reasons: [{ code: 'login-agents', text: '登录方式变了：移除 dimagent' }, { code: 'settings-drift', text: '网关设置有变化：新增 25 项' }] },
-  rtk: { available: true, enabled: true, line: '停在待复核：v0.51.0 声明了破坏性变更', reasons: [] },
-})
-
-test('magpie auto status：两行状态 + 全部原因', async () => {
-  const result = await run(['magpie', 'auto'], { 'GET /api/autoupdate': () => [200, autoView()] })
+test('rtk auto：只读 /api/autoupdate 的 rtk 一项', async () => {
+  const view = { rtk: { available: true, enabled: true, line: '停在待复核：v0.51.0 声明了破坏性变更', reasons: [] } }
+  const result = await run(['rtk', 'auto'], { 'GET /api/autoupdate': () => [200, view] })
   assert.equal(result.code, 0, result.stderr)
-  assert.match(result.stdout, /停在待复核：登录方式变了/)
-  assert.match(result.stdout, /网关设置有变化：新增 25 项/)
+  assert.match(result.stdout, /开关\s+开/)
   assert.match(result.stdout, /v0\.51\.0 声明了破坏性变更/)
-})
-
-test('magpie auto on --yes：关着时 PUT 一次；已经开着时不发请求', async () => {
-  const off = await run(['magpie', 'auto', 'on', '--yes'], {
-    'GET /api/autoupdate': () => [200, autoView(false)],
-    'PUT /api/autoupdate': call => [200, { ...autoView(call.body.magpie.enabled), magpie: { ...autoView().magpie, line: '候选 7547dfb 等下一轮定时任务演练' } }],
-  })
-  assert.equal(off.code, 0, off.stderr)
-  assert.deepEqual(off.calls.find(call => call.method === 'PUT')?.body, { magpie: { enabled: true } })
-  const already = await run(['magpie', 'auto', 'on', '--yes'], { 'GET /api/autoupdate': () => [200, autoView(true)] })
-  assert.equal(already.code, 0, already.stderr)
-  assert.ok(!already.calls.some(call => call.method === 'PUT'))
-  const noYes = await run(['magpie', 'auto', 'off'], { 'GET /api/autoupdate': () => [200, autoView(true)] })
-  assert.equal(noYes.code, 2, '改策略在非交互环境需要 --yes')
-})
-
-test('magpie auto run：只接受 --dry-run，且 dry run 是服务端只读的 POST', async () => {
-  const real = await run(['magpie', 'auto', 'run'], {})
-  assert.equal(real.code, 2)
-  assert.match(real.stderr, /只接受 --dry-run/)
-  assert.ok(!real.calls.some(call => call.method === 'POST' && call.path === '/api/autoupdate/run'))
-  const dry = await run(['magpie', 'auto', 'run', '--dry-run'], {
-    'POST /api/autoupdate/run': call => [200, { target: 'magpie', dryRun: call.body.dryRun, result: { dryRun: true, magpie: { action: 'none', why: 'held', candidate: 'c'.repeat(40), window: '03:00–06:00', reasons: [{ code: 'x', text: '账号目录有变化' }] } } }],
-  })
-  assert.equal(dry.code, 0, dry.stderr)
-  assert.deepEqual(dry.calls.find(call => call.path === '/api/autoupdate/run')?.body, { target: 'magpie', dryRun: true })
-  assert.match(dry.stdout, /停在待复核/)
-  assert.match(dry.stdout, /账号目录有变化/)
+  assert.deepEqual(result.calls.filter(call => call.path.startsWith('/api/autoupdate')).map(call => call.method), ['GET'])
 })
 
 test('rtk upgrade --dry-run 显示下载与校验；rtk upgrade 需确认，确认后才发 confirm:true', async () => {

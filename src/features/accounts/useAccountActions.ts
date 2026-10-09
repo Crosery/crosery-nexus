@@ -70,7 +70,7 @@ export function useAccountActions(refresh: () => Promise<void> | void, egress?: 
       showResetOutcome('no_credit')
       return
     }
-    // Magpie: a reset on an account whose windows are all unused restarts nothing and burns the credit
+    // a reset on an account whose windows are all unused restarts nothing and burns the credit
     if (row.quotaState === 'ok' && row.windows.every((w) => w.used <= 0)) {
       showResetOutcome('no_window')
       return

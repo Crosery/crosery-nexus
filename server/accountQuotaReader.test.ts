@@ -7,7 +7,6 @@ import test, { after } from 'node:test'
 import { testDataDir } from './testDataDir.js'
 
 // 远端 CPA 控制面：额度读取经 /api-call 转发。全部指向假地址，由下面的 fetch 桩应答，绝不联网。
-delete process.env.GATEWAY_ENGINE
 process.env.CPA_BASE_URL = 'https://cpa.example.test'
 process.env.CPA_MANAGEMENT_KEY = 'fixture-management-key'
 

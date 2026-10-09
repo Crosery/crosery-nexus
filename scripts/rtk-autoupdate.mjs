@@ -13,14 +13,13 @@
  *   coordinator forwards to production). One trial at a time; a failing check restores the previous binary.
  * - production (also any Linux host without the env file): only the version (and archive sha256) preview accepted, from
  *   <state>/promotion.json, while that record is younger than AUTOUPDATE_RECORD_MAX_AGE_DAYS.
- * - standalone (a Mac without the env file): the latest release, as before.
- * The latest tag comes from the GitHub releases list (one conditional request per run, cached); a Mac's own upstream
- * check (status.json in the same dir) is used instead while it is fresh. The archive must match the published sha256
+ * - standalone (a Mac without the env file): the latest release.
+ * The latest tag comes from the GitHub releases list (one conditional request per run, cached). The archive must match the published sha256
  * (checksums.txt and/or the API digest; neither published → refuse; a published signature this script cannot verify →
  * refuse). The extracted binary must report the release's version before the swap: backup → atomic rename →
  * `rtk --version` + functional check → otherwise restore the backup. A Homebrew install is upgraded with
  * `brew upgrade rtk` instead. A release range that declares BREAKING CHANGES is held for review.
- * State lives in RTK_STATE_DIR (falls back to MAGPIE_UPSTREAM_RUNTIME, then the Mac's old runtime dir).
+ * State lives in RTK_STATE_DIR (default ~/.agents/crosery/rtk).
  */
 import fs from 'node:fs/promises'
 import { constants as fsConstants, realpathSync } from 'node:fs'
@@ -45,9 +44,8 @@ const CACHE_MAX_AGE_MANUAL_MS = 10 * 60_000
 const CLOCK_SKEW_MS = 5 * 60_000
 const KEEP_CHECKS = 10
 
-/** RTK_STATE_DIR; MAGPIE_UPSTREAM_RUNTIME only as the old name of the same dir; the Mac's old default last. */
 export function rtkRuntime(env = process.env, home = os.homedir()) {
-  return path.resolve(env.RTK_STATE_DIR || env.MAGPIE_UPSTREAM_RUNTIME || path.join(home, '.agents/crosery/magpie-upstream'))
+  return path.resolve(env.RTK_STATE_DIR || path.join(home, '.agents/crosery/rtk'))
 }
 
 /** An explicit AUTOUPDATE_ROLE wins; a Mac without one keeps the old standalone behaviour; any other host is production. */
@@ -59,7 +57,7 @@ export function rtkRole(env = process.env, platform = process.platform) {
 
 export function rtkPaths(runtime = rtkRuntime()) {
   return {
-    runtime, config: path.join(runtime, 'autoupdate.json'), status: path.join(runtime, 'status.json'),
+    runtime, config: path.join(runtime, 'autoupdate.json'),
     state: path.join(runtime, 'autoupdate-rtk.json'), cache: path.join(runtime, 'rtk-releases.json'),
     backups: path.join(runtime, 'rtk-backups'), lock: path.join(runtime, 'rtk-upgrade.lock'),
     promotion: path.join(runtime, 'promotion.json'),
@@ -481,22 +479,16 @@ export async function upgradeRtk({ mode = 'plan', acceptBreaking = false, paths 
     if (notBefore > now) return { action: 'none', why: 'backoff', retryAt: iso(notBefore), role, ...base, latest: state.latest, reasons: state.reasons }
   }
 
-  /* the latest release: the Mac's upstream check when standalone, else the releases list itself */
-  let releases = null
-  let latest = null
-  if (role === 'standalone') {
-    const status = await readJSON(paths.status)
-    latest = typeof status?.rtkRelease === 'string' && /^v?\d+\.\d+\.\d+/.test(status.rtkRelease) ? status.rtkRelease : null
-  } else {
-    try {
-      releases = (await fetchReleases({ cacheFile: paths.cache, fetchImpl: deps.fetch ?? fetch, api: deps.api ?? RELEASES_API, now, maxAgeMs: mode === 'auto' ? CACHE_MAX_AGE_AUTO_MS : CACHE_MAX_AGE_MANUAL_MS })).releases
-    } catch (error) {
-      const retry = error.retryAt ?? now + 30 * 60_000
-      return finish({ action: 'none', why: error.code === 'rate-limited' ? 'rate-limited' : 'error', result: 'error', ...base },
-        { reasons: [{ code: error.code ?? 'api', text: `读不到 rtk 的发布信息：${error.message}` }], state: { retryNotBefore: iso(retry) } })
-    }
-    latest = latestStable(releases)
+  /* the latest release: the releases list itself */
+  let releases
+  try {
+    releases = (await fetchReleases({ cacheFile: paths.cache, fetchImpl: deps.fetch ?? fetch, api: deps.api ?? RELEASES_API, now, maxAgeMs: mode === 'auto' ? CACHE_MAX_AGE_AUTO_MS : CACHE_MAX_AGE_MANUAL_MS })).releases
+  } catch (error) {
+    const retry = error.retryAt ?? now + 30 * 60_000
+    return finish({ action: 'none', why: error.code === 'rate-limited' ? 'rate-limited' : 'error', result: 'error', ...base },
+      { reasons: [{ code: error.code ?? 'api', text: `读不到 rtk 的发布信息：${error.message}` }], state: { retryNotBefore: iso(retry) } })
   }
+  const latest = latestStable(releases)
   const facts = { ...base, latest }
   if (!latest) return finish({ action: 'none', why: 'no-latest', ...facts }, { reasons: [{ code: 'no-latest', text: REASON['no-latest']() }] })
 
@@ -532,15 +524,6 @@ export async function upgradeRtk({ mode = 'plan', acceptBreaking = false, paths 
         state: ok ? { lastUpgrade: { from: install.version, to: after, at: iso(now), via: 'brew', result: 'upgraded' }, failures: 0, nextAttemptAt: null } : retryLater(state, now) })
   }
   if (install.method === 'unwritable') return finish({ action: 'none', why: 'unwritable', ...facts }, { reasons: [{ code: 'unwritable', text: REASON.unwritable(install) }] })
-  if (!releases) {
-    try {
-      releases = (await fetchReleases({ latest: target, cacheFile: paths.cache, fetchImpl: deps.fetch ?? fetch, api: deps.api ?? RELEASES_API, now })).releases
-    } catch (error) {
-      const retry = error.retryAt ?? now + 30 * 60_000
-      return finish({ action: 'none', why: error.code === 'rate-limited' ? 'rate-limited' : 'error', result: 'error', ...facts },
-        { reasons: [{ code: error.code ?? 'api', text: `读不到 rtk 的发布信息：${error.message}` }], state: { retryNotBefore: iso(retry) } })
-    }
-  }
   const release = releases.find(item => item.tag === target && !item.draft)
   if (!release) return finish({ action: 'none', why: 'no-release', result: 'error', ...facts }, { reasons: [{ code: 'no-release', text: `发布列表里没有 ${target}` }] })
   const breaking = breakingNotes(releases, install.version ?? '0.0.0', target)
@@ -604,7 +587,7 @@ async function main() {
   if (action === 'status') {
     const install = await detectInstall({ env })
     const state = await readRtkState(paths.state)
-    console.log(json({ role: rtkRole(env), install, latest: state.latest ?? (await readJSON(paths.status))?.rtkRelease ?? null, state }))
+    console.log(json({ role: rtkRole(env), install, latest: state.latest ?? null, state }))
   } else if (action === 'plan') {
     console.log(json(await upgradeRtk({ mode: 'plan', paths, deps })))
   } else if (action === 'upgrade') {

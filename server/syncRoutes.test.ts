@@ -11,7 +11,6 @@ import { testDataDir } from './testDataDir.js'
 process.env.RTK_HOME = path.join(testDataDir, 'rtk-home')
 process.env.RTK_BIN = path.join(testDataDir, 'no-rtk')
 fs.mkdirSync(process.env.RTK_HOME, { recursive: true })
-for (const name of ['MAGPIE_SOURCE_CPA_BASE_URL', 'MAGPIE_SOURCE_CPA_KEY', 'GATEWAY_ENGINE']) delete process.env[name]
 
 const { createExternalJobs, installSyncCenter, launchdIntervalMs, parseModelsSyncLog, registerSyncJobs, rtkAutoupdateJob } = await import('./syncRoutes.js')
 const { SyncRegistry } = await import('./syncRegistry.js')
@@ -44,49 +43,23 @@ test('LaunchAgent 周期只读 plist；读不到用默认值', () => {
   assert.equal(launchdIntervalMs('com.example.missing', 42, dir), 42)
 })
 
-test('外部任务：共享目录、内核上游、RTK 版本只读状态文件', async () => {
+test('外部任务：共享目录只读状态文件', async () => {
   const now = Date.now()
   const catalogFile = write('catalog.json', JSON.stringify({
     version: 1, generatedAt: now - 60_000, provider: 'crosery', baseUrl: 'https://gw.example.test/v1', models: [{ id: 'a' }, { id: 'b' }],
     pricing: { sources: { openrouter: { ok: true }, 'models.dev': { ok: false } } },
   }))
   write('logs/sync.log', `[${new Date(now - 120_000).toISOString()}] applied: 2 models, +1 ~0 -0\n`)
-  const upstreamDir = path.join(root, 'upstream')
-  const status = { version: 1, checkedAt: new Date(now - 30_000).toISOString(), status: 'review_required', candidateRevision: 'a'.repeat(40), latestRelease: 'v0.1.604', rtkRelease: 'v0.51.0' }
-  write('upstream/status.json', JSON.stringify(status))
-  const jobs = createExternalJobs({ catalogFile, upstreamDir, launchAgentsDir: path.join(root, 'none'), localRtkVersion: async () => '0.50.0', magpieLocal: () => true, platform: 'darwin' })
-  const [catalog, kernel, rtk] = await Promise.all(jobs.map(job => job.read()))
-
+  const jobs = createExternalJobs({ catalogFile, launchAgentsDir: path.join(root, 'none'), platform: 'darwin' })
+  assert.deepEqual(jobs.map(job => job.id), ['catalog-sync'])
+  const catalog = await jobs[0].read()
   assert.equal(catalog.lastResult, 'partial', '价格源有一个失败')
   assert.equal(catalog.summary, '2 模型 · +1 · 价格源 1/2')
   assert.equal(catalog.intervalMs, 6 * 60 * 60_000)
   assert.equal(catalog.history?.length, 1)
-  // no LaunchAgent: auto-update is on by default but cannot run, and the row says so instead of a bare 待复核
-  assert.equal(kernel.summary, '检查 · 自动更新未生效 · 待复核 aaaaaaa · v0.1.604')
-  assert.equal(kernel.state, 'idle')
-  assert.equal(rtk.summary, '检查 · 自动升级未生效 · 可升级 v0.51.0 · 本机 0.50.0')
 
-  // the job runs `scheduled` and has held the candidate / the rtk release
-  write('agents/com.crosery.magpie-upstream-check.plist', '<plist><dict><key>ProgramArguments</key><array><string>node</string><string>x</string><string>scheduled</string></array><key>StartInterval</key><integer>1800</integer></dict></plist>')
-  write('upstream/autoupdate-magpie.json', JSON.stringify({ version: 1, candidate: 'a'.repeat(40), why: 'held', result: 'held', reasons: [{ code: 'login-agents', text: '登录方式变了：移除 dimagent' }] }))
-  write('upstream/autoupdate-rtk.json', JSON.stringify({ version: 1, latest: 'v0.51.0', why: 'breaking', result: 'held', reasons: [{ code: 'breaking', text: 'v0.51.0 声明了破坏性变更' }] }))
-  const live = createExternalJobs({ catalogFile, upstreamDir, launchAgentsDir: path.join(root, 'agents'), localRtkVersion: async () => '0.50.0', magpieLocal: () => true, platform: 'darwin' })
-  assert.equal((await live[1].read()).summary, '检查 · 自动更新开 · aaaaaaa 停在待复核 · v0.1.604')
-  assert.equal((await live[2].read()).summary, '检查 · 自动升级开 · v0.51.0 停在待复核 · 本机 0.50.0')
-  write('upstream/autoupdate.json', JSON.stringify({ magpie: { enabled: false }, rtk: { enabled: false } }))
-  assert.equal((await live[1].read()).summary, '检查 · 自动更新关 · 待复核 aaaaaaa · v0.1.604')
-  assert.equal((await live[2].read()).summary, '检查 · 自动升级关 · 可升级 v0.51.0 · 本机 0.50.0')
-  const cpa = createExternalJobs({ catalogFile, upstreamDir, launchAgentsDir: path.join(root, 'agents'), localRtkVersion: async () => '0.50.0', magpieLocal: () => false, platform: 'darwin' })
-  assert.equal((await cpa[1].read()).summary, '检查 · 仅本机 Magpie 网关 · v0.1.604')
-
-  write('upstream/status.json', JSON.stringify({ ...status, status: 'error', errorStage: 'source-checkout', error: 'Upstream check failed at source-checkout' }))
-  const failed = await jobs[1].read()
-  assert.equal(failed.state, 'error')
-  assert.match(failed.summary ?? '', /^失败于 source-checkout · /)
-
-  const missing = createExternalJobs({ catalogFile: path.join(root, 'nope/catalog.json'), upstreamDir: path.join(root, 'nope') })
+  const missing = createExternalJobs({ catalogFile: path.join(root, 'nope/catalog.json') })
   assert.equal((await missing[0].read()).state, 'unknown')
-  assert.equal((await missing[1].read()).state, 'unknown')
 })
 
 test('Linux：RTK 自动升级只读 autoupdate-rtk.json，按角色说预发布试运行 / 正式等验收，失败与退避照实显示', async () => {
@@ -147,7 +120,7 @@ const center = installSyncCenter(app, {
   onModelsChanged: () => undefined,
   dataPlaneStatus: () => ({ enabled: false, pending: 0, deadLetters: 0, oldestPendingAgeMs: null, lastErrorCode: null, lastAttemptAt: null, lastSuccessAt: null, effectiveBatchSize: 200 }),
   addAudit: (action, target) => { audits.push(`${action}:${target}`) },
-  externalJobs: { catalogFile: path.join(root, 'nope/catalog.json'), upstreamDir: path.join(root, 'nope'), localRtkVersion: async () => null, platform: 'darwin' },
+  externalJobs: { catalogFile: path.join(root, 'nope/catalog.json'), platform: 'darwin' },
 }, registry)
 assert.equal(typeof center.start, 'function')
 const server = app.listen(0, '127.0.0.1')
@@ -160,7 +133,7 @@ test('GET /api/sync/status 按契约 C3 返回全部任务', async () => {
   assert.equal(response.status, 200)
   const body = await response.json() as { policy: Record<string, unknown>; jobs: Array<Record<string, unknown>>; generatedAt: string }
   assert.deepEqual(Object.keys(body.policy).sort(), ['backoff', 'globalUpstreamConcurrency', 'jitterPct', 'minIntervalPerHostMs'])
-  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane', 'catalog-sync', 'kernel-upstream', 'rtk-version'])
+  assert.deepEqual(body.jobs.map(job => job.id), ['model-discovery', 'pricing', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane', 'catalog-sync'])
   const required = ['id', 'label', 'kind', 'intervalMs', 'lastRunAt', 'lastFinishedAt', 'nextRunAt', 'state', 'lastResult', 'lastError', 'summary',
     'backoffUntil', 'backoffLevel', 'requests24h', 'history', 'canRunNow', 'runCooldownUntil']
   for (const job of body.jobs) for (const key of required) assert.ok(key in job, `${String(job.id)} 缺少 ${key}`)
@@ -168,7 +141,7 @@ test('GET /api/sync/status 按契约 C3 返回全部任务', async () => {
   // CPA_MODELS_CATALOG_FILE unset: the catalog job is listed but never runs
   const catalog = body.jobs.find(job => job.id === 'cpa-catalog')!
   assert.deepEqual([catalog.state, catalog.canRunNow, catalog.nextRunAt, catalog.summary], ['disabled', false, null, '未设置 CPA_MODELS_CATALOG_FILE'])
-  assert.equal(body.jobs.find(job => job.id === 'kernel-upstream')!.canRunNow, false)
+  assert.equal(body.jobs.find(job => job.id === 'catalog-sync')!.canRunNow, false)
   // CPA engine: discovery would write live routing, so it never runs on its own — only from the sync center
   const discovery = body.jobs.find(job => job.id === 'model-discovery')!
   assert.equal(discovery.intervalMs, null)
@@ -191,7 +164,7 @@ test('POST /api/sync/:id/run：202 → 冷却 429（带 Retry-After）；外部�
   assert.ok(Number(cooled.headers.get('retry-after')) > 0)
   assert.equal((await cooled.json() as { code: string }).code, 'cooldown')
 
-  const external = await fetch(`${base}/api/sync/kernel-upstream/run`, { method: 'POST' })
+  const external = await fetch(`${base}/api/sync/catalog-sync/run`, { method: 'POST' })
   assert.equal(external.status, 400)
   assert.equal((await external.json() as { code: string }).code, 'not_runnable')
   assert.equal((await fetch(`${base}/api/sync/nope/run`, { method: 'POST' })).status, 404)
@@ -214,28 +187,6 @@ test('RTK 全局开关路由：没确认 403、参数错 400、读取不写任�
 
 /* ────────────────────────── review-sync-balance ────────────────────────── */
 
-test('SB-22 内核上游：检查脚本持久化的 nextAttemptAt / retryNotBefore 显示成 backoff 与下次真正检查时间', async () => {
-  const now = Date.now()
-  const upstreamDir = path.join(root, 'upstream-backoff')
-  const checkedAt = now - 60_000
-  const nextAttemptAt = now + 2 * 60 * 60_000
-  write('upstream-backoff/status.json', JSON.stringify({
-    version: 1, checkedAt: new Date(checkedAt).toISOString(), status: 'error', errorStage: 'public-metadata', failures: 3,
-    nextAttemptAt: new Date(nextAttemptAt).toISOString(), retryNotBefore: new Date(now + 3 * 60 * 60_000).toISOString(), rtkRelease: 'v0.51.0',
-  }))
-  const jobs = createExternalJobs({ catalogFile: path.join(root, 'nope/catalog.json'), upstreamDir, launchAgentsDir: path.join(root, 'none'), localRtkVersion: async () => null })
-  const kernel = await jobs[1].read()
-  assert.equal(kernel.backoffUntil, now + 3 * 60 * 60_000, '取两者中更晚的')
-  assert.equal(kernel.backoffLevel, 3)
-  assert.equal(kernel.nextRunAt, now + 3 * 60 * 60_000)
-  const scratch = new SyncRegistry({ file: null, log: () => undefined })
-  for (const job of jobs) scratch.register(job)
-  const view = (await scratch.status()).jobs.find(job => job.id === 'kernel-upstream')!
-  assert.equal(view.state, 'backoff')
-  assert.equal(view.backoffLevel, 3)
-  assert.equal((await scratch.status()).jobs.find(job => job.id === 'rtk-version')!.state, 'backoff')
-})
-
 test('SB-04 兼容入口 POST /api/models/sync：与 run-now 共用冷却，冷却内返回 429 而不是再强制全量探测', async () => {
   const first = await center.runModelDiscovery()
   assert.equal(first.status, 200)
@@ -249,40 +200,9 @@ test('SB-04 兼容入口 POST /api/models/sync：与 run-now 共用冷却，冷�
   assert.equal(viaRunNow.status, 429, '两个入口是同一个冷却')
 })
 
-test('SB-07 本机控制面（magpie+local）：账号额度任务整体标为不支持，不逐账号报错、不能手动运行', async () => {
-  const { config } = await import('./config.js')
-  const { accountQuotaSupport, readAccountQuota, summarizeAccountQuota } = await import('./accountQuotaReader.js')
-  const { normalizeAccountQuota } = await import('./accountQuota.js')
-  const original = { engine: config.gatewayEngine, plane: config.magpieControlPlane }
-  config.gatewayEngine = 'magpie'
-  config.magpieControlPlane = 'local'
-  try {
-    assert.equal(accountQuotaSupport().supported, false)
-    const before = (await registry.status()).jobs.find(job => job.id === 'account-quota')!
-    const read = await readAccountQuota({ type: 'claude', auth_index: '1' })
-    const normalized = normalizeAccountQuota('claude', read.quota, read.resetCredits)
-    assert.equal(normalized.unsupported, true)
-    assert.match(normalized.error ?? '', /本机控制面/)
-    const outcome = summarizeAccountQuota({ accounts: [{ normalizedQuota: normalized }], quotaSupport: accountQuotaSupport() })
-    assert.equal(outcome.silent, true)
-    const view = (await registry.status()).jobs.find(job => job.id === 'account-quota')!
-    assert.equal(view.state, 'disabled')
-    assert.equal(view.canRunNow, false)
-    assert.match(view.summary ?? '', /不支持/)
-    assert.equal(view.requests24h, before.requests24h, '不支持时不发也不计任何上游请求')
-    const run = await fetch(`${base}/api/sync/account-quota/run`, { method: 'POST' })
-    assert.equal(run.status, 400)
-    assert.equal((await run.json() as { code: string }).code, 'disabled')
-  } finally {
-    config.gatewayEngine = original.engine
-    config.magpieControlPlane = original.plane
-  }
-})
-
 test('SB-21 网关价格部分来源失败：刷新报 partial 并列出失败来源，不再显示健康', async () => {
   const { config } = await import('./config.js')
-  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl, engine: config.gatewayEngine, catalog: process.env.CROSERY_SHARED_CATALOG }
-  config.gatewayEngine = 'cpa'
+  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl, catalog: process.env.CROSERY_SHARED_CATALOG }
   config.cpaManagementKey = 'fixture-management-key'
   config.cpaBaseUrl = 'https://cpa.example.test'
   process.env.CROSERY_SHARED_CATALOG = path.join(root, 'nope/catalog.json')
@@ -308,7 +228,6 @@ test('SB-21 网关价格部分来源失败：刷新报 partial 并列出失败�
     globalThis.fetch = original.fetch
     config.cpaManagementKey = original.key
     config.cpaBaseUrl = original.base
-    config.gatewayEngine = original.engine
     if (original.catalog === undefined) delete process.env.CROSERY_SHARED_CATALOG
     else process.env.CROSERY_SHARED_CATALOG = original.catalog
   }
@@ -360,8 +279,7 @@ test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次
 
 test('价格变更任务登记在同步中心：读网关价与共享产物，共享产物缺失时报 partial 并写明原因', async () => {
   const { config } = await import('./config.js')
-  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl, engine: config.gatewayEngine, catalog: process.env.CROSERY_SHARED_CATALOG }
-  config.gatewayEngine = 'cpa'
+  const original = { fetch: globalThis.fetch, key: config.cpaManagementKey, base: config.cpaBaseUrl, catalog: process.env.CROSERY_SHARED_CATALOG }
   config.cpaManagementKey = 'fixture-management-key'
   config.cpaBaseUrl = 'https://cpa.example.test'
   process.env.CROSERY_SHARED_CATALOG = path.join(root, 'nope/catalog.json')
@@ -384,7 +302,6 @@ test('价格变更任务登记在同步中心：读网关价与共享产物，�
     globalThis.fetch = original.fetch
     config.cpaManagementKey = original.key
     config.cpaBaseUrl = original.base
-    config.gatewayEngine = original.engine
     if (original.catalog === undefined) delete process.env.CROSERY_SHARED_CATALOG
     else process.env.CROSERY_SHARED_CATALOG = original.catalog
   }

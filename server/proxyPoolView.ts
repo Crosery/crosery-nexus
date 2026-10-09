@@ -40,7 +40,7 @@ export type EntryView = {
   updatedAt: string
 }
 
-export type AssignContext = { cpaSameHost: boolean; kernel: ProxyKernelView; backend: 'cpa' | 'magpie' }
+export type AssignContext = { cpaSameHost: boolean; kernel: ProxyKernelView }
 
 export function usageByEntry(pool: PoolFile): Map<string, UsedBy> {
   const out = new Map<string, UsedBy>()
@@ -191,9 +191,6 @@ export function secretExport(pool: PoolFile, now = new Date().toISOString()) {
     if (!entryRef) continue
     if (ref.startsWith('cpa:') && !/^cpa:(global|channel:|key:)/.test(ref)) {
       assignments.push({ entryRef, account: { backend: 'cpa', provider: link.provider ?? '', identity: ref.slice(4) } })
-    } else if (/^magpie:[^:]+:/.test(ref)) {
-      const [, agent, ...user] = ref.split(':')
-      assignments.push({ entryRef, account: { backend: 'magpie', provider: agent, identity: user.join(':') } })
     }
   }
   return {

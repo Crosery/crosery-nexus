@@ -220,9 +220,8 @@ const policy = computed(() => policyWords(sync.data.value?.policy))
 const kernel = computed(() => {
   const cpa = versions.data.value?.cpa
   if (!cpa) return null
-  const engine = cpa.engine === 'magpie' ? 'magpie' : 'cpa'
-  if (cpa.version === 'offline') return `${engine} 离线`
-  return `${engine} ${cpa.commit && cpa.commit !== 'unknown' ? cpa.commit.slice(0, 7) : cpa.version}`
+  if (cpa.version === 'offline') return 'cpa 离线'
+  return `cpa ${cpa.commit && cpa.commit !== 'unknown' ? cpa.commit.slice(0, 7) : cpa.version}`
 })
 
 /* ── nav badges ───────────────────────────────────────────────────────────────────────────────── */
@@ -278,7 +277,6 @@ const ledgerCols = computed(() => (width.value >= 1180 ? 6 : isMobile.value ? 2 
         :health="health"
         :health-state="healthState"
         :kernel="kernel"
-        :magpie="versions.data.value?.cpa.gateway ?? null"
         :enabled-keys="enabledKeys"
         @update:range="setRange"
         @retry="effectiveRange === 'live' ? pulse.refresh() : overview.refresh()"

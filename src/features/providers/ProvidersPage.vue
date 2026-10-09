@@ -7,7 +7,6 @@ import LiveMark from '../../ui/shell/LiveMark.vue'
 import Plate from '../../ui/data/Plate.vue'
 import RowTable from '../../ui/data/RowTable.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
-import ProviderMark from '../../ui/data/ProviderMark.vue'
 import Readout from '../../ui/viz/Readout.vue'
 import Segmented from '../../ui/form/Segmented.vue'
 import SearchField from '../../ui/form/SearchField.vue'
@@ -22,19 +21,12 @@ import { fmtDuration, fmtInt, fmtPct, NONE } from '../../ui/fmt'
 import { notify } from '../../ui/feedback/toast'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { api } from '../../api'
-import { accountsApi } from '../../api/accounts'
-import { proxyApi } from '../../api/proxy'
-import type { AccountsCatalog, AccountsData, ChannelItem, ChannelsData, EgressData, MagpieAccount, SignInView } from '../../types'
-import type { DataState, RowColumn, SegmentItem, StatusKind } from '../../ui/types'
+import type { ChannelItem, ChannelsData } from '../../types'
+import type { RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 import ChannelSheet from '../channels/ChannelSheet.vue'
 import CreateChannelSheet from '../channels/CreateChannelSheet.vue'
-import CatalogSheet from '../accounts/CatalogSheet.vue'
-import EgressSheet from '../accounts/EgressSheet.vue'
-import MagpieAccountRow from '../accounts/MagpieAccountRow.vue'
-import { errorReason } from '../../lib/errors'
 import { classifyChannel, hostOf, modelCounts } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
-import { groupsOf, type RowAction } from '../accounts/magpieModel'
 import {
   accountShow, accountsFigure, channelInStatus, channelsFigure, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems, successFigure,
   type AccountCountsLike, type ChannelBucket, type LiveSource, type ProviderStatus,
@@ -42,10 +34,9 @@ import {
 /**
  * 供应商 (Providers): 统一接入管理「API 渠道」与「订阅账号池」，并管理「全局共享模型」。
  * 整页一个搜索、一个状态筛选（同时管两栏）、一个刷新时间；指标卡只报从已读数据算出的数并写明口径。
- * 本地环境自适应 Magpie 原生 CatalogSheet 授权，远端 CPA 把订阅账号池整块交给账号页（embedded）。
+ * 订阅账号池整块交给账号页（embedded）。
  */
-/* CPA 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读），
-   Magpie 控制台不会下载这一块 */
+/* 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读） */
 const CpaAccountsPage = defineAsyncComponent(() => import('../accounts/CpaAccountsPage.vue'))
 /** the page's live mark speaks for its slowest loop (accounts, exits: 60 s; channels and health poll every 30 s) */
 const PAGE_INTERVAL = 60_000
@@ -112,11 +103,9 @@ watch(() => [route.query.status, route.query.show], ([status, show]) => {
 /* ── 核心数据读取 ── */
 const channelsLive = useLive<ChannelsData>(() => api.channels<ChannelsData>(), { intervalMs: 30_000 })
 const healthLive = useLive<HealthResult>((signal) => fetchChannelHealth('24', signal), { intervalMs: 30_000 })
-const accountsLive = useLive<AccountsData>((signal) => accountsApi.list(signal), { intervalMs: 60_000, isEmpty: () => false })
 const sharedLive = useLive(() => api.sharedModels(), { intervalMs: 30_000 })
-const egressLive = useLive<EgressData>((signal) => proxyApi.egress(signal), { intervalMs: 60_000, isEmpty: () => false })
 
-/* CPA 账号池上报的计数、刷新状态与重试入口（它挂着就一直上报，切到「API 渠道」时也不卸载） */
+/* 账号池上报的计数、刷新状态与重试入口（它挂着就一直上报，切到「API 渠道」时也不卸载） */
 const cpaPool = useTemplateRef<{ refresh: () => Promise<void> }>('cpaPool')
 const cpaCounts = shallowRef<AccountCountsLike | null>(null)
 const cpaLive = shallowRef<LiveSource | null>(null)
@@ -124,40 +113,23 @@ const cpaLive = shallowRef<LiveSource | null>(null)
 function refreshAll() {
   void channelsLive.refresh()
   void healthLive.refresh()
-  void accountsLive.refresh()
   void sharedLive.refresh()
-  void egressLive.refresh()
   void cpaPool.value?.refresh()
 }
 
 const channelsData = computed(() => channelsLive.data.value?.channels ?? [])
-const accountsData = computed(() => accountsLive.data.value ?? null)
-const isMagpie = computed(() => accountsData.value?.backend === 'magpie')
-const egress = computed(() => egressLive.data.value ?? null)
 
 const healthPayload = computed(() => (healthLive.data.value?.available ? healthLive.data.value.payload : null))
 const healthAvailable = computed(() => healthLive.data.value?.available !== false)
 const healthMap = computed(() => new Map((Array.isArray(healthPayload.value?.channels) ? healthPayload.value.channels : []).map((h) => [h.name, h])))
 const classes = computed(() => new Map(channelsData.value.map((c) => [c.name, classifyChannel(c, healthMap.value.get(c.name), now.value)])))
 
-/* Magpie 账号分组列表 */
-const accountGroups = computed(() => groupsOf(accountsData.value))
-/* 订阅账号计数：Magpie 用 /api/accounts 的 counts（启用 / 需关注）；CPA 由嵌入的账号池上报（它已经有 channels+monitor 那一轮读） */
-const magpieCounts = computed<AccountCountsLike | null>(() => {
-  const counts = accountsData.value?.counts
-  if (!isMagpie.value || !counts) return null
-  const on = (accountsData.value?.providers ?? []).reduce((n, p) => n + p.counts.on, 0)
-  return { all: counts.accounts, run: on, cool: 0, pause: Math.max(0, counts.accounts - on), bad: 0, warn: counts.attention, hot: 0, reset: 0 }
-})
-const accountCounts = computed(() => (isMagpie.value ? magpieCounts.value : cpaCounts.value))
-const totalAccountsCount = computed(() => accountCounts.value?.all ?? 0)
+/* 订阅账号计数由嵌入的账号池上报（它已经有 channels+monitor 那一轮读） */
+const totalAccountsCount = computed(() => cpaCounts.value?.all ?? 0)
 const totalProvidersCount = computed(() => channelsData.value.length + totalAccountsCount.value)
 
 /* ── 整页一个刷新时间：渠道、渠道健康与账号池三路数据，取最旧的那次成功读取 ── */
-const accountsSource = computed<LiveSource>(() => {
-  if (isMagpie.value) return { state: accountsLive.state.value, lastAt: accountsLive.lastAt.value }
-  return cpaLive.value ?? { state: 'loading', lastAt: null }
-})
+const accountsSource = computed<LiveSource>(() => cpaLive.value ?? { state: 'loading', lastAt: null })
 const live = computed(() => pageLive([
   { state: channelsLive.state.value, lastAt: channelsLive.lastAt.value },
   { state: healthLive.state.value, lastAt: healthLive.lastAt.value },
@@ -176,8 +148,8 @@ const stats = computed(() => [
   {
     key: 'accounts',
     label: '运行中的订阅账号',
-    loading: accountCounts.value === null && accountsSource.value.state === 'loading',
-    ...accountsFigure(accountCounts.value),
+    loading: cpaCounts.value === null && accountsSource.value.state === 'loading',
+    ...accountsFigure(cpaCounts.value),
   },
   {
     key: 'success',
@@ -301,9 +273,8 @@ const sectionItems = computed<SegmentItem[]>(() => [
   { value: 'accounts', label: '订阅账号', count: totalAccountsCount.value },
 ])
 
-/* Magpie 账号列表不参与筛选，所以它的计数不进筛选项 */
 const statusItems = computed<SegmentItem[]>(() => buildStatusItems(
-  statusCounts(channelRows.value.map((r) => r.bucket), isMagpie.value ? null : cpaCounts.value, sectionFilter.value),
+  statusCounts(channelRows.value.map((r) => r.bucket), cpaCounts.value, sectionFilter.value),
   sectionFilter.value,
   appliedStatus.value,
 ))
@@ -339,58 +310,12 @@ const focusedChannel = shallowRef<ChannelItem | null>(null)
 const addSharedOpen = ref(false)
 const searchModelQuery = ref('')
 
-/* Magpie 授权 Catalog 抽屉 */
-const magpieCatalog = shallowRef<AccountsCatalog | null>(null)
-const magpieCatalogError = shallowRef<unknown>(null)
-const magpieCatalogLoading = ref(false)
-const magpieAddOpen = ref(false)
-const magpieTarget = shallowRef<{ agent: string; relogin: boolean; start: boolean } | null>(null)
-
-async function loadMagpieCatalog() {
-  if (magpieCatalogLoading.value) return
-  magpieCatalogLoading.value = true
-  try {
-    magpieCatalog.value = await accountsApi.catalog()
-    magpieCatalogError.value = null
-  } catch (error) {
-    magpieCatalogError.value = error
-  } finally {
-    magpieCatalogLoading.value = false
-  }
-}
-const magpieCatalogState = computed<DataState>(() => {
-  if (magpieCatalog.value) return magpieCatalogError.value ? 'stale' : 'ready'
-  if (magpieCatalogError.value) return 'error'
-  return 'loading'
-})
-
 const pending = ref(new Set<string>())
 function setPending(key: string, on: boolean) {
   const next = new Set(pending.value)
   if (on) next.add(key)
   else next.delete(key)
   pending.value = next
-}
-
-function openAddDialog() {
-  if (currentTab.value === 'shared') {
-    addSharedOpen.value = true
-  } else if (sectionFilter.value === 'accounts') {
-    openAddAccount(null)
-  } else {
-    createChannelOpen.value = true
-  }
-}
-
-function openAddAccount(agent: string | null = null) {
-  magpieTarget.value = agent ? { agent, relogin: false, start: true } : null
-  magpieAddOpen.value = true
-  void loadMagpieCatalog()
-}
-
-function onMagpieSignedIn(_view: SignInView) {
-  notify('✓ 账号授权成功')
-  refreshAll()
 }
 
 function openChannelConfig(row: ChannelRow) {
@@ -468,67 +393,6 @@ async function deleteChannel(channel: ChannelItem) {
     notify('删除失败', { tone: 'bad' })
   } finally {
     setPending(channel.name, false)
-  }
-}
-
-const accountBusy = ref<Record<string, string>>({})
-const egressOf = shallowRef<MagpieAccount | null>(null)
-const egressOpen = ref(false)
-
-const ACTION_DONE: Record<RowAction, string> = {
-  first: '✓ 已设为首选',
-  on: '✓ 已启用',
-  off: '✓ 已停用',
-  reset: '✓ 已使用重置',
-  relogin: '',
-  egress: '',
-  forget: '✓ 已移除',
-}
-
-async function onAccountAction(account: MagpieAccount, action: RowAction) {
-  if (accountBusy.value[account.id]) return
-  if (action === 'relogin') {
-    openAddAccount(account.agent)
-    return
-  }
-  if (action === 'egress') {
-    egressOf.value = account
-    egressOpen.value = true
-    return
-  }
-  if (action === 'forget') {
-    const ok = await confirmSheet({
-      title: '移除这个账号？',
-      body: 'magpie 会忘记这个账号的登录，账号本身不受影响。',
-      facts: [{ k: '账号', v: account.user }],
-      confirmText: '移除',
-      danger: true,
-    })
-    if (!ok) return
-  }
-  if (action === 'reset') {
-    accountBusy.value[account.id] = 'reset'
-    try {
-      await accountsApi.codexReset(account.id)
-      notify('✓ 已使用重置')
-      await accountsLive.refresh()
-    } catch (error) {
-      notify(`◆ 重置失败 · ${errorReason(error)}`, { tone: 'bad' })
-    } finally {
-      delete accountBusy.value[account.id]
-    }
-    return
-  }
-
-  accountBusy.value[account.id] = action
-  try {
-    await accountsApi.login(action, account.agent, account.id)
-    notify(ACTION_DONE[action] || '✓ 操作成功')
-    await accountsLive.refresh()
-  } catch (error) {
-    notify(`◆ ${errorReason(error)}`, { tone: 'bad' })
-  } finally {
-    delete accountBusy.value[account.id]
   }
 }
 
@@ -861,9 +725,8 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 
       <!-- 栏目 2：订阅账号池 (OAuth 账号)。v-show：只看渠道时也挂着，计数、指标与刷新时间不断 -->
       <section v-show="sectionFilter !== 'channels'" class="pv-section">
-        <!-- CPA：账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供；搜索与筛选用本页的 -->
+        <!-- 账号池自带数据环（/api/channels + /api/monitor）与全部行操作，栏目标题由它的 Plate 提供；搜索与筛选用本页的 -->
         <CpaAccountsPage
-          v-if="!isMagpie"
           ref="cpaPool"
           embedded
           plate-title="订阅账号池"
@@ -873,64 +736,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
           @live="cpaLive = $event"
           @clear-filters="clearFilters"
         />
-        <Plate v-else title="订阅账号池" flush>
-          <template #actions>
-            <TxButton variant="subtle" size="small" @click="openAddAccount(null)">
-              <Icon name="plus" /> 添加账号
-            </TxButton>
-          </template>
-
-          <!-- 已有订阅账号时按供应商分组展示 -->
-          <div v-if="accountGroups.length" class="pv-accounts-list">
-            <section v-for="group in accountGroups" :key="group.agent" class="pv-acc-group">
-              <header class="pv-acc-gh">
-                <ProviderMark :provider="group.agent" :size="18" />
-                <h3 class="pv-acc-name">{{ group.name }}</h3>
-                <span class="pv-acc-count num">{{ group.accounts.length }} 个账号</span>
-                <button
-                  type="button"
-                  class="ui-link pv-acc-add"
-                  @click="openAddAccount(group.agent)"
-                >
-                  <Icon name="plus" :size="12" />添加
-                </button>
-              </header>
-              <ul class="pv-acc-rows">
-                <MagpieAccountRow
-                  v-for="account in group.accounts"
-                  :key="account.id"
-                  :account="account"
-                  :now="now"
-                  :busy="accountBusy[account.id]"
-                  :egress="egress"
-                  @action="onAccountAction(account, $event)"
-                />
-              </ul>
-            </section>
-          </div>
-
-          <!-- 未接入账号时呈现整洁的引导卡片，一键唤醒真机 Magpie 登录流 -->
-          <div v-else class="pv-empty-accounts">
-            <p class="pv-empty-title">支持接入订阅号池（免密钥直接登录）</p>
-            <p class="pv-empty-desc">
-              通过 OAuth / 设备码接入 Claude、ChatGPT (Codex)、AntiGravity 等官方订阅，网关统一托管凭据、额度刷新与自动轮换。
-            </p>
-            <div class="pv-empty-actions">
-              <TxButton variant="secondary" size="small" @click="openAddAccount('claude')">
-                <ProviderMark provider="claude" :size="16" /> 添加 Claude 账号
-              </TxButton>
-              <TxButton variant="secondary" size="small" @click="openAddAccount('codex')">
-                <ProviderMark provider="openai" :size="16" /> 添加 Codex 账号
-              </TxButton>
-              <TxButton variant="secondary" size="small" @click="openAddAccount('antigravity')">
-                <ProviderMark provider="antigravity" :size="16" /> 添加 AntiGravity 账号
-              </TxButton>
-              <TxButton variant="secondary" size="small" @click="openAddAccount('copilot')">
-                <ProviderMark provider="githubcopilot" :size="16" /> 添加 Copilot 账号
-              </TxButton>
-            </div>
-          </div>
-        </Plate>
       </section>
     </div>
 
@@ -953,21 +758,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       v-model="createChannelOpen"
       :existing="channelsData.map(c => c.name)"
       @created="refreshAll"
-    />
-
-    <!-- 弹窗 3A: Magpie 本机原生授权抽屉（解决 Image #26 410 报错，真机对接 /api/accounts/signin） -->
-    <CatalogSheet
-      v-if="isMagpie"
-      v-model="magpieAddOpen"
-      :catalog="magpieCatalog"
-      :catalog-state="magpieCatalogState"
-      :catalog-error="magpieCatalogError"
-      :signing-in="accountsData?.signingIn ?? []"
-      :target="magpieTarget"
-      :egress="egress"
-      @done="onMagpieSignedIn"
-      @reload="loadMagpieCatalog"
-      @egress="egressLive.refresh()"
     />
 
     <!-- 弹窗 4: 添加全局共享模型选择器 -->
@@ -1005,14 +795,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       </div>
     </Sheet>
 
-    <!-- 弹窗 5: 账号出口选择抽屉 -->
-    <EgressSheet
-      v-model="egressOpen"
-      :account="egressOf"
-      :egress="egress"
-      :service-name="accountGroups.find((g) => g.agent === egressOf?.agent)?.name"
-      @changed="egressLive.refresh()"
-    />
   </div>
 </template>
 
@@ -1089,44 +871,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 .pv-searchrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
 .pv-search { width: 280px; }
 .pv-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-
-/* 账号池样式 */
-.pv-accounts-list { padding: 4px 0; }
-.pv-acc-group + .pv-acc-group { margin-top: 14px; }
-.pv-acc-gh { display: flex; align-items: center; gap: 8px; min-height: 32px; border-bottom: 1px solid var(--rule-2); min-width: 0; padding-bottom: 4px; }
-.pv-acc-name { margin: 0; font-size: var(--fs-sm); font-weight: 650; color: var(--ink); white-space: nowrap; }
-.pv-acc-count { font-size: var(--fs-xs); color: var(--ink-3); }
-.pv-acc-add { margin-left: auto; font-size: var(--fs-xs); }
-.pv-acc-rows { list-style: none; margin: 0; padding: 0; }
-
-.pv-empty-accounts {
-  padding: 36px 20px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-}
-.pv-empty-title {
-  margin: 0;
-  font-size: var(--fs-sm);
-  font-weight: 650;
-  color: var(--ink);
-}
-.pv-empty-desc {
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--ink-3);
-  max-width: 520px;
-  line-height: 1.5;
-}
-.pv-empty-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 6px;
-}
 
 /* 共享模型添加抽屉 */
 .pv-add-shared {

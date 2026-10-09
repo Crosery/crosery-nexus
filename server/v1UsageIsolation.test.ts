@@ -128,9 +128,6 @@ const modelSet = (body: { models?: Array<{ model?: string }> }): string[] =>
 
 test('跨 Key 隔离：两个真实 Key 各自只看到自己的标记模型（集合级对照 + 参数注入无效）', { timeout: 120_000 }, async () => {
   const harness = await startHarness({
-    GATEWAY_ENGINE: 'magpie',
-    MAGPIE_CONTROL_PLANE: 'local',
-    MAGPIE_PORT: String(await freePort()),
     CPA_BASE_URL: 'http://127.0.0.1:9',
     CPA_MANAGEMENT_KEY: '',
   })
@@ -211,8 +208,6 @@ test('跨 Key 隔离：两个真实 Key 各自只看到自己的标记模型（�
 
 test('管理面不可用时 /v1/usage 降级为 200 + 显式标注（不是 500，也不静默改语义）', { timeout: 120_000 }, async () => {
   const harness = await startHarness({
-    GATEWAY_ENGINE: 'cpa',
-    MAGPIE_CONTROL_PLANE: 'local',
     CPA_BASE_URL: 'http://127.0.0.1:9',
     CPA_MANAGEMENT_KEY: '', // ← 管理面不可用：listGroupsForReporting 拿不到分组
   })
@@ -243,9 +238,6 @@ test('管理面不可用时 /v1/usage 降级为 200 + 显式标注（不是 500�
 
 test('同一非法 provider：/start 与 /callback 状态码与 reason 必须一致（都不是 5xx）', { timeout: 120_000 }, async () => {
   const harness = await startHarness({
-    GATEWAY_ENGINE: 'magpie',
-    MAGPIE_CONTROL_PLANE: 'local',
-    MAGPIE_PORT: String(await freePort()),
     CPA_BASE_URL: 'http://127.0.0.1:9',
     CPA_MANAGEMENT_KEY: '',
   })

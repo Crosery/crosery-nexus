@@ -7,14 +7,11 @@ import path from 'node:path'
 import test from 'node:test'
 import cookieParser from 'cookie-parser'
 import express from 'express'
-import { countingServer, FakeCpa } from './testing/proxyFakeCpa.js'
+import { FakeCpa } from './testing/proxyFakeCpa.js'
 
 const fake = await new FakeCpa().start()
-const bridge = await countingServer()
-process.env.GATEWAY_ENGINE = 'cpa'
 process.env.CPA_BASE_URL = fake.base
 process.env.CPA_MANAGEMENT_KEY = fake.key
-process.env.MAGPIE_SOURCE_CPA_BASE_URL = bridge.base
 process.env.SESSION_SECRET ||= 'proxy-routes-unit-secret'
 delete process.env.PROXY_PRESETS
 
@@ -105,7 +102,7 @@ function assertMasked(h: { bodies: string[]; audits: Array<[string, string, stri
   }
 }
 
-test.after(async () => { await fake.stop(); await bridge.stop() })
+test.after(async () => { await fake.stop() })
 
 const ROUTES: Array<[string, string, unknown?]> = [
   ['GET', '/api/proxies'], ['GET', '/api/proxies/options'], ['GET', '/api/proxies/accounts'], ['GET', '/api/proxies/export'],

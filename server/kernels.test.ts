@@ -19,7 +19,7 @@ const at = (ms: number) => new Date(ms).toISOString()
 const RUNNING = '7.3.20-patched.1a2b3c4d'
 
 const facts = (cpa: Record<string, unknown> | null, over: Record<string, unknown> = {}) => ({
-  config: readKernelConfig('/nonexistent/kernel-autoupdate.json'), scheduler: 'installed' as const, cpa, magpie: null, cpaRunning: RUNNING, ...over,
+  config: readKernelConfig('/nonexistent/kernel-autoupdate.json'), scheduler: 'installed' as const, cpa, cpaRunning: RUNNING, ...over,
 })
 const tick = (decision: Record<string, unknown>, over: Record<string, unknown> = {}) => ({ version: 1, kernel: 'cpa', checkedAt: at(NOW - 60_000), decision, ...over })
 const cpaView = (state: Record<string, unknown> | null, over: Record<string, unknown> = {}) => buildKernelsView(facts(state, over), NOW).kernels[0]
@@ -27,18 +27,18 @@ const cpaView = (state: Record<string, unknown> | null, over: Record<string, unk
 test('config: same defaults as the applier; strict PUT; the time zone is not editable here', () => {
   const dir = temp()
   const file = path.join(dir, 'kernel-autoupdate.json')
-  assert.deepEqual(readKernelConfig(file), { version: 1, cpa: { enabled: true }, magpie: { enabled: true }, window: { start: '05:00', end: '07:00', tz: 'Asia/Shanghai' } })
+  assert.deepEqual(readKernelConfig(file), { version: 1, cpa: { enabled: true }, window: { start: '05:00', end: '07:00', tz: 'Asia/Shanghai' } })
   writeKernelConfig(file, { cpa: { enabled: false }, window: { start: '04:30', end: '06:30' } })
   assert.deepEqual(readKernelConfig(file).window, { start: '04:30', end: '06:30', tz: 'Asia/Shanghai' })
   assert.equal(readKernelConfig(file).cpa.enabled, false)
-  for (const bad of [null, { rtk: {} }, { cpa: { enabled: 'yes' } }, { cpa: { enabled: true, x: 1 } }, { window: { start: '5:00', end: '07:00' } }, { window: { start: '05:00', end: '07:00', tz: 'UTC' } }]) {
+  for (const bad of [null, { rtk: {} }, { magpie: { enabled: false } }, { cpa: { enabled: 'yes' } }, { cpa: { enabled: true, x: 1 } }, { window: { start: '5:00', end: '07:00' } }, { window: { start: '05:00', end: '07:00', tz: 'UTC' } }]) {
     assert.throws(() => writeKernelConfig(file, bad), KernelConfigError)
   }
   // the applier reads the same file the same way
   const out = execFileSync(process.execPath, ['--input-type=module', '-e',
     `import { normalizeConfig, readJSON } from ${JSON.stringify(path.join(repo, 'scripts/kernel-applier.mjs'))}; console.log(JSON.stringify(normalizeConfig(await readJSON(${JSON.stringify(file)}))))`], { encoding: 'utf8' })
   const applier = JSON.parse(out)
-  assert.deepEqual({ cpa: applier.cpa, magpie: applier.magpie, window: applier.window }, { cpa: { enabled: false }, magpie: { enabled: true }, window: { start: '04:30', end: '06:30', tz: 'Asia/Shanghai' } })
+  assert.deepEqual({ cpa: applier.cpa, window: applier.window }, { cpa: { enabled: false }, window: { start: '04:30', end: '06:30', tz: 'Asia/Shanghai' } })
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -175,16 +175,18 @@ test('routes: GET/PUT; rollback is queued only with confirm and only when there 
   try {
     const view = await call('GET', '/api/kernels')
     assert.equal(view.status, 200)
-    assert.deepEqual(view.body.kernels.map((k: { id: string; role: string }) => `${k.id}:${k.role}`), ['cpa:serving', 'magpie:standby'])
+    assert.deepEqual(view.body.kernels.map((k: { id: string; role: string }) => `${k.id}:${k.role}`), ['cpa:serving'])
     assert.equal(view.body.kernels[0].version, RUNNING)
     assert.equal((await call('PUT', '/api/kernels', { cpa: { enabled: 'off' } })).status, 400)
-    const put = await call('PUT', '/api/kernels', { magpie: { enabled: false } })
+    assert.equal((await call('PUT', '/api/kernels', { magpie: { enabled: false } })).status, 400)
+    const put = await call('PUT', '/api/kernels', { cpa: { enabled: false } })
     assert.equal(put.status, 200)
-    assert.equal(put.body.kernels[1].state, 'off')
-    assert.match(audits.at(-1) ?? '', /^kernel_autoupdate_config relay cpa=on magpie=off window=05:00-07:00 Asia\/Shanghai/)
+    assert.equal(put.body.kernels[0].state, 'off')
+    assert.match(audits.at(-1) ?? '', /^kernel_autoupdate_config relay cpa=off window=05:00-07:00 Asia\/Shanghai/)
+    await call('PUT', '/api/kernels', { cpa: { enabled: true } })
     assert.equal((await call('POST', '/api/kernels/rollback', { kernel: 'cpa' })).status, 403)
     assert.equal(fs.existsSync(paths.requests), false)
-    assert.equal((await call('POST', '/api/kernels/rollback', { kernel: 'magpie', confirm: true })).status, 409)
+    assert.equal((await call('POST', '/api/kernels/rollback', { kernel: 'magpie', confirm: true })).status, 400)
     const queued = await call('POST', '/api/kernels/rollback', { kernel: 'cpa', confirm: true })
     assert.equal(queued.status, 202)
     assert.equal(queued.body.to, '7.3.15-patched.498fcc2b')
@@ -212,5 +214,19 @@ test('facts: a missing timer unit is "missing"; unreadable state files are ignor
   const read = readKernelFacts(paths, null)
   assert.equal(read.scheduler, 'missing')
   assert.equal(read.cpa, null)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('leftovers of the retired standby kernel are ignored: its config key, state file and inbox', () => {
+  const dir = temp()
+  const paths = kernelPaths(dir, path.join(dir, 'none.timer'))
+  fs.mkdirSync(paths.states, { recursive: true })
+  fs.writeFileSync(paths.config, JSON.stringify({ version: 1, cpa: { enabled: false }, magpie: { enabled: true }, window: { start: '04:00', end: '06:00', tz: 'Asia/Shanghai' } }))
+  fs.writeFileSync(path.join(paths.states, 'magpie.json'), JSON.stringify({ version: 1, kernel: 'magpie', role: 'standby', checkedAt: at(NOW), decision: { why: 'no-candidate' } }))
+  fs.mkdirSync(path.join(dir, 'magpie', 'inbox'), { recursive: true })
+  const read = readKernelFacts(paths, RUNNING)
+  assert.deepEqual(read.config, { version: 1, cpa: { enabled: false }, window: { start: '04:00', end: '06:00', tz: 'Asia/Shanghai' } })
+  assert.deepEqual(buildKernelsView(read, NOW).kernels.map(kernel => kernel.id), ['cpa'])
+  assert.equal(writeKernelConfig(paths.config, { cpa: { enabled: true } }).cpa.enabled, true)
   fs.rmSync(dir, { recursive: true, force: true })
 })

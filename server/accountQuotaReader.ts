@@ -13,14 +13,6 @@ import { sanitizeSyncError, syncRegistry, upstreamLimiter, type SyncOutcome } fr
  * 每类账号各自 TTL + 失败冷却 + 在途去重，monitor 的整页缓存过期后也只会刷新真正到期的账号。
  */
 
-export const ACCOUNT_QUOTA_UNSUPPORTED_REASON = '本机控制面（magpie + local）不代理上游 API 调用，读取账号额度需要远端 CPA 控制面'
-
-/** 额度读取全部经由 CPA 的 /api-call 转发；本机控制面没有这个能力（cpa.ts LOCAL_UNSUPPORTED_OPERATIONS）。 */
-export function accountQuotaSupport(): { supported: boolean; reason: string | null } {
-  const local = config.gatewayEngine === 'magpie' && config.magpieControlPlane === 'local'
-  return local ? { supported: false, reason: ACCOUNT_QUOTA_UNSUPPORTED_REASON } : { supported: true, reason: null }
-}
-
 /**
  * 每一次真正发出去的 /api-call 转发：在全局上游闸门里排队（与模型发现共享 globalUpstreamConcurrency），
  * 并按实际次数计入 requests24h（AntiGravity 一个账号可能是多个域名 + loadCodeAssist）。
@@ -107,8 +99,6 @@ const withError = <T extends object>(value: T | null, error: string | null): unk
 
 /** 单个账号的额度体 + Codex 重置额度（形状与旧的 /api/monitor 内联实现一致）。 */
 export async function readAccountQuota(file: Record<string, any>): Promise<{ quota: unknown; resetCredits: ResetCreditsInput | null }> {
-  const support = accountQuotaSupport()
-  if (!support.supported) return { quota: { error: support.reason, unsupported: true }, resetCredits: null }
   try {
     return await readSupportedAccountQuota(file)
   } finally {
@@ -166,15 +156,11 @@ export function accountQuotaCooldowns(): number {
   return claudeQuotaCache.blockedCount() + codexUsageCache.blockedCount() + antigravityQuotaCache.blockedCount()
 }
 
-/** /api/monitor 一次刷新的同步中心记录：全失败才算 error，部分失败 partial；控制面不支持时不记历史。 */
+/** /api/monitor 一次刷新的同步中心记录：全失败才算 error，部分失败 partial。 */
 export function summarizeAccountQuota(payload: {
   accounts?: Array<{ normalizedQuota?: { error?: string | null } }>
-  quotaSupport?: { supported: boolean; reason?: string | null }
 }): SyncOutcome {
   const accounts = payload.accounts ?? []
-  if (payload.quotaSupport?.supported === false) {
-    return { result: 'skipped', summary: `${accounts.length} 账号 · 本机控制面不支持读取额度`, error: null, silent: true, skipBackoff: true }
-  }
   const failing = accounts.filter(account => account.normalizedQuota?.error).length
   const cooling = accountQuotaCooldowns()
   const parts = [`${accounts.length} 账号`]

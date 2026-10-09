@@ -9,7 +9,7 @@ import { paginate, resettingField, useQueryState } from '../src/lib/listState.js
 import { channelStatusFilter } from '../src/features/channels/channelModel.js'
 import { batchTargets, legacyModelsQuery, type ModelRow } from '../src/features/models/modelRows.js'
 import { useSheetWrite, whenIdle } from '../src/lib/resource.js'
-import { jobAction, rtkBinaryNotice, rtkDirections, rtkWords, type SyncJobLike } from '../src/features/settings/settingsModel.js'
+import { jobAction, type SyncJobLike } from '../src/features/settings/settingsModel.js'
 import { buildAccounts, classifyResetError, classifyResetSuccess, filterGroups, groupAccounts, mergeAccountsPayload, PROXY_CUSTOM, proxyKeepsDraft, proxySentAfterWrite, verifyOutcome } from '../src/features/accounts/model.js'
 
 /*
@@ -262,37 +262,7 @@ test('FF-30 created-key copy no longer claims it can never be shown again', () =
   assert.doesNotMatch(src('features/settings/PrefsSection.vue'), /新建时只出现一次/)
 })
 
-/* ── FF-03 / FF-21 / FF-26 / FF-27 / FF-28: settings ───────────────────────────────────────────── */
-
-const rtk = (on: boolean | null, agentsOn: number, supported = 9) => ({ on, plane: 'local' as const, agents: { supported, on: agentsOn }, savings: null, writable: true, reason: null })
-
-test('FF-03 RTK mixed state offers both 全部开启 and 全部关闭 (implemented concurrently by the sync-balance fixer)', () => {
-  assert.deepEqual(rtkDirections(rtkWords(rtk(null, 4)), true), [{ target: true, label: '全部开启' }, { target: false, label: '全部关闭' }])
-  assert.deepEqual(rtkDirections(rtkWords(rtk(true, 9)), true), [])
-  assert.deepEqual(rtkDirections(rtkWords(rtk(false, 0)), true), [])
-  assert.match(src('features/settings/RtkSection.vue'), /v-for="d in directions"[^>]*@click="ask\(d\.target\)"/)
-})
-
-test('FF-21 RTK with the binary missing shows the manual install command (sync-balance: C4 installHint)', () => {
-  const words = rtkWords({ ...rtk(null, 0), writable: false, reason: 'rtk_binary_missing', installHint: 'curl -fsSL https://x/install.sh | sh' })
-  assert.equal(words.install, 'curl -fsSL https://x/install.sh | sh')
-  assert.match(src('features/settings/RtkSection.vue'), /words\.install/)
-})
-
-test('FF-21 confirmed 安装 / 升级 rtk in 诊断: 501 carries the manual command, never a silent success', () => {
-  assert.deepEqual(rtkBinaryNotice('upgrade', { ok: true }), { title: '✓ rtk 已升级', tone: 'ok' })
-  const local = rtkBinaryNotice('upgrade', { status: 501, reason: 'local_upgrade_not_supported', message: '控制台不代为升级本机 rtk，请人工执行：curl -fsSL https://x/install.sh | sh' })
-  assert.equal(local.tone, 'note')
-  assert.match(local.description ?? '', /请人工执行：curl/)
-  assert.deepEqual(rtkBinaryNotice('install', { status: 403, reason: 'remote_write_disabled', message: 'x' }), { title: '◆ rtk 没有安装 · 中转站平面写入未开启', tone: 'bad' })
-  assert.deepEqual(rtkBinaryNotice('install', { status: 502, reason: null, message: '' }), { title: '◆ rtk 没有安装 · 请求失败', tone: 'bad' })
-  const section = src('features/settings/RtkSection.vue')
-  // both reach the (previously uncalled) routes, each behind its own confirm sheet
-  assert.match(section, /api\.installRTK\(\{ confirm: true \}\) : api\.upgradeRTK\(\{ confirm: true \}\)/)
-  assert.match(section, /async function binary\(action: RtkBinaryAction\) \{[\s\S]{0,200}const ok = await confirmSheet\(/)
-  assert.match(section, /@click="binary\('install'\)"/)
-  assert.match(section, /@click="binary\('upgrade'\)"/)
-})
+/* ── FF-26 / FF-27: settings ─────────────────────────────────────────────────────────────────── */
 
 const job = (over: Partial<SyncJobLike> = {}): SyncJobLike => ({
   id: 'pricing', label: '价格元数据', kind: 'in-process', intervalMs: 3_600_000, lastRunAt: '2026-10-02T05:00:00Z', nextRunAt: null,
@@ -313,17 +283,11 @@ test('FF-27 run-now stays locked after 202 until the refreshed status shows the 
   assert.equal(jobAction(job(), at + 500).kind, 'run')
 })
 
-test('FF-28 a successful kernel apply re-reads the versions', () => {
-  const section = src('features/settings/VersionSection.vue')
-  assert.match(section, /action === 'apply'[\s\S]{0,200}emit\('recheck'\)/)
-})
-
-test('FF-26 pages reuse the shell live sources and an RTK apply refreshes the statusline source', () => {
+test('FF-26 pages reuse the shell live sources', () => {
   const shell = src('shell/useAdminStatus.ts')
   assert.match(shell, /provide\(ADMIN_LIVE, /)
   const settings = src('features/settings/SettingsPage.vue')
   assert.match(settings, /useSharedAdminLive\(\)/)
-  assert.match(settings, /shared\?\.rtk \?\?/)
   assert.match(settings, /shared\?\.sync \?\?/)
   const overview = src('features/overview/OverviewPage.vue')
   assert.match(overview, /useSharedAdminLive\(\)/)

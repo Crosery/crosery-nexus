@@ -2,7 +2,7 @@ import './testDataDir.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { maskIdentity, maskProxyUserinfo, projectMonitorAccount } from './accountProjection.js'
-import { secretFindings } from './testing/fakeKernel.js'
+import { secretFindings } from './testing/secretFindings.js'
 
 const SECRETS = ['fixture-access-0001', 'fixture-refresh-0002', 'fixture-id-0003', 'fixture-cookie-0004', 'fixture-key-0005', 'proxy-pass-0006']
 
@@ -91,32 +91,4 @@ test('proxy and identity masks', () => {
   assert.equal(maskProxyUserinfo(undefined), '')
   assert.equal(maskIdentity('zhang.wei.ops@company.example'), 'zh••••••s@•••')
   assert.equal(maskIdentity('ab@x.test'), 'a••@•••')
-})
-
-test('local credential store: the listing (and /auth-files) is allow-listed; the runtime reads the credential server-side', async () => {
-  const { listLocalAuthFiles, saveLocalAuthFile, deleteLocalAuthFile, readLocalAuthFileCredential, magpieManagementRequest } = await import('./magpieControl.js')
-  const name = `p0-${process.pid}.json`
-  saveLocalAuthFile(name, JSON.stringify({ ...gatewayRecord, name: undefined }))
-  try {
-    const listed = listLocalAuthFiles().find(file => file.name === name)
-    assert.ok(listed)
-    assert.deepEqual(secretFindings(listed, SECRETS.filter(secret => secret !== 'proxy-pass-0006')), [])
-    assert.equal(listed.email, 'alpha.one@example.test')
-    const viaManagement = await magpieManagementRequest<{ files: Array<Record<string, unknown>> }>('/auth-files')
-    assert.deepEqual(secretFindings(viaManagement.files.find(file => file.name === name), SECRETS.filter(secret => secret !== 'proxy-pass-0006')), [])
-    assert.deepEqual(readLocalAuthFileCredential(name), { token: 'fixture-access-0001', accountId: 'acct-1' })
-  } finally {
-    deleteLocalAuthFile(name)
-  }
-})
-
-test('local OAuth simulator is retired: start and callback are 410, status 404, nothing is written', async () => {
-  const { listLocalAuthFiles, magpieManagementRequest } = await import('./magpieControl.js')
-  const before = listLocalAuthFiles().length
-  await assert.rejects(magpieManagementRequest('/codex-auth-url?is_webui=true'), (error: { status?: number; code?: string }) => error.status === 410 && error.code === 'use_accounts_signin')
-  await assert.rejects(magpieManagementRequest('/oauth-callback', { method: 'POST', body: JSON.stringify({ provider: 'codex', redirect_url: 'http://localhost:1455/auth/callback?code=x', state: 's' }) }),
-    (error: { status?: number }) => error.status === 410)
-  await assert.rejects(magpieManagementRequest('/get-auth-status?state=s'), (error: { status?: number }) => error.status === 404)
-  assert.deepEqual(await magpieManagementRequest('/oauth-session?state=s', { method: 'DELETE' }), { ok: true })
-  assert.equal(listLocalAuthFiles().length, before, 'no fabricated credential file')
 })

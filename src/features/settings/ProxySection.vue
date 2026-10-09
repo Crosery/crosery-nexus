@@ -54,7 +54,7 @@ const kernel = computed(() => (data.value ? kernelLine(data.value.kernel, data.v
 const banner = computed(() => (data.value ? migrationBanner(data.value.migration) : null))
 const firstRun = computed(() => (data.value ? firstRunNote(data.value.migration, now.value) : null))
 const defaultName = computed(() => (data.value ? defaultLine(data.value) : null))
-const canDefault = computed(() => data.value?.backend === 'cpa' && data.value.default.mode !== 'unsupported')
+const canDefault = computed(() => Boolean(data.value) && data.value?.default.mode !== 'unsupported')
 
 /* ── table ── */
 const query = ref('')

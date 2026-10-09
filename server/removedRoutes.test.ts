@@ -7,9 +7,9 @@ import path from 'node:path'
 import test from 'node:test'
 
 /**
- * Console v3 契约 C5：Magpie 引擎下凭据导入与 A/B 实验台已下线（CPA 引擎的批量导入见 credentialUploadRoute.test.ts）。
- * 已登录管理员打这两个旧写入口必须落到 `/api` 兜底 404（不是 400/500，也不落盘），
- * bootstrap 不再下发上传限额；同前缀的账号管理路由 `/api/credentials/:name` 仍然在线。
+ * 已下线的接口：A/B 实验台（Console v3 契约 C5）与 Magpie 内核的接口（2026-10-09 随内核一起下线：网关功能设置、
+ * 内核更新、账号页的内核登录与额度）。已登录管理员打这些旧入口必须落到 `/api` 兜底 404（不是 400/500，也不落盘），
+ * bootstrap 不再下发上传限额；同前缀仍在线的路由（`/api/credentials/:name`、`/api/accounts`）照常命中。
  */
 
 const REPO = new URL('../', import.meta.url).pathname
@@ -41,11 +41,8 @@ async function startHarness(): Promise<Harness> {
       CONSOLE_PASSWORD: 'correct-horse-battery',
       SESSION_SECRET: 'removed-routes-secret',
       COOKIE_SECURE: 'false',
-      GATEWAY_ENGINE: 'magpie',
-      MAGPIE_CONTROL_PLANE: 'local',
-      MAGPIE_PORT: String(await freePort()),
       CPA_BASE_URL: 'http://127.0.0.1:9',
-      CPA_MANAGEMENT_KEY: 'unused-in-local-mode',
+      CPA_MANAGEMENT_KEY: 'unused-by-these-routes',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -72,7 +69,21 @@ async function stopHarness(harness: Harness): Promise<void> {
   fs.rmSync(harness.dataDir, { recursive: true, force: true })
 }
 
-test('凭据导入与 A/B 投票接口已下线：管理员请求落到 404 兜底，账号管理路由仍在', { timeout: 120_000 }, async () => {
+const MAGPIE_ROUTES: Array<[string, string, unknown?]> = [
+  ['GET', '/api/gateway/settings'],
+  ['PUT', '/api/gateway/settings', { redact: true }],
+  ['GET', '/api/magpie/update-status'],
+  ['POST', '/api/magpie/update', { action: 'apply', confirm: true }],
+  ['POST', '/api/accounts/signin', { agent: 'codex' }],
+  ['GET', '/api/accounts/signin/flow1x'],
+  ['POST', '/api/accounts/signin/flow1x/callback', { url: 'http://localhost:1455/auth/callback?code=x' }],
+  ['POST', '/api/accounts/signin/flow1x/cancel', {}],
+  ['POST', '/api/accounts/login/on', { agent: 'codex', id: '0123456789abcdef' }],
+  ['POST', '/api/accounts/codex-reset', { id: '0123456789abcdef' }],
+  ['POST', '/api/accounts/quota/refresh', {}],
+]
+
+test('A/B 投票与 Magpie 内核的接口已下线：管理员请求落到 404 兜底，同前缀的在线路由仍在', { timeout: 120_000 }, async () => {
   const harness = await startHarness()
   try {
     const login = await fetch(`${harness.base}/api/login`, {
@@ -81,13 +92,6 @@ test('凭据导入与 A/B 投票接口已下线：管理员请求落到 404 兜�
     })
     assert.equal(login.status, 200, `管理员登录失败：${login.status}\n${harness.logs().slice(-400)}`)
     const cookie = String(login.headers.get('set-cookie') || '').split(';')[0]
-
-    const form = new FormData()
-    form.set('file', new Blob([JSON.stringify({ type: 'xai', access_token: 'a', refresh_token: 'r' })]), 'xai-one.json')
-    const upload = await fetch(`${harness.base}/api/credentials/upload`, { method: 'POST', headers: { cookie }, body: form })
-    assert.equal(upload.status, 404, `上传入口必须已下线：${upload.status}`)
-    assert.deepEqual(await upload.json(), { error: '接口不存在' })
-    assert.equal(fs.existsSync(path.join(harness.dataDir, 'auth-files', 'xai-one.json')), false, '不得落盘任何上传内容')
 
     const vote = await fetch(`${harness.base}/api/ab/preference`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json' },
@@ -101,14 +105,23 @@ test('凭据导入与 A/B 投票接口已下线：管理员请求落到 404 兜�
     assert.equal(bootstrap.status, 200)
     assert.equal('credentialUploadLimits' in (await bootstrap.json() as Record<string, unknown>), false)
 
-    // 同前缀的账号管理路由必须仍被路由命中：返回的是业务 404（credential_not_found），而不是兜底的「接口不存在」。
+    for (const [method, route, body] of MAGPIE_ROUTES) {
+      const response = await fetch(`${harness.base}${route}`, {
+        method, headers: { cookie, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      assert.equal(response.status, 404, `${method} ${route} 必须已下线：${response.status}`)
+      assert.deepEqual(await response.json(), { error: '接口不存在' }, `${method} ${route}`)
+    }
+
+    // 同前缀的路由必须仍被路由命中，而不是兜底的「接口不存在」。
     const toggle = await fetch(`${harness.base}/api/credentials/ghost-cred.json`, {
       method: 'PATCH', headers: { cookie, 'content-type': 'application/json' },
       body: JSON.stringify({ enabled: false }),
     })
-    const toggleBody = await toggle.json() as { reason?: string }
-    assert.equal(toggle.status, 404)
-    assert.equal(toggleBody.reason, 'credential_not_found')
+    assert.notDeepEqual(await toggle.json(), { error: '接口不存在' })
+    const accounts = await fetch(`${harness.base}/api/accounts`, { headers: { cookie } })
+    assert.equal(accounts.status, 200)
+    assert.equal((await accounts.json() as { backend?: string }).backend, 'cpa')
   } finally {
     await stopHarness(harness)
   }

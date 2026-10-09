@@ -35,9 +35,9 @@ const MAX_ALARMS = 50
 const MAX_REASON_LENGTH = 200
 const MAX_BODY_BYTES = 64 * 1024
 
-/** 探测只在 CPA 网关下进行（渠道白名单与探测 Key 都是 CPA 的能力）；MODEL_AVAILABILITY_PROBE=false 整体关闭。 */
+/** 探测要 CPA 管理密钥（渠道白名单与探测 Key 都是 CPA 的能力）；MODEL_AVAILABILITY_PROBE=false 整体关闭。 */
 export const modelAvailabilityEnabled = () =>
-  config.modelAvailabilityProbe && config.gatewayEngine === 'cpa' && Boolean(config.cpaManagementKey)
+  config.modelAvailabilityProbe && Boolean(config.cpaManagementKey)
 
 /* ────────────────────────── 单次探测的判定 ────────────────────────── */
 

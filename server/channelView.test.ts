@@ -124,9 +124,6 @@ test('derives the upstream protocol for every channel flavor', () => {
   assert.equal(plain.protocol, 'openai')
   const [cpaRelay] = mergeChannelView([{ ...liveChannel, name: 'aigw', 'relay-mode': 'responses' }], [], [])
   assert.equal(cpaRelay.protocol, 'responses')
-  // Magpie registry 词汇：protocol 键直接落在渠道对象上。
-  const [registryRelay] = mergeChannelView([{ name: 'aigw2', protocol: 'responses', models: [] }], [], [])
-  assert.equal(registryRelay.protocol, 'responses')
   const [claude] = mergeChannelView([{ name: 'kimi-native', __providerEndpoint: 'claude-api-key', models: [] }], [], [])
   assert.equal(claude.protocol, 'claude')
 })

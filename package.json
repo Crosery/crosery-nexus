@@ -17,14 +17,6 @@
     "nanoid": "^3.3.18"
   },
   "scripts": {
-    "magpie:build": "node scripts/build-magpie-kernel.mjs --test",
-    "magpie:prepare": "node --import tsx scripts/magpie-console.mjs prepare",
-    "magpie:install": "node --import tsx scripts/magpie-console.mjs install",
-    "magpie:api:generate": "node scripts/magpie-upstream.mjs generate",
-    "magpie:api:verify": "node scripts/magpie-upstream.mjs verify",
-    "magpie:upstream:check": "node scripts/magpie-upstream.mjs check",
-    "magpie:upstream:install": "node scripts/magpie-upstream.mjs install-check",
-    "test:magpie": "node --test --test-timeout=30000 --import tsx server/magpie*.test.ts server/rtk*.test.ts server/modelSync.test.ts",
     "dev": "concurrently \"npm:dev:web\" \"npm:dev:edge\"",
     "dev:all": "concurrently \"npm:dev:web\" \"npm:dev:edge\" \"npm:dev:data\"",
     "dev:web": "vite --configLoader runner",

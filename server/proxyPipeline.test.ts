@@ -25,7 +25,6 @@ import { startSocksNode, writeRelayMihomo } from './testing/fakeMihomoRelay.js'
  */
 
 const fake = await new FakeCpa().start()
-process.env.GATEWAY_ENGINE = 'cpa'
 process.env.CPA_BASE_URL = fake.base
 process.env.CPA_MANAGEMENT_KEY = fake.key
 process.env.SESSION_SECRET ||= 'proxy-pipeline-secret'

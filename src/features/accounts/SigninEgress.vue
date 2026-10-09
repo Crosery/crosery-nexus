@@ -5,18 +5,17 @@ import type { EgressData, EgressService } from '../../types'
 import { egressOptions, signinVia } from './egressModel'
 
 /**
- * 登录出口 in a sign-in sheet. No backend can send one sign-in through an exit chosen for it (CPA signs in through
- * its global proxy, the Magpie kernel directly), so the sign-in's own route is stated, not offered. The account
+ * 登录出口 in a sign-in sheet. CPA cannot send one sign-in through an exit chosen for it (it signs in through its
+ * global proxy), so the sign-in's own route is stated, not offered. The account
  * that comes out of it can take an exit straight away: 账号出口 is picked here and written when the sign-in
  * completes — only where accounts can hold an exit of their own and the pool has one to give.
  */
-const props = withDefaults(defineProps<{ egress: EgressData | null; service: EgressService | null; agent?: string | null }>(), { agent: null })
+const props = defineProps<{ egress: EgressData | null; service: EgressService | null }>()
 const choice = defineModel<string>({ default: '' })
 
 const via = computed(() => signinVia(props.egress))
 const canPick = computed(() => Boolean(props.egress?.accountProxy.supported && props.egress.entries.some((entry) => entry.assignable)))
-// 继承 means CPA's global proxy, or (Magpie) the service's own proxy: the inherit label reads the service from the ref
-const options = computed(() => egressOptions(props.egress, props.egress?.backend === 'magpie' ? `magpie:${props.agent ?? ''}:` : 'cpa:', props.service))
+const options = computed(() => egressOptions(props.egress, 'cpa:', props.service))
 </script>
 
 <template>

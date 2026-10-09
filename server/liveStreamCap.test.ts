@@ -180,7 +180,6 @@ async function startHarness(stubPort: number, extraEnv: Record<string, string>):
       ...process.env,
       DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1',
       CPA_BASE_URL: `http://127.0.0.1:${stubPort}`, CPA_MANAGEMENT_KEY: 'test',
-      MAGPIE_CONTROL_PLANE: 'local', MAGPIE_PORT: String(stubPort),
       CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: 'sse-cap-password', SESSION_SECRET: 'sse-cap-secret',
       COOKIE_SECURE: 'false',
       ...extraEnv,

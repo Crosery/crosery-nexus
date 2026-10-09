@@ -12,8 +12,7 @@ RTK 省 token 全局开关。开关会改「控制台服务端所在机器」上
   on | off                   打开 / 关闭（需要确认；脚本里加 --yes）
   upgrade --dry-run          看本机 rtk 会升级到哪个版本：服务端下载并校验 sha256，不替换
   upgrade [--accept-breaking]  现在升级本机 rtk（先备份、原子替换、--version 自检、失败回滚；需确认）
-
-自动升级的开关与状态见 cradmin magpie auto status。
+  auto                       自动升级：开关与上次结果（只读）
 `
 
 export default {
@@ -25,6 +24,7 @@ export default {
   async run(ctx) {
     const [action = 'status', ...extra] = ctx.positionals
     if (action === 'upgrade') return upgrade(ctx, extra)
+    if (action === 'auto') return auto(ctx, extra)
     if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
     if (action === 'status') {
       const rtk = await getRtk(ctx)
@@ -99,10 +99,20 @@ async function upgrade(ctx, extra) {
     danger: '替换本机 rtk 可执行文件（先备份，--version 自检失败自动回滚）',
     items: [{ area: 'RTK', label: '升级本机 rtk', to: acceptBreaking ? '最新（接受破坏性变更）' : '最新', method: 'POST', path: '/api/autoupdate/run',
       body: { target: 'rtk', dryRun: false, confirm: true, ...(acceptBreaking ? { acceptBreaking: true } : {}) }, timeoutMs: UPGRADE_TIMEOUT_MS,
-      unknownHint: '用 cradmin magpie auto status 查看 rtk 的上次结果' }],
+      unknownHint: '用 cradmin rtk auto 查看 rtk 的上次结果' }],
   })
   if (result.dryRun) return void ctx.output(result)
   const payload = result.results[0].result?.result ?? {}
   ctx.output(payload, () => planLines(ui, payload))
   if (!['upgraded', 'up-to-date'].includes(payload.why)) throw new CliError(payload.why === 'breaking' ? '这次升级声明了破坏性变更；确认无碍后加 --accept-breaking' : `没有升级（${payload.why ?? '未知'}）`, 1)
+}
+
+/** `rtk auto`：/api/autoupdate 的 rtk 一项（定时任务记下的开关与上次结果）。 */
+async function auto(ctx, extra) {
+  if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+  const view = (await ctx.get('/api/autoupdate'))?.rtk ?? {}
+  ctx.output(view, () => {
+    ctx.ui.kv('开关', view.enabled ? '开' : '关')
+    ctx.ui.kv('状态', view.line ?? '-')
+  })
 }

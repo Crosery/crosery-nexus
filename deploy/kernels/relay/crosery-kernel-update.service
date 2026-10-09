@@ -1,7 +1,7 @@
 # 预发布与正式同一份。角色来自 /etc/crosery/autoupdate.env（AUTOUPDATE_ROLE=preview|production，不入库）；没有这个文件
 # 就按正式处理：只装带匹配预发布记录的二进制，且只在安静时段（scripts/kernel-applier.mjs）。
 [Unit]
-Description=Crosery gateway kernels: stage builder drops, CPA preview trial / production promotion, keep the Magpie standby current
+Description=Crosery gateway kernel: stage builder drops, CPA preview trial / production promotion
 After=network-online.target cli-proxy-api.service crosery-api-console.service
 Wants=network-online.target
 

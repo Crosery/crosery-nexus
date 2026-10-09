@@ -84,16 +84,3 @@ export class FakeCpa {
     await new Promise<void>(resolve => (this.server ? this.server.close(() => resolve()) : resolve()))
   }
 }
-
-/** A server that only counts hits (the sandbox bridge must never be contacted). */
-export async function countingServer(): Promise<{ base: string; hits: () => number; stop: () => Promise<void> }> {
-  let hits = 0
-  const server = createServer((_req, res) => { hits++; res.writeHead(500); res.end() })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  const address = server.address()
-  return {
-    base: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`,
-    hits: () => hits,
-    stop: () => new Promise<void>(resolve => server.close(() => resolve())),
-  }
-}

@@ -5,13 +5,14 @@ import fs from 'node:fs'
 import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
-import { FakeKernel, secretFindings } from './testing/fakeKernel.js'
+import { secretFindings } from './testing/secretFindings.js'
 
 /**
- * The real console process (server/index.ts) in both engine modes: what GET /api/monitor, /api/accounts and
- * /api/channels send to a browser must not carry a token, cookie, key or proxy password, and the retired
- * local OAuth simulator answers 410 only in magpie + local (CPA mode keeps its OAuth routes).
+ * The real console process (server/index.ts): what GET /api/monitor and /api/accounts send to a browser must not
+ * carry a token, cookie, key or proxy password; and a data dir and environment an older release left Magpie state
+ * in (the retired gateway kernel) start a console that serves CPA and ignores that state.
  */
 
 const REPO = new URL('../', import.meta.url).pathname
@@ -78,12 +79,11 @@ async function launch(env: Record<string, string>) {
   }
 }
 
-test('CPA mode: /api/monitor projects gateway records; OAuth start still goes to CPA; /api/accounts says cpa', { timeout: 120_000 }, async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cac-acc-cpa-'))
-  const cpaCalls: string[] = []
+async function fakeCpa() {
+  const calls: string[] = []
   const cpa = createServer((req, res) => {
     const url = new URL(req.url || '/', 'http://cpa')
-    cpaCalls.push(`${req.method} ${url.pathname}`)
+    calls.push(`${req.method} ${url.pathname}`)
     const json = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
     req.resume()
     if (url.pathname === '/v0/management/auth-files') return json(200, { files: [credential('codex-a.json', 'codex'), credential('claude-a.json', 'claude')] })
@@ -95,10 +95,13 @@ test('CPA mode: /api/monitor projects gateway records; OAuth start still goes to
   cpa.listen(0, '127.0.0.1')
   await once(cpa, 'listening')
   const address = cpa.address()
-  const app = await launch({
-    DATA_DIR: dataDir, GATEWAY_ENGINE: 'cpa', CPA_BASE_URL: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`,
-    CPA_MANAGEMENT_KEY: 'e2e-management-key',
-  })
+  return { calls, baseUrl: `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`, close: () => cpa.close() }
+}
+
+test('/api/monitor projects gateway records; OAuth start goes to CPA; /api/accounts says cpa', { timeout: 120_000 }, async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cac-acc-cpa-'))
+  const cpa = await fakeCpa()
+  const app = await launch({ DATA_DIR: dataDir, CPA_BASE_URL: cpa.baseUrl, CPA_MANAGEMENT_KEY: 'e2e-management-key' })
   try {
     const monitor = await app.send('GET', '/api/monitor')
     assert.equal(monitor.status, 200, app.log())
@@ -110,9 +113,9 @@ test('CPA mode: /api/monitor projects gateway records; OAuth start still goes to
     const accounts = await app.send('GET', '/api/accounts')
     assert.deepEqual([accounts.status, accounts.body.backend], [200, 'cpa'])
     const start = await app.send('POST', '/api/cpa/oauth/start', { provider: 'codex' })
-    assert.equal(start.status, 200, 'CPA mode keeps its OAuth start')
+    assert.equal(start.status, 200)
     assert.equal(start.body.state, 'cpa-state-1')
-    assert.ok(cpaCalls.includes('GET /v0/management/codex-auth-url'))
+    assert.ok(cpa.calls.includes('GET /v0/management/codex-auth-url'))
   } finally {
     await app.stop()
     cpa.close()
@@ -120,39 +123,74 @@ test('CPA mode: /api/monitor projects gateway records; OAuth start still goes to
   }
 })
 
-test('magpie + local: monitor, channels and accounts carry no credential; the simulator is 410; oauthConnected follows Magpie', { timeout: 120_000 }, async () => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cac-acc-mag-'))
-  fs.mkdirSync(path.join(dataDir, 'auth-files'), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(path.join(dataDir, 'auth-files', 'codex-a.json'), JSON.stringify(credential('codex-a.json', 'codex')), { mode: 0o600 })
-  const kernel = await new FakeKernel().start()
-  kernel.logins = [{ agent: 'codex', user: 'kernel.user@example.test', plan: 'Plus', active: true }]
+test('Magpie leftovers in the environment, the data dir and the database: the console starts, serves CPA and ignores them', { timeout: 120_000 }, async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cac-acc-leftover-'))
+  const put = (file: string, value: unknown) => {
+    fs.mkdirSync(path.dirname(path.join(dataDir, file)), { recursive: true })
+    fs.writeFileSync(path.join(dataDir, file), typeof value === 'string' ? value : JSON.stringify(value))
+  }
+  put('kernels/magpie.json', { kernel: 'magpie', role: 'standby', current: { revision: 'abc1234' } })
+  put('kernel-autoupdate.json', { version: 1, cpa: { enabled: true }, magpie: { enabled: true } })
+  put('kernel-requests/rollback-magpie.json', { confirm: true, at: '2026-10-01T08:00:00Z', to: 'abc1234' })
+  put('magpie-upstream/autoupdate.json', { version: 1, magpie: { enabled: true }, rtk: { enabled: true } })
+  put('magpie-upstream/status.json', { revision: 'abc1234' })
+  // HOME is the data dir here: the runtime dir older releases kept under ~/.agents/crosery
+  put('.agents/crosery/magpie-upstream/autoupdate.json', { version: 1, magpie: { enabled: false }, rtk: { enabled: false } })
+  put('magpie-channels.json', [{ name: 'old', 'base-url': 'https://upstream.example/v1', models: [] }])
+  put('auth-files/codex-a.json', credential('codex-a.json', 'codex'))
+  put('auth-files-meta.json', { 'codex-a.json': { disabled: false } })
+  put('magpie-kernel.sock', '')
+  put('proxy/pool.json', {
+    version: 1, entries: [], subscriptions: [],
+    links: { 'magpie:codex:kernel.user@example.test': { entryId: 'px_aaaaaaaaaa', provider: 'codex' } },
+    observed: {
+      'magpie:codex:kernel.user@example.test': { mode: 'url', masked: 'http://***@proxy.example:7890', at: '2026-10-01T08:00:00Z' },
+      'cpa:codex-a.json': { mode: 'inherit', masked: null, at: '2026-10-01T08:00:00Z' },
+    },
+  })
+  const seeded = new DatabaseSync(path.join(dataDir, 'console.db'))
+  seeded.exec("CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, target TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
+  seeded.prepare('INSERT INTO audit_log (action, target, details, created_at) VALUES (?, ?, ?, ?)').run('magpie_update', 'apply', 'exit=0', '2026-10-01T08:00:00Z')
+  seeded.close()
+  const cpa = await fakeCpa()
   const app = await launch({
-    DATA_DIR: dataDir, GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local', MAGPIE_PORT: String(await freePort()),
-    MAGPIE_KERNEL_SOCKET: kernel.socket, CPA_BASE_URL: 'http://127.0.0.1:9',
+    DATA_DIR: dataDir, CPA_BASE_URL: cpa.baseUrl, CPA_MANAGEMENT_KEY: 'e2e-management-key',
+    GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local', MAGPIE_PORT: '8790', MAGPIE_KERNEL_SOCKET: path.join(dataDir, 'magpie-kernel.sock'),
+    MAGPIE_CHANNELS_FILE: path.join(dataDir, 'magpie-channels.json'), MAGPIE_TIMEOUT_MS: 'not-a-number',
   })
   try {
-    for (const route of ['/api/monitor', '/api/channels', '/api/accounts', '/api/accounts/catalog']) {
-      const response = await app.send('GET', route)
-      assert.equal(response.status, 200, `${route}: ${response.text.slice(0, 200)}`)
-      assert.deepEqual(secretFindings(response.body, SECRETS), [], route)
-    }
+    const monitor = await app.send('GET', '/api/monitor')
+    assert.equal(monitor.status, 200, app.log())
+    assert.equal(monitor.body.accounts.length, 2, 'accounts come from CPA, not the local auth-files dir')
+    assert.deepEqual(secretFindings(monitor.body, SECRETS), [])
     const accounts = await app.send('GET', '/api/accounts')
-    assert.equal(accounts.body.backend, 'magpie')
-    assert.equal(accounts.body.providers[0].accounts[0].userMasked, 'ke••••••r@•••')
-
+    assert.deepEqual([accounts.status, accounts.body.backend], [200, 'cpa'])
     const start = await app.send('POST', '/api/cpa/oauth/start', { provider: 'codex' })
-    assert.deepEqual([start.status, start.body.code], [410, 'use_accounts_signin'])
-    const callback = await app.send('POST', '/api/cpa/oauth/callback', { provider: 'codex', redirectUrl: 'http://localhost:1455/auth/callback?code=x&state=y', state: 'y' })
-    assert.equal(callback.status, 410)
-    assert.equal((await app.send('GET', '/api/cpa/oauth/status?state=y')).status, 404)
-    assert.deepEqual(fs.readdirSync(path.join(dataDir, 'auth-files')), ['codex-a.json'], 'no fabricated credential was written')
+    assert.deepEqual([start.status, start.body.state], [200, 'cpa-state-1'], 'GATEWAY_ENGINE=magpie no longer retires the CPA sign-in')
 
     const version = await app.send('GET', '/api/version')
-    assert.equal(version.status, 200)
-    assert.equal(version.body.cpa?.upstream?.oauthConnected, true, 'a Magpie login that is on counts as connected')
+    assert.equal(version.status, 200, version.text)
+    assert.equal('engine' in version.body.cpa, false)
+    const auto = await app.send('GET', '/api/autoupdate')
+    assert.deepEqual([auto.status, Object.keys(auto.body)], [200, ['rtk']])
+    assert.equal(auto.body.rtk.enabled, true, 'the switch lives in the rtk state dir, not the retired one')
+    const kernels = await app.send('GET', '/api/kernels')
+    assert.equal(kernels.status, 200)
+    assert.ok(kernels.body.kernels.every((kernel: { id: string }) => kernel.id === 'cpa'))
+    const egress = await app.send('GET', '/api/proxies/egress')
+    assert.equal(egress.status, 200, egress.text)
+    assert.deepEqual(Object.keys(egress.body.accounts), ['cpa:codex-a.json'])
+    for (const route of ['/api/gateway/settings', '/api/magpie/update-status']) assert.equal((await app.send('GET', route)).status, 404, route)
+    const audit = await app.send('GET', '/api/audit')
+    assert.ok(audit.body.items.some((item: { action: string }) => item.action === 'magpie_update'), 'history stays readable')
+
+    for (const file of ['kernels/magpie.json', 'magpie-upstream/autoupdate.json', 'magpie-channels.json', 'auth-files/codex-a.json']) {
+      assert.ok(fs.existsSync(path.join(dataDir, file)), `${file} is left alone`)
+    }
+    assert.match(fs.readFileSync(path.join(dataDir, 'proxy/pool.json'), 'utf8'), /magpie:codex:/, 'reading the pool does not rewrite it')
   } finally {
     await app.stop()
-    await kernel.stop()
+    cpa.close()
     fs.rmSync(dataDir, { recursive: true, force: true })
   }
 })

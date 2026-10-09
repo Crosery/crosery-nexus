@@ -38,14 +38,13 @@ process.env.RTK_HOME = home
 process.env.RTK_BACKUP_DIR = backups
 const env = { ...process.env, RTK_HOME: home, RTK_BACKUP_DIR: backups }
 const service = await import(path.join(ROOT, 'server/rtkService.ts'))
-const targets = { kernel: { engine: 'cpa' }, relay: { baseUrl: '', key: '' } }
 const hookFile = path.join(home, '.codex/hooks.json')
 fs.mkdirSync(path.dirname(hookFile), { recursive: true })
 fs.writeFileSync(hookFile, '{"hooks":{"PreToolUse":[]}}\n')
 const PREOP = '{"hooks":{"PreToolUse":[]}}'
 const TAKER = `${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'TAKER', hooks: [{ type: 'command', command: 'taker' }] }] } })}\n`
 
-const seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: path.join(base, 'no-rtk'), ...targets })
+const seeded = await service.setRTKAgentHook('codex', true, { plane: 'local', home, bin: path.join(base, 'no-rtk') })
 const lockPath = service.rtkLockPath(home, env)
 const thief = JSON.stringify({ token: 'THIEF-TOKEN', pid: process.pid, at: new Date().toISOString(), purpose: 'taker', home })
 

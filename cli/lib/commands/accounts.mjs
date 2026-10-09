@@ -191,7 +191,7 @@ export default {
         if (!kind) throw new UsageError(`只有 codex / claude 账号支持重置额度（${credential.name} 是 ${credential.type}）`)
         const monitor = await ctx.get('/api/monitor')
         const authIndex = monitorFor(monitor, credential.name)?.auth_index
-        if (authIndex === undefined || authIndex === null || authIndex === '') throw new CliError('读不到这个账号的 auth_index（本机控制面不支持重置额度）', 1)
+        if (authIndex === undefined || authIndex === null || authIndex === '') throw new CliError('读不到这个账号的 auth_index（网关监控里没有这个账号）', 1)
         const result = await runPlan(ctx, {
           level: 'D', title: '重置账号额度', danger: '会消耗一次上游重置额度，并访问外部服务',
           items: [{ area: '账号', label: credential.label || credential.name, from: '-', to: '重置额度', method: 'POST', path: `/api/accounts/${encodeURIComponent(authIndex)}/reset-${kind}-quota`, target: `账号 ${credential.name}` }],

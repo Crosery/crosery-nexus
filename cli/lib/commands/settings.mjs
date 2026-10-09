@@ -3,7 +3,7 @@ import { CliError } from '../args.mjs'
 import { getBootstrap, getChannels, getRtk, getSync, getVersion } from '../ops.mjs'
 import { redactUrl } from '../resolve.mjs'
 
-export const DEPLOY_ONLY = ['CONSOLE_USERNAME', 'CONSOLE_PASSWORD(_FILE)', 'SESSION_SECRET(_FILE)', 'USAGE_RETENTION_DAYS', 'PROXY_PRESETS', 'PUBLIC_GATEWAY_BASE_URL', 'SYNC_INTERVAL_MS', 'USAGE_COLLECT_INTERVAL_MS', 'GATEWAY_ENGINE', 'MAGPIE_CONTROL_PLANE', 'HOST', 'PORT']
+export const DEPLOY_ONLY = ['CONSOLE_USERNAME', 'CONSOLE_PASSWORD(_FILE)', 'SESSION_SECRET(_FILE)', 'USAGE_RETENTION_DAYS', 'PROXY_PRESETS', 'PUBLIC_GATEWAY_BASE_URL', 'SYNC_INTERVAL_MS', 'USAGE_COLLECT_INTERVAL_MS', 'HOST', 'PORT']
 
 const HELP = `cradmin settings [--json]
 
@@ -35,7 +35,7 @@ export async function collectSettings(ctx) {
     proxyPresets: channels.error ? null : (channels.proxyPresets || []).map(preset => ({ ...preset, label: redactUrl(preset.label), url: redactUrl(preset.url) })),
     syncPolicy: sync.error ? null : sync.policy ?? null,
     rtk: rtk.error ? null : { on: rtk.on ?? null, writable: Boolean(rtk.writable), reason: rtk.reason || null },
-    versions: version.error ? null : { console: version.console || null, gateway: { engine: version.cpa?.engine ?? null, version: version.cpa?.version ?? null, commit: version.cpa?.commit ?? null } },
+    versions: version.error ? null : { console: version.console || null, gateway: { version: version.cpa?.version ?? null, commit: version.cpa?.commit ?? null } },
     errors: Object.fromEntries(Object.entries({ bootstrap, connect, channels, sync, rtk, version }).filter(([, value]) => value?.error).map(([key, value]) => [key, value.error])),
   }
 }
@@ -59,7 +59,7 @@ export default {
       ui.kv('同步策略', data.syncPolicy ? `上游并发 ${data.syncPolicy.globalUpstreamConcurrency ?? '-'} · 单主机间隔 ${Math.round((data.syncPolicy.minIntervalPerHostMs ?? 0) / 1000)} 秒` : '-')
       ui.kv('RTK', data.rtk ? `${data.rtk.on === null ? '未知' : data.rtk.on ? 'on' : 'off'} · ${data.rtk.writable ? '可写' : `不可写（${data.rtk.reason || '-'}）`}` : '-')
       ui.kv('Key 模型', data.gatewayModelAccess === 'unavailable' ? '网关不执行按 Key 模型白名单' : data.gatewayModelAccess ?? '-')
-      if (data.versions) ui.kv('版本', `控制台 ${data.versions.console?.version ?? '-'} · 网关 ${data.versions.gateway.engine ?? '-'} ${data.versions.gateway.version ?? ''}`.trim())
+      if (data.versions) ui.kv('版本', `控制台 ${data.versions.console?.version ?? '-'} · 网关 ${data.versions.gateway.version ?? '-'}`)
       for (const [key, message] of Object.entries(data.errors)) ui.warn(`${key} 读取失败：${message}`)
       ui.section('只能改部署配置', '改环境变量后重启控制台')
       ui.note(DEPLOY_ONLY.join('、'))

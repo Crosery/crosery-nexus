@@ -93,34 +93,15 @@ if (dataPlaneDashboardReadMode === 'snapshot' && !dataPlaneEnabled) {
 // The relay process (server/rtkRelayMain.ts) applies the same rules; the console fails on the same bad env.
 const { port: rtkRelayPort, target: rtkRelayTarget } = parseRelayEnv(process.env)
 
-const gatewayEngine = choiceSetting('GATEWAY_ENGINE', process.env.GATEWAY_ENGINE, 'cpa', ['cpa', 'magpie'] as const)
-
 export const config = {
-  gatewayEngine,
-  /**
-   * Model discovery writes newly found models into the channel table; under CPA that table is live routing.
-   * Default: on its timer with the Magpie engine, on demand (sync center) with CPA.
-   */
-  modelDiscoveryScheduled: booleanSetting('MODEL_DISCOVERY_SCHEDULE', process.env.MODEL_DISCOVERY_SCHEDULE, gatewayEngine === 'magpie'),
+  /** Model discovery writes newly found models into CPA's channel table, which is live routing: on demand (sync center) unless set. */
+  modelDiscoveryScheduled: booleanSetting('MODEL_DISCOVERY_SCHEDULE', process.env.MODEL_DISCOVERY_SCHEDULE, false),
   /** Every 30 min, one minimal chat request per chat model per service through CPA (server/modelAvailability.ts); false = off and no filtering. */
   modelAvailabilityProbe: booleanSetting('MODEL_AVAILABILITY_PROBE', process.env.MODEL_AVAILABILITY_PROBE, true),
-  magpieControlPlane: choiceSetting('MAGPIE_CONTROL_PLANE', process.env.MAGPIE_CONTROL_PLANE, 'local', ['local', 'cpa'] as const),
-  magpiePort: positiveInteger('MAGPIE_PORT', process.env.MAGPIE_PORT, 8790, { min: 1024, max: 65535 }),
-  magpieKernelSocket: process.env.MAGPIE_KERNEL_SOCKET || path.join(dataDir, 'magpie-kernel.sock'),
-  /** The launcher runs the kernel under a sandbox HOME, so its RTK view lacks this host's agents: opt-in only. */
-  rtkKernelPlane: booleanSetting('RTK_KERNEL_PLANE', process.env.RTK_KERNEL_PLANE, false),
   /** Port of the separate RTK relay process on this host (0 = none expected). See docs/ops/rtk-relay.md. */
   rtkRelayPort,
   /** Loopback HTTP origin the relay forwards to (the context guard). */
   rtkRelayTarget,
-  magpieChannelsFile: process.env.MAGPIE_CHANNELS_FILE || path.join(dataDir, 'magpie-channels.json'),
-  magpieTimeoutMs: positiveInteger('MAGPIE_TIMEOUT_MS', process.env.MAGPIE_TIMEOUT_MS, 600_000, { min: 1000, max: 3_600_000 }),
-  magpieSourceCpaBaseUrl: internalHttpBaseUrl('MAGPIE_SOURCE_CPA_BASE_URL', process.env.MAGPIE_SOURCE_CPA_BASE_URL, false),
-  magpieSourceCpaKey: fileBackedSecret('MAGPIE_SOURCE_CPA_KEY', process.env.MAGPIE_SOURCE_CPA_KEY, process.env.MAGPIE_SOURCE_CPA_KEY_FILE) || '',
-  /** Sign-ins that run a vendor CLI or installer on this host (cursor, grok, devin): off unless set, and the kernel must allow them too. */
-  magpieSigninHostExec: booleanSetting('MAGPIE_SIGNIN_HOST_EXEC', process.env.MAGPIE_SIGNIN_HOST_EXEC, false),
-  /** Magpie account allowance reads: one per agent per this interval (never under 5 min). */
-  magpieAccountQuotaTtlMs: positiveInteger('MAGPIE_ACCOUNT_QUOTA_TTL_MS', process.env.MAGPIE_ACCOUNT_QUOTA_TTL_MS, 5 * 60_000, { min: 5 * 60_000, max: 24 * 60 * 60_000 }),
   nativeResponsesPolicySource: choiceSetting('NATIVE_RESPONSES_POLICY_SOURCE', process.env.NATIVE_RESPONSES_POLICY_SOURCE, 'cpa', ['cpa', 'console'] as const),
   nativeResponsesEnabled: booleanSetting('NATIVE_RESPONSES_ENABLED', process.env.NATIVE_RESPONSES_ENABLED, false),
   nativeResponsesPort: positiveInteger('NATIVE_RESPONSES_PORT', process.env.NATIVE_RESPONSES_PORT, 8788, { min: 1, max: 65535 }),

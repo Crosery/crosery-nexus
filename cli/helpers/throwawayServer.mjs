@@ -1,9 +1,10 @@
-// 一次性控制台实例：子进程 + 临时 DATA_DIR + 空闲端口，只供测试使用（server/index.ts 不能 import）。
+// 一次性控制台实例：子进程 + 临时 DATA_DIR + 空闲端口 + 假 CPA，只供测试使用（server/index.ts 不能 import）。
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { startFakeCpa } from './fakeCpa.mjs'
 
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..')
 
@@ -18,15 +19,15 @@ export function freePort() {
   })
 }
 
-const STRIPPED = /^(CONSOLE_|SESSION_SECRET|DATA_PLANE_|NGINX_UNLIMITED_|PUBLIC_GATEWAY_BASE_URL$|MAGPIE_|CPA_|RTK_|CROSERY_|CRADMIN_|LOGIN_|PROXY_PRESETS$|GATEWAY_ENGINE$|DATA_DIR$|PORT$|HOST$)/
+const STRIPPED = /^(CONSOLE_|SESSION_SECRET|DATA_PLANE_|NGINX_UNLIMITED_|PUBLIC_GATEWAY_BASE_URL$|CPA_|RTK_|CROSERY_|CRADMIN_|LOGIN_|PROXY_PRESETS$|DATA_DIR$|PORT$|HOST$)/
 
 export async function startThrowawayServer({ password = 'cradmin-test-pass-1', env = {}, prepare } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cradmin-e2e-'))
   const dataDir = path.join(tmp, 'data')
   fs.mkdirSync(dataDir, { recursive: true })
-  if (prepare) await prepare({ tmp, dataDir })
+  const cpa = await startFakeCpa()
+  if (prepare) await prepare({ tmp, dataDir, cpa })
   const port = await freePort()
-  const magpiePort = await freePort()
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !STRIPPED.test(name)))
   const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
     cwd: REPO,
@@ -35,11 +36,9 @@ export async function startThrowawayServer({ password = 'cradmin-test-pass-1', e
       ...inherited,
       DATA_DIR: dataDir, PORT: String(port), HOST: '127.0.0.1',
       CONSOLE_USERNAME: 'admin', CONSOLE_PASSWORD: password, SESSION_SECRET: 'cradmin-test-secret', COOKIE_SECURE: 'false',
-      GATEWAY_ENGINE: 'magpie', MAGPIE_CONTROL_PLANE: 'local', MAGPIE_PORT: String(magpiePort),
-      CPA_BASE_URL: 'http://127.0.0.1:9', CPA_MANAGEMENT_KEY: 'unused',
+      CPA_BASE_URL: cpa.base, CPA_MANAGEMENT_KEY: cpa.key,
       RTK_HOME: path.join(tmp, 'rtkhome'), RTK_WRITE_MODE: 'off',
       CROSERY_SHARED_CATALOG: path.join(tmp, 'catalog.json'),
-      MAGPIE_UPDATE_SCRIPT: path.join(tmp, 'none.mjs'), MAGPIE_UPDATE_ROOT: path.join(tmp, 'none'), MAGPIE_UPSTREAM_RUNTIME: path.join(tmp, 'up'),
       ...env,
     },
   })
@@ -49,13 +48,14 @@ export async function startThrowawayServer({ password = 'cradmin-test-pass-1', e
   const base = `http://127.0.0.1:${port}`
   const deadline = Date.now() + 25_000
   for (;;) {
-    if (child.exitCode !== null) throw new Error(`一次性实例提前退出：${child.exitCode}\n${logs.slice(-2000)}`)
+    if (child.exitCode !== null) { await cpa.stop(); throw new Error(`一次性实例提前退出：${child.exitCode}\n${logs.slice(-2000)}`) }
     try {
       const response = await fetch(`${base}/api/session`)
       if (response.status < 500) break
     } catch { /* 还没起来 */ }
     if (Date.now() > deadline) {
       child.kill('SIGKILL')
+      await cpa.stop()
       throw new Error(`一次性实例 25 秒内没起来\n${logs.slice(-2000)}`)
     }
     await new Promise(resolve => setTimeout(resolve, 150))
@@ -66,9 +66,10 @@ export async function startThrowawayServer({ password = 'cradmin-test-pass-1', e
       await new Promise(resolve => setTimeout(resolve, 300))
       if (child.exitCode === null) child.kill('SIGKILL')
     }
+    await cpa.stop()
     fs.rmSync(tmp, { recursive: true, force: true })
   }
-  return { base, port, password, tmp, dataDir, child, stop, logs: () => logs }
+  return { base, port, password, tmp, dataDir, cpa, child, stop, logs: () => logs }
 }
 
 /** 测试里直接打服务端（不经 CLI）：登录拿 cookie，再发请求。 */

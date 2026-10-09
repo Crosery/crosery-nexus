@@ -28,7 +28,6 @@ import { maskIdentity } from './accountProjection.js'
 import { upstreamLimiter } from './syncRegistry.js'
 import { accountValue, egressView, presetIndex } from './proxyEgress.js'
 import { parseAccountRef } from './proxyPoolAssign.js'
-import { readAccountProxySection } from './magpieAccountProxies.js'
 
 export type ProxyServiceDeps = {
   store?: ProxyPoolStore
@@ -58,7 +57,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
     }
   }
 
-  const context = (): AssignContext => ({ backend: control.backend(), cpaSameHost: control.cpaSameHost(), kernel: kernelView() })
+  const context = (): AssignContext => ({ cpaSameHost: control.cpaSameHost(), kernel: kernelView() })
   const assignDeps = () => ({ store: store(), control, context: context(), audit, now: () => new Date(now()).toISOString() })
 
   /** Validate changed mihomo entries (`mihomo -t` via the kernel module), then ask for a reload. `removed` forces the reload. */
@@ -95,11 +94,11 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
     const used = usageByEntry(pool)
     const ctx = context()
     const entries = pool.entries.map(entry => entryView(entry, used.get(entry.id), health.entries[entry.id], ctx))
-    const accountsLinked = Object.keys(pool.links).filter(ref => /^cpa:(?!global$|channel:|key:)|^magpie:[^:]+:/.test(ref)).length
+    const accountsLinked = Object.keys(pool.links).filter(ref => /^cpa:(?!global$|channel:|key:)/.test(ref)).length
     const global = pool.observed['cpa:global']
     const defaultEntry = pool.defaultEntryId ? pool.entries.find(entry => entry.id === pool.defaultEntryId) : undefined
     return {
-      backend: ctx.backend,
+      backend: 'cpa' as const,
       cpaSameHost: ctx.cpaSameHost,
       kernel: projectKernelView(ctx.kernel, pool),
       ports: managedRange(),
@@ -123,9 +122,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
         pending: pool.migration.pending ?? null,
         ignored: pool.migration.ignored.length,
       },
-      default: ctx.backend === 'cpa'
-        ? { mode: global?.mode ?? 'unknown', entryId: defaultEntry?.id ?? null, masked: global?.masked ?? null, at: global?.at ?? null }
-        : { mode: 'unsupported', entryId: null, masked: null, at: null },
+      default: { mode: global?.mode ?? 'unknown', entryId: defaultEntry?.id ?? null, masked: global?.masked ?? null, at: global?.at ?? null },
       signinNote: SIGNIN_NOTE,
     }
   }
@@ -156,7 +153,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
     const credentials = await control.listCredentials()
     for (const credential of credentials) {
       const ref = `cpa:${credential.name}`
-      // the local shim's list carries proxy_url (live); CPA's does not, so its value is the last observed one
+      // a list that carries proxy_url is live; CPA's does not, so its value is the last observed one
       const live = credential.proxyUrl !== undefined
       const mode = live ? proxyMode(credential.proxyUrl as string) : pool.observed[ref]?.mode ?? 'unknown'
       const entryId = live ? (mode === 'url' ? matchEntryForUrl(pool, credential.proxyUrl as string)?.id ?? null : null) : pool.links[ref]?.entryId ?? null
@@ -170,18 +167,9 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
         restorable: pool.links[ref]?.prev !== undefined,
       })
     }
-    if (ctx.backend === 'cpa') {
-      const global = pool.observed['cpa:global']
-      rows.push({ ref: 'cpa:global', kind: 'global', provider: 'global', name: 'CPA 全局', label: 'CPA 全局', disabled: false, mode: global?.mode ?? 'unknown', masked: global?.masked ?? null, entryId: pool.links['cpa:global']?.entryId ?? null, entryName: names.get(pool.links['cpa:global']?.entryId ?? '') ?? null, observedAt: global?.at ?? null, assignable: true, restorable: false })
-    }
-    const magpieWritable = ctx.backend === 'magpie' && Boolean(control.magpieAccounts && (await control.magpieAccounts.support()).supported)
-    for (const item of control.readMagpieAccountProxies()) {
-      const mode = proxyMode(item.url)
-      const entryId = mode === 'url' ? matchEntryForUrl(pool, item.url)?.id ?? null : null
-      const account = item.ref.split(':').length > 2
-      rows.push({ ref: item.ref, kind: 'magpie', provider: item.provider ?? 'magpie', name: item.label, label: item.label, disabled: false, mode, masked: mode === 'url' ? maskAccountProxy(item.url) : null, entryId, entryName: entryId ? names.get(entryId) ?? null : null, observedAt: null, assignable: account && magpieWritable, restorable: account && magpieWritable && pool.links[item.ref]?.prev !== undefined })
-    }
-    return { backend: ctx.backend, cpaSameHost: ctx.cpaSameHost, signinNote: SIGNIN_NOTE, accounts: rows }
+    const global = pool.observed['cpa:global']
+    rows.push({ ref: 'cpa:global', kind: 'global', provider: 'global', name: 'CPA 全局', label: 'CPA 全局', disabled: false, mode: global?.mode ?? 'unknown', masked: global?.masked ?? null, entryId: pool.links['cpa:global']?.entryId ?? null, entryName: names.get(pool.links['cpa:global']?.entryId ?? '') ?? null, observedAt: global?.at ?? null, assignable: true, restorable: false })
+    return { backend: 'cpa' as const, cpaSameHost: ctx.cpaSameHost, signinNote: SIGNIN_NOTE, accounts: rows }
   }
 
   async function parse(body: Record<string, unknown>) {
@@ -212,7 +200,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
       skipped: result.skipped,
       ids: result.added,
       subscriptions: result.subscriptions,
-      assignPlan: result.assignPlan.map(item => ({ account: item.account.startsWith('cpa:') ? `cpa:${maskIdentity(item.account.slice(4))}` : 'magpie', accountRef: item.account, entryId: item.entryId, status: item.status })),
+      assignPlan: result.assignPlan.map(item => ({ account: `cpa:${maskIdentity(item.account.slice(4))}`, accountRef: item.account, entryId: item.entryId, status: item.status })),
       entries: view().entries.filter(entry => result.added.includes(entry.id) || result.updated.includes(entry.id)),
     }
   }
@@ -236,7 +224,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
       if (entry.kind === 'mihomo') throw new ProxyError(409, 'proxy_in_use', '加密节点删除后账号会断开，请先把账号换到别的出口', { accounts: writable.length })
       return { moved: 0 }
     }
-    if (readOnly.length) throw new ProxyError(409, 'proxy_in_use', '还有渠道或 Magpie 服务级设置引用这个出口，只能在网关里修改', { readOnly: readOnly.length })
+    if (readOnly.length) throw new ProxyError(409, 'proxy_in_use', '还有渠道设置引用这个出口，只能在网关里修改', { readOnly: readOnly.length })
     const target = resolveTarget(pool, reassign)
     if (target.mode === 'entry' && target.entry.id === entry.id) throw new ProxyError(400, 'invalid_target')
     if (confirm !== true && confirm !== '1' && confirm !== 'true') throw new ProxyError(409, 'confirm_required', `将更新 ${writable.length} 个账号`, { accounts: writable.length })
@@ -358,35 +346,27 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
   /** The /accounts page's read model: local state only (no CPA, vendor or exit traffic). */
   async function egress() {
     const { pool } = store().snapshot()
-    const ctx = context()
-    const support = ctx.backend === 'cpa'
-      ? { supported: true, reason: null }
-      : control.magpieAccounts ? await control.magpieAccounts.support() : { supported: false, reason: '只有本机 Magpie 内核的账号可以单独设置出口' }
     return egressView({
       pool,
       health: store().readHealth().entries,
       used: usageByEntry(pool),
-      context: ctx,
+      context: context(),
       presets: control.presets(),
-      magpie: ctx.backend === 'magpie' ? readAccountProxySection() : null,
-      support,
     })
   }
 
   /**
-   * One account's exit, read from its owner (CPA: the management API's copy of the credential, reduced to proxy_url
-   * server-side; Magpie: the registry) and noted in the pool's index. Never returns the URL itself.
+   * One account's exit, read from its owner (the CPA management API's copy of the credential, reduced to proxy_url
+   * server-side) and noted in the pool's index. Never returns the URL itself.
    */
   async function egressAccount(query: Record<string, unknown>) {
     const ref = parseAccountRef(query.ref)
-    if (ref.kind === 'readonly' || (ref.kind === 'magpie' && !ref.agent)) throw new ProxyError(409, 'account_read_only')
+    if (ref.kind === 'readonly') throw new ProxyError(409, 'account_read_only')
     const provider = typeof query.provider === 'string' && /^[a-z0-9][a-z0-9-]{0,31}$/.test(query.provider) ? query.provider : undefined
     const cached = accountReads.get(ref.ref)
     let read = cached && now() - cached.at < EGRESS_READ_TTL_MS ? cached.value : null
     if (!read) {
-      read = ref.kind === 'credential'
-        ? control.readCredentialProxy(ref.name)
-        : ref.kind === 'global' ? control.readGlobalProxy() : Promise.resolve(control.magpieAccounts?.read(ref.agent as string, ref.user as string) ?? '')
+      read = ref.kind === 'credential' ? control.readCredentialProxy(ref.name) : control.readGlobalProxy()
       const entry = { at: now(), value: read }
       accountReads.set(ref.ref, entry)
       read.catch(() => { if (accountReads.get(ref.ref) === entry) accountReads.delete(ref.ref) })
@@ -399,7 +379,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
     const changed = !seen || seen.mode !== value.mode || (seen.masked ?? null) !== value.masked || (pool.links[ref.ref]?.entryId ?? null) !== value.entryId
     if (!readOnly && (changed || (provider && !seen?.provider))) {
       try {
-        store().update((next) => { observeAccount(next, ref.ref, raw, next.observed[ref.ref]?.provider ?? provider ?? (ref.kind === 'magpie' ? ref.agent : undefined), 'scan', at) })
+        store().update((next) => { observeAccount(next, ref.ref, raw, next.observed[ref.ref]?.provider ?? provider, 'scan', at) })
       } catch { /* the index is rebuildable; a failed note never fails the read */ }
     }
     const entryName = value.entryId ? pool.entries.find(entry => entry.id === value.entryId)?.name ?? null : null
@@ -407,7 +387,6 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
   }
 
   async function setDefault(body: Record<string, unknown>) {
-    if (control.backend() !== 'cpa') throw new ProxyError(501, 'accounts_proxy_unavailable', 'Magpie 模式的默认出口还没有接入')
     const inheriting = Object.entries(store().read().observed).filter(([ref, item]) => /^cpa:(?!global$|channel:|key:)/.test(ref) && item.mode === 'inherit').length
     if (body.confirm !== true) throw new ProxyError(409, 'confirm_required', `${inheriting} 个继承全局的账号会改走这个出口`, { accounts: inheriting })
     const result = await assignAccounts(assignDeps(), body.target, ['cpa:global'])
@@ -573,7 +552,7 @@ export function proxyService(deps?: ProxyServiceDeps): ProxyService {
 /** `{error, code}` + extras (counts, retryAfterSec); unknown errors never echo their message. */
 export function proxyErrorResponse(error: unknown): { status: number; body: Record<string, unknown> } {
   if (error instanceof ProxyError) return { status: error.status, body: { error: error.message, code: error.code, ...error.extra } }
-  // a CPA / local shim refusal (CPARequestError, MagpieManagementError…) or an unreachable control plane
+  // a CPA refusal (CPARequestError) or an unreachable control plane
   const status = Number((error as { status?: unknown })?.status)
   if ((Number.isInteger(status) && status >= 400) || (error instanceof TypeError && /fetch failed/i.test(error.message)) || (error as { name?: string })?.name === 'TimeoutError') {
     return { status: 502, body: { error: '控制面暂时不可用', code: 'control_plane_unavailable' } }

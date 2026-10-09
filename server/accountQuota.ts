@@ -35,8 +35,6 @@ export type AccountQuota = {
   } | null
   windows: QuotaWindow[]
   error: string | null
-  /** 当前控制面根本读不了额度（magpie+local 没有 /api-call）：页面应整体提示，而不是逐个账号报错。 */
-  unsupported?: true
 }
 
 /** `default_claude_max_20x` → `Max 20×`，让金标签直接可读 */
@@ -275,9 +273,6 @@ export type ResetCreditsInput = {
 
 export function normalizeAccountQuota(type: string, quota: unknown, resetCredits?: ResetCreditsInput | null): AccountQuota {
   const source = (quota || {}) as Record<string, any>
-  if (source.unsupported === true) {
-    return { plan: '', tier: '', resetCredits: null, windows: [], error: typeof source.error === 'string' ? source.error : '当前控制面不支持读取额度', unsupported: true }
-  }
   if (type === 'claude') return normalizeClaude(source)
   if (type === 'antigravity') return normalizeAntigravity(source)
   const error = typeof source.error === 'string' ? source.error : null

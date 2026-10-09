@@ -553,28 +553,8 @@ function syncItems(jobs: SyncJob[], now: number): { items: AttentionResult['item
 }
 
 function kernelItems(versions: VersionsData): AttentionResult['items'] {
-  const cpa = versions.cpa
-  if (!cpa) return []
-  const engine = cpa.engine === 'magpie' ? 'magpie' : 'cpa'
-  if (cpa.version === 'offline') {
-    return [{ id: 'kern:offline', domain: 'kern', severity: 'bad', kind: 'KERN', subject: `${engine} 内核`, reason: '网关内核离线 · 请求无法转发', action: { label: '查看', to: '/settings#magpie' } }]
-  }
-  const up = cpa.upstream
-  if (up?.status === 'review_required') {
-    const c = up.changes
-    // same count and word as /settings 内核与版本 (routes + login agents)
-    const n = (c?.addedRoutes.length ?? 0) + (c?.removedRoutes.length ?? 0) + (c?.changedRoutes.length ?? 0)
-      + (c?.addedLoginAgents?.length ?? 0) + (c?.removedLoginAgents?.length ?? 0)
-    return [{
-      // the subject names upstream's release, not the running build (that is cpa.commit) — say so
-      id: 'kern:review', domain: 'kern', severity: 'note', kind: 'KERN', subject: `${engine} 上游 ${up.latestRelease ?? up.candidateRevision?.slice(0, 7) ?? ''}`.trim(),
-      reason: `内核上游有候选 · 契约变化 ${n} 项`, metric: '待评审', action: { label: '看差异', to: '/settings#magpie' },
-    }]
-  }
-  if (up?.status === 'error' || up?.status === 'baseline_mismatch') {
-    return [{ id: 'kern:check', domain: 'kern', severity: 'warn', kind: 'KERN', subject: `${engine} 上游检查`, reason: up.status === 'error' ? '上游检查失败' : '基线不一致 · 需人工核对', action: { label: '查看', to: '/settings#magpie' } }]
-  }
-  return []
+  if (versions.cpa?.version !== 'offline') return []
+  return [{ id: 'kern:offline', domain: 'kern', severity: 'bad', kind: 'KERN', subject: 'cpa 内核', reason: '网关内核离线 · 请求无法转发', action: { label: '查看', to: '/settings#gateway' } }]
 }
 
 export function attention(input: AttentionInput): AttentionResult {
@@ -861,15 +841,9 @@ export function checks(input: ChecksInput): CheckRow[] {
 
   const cpa = input.versions?.cpa
   if (cpa) {
-    const engine = cpa.engine === 'magpie' ? 'magpie' : 'cpa'
     const ref = cpa.commit && cpa.commit !== 'unknown' ? cpa.commit.slice(0, 7) : cpa.version
-    const up = cpa.upstream
-    const tail = cpa.version === 'offline' ? '离线'
-      : up?.status === 'review_required' ? `上游 ${up.latestRelease ?? '候选'} 待评审`
-      : up?.status === 'unchanged' ? '上游无变化'
-      : up?.checkedAt ? `上游检查 ${fmtTime(up.checkedAt)}` : '上游未检查'
-    out.push(row('kern', `${engine} ${ref} · ${tail}`, '/settings#magpie'))
-  } else out.push(row('kern', '读取中', '/settings#magpie', '—'))
+    out.push(row('kern', cpa.version === 'offline' ? `cpa ${ref} · 离线` : `cpa ${ref}`, '/settings#gateway'))
+  } else out.push(row('kern', '读取中', '/settings#gateway', '—'))
 
   return out
 }

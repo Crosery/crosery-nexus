@@ -112,7 +112,7 @@ test('help: FAQ links never point at the retired /rtk page; inline code spans sp
     assert.ok(f.a.split('`').length % 2 === 1, `${f.id} has balanced backticks`)
     assert.doesNotMatch(`${f.q} ${f.a}`, /您|请(?!求)/, `${f.id}: no polite filler`)
   }
-  assert.equal(faq.find((f) => f.id === 'rtk')?.link?.to, '/settings#rtk')
+  assert.equal(faq.find((f) => f.id === 'rtk')?.link?.to, '/settings#rtk-relay')
   assert.ok(faq.find((f) => f.id === 'apps')?.a.includes(BASE))
   assert.deepEqual(inlineParts('a `b` c'), [
     { t: 'a ', code: false },
