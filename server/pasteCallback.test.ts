@@ -67,6 +67,7 @@ test('sheet: the paste box says URL or code, Enter submits, the button reads the
   assert.match(sheet, /@click="pasteNow">[\s\S]{0,60}从剪贴板粘贴并提交/)
   assert.match(sheet, /<details v-if="failDetail" class="acc-add__raw">/)
   const clipboard = fs.readFileSync(new URL('../src/features/accounts/useClipboardCallback.ts', import.meta.url), 'utf8')
-  assert.match(clipboard, /if \(found\?\.kind !== 'url' \|\| found\.value === tried\) return/, 'a bare code is never submitted on its own')
+  assert.match(clipboard, /if \(found\?\.kind !== 'url' \|\| found\.value === tried\) return/, 'a bare code is never submitted on its own (return to the tab)')
+  assert.match(clipboard, /function onPaste\(event: ClipboardEvent\) \{[\s\S]{0,200}if \(found\?\.kind !== 'url'\) return\s*event\.preventDefault\(\)/, 'a pasted bare code stays in the box (paste)')
   assert.match(clipboard, /\.state === 'granted'/, 'returning to the tab never pops a permission prompt')
 })

@@ -6,8 +6,12 @@ import { explainOAuthError, OAUTH_CODE_TEXT, OAUTH_REGION_TEXT } from './oauthEr
 
 const CODEX_400 = 'Failed to exchange authorization code for tokens: token exchange failed with status 400: {"error":{"message":"Invalid authorization code.","type":"invalid_request_error","param":null,"code":"invalid_grant"}}'
 
+/** what preview CPA answered for a made-up Codex code, bare and as a full callback URL (2026-10-09) */
+const CODEX_FAKE_CODE = 'Failed to exchange authorization code for tokens: token exchange failed with status 400: {\n  "error": {\n    "message": "Invalid request. Please try again later.",\n    "type": "invalid_request_error",\n    "param": null,\n    "code": "token_exchange_user_error"\n  }\n}'
+
 test('a refused code exchange: 授权码无效、已用过或已过期, CPA text kept as detail', () => {
   assert.deepEqual(explainOAuthError(CODEX_400), { error: OAUTH_CODE_TEXT, detail: CODEX_400 })
+  assert.deepEqual(explainOAuthError(CODEX_FAKE_CODE), { error: OAUTH_CODE_TEXT, detail: CODEX_FAKE_CODE })
   for (const raw of [
     'Failed to exchange authorization code for tokens',
     'Failed to exchange token',

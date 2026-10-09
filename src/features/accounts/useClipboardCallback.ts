@@ -2,10 +2,11 @@ import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import { readCallback, type CallbackExpect } from './pasteCallback'
 
 /**
- * 「从剪贴板粘贴并提交」 and, while the sheet waits, a quiet look at the clipboard on returning to the tab.
- * The button submits this session's callback URL or a bare code; the quiet look submits only this session's URL,
- * and only once the browser already lets the page read the clipboard (granted after the first button use), so
- * coming back never pops a permission prompt.
+ * 「从剪贴板粘贴并提交」 and, while the sheet waits, two quiet paths: a paste anywhere on the page, and a look at the
+ * clipboard on returning to the tab. The button submits this session's callback URL or a bare code; the quiet paths
+ * submit only this session's URL (a bare code pasted into the box stays there for Enter). The look on return runs
+ * only once the browser already lets the page read the clipboard (granted after the first button use), so coming
+ * back never pops a permission prompt.
  */
 export function useClipboardCallback(options: {
   /** waiting for the callback: a browser session with a paste box, nothing submitted yet */
@@ -55,13 +56,25 @@ export function useClipboardCallback(options: {
     if (document.visibilityState === 'visible') void read(true)
   }
 
+  function onPaste(event: ClipboardEvent) {
+    if (!options.active.value) return
+    const found = readCallback(event.clipboardData?.getData('text/plain') ?? '', options.expect())
+    if (found?.kind !== 'url') return
+    event.preventDefault()
+    tried = found.value
+    note.value = ''
+    options.submit(found.value)
+  }
+
   function listen(on: boolean) {
     if (on) {
       window.addEventListener('focus', onReturn)
       document.addEventListener('visibilitychange', onReturn)
+      document.addEventListener('paste', onPaste)
     } else {
       window.removeEventListener('focus', onReturn)
       document.removeEventListener('visibilitychange', onReturn)
+      document.removeEventListener('paste', onPaste)
     }
   }
 
