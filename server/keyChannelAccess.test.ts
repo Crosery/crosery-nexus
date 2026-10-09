@@ -7,7 +7,7 @@ import { sameKeyAccess } from './keyModelAccess.js'
 import type { ConsoleGroup } from './groups.js'
 
 /**
- * 2026-09-07 事故回归：面板上给「非雨」开了 Antigravity + Codex，模型白名单同步成功，
+ * 2026-09-07 事故回归：面板上给某个 Key 开了 Antigravity + Codex，模型白名单同步成功，
  * 但网关渠道白名单仍是 09-03 手工写死的 [antigravity]，于是 gpt-6-astra 一律
  * 503 auth_not_found。控制台必须把分组同时翻译成渠道白名单。
  */
@@ -41,7 +41,7 @@ test('未明确授权的渠道必须移除，旧 Mox 条目不能进入独立候
 /**
  * 额度停用会把 Key 从网关 api-keys 摘掉，网关随即删掉它的渠道条目；恢复启用后如果控制台
  * 不重建条目，这把 Key 就变成「无条目 = 不限渠道」，会绕过分组打到 priority 更高的渠道
- * （2026-09-07 非雨 460 次 gpt-6-astra 打进 mox-aigw）。所以没有条目也必须写。
+ * （2026-09-07 该 Key 有 460 次 gpt-6-astra 打进 mox-aigw）。所以没有条目也必须写。
  */
 test('网关里没有条目的 Key 也要按分组写入，不能留成不限渠道', () => {
   const plan = buildKeyChannelAccessPlan(GROUPS, [row('sk-feiyu', ['antigravity', 'codex'])], {}, configured('sk-feiyu'))

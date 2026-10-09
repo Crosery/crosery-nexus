@@ -266,9 +266,9 @@ test('page model: discovery and error cells speak plain words; counts match thei
 })
 
 test('page model: hosts, middle ellipsis, slot pooling, suggested names', () => {
-  assert.equal(hostOf('https://openrouter.crosery.com/api/v1/'), 'openrouter.crosery.com/api/v1')
+  assert.equal(hostOf('https://openrouter.example.com/api/v1/'), 'openrouter.example.com/api/v1')
   assert.equal(hostOf('nope'), 'nope')
-  const short = middleEllipsis('openrouter.crosery.com/api/v1', 12)
+  const short = middleEllipsis('openrouter.example.com/api/v1', 12)
   assert.equal(short.length, 12)
   assert.ok(short.startsWith('openr') && short.endsWith('/v1') && short.includes('…'))
   const pooled = poolSlots(Array.from({ length: 36 }, (_, i) => ({ n: i === 35 ? 2 : 0, bad: i === 0 ? 1 : 0 })), 18)

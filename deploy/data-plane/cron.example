@@ -2,5 +2,5 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Crosery CPE PostgreSQL backup jobs
-*/5 * * * * /home/crosery/cpe-console-shadow/cpe-wal-webdav.sh >>/home/crosery/cpe-console-shadow/logs/wal-webdav.log 2>&1
-15 3 * * * /home/crosery/cpe-console-shadow/cpe-base-webdav.sh >>/home/crosery/cpe-console-shadow/logs/base-webdav.log 2>&1
+*/5 * * * * $HOME/cpe-console-shadow/cpe-wal-webdav.sh >>$HOME/cpe-console-shadow/logs/wal-webdav.log 2>&1
+15 3 * * * $HOME/cpe-console-shadow/cpe-base-webdav.sh >>$HOME/cpe-console-shadow/logs/base-webdav.log 2>&1
