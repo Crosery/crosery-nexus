@@ -15,6 +15,7 @@ import { api } from '../../api'
 import type { EgressData, OAuthStartResult } from '../../types'
 import { flowLabel, PROVIDERS, providerById, type ProviderInfo, type VerifyResult } from './model'
 import { choiceName, cpaRef, serviceOf } from './egressModel'
+import { useClipboardCallback } from './useClipboardCallback'
 import SigninEgress from './SigninEgress.vue'
 
 /**
@@ -51,6 +52,10 @@ const submitting = ref(false)
 /** the pasted callback was accepted; the gateway exchanges the code on its own time, so polling carries on */
 const callbackSent = ref(false)
 const failText = ref('')
+/** CPA's own words behind a reworded session error (server/oauthErrors.ts), shown collapsed */
+const failDetail = ref('')
+/** the submitted callback came from the clipboard (button, or read on returning to the tab) */
+const viaClipboard = ref(false)
 const outcome = ref<{ text: string; tone: 'ok' | 'warn' } | null>(null)
 /** 账号出口 picked during the sign-in ('' = 继承): written to the new account once it is listed */
 const exitChoice = ref('')
@@ -90,6 +95,17 @@ const authHost = computed(() => {
   }
 })
 const isDevice = computed(() => chosen.value?.flow === 'device' || Boolean(userCode.value))
+const pastePlaceholder = computed(() => (chosen.value?.pastePlaceholder ? `${chosen.value.pastePlaceholder} · 或只填授权码` : '回调地址或授权码'))
+
+const waitingPaste = computed(() => step.value === 'auth' && Boolean(session.value) && !isDevice.value && Boolean(chosen.value?.paste) && !callbackSent.value)
+const { note: clipNote, pasteNow } = useClipboardCallback({
+  active: waitingPaste,
+  expect: () => (session.value && chosen.value ? { state: session.value.state, authUrl: session.value.url, placeholder: chosen.value.pastePlaceholder } : null),
+  submit: (value) => {
+    callbackUrl.value = value
+    void submitCallback(true)
+  },
+})
 
 function stopPolling() {
   if (timer) clearTimeout(timer)
@@ -115,6 +131,8 @@ function reset() {
   callbackSent.value = false
   starting.value = false
   failText.value = ''
+  failDetail.value = ''
+  viaClipboard.value = false
   outcome.value = null
   exitChoice.value = ''
   pollErrors = 0
@@ -155,9 +173,10 @@ watch(open, (value) => {
 }, { immediate: true }) // ?add=<provider> opens the sheet before it mounts
 onBeforeUnmount(reset)
 
-function fail(text: string) {
+function fail(text: string, detail = '') {
   stopPolling()
   failText.value = text
+  failDetail.value = detail
   step.value = 'fail'
 }
 
@@ -208,7 +227,7 @@ async function poll(mine: number) {
       return
     }
     if (res.status === 'error') {
-      fail(`授权没完成 · ${res.error || '上游返回失败'}`)
+      fail(`授权没完成 · ${res.error || '上游返回失败'}`, String((res as { detail?: string }).detail ?? ''))
       return
     }
   } catch (error) {
@@ -222,7 +241,7 @@ async function poll(mine: number) {
   schedule(mine)
 }
 
-async function submitCallback() {
+async function submitCallback(fromClipboard = false) {
   const p = chosen.value
   const url = callbackUrl.value.trim()
   if (!p || !url || submitting.value) return
@@ -234,6 +253,7 @@ async function submitCallback() {
     // the POST only hands the code to the gateway (CPA exchanges it asynchronously): keep polling the session,
     // which moves on to 服务端验证 on `ok` and shows the upstream error on `error`
     failText.value = ''
+    viaClipboard.value = fromClipboard
     callbackSent.value = true
     pollErrors = 0
     schedule(mine)
@@ -413,16 +433,20 @@ const riskText = computed(() => {
           </div>
           <p v-if="isDevice && !userCode" class="acc-add__p dim">设备码已带在授权链接里 · 打开后确认即可</p>
           <p class="acc-add__wait" role="status">
-            <StatusMark state="busy" :label="callbackSent ? '回调已提交 · 等网关换取令牌' : isDevice ? '等待确认' : '等待回调'" />
+            <StatusMark state="busy" :label="callbackSent ? `${viaClipboard ? '已从剪贴板提交' : '回调已提交'} · 等网关换取令牌` : isDevice ? '等待确认' : '等待回调'" />
             <span class="num">· {{ isDevice ? `每 ${DEVICE_POLL_MS / 1000}s 轮询 · ` : '' }}剩 {{ left === null ? '—' : fmtCountdownClock(left) }}</span>
           </p>
-          <form v-if="chosen.paste" class="acc-add__paste" novalidate @submit.prevent="submitCallback">
-            <label for="acc-cb" class="acc-add__lbl">粘贴回调地址</label>
+          <form v-if="chosen.paste" class="acc-add__paste" novalidate @submit.prevent="submitCallback()">
+            <label for="acc-cb" class="acc-add__lbl">粘贴回调地址或授权码</label>
             <div class="acc-add__row">
-              <input id="acc-cb" v-model="callbackUrl" class="ui-input mono" type="text" inputmode="url" autocomplete="off" spellcheck="false" :placeholder="chosen.pastePlaceholder" aria-describedby="acc-cb-hint">
+              <input id="acc-cb" v-model="callbackUrl" class="ui-input mono" type="text" inputmode="url" autocomplete="off" spellcheck="false" :placeholder="pastePlaceholder" aria-describedby="acc-cb-hint">
               <TxButton variant="secondary" native-type="submit" :disabled="!callbackUrl.trim() || submitting">{{ submitting ? '提交中···' : '提交' }}</TxButton>
             </div>
-            <p id="acc-cb-hint" class="acc-add__hint">把浏览器地址栏里的完整 URL 粘贴到这里 · 跳到 localhost 打不开是正常的</p>
+            <p id="acc-cb-hint" class="acc-add__hint">浏览器跳到 localhost 打不开是正常的 · 复制地址栏的完整地址，或只复制 code= 后面的授权码</p>
+            <div class="acc-add__btns acc-add__btns--start">
+              <TxButton variant="secondary" :disabled="submitting || callbackSent" @click="pasteNow"><Icon name="copy" :size="14" />从剪贴板粘贴并提交</TxButton>
+            </div>
+            <p v-if="clipNote" class="acc-add__hint" role="status">{{ clipNote }}</p>
             <p v-if="failText" class="acc-add__err" role="alert">◆ {{ failText }}</p>
           </form>
           <div class="acc-add__btns">
@@ -445,6 +469,10 @@ const riskText = computed(() => {
       </div>
       <div v-else-if="step === 'fail'" class="acc-add__body" role="alert">
         <p class="acc-add__err">◆ {{ failText }}</p>
+        <details v-if="failDetail" class="acc-add__raw">
+          <summary>原始错误</summary>
+          <p class="mono">{{ failDetail }}</p>
+        </details>
         <div class="acc-add__btns">
           <TxButton variant="secondary" @click="another">换一种方式</TxButton>
           <TxButton variant="primary" @click="retry">重试</TxButton>
@@ -498,6 +526,9 @@ html:root .acc-add__svc.tx-button:focus-visible { outline: 2px solid var(--signa
 .acc-add__row .ui-input { flex: 1 1 auto; min-width: 0; font-size: var(--fs-xs); background: transparent; }
 .acc-add__hint { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); }
 .acc-add__err { margin: 0; font-size: var(--fs-sm); color: var(--signal-ink); }
+.acc-add__raw { font-size: var(--fs-xs); color: var(--ink-3); }
+.acc-add__raw summary { cursor: pointer; width: max-content; }
+.acc-add__raw p { margin: 6px 0 0; color: var(--ink-2); overflow-wrap: anywhere; max-height: 12em; overflow: auto; }
 .acc-add__verify { margin: 0; font-family: var(--font-mono); font-size: var(--fs-md); color: var(--ink); }
 .acc-add__done { margin: 0; font-size: var(--fs-md); color: var(--ink); }
 .acc-dots i { font-style: normal; animation: acc-dot 1.2s steps(1) infinite; opacity: .2; }
