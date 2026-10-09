@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { config } from './config.js'
+import { explainOAuthError } from './oauthErrors.js'
 import { canonicalChannelName, ensureLockoutKey, ensureProbeKeys, isSystemKey, readSystemKeys } from './systemKeys.js'
 
 export type UsageRecord = {
@@ -818,11 +819,15 @@ export async function startOAuthLogin(provider: string): Promise<OAuthStartRespo
 export type OAuthStatusResponse = {
   status: 'ok' | 'wait' | 'error' | string
   error?: string
+  /** CPA's own text when `error` was reworded (oauthErrors.ts) */
+  detail?: string
 }
 
 export async function getOAuthStatus(state: string): Promise<OAuthStatusResponse> {
   if (!state) throw new Error('缺少 state 参数')
-  return cpaRequest<OAuthStatusResponse>(`/get-auth-status?state=${encodeURIComponent(state)}`)
+  const result = await cpaRequest<OAuthStatusResponse>(`/get-auth-status?state=${encodeURIComponent(state)}`)
+  if (result?.status !== 'error' || !result.error) return result
+  return { ...result, ...explainOAuthError(result.error) }
 }
 
 export async function submitOAuthCallback(provider: string, redirectUrl: string, sessionState?: string): Promise<{ ok: boolean }> {
