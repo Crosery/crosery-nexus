@@ -28,9 +28,9 @@ const insertUsage = db.prepare(`
     request_id, timestamp, timestamp_ms, key_hash, provider, model, model_group, endpoint,
     success, status_code, latency_ms, ttft_ms, input_tokens, output_tokens,
     reasoning_tokens, cached_tokens, cache_write_tokens, total_tokens, error_detail, error_category, upstream_request_id,
-    source, auth_index, reasoning_effort, service_tier, response_headers_json,
+    source, auth_index, reasoning_effort, service_tier, response_model, response_headers_json,
     user_agent, client_type, client_ip, cost_usd
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 
 const insertQuotaUsage = db.prepare(`
@@ -294,6 +294,7 @@ export function persistUsageRecords(records: UsageRecord[], groups: ConsoleGroup
         diagnostics.authIndex,
         diagnostics.reasoningEffort,
         diagnostics.serviceTier,
+        record.response_model || '',
         diagnostics.responseHeadersJson,
         diagnostics.userAgent,
         diagnostics.clientType,

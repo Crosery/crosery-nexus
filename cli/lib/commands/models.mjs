@@ -1,6 +1,7 @@
 // models：模型目录、价格、拉取上游新模型。
-import { CliError, UsageError } from '../args.mjs'
+import { CliError, UsageError, numberValue } from '../args.mjs'
 import { HttpError, request } from '../client.mjs'
+import { fmtInt } from '../fmt.mjs'
 import { getModelIndex, getSync } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { modelVendor, modelsTree } from '../tree.mjs'
@@ -20,6 +21,8 @@ const HELP = `cradmin models <动作> [参数]
                              embedding 向量 · rerank 重排 · other 其他
       --all                  连只存在于价格目录、网关上没有来源的模型一起列出
   show <模型>                来源、价格、双源价格
+  upstream <模型>            查看该请求模型在上游实际响应成了哪些模型（按次数与账号分布）
+      --days <N>             统计天数（默认 7）
   sync                       探测各渠道上游的 /models，拉取新模型（后台任务 model-discovery，等它跑完，最多 10 分钟；
                              有冷却，冷却中退出 4）
 
@@ -29,6 +32,7 @@ const HELP = `cradmin models <动作> [参数]
   cradmin models ls --channel codex
   cradmin models ls --type image --all
   cradmin models show gpt-5.6-sol --json
+  cradmin models upstream gemini-3.8-flash-high --days 7
 `
 
 const DISCOVERY_JOB = 'model-discovery'
@@ -68,6 +72,7 @@ export default {
     unpriced: { type: 'boolean' },
     all: { type: 'boolean' },
     type: { type: 'string' },
+    days: { type: 'string' },
   },
   async run(ctx) {
     const [action = 'ls', id, ...extra] = ctx.positionals
@@ -115,6 +120,25 @@ export default {
           source.enabled ? { text: 'on', tone: 'ok' } : { text: 'off', tone: 'muted' },
           source.channelEnabled ? '启用' : { text: '停用', tone: 'warn' },
         ]), { align: ['left', 'left', 'center', 'center'] })
+      })
+    }
+    if (action === 'upstream') {
+      if (!id) throw new UsageError('缺少 <模型>')
+      const days = numberValue(ctx.values.days, '--days', { integer: true, min: 1, max: 3650 }) ?? 7
+      const params = new URLSearchParams({ days: String(days) })
+      const data = await ctx.get(`/api/models/${encodeURIComponent(id)}/upstream-models?${params}`)
+      return void ctx.output(data, () => {
+        const { ui } = ctx
+        const span = data?.days ?? days
+        const total = Number(data?.total) || 0
+        const served = Array.isArray(data?.served) ? data.served : []
+        ui.section(`上游模型 · ${data?.requested || id}`, `近 ${span} 天 · 共 ${fmtInt(total)} 次`)
+        if (!served.length) return ui.note('没有记录到上游返回的模型')
+        ui.table(['上游模型', '次数', '账号'], served.map(item => [
+          item.model,
+          fmtInt(item.requests),
+          (item.accounts || []).map(acc => `${acc.authIndex || '-'} (${fmtInt(acc.requests)})`).join(', ') || '-',
+        ]), { align: ['left', 'right', 'left'] })
       })
     }
     if (action === 'sync') {

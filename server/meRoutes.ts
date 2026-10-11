@@ -531,13 +531,13 @@ export function createMeRouter(deps: { usageReader: Reader }) {
     const after = afterRaw ? Date.parse(afterRaw) : 0
     if (!Number.isFinite(after)) return void response.status(400).json({ error: 'after 不是有效时间', code: 'invalid_after' })
     const keyHash = assertKeyHash(key.key_hash)
-    const columns = `request_id requestId, timestamp, timestamp_ms timestampMs, ${canonicalModelSql()} model, endpoint,
+    const columns = `request_id requestId, timestamp, timestamp_ms timestampMs, ${canonicalModelSql()} model, response_model responseModel, endpoint,
       success, status_code statusCode, latency_ms latencyMs, ttft_ms ttftMs,
       input_tokens inputTokens, output_tokens outputTokens, cached_tokens cacheReadTokens, cache_write_tokens cacheWriteTokens,
       reasoning_tokens reasoningTokens, total_tokens totalTokens, ${NEW_INPUT_SQL()} newInputTokens, cost_usd costUsd, error_category errorCategory`
     const statusSql = errorsOnly ? 'AND success = 0' : ''
     type Row = {
-      requestId: string | null; timestamp: string; timestampMs: number; model: string; endpoint: string
+      requestId: string | null; timestamp: string; timestampMs: number; model: string; responseModel: string; endpoint: string
       success: number; statusCode: number; latencyMs: number; ttftMs: number
       inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number
       reasoningTokens: number; totalTokens: number; newInputTokens: number; costUsd: number | null; errorCategory: string
@@ -580,6 +580,7 @@ export function createMeRouter(deps: { usageReader: Reader }) {
         id: row.requestId || `t${row.timestampMs}-${index}`,
         timestamp: utcIso(row.timestampMs) ?? utcIso(row.timestamp),
         model: row.model,
+        responseModel: row.responseModel || '',
         endpoint: row.endpoint,
         success: Boolean(row.success),
         status: row.statusCode > 0 ? row.statusCode : null,

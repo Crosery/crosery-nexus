@@ -74,7 +74,7 @@ const rowTone = (row: Item) => (row.success ? null : 'attn')
   >
     <template #cell-model="{ row }">
       <span class="me-req__model">
-        <span class="me-req__id num" :title="row.model">{{ row.model }}</span>
+        <span class="me-req__id num" :title="row.model">{{ row.model }}<span v-if="row.responseModel && row.responseModel !== row.model" class="dim"> · 上游模型：{{ row.responseModel }}</span></span>
         <span v-if="!row.success" class="me-req__why">
           {{ requestFailure(row).title }}<template v-if="requestFailure(row).next"> · {{ requestFailure(row).next }}</template>
         </span>

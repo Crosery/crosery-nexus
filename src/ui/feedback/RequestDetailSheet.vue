@@ -40,6 +40,7 @@ const facts = computed(() => {
     { k: '来源 IP', v: r.clientIp || '未记录', mono: true },
     { k: '渠道', v: r.provider ? channelLabel(r.provider) : '未记录' },
     { k: '模型分组', v: r.modelGroup || '未记录' },
+    ...(r.responseModel && r.responseModel !== r.model ? [{ k: '上游模型', v: r.responseModel, mono: true }] : []),
     { k: '入口', v: r.endpoint || '未记录', mono: true },
     { k: '耗时', v: `${fmtDuration(r.latencyMs)}${r.ttftMs ? ` · 首字 ${fmtDuration(r.ttftMs)}` : ''}`, mono: true },
     { k: '思考等级', v: r.reasoningEffort || '无' },

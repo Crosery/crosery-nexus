@@ -199,7 +199,9 @@ const tableEmpty = computed(() => (data.value && data.value.total === 0 ? emptyT
               <span v-if="!ok(row) && row.errorCategory" class="ureq-st__c">{{ categoryLabel(row.errorCategory) }}</span>
             </span>
           </template>
-          <template #cell-model="{ row }"><span class="ureq-model">{{ row.model }}</span></template>
+          <template #cell-model="{ row }">
+            <span class="ureq-model">{{ row.model }}<span v-if="row.responseModel && row.responseModel !== row.model" class="dim"> · 上游模型：{{ row.responseModel }}</span></span>
+          </template>
           <template #cell-requestId="{ row }"><span class="num dim">{{ row.requestId ? `${row.requestId.slice(0, 8)}…` : NONE }}</span></template>
         </RowTable>
         <Pager

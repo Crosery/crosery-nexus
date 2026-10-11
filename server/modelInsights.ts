@@ -298,6 +298,67 @@ export function modelUsageOperations(groups: ConsoleGroup[], days: number, now: 
     },
   ]
 }
+export type UpstreamServedModel = {
+  model: string
+  requests: number
+  accounts: Array<{ authIndex: string; requests: number }>
+}
+
+export type UpstreamModelsPayload = {
+  requested: string
+  days: number
+  total: number
+  served: UpstreamServedModel[]
+}
+
+type UpstreamModelRow = { responseModel?: unknown; authIndex?: unknown; requests?: unknown }
+
+/** 统计某请求模型在时间窗口内被上游实际响应成了哪些模型（空串=上游没报，不计入）。 */
+export function upstreamModelsOperations(requested: string, days: number, now: number): ReadOperation[] {
+  const { where, params } = usageWindow(days, '', 'timestamp_ms', now)
+  return [{
+    method: 'all',
+    sql: `
+      SELECT trim(response_model) responseModel, trim(auth_index) authIndex, COUNT(*) requests
+      FROM usage_events
+      WHERE ${where} AND (model = ? OR ${canonicalModelSql()} = ?) AND trim(response_model) != ''
+      GROUP BY trim(response_model), trim(auth_index)
+    `,
+    params: [...params, requested, requested],
+  }]
+}
+
+export function buildUpstreamModels(requested: string, days: number, rows: readonly UpstreamModelRow[]): UpstreamModelsPayload {
+  const byModel = new Map<string, { requests: number; accounts: Map<string, number> }>()
+  let total = 0
+  for (const row of rows) {
+    const model = String(row.responseModel ?? '').trim()
+    const requests = Math.floor(Number(row.requests) || 0)
+    if (!model || requests <= 0) continue
+    const authIndex = String(row.authIndex ?? '').trim()
+    const entry = byModel.get(model) ?? { requests: 0, accounts: new Map<string, number>() }
+    entry.requests += requests
+    entry.accounts.set(authIndex, (entry.accounts.get(authIndex) ?? 0) + requests)
+    byModel.set(model, entry)
+    total += requests
+  }
+  const served: UpstreamServedModel[] = [...byModel.entries()]
+    .map(([model, entry]) => ({
+      model,
+      requests: entry.requests,
+      accounts: [...entry.accounts.entries()]
+        .map(([authIndex, requests]) => ({ authIndex, requests }))
+        .sort((a, b) => b.requests - a.requests || a.authIndex.localeCompare(b.authIndex)),
+    }))
+    .sort((a, b) => b.requests - a.requests || a.model.localeCompare(b.model))
+  return { requested, days, total, served }
+}
+
+export async function loadUpstreamModels(reader: Reader, requested: string, days: number, now = Date.now()): Promise<UpstreamModelsPayload> {
+  const [rows] = await reader.run(upstreamModelsOperations(requested, days, now))
+  return buildUpstreamModels(requested, days, (rows as UpstreamModelRow[] | undefined) ?? [])
+}
+
 
 export function createModelInsights(deps: ModelInsightsDeps) {
   const now = deps.now ?? Date.now
@@ -381,6 +442,18 @@ export function registerModelInsightsRoutes(app: express.Express, deps: { usageR
       res.json(payload)
     } catch {
       res.status(503).json({ error: '模型证据暂不可用', code: 'insights_unavailable' })
+    }
+  })
+  app.get('/api/models/:model/upstream-models', async (req, res) => {
+    const requested = String(req.params.model || '').trim()
+    if (!requested) return void res.status(400).json({ error: '缺少模型参数' })
+    const days = boundedInteger(req.query.days, 7, 1, Math.max(1, config.usageRetentionDays))
+    try {
+      const payload = await loadUpstreamModels(deps.usageReader, requested, days)
+      res.setHeader('Cache-Control', 'no-store')
+      res.json(payload)
+    } catch {
+      res.status(503).json({ error: '上游模型统计暂不可用', code: 'upstream_models_unavailable' })
     }
   })
 }

@@ -58,6 +58,7 @@ db.exec(`
     auth_index TEXT NOT NULL DEFAULT '',
     reasoning_effort TEXT NOT NULL DEFAULT '',
     service_tier TEXT NOT NULL DEFAULT '',
+    response_model TEXT NOT NULL DEFAULT '',
     response_headers_json TEXT NOT NULL DEFAULT '{}',
     cost_usd REAL,
     FOREIGN KEY(key_hash) REFERENCES api_keys(key_hash) ON DELETE SET NULL
@@ -142,6 +143,9 @@ for (const [name, definition] of [
   ['auth_index', "TEXT NOT NULL DEFAULT ''"],
   ['reasoning_effort', "TEXT NOT NULL DEFAULT ''"],
   ['service_tier', "TEXT NOT NULL DEFAULT ''"],
+  // 上游响应里实际出现的模型（CPA 一直在下发 response_model；上游会改写模型时用来核对路由，
+  // 例如 Antigravity 把 gemini-3.8-flash-high 换成 gemini-3.8-flash-exp-a / -n）。
+  ['response_model', "TEXT NOT NULL DEFAULT ''"],
   ['response_headers_json', "TEXT NOT NULL DEFAULT '{}'"],
   // Anthropic 缓存写入段。漏接期间命中率恒 100%、成本低估约 12%。
   ['cache_write_tokens', 'INTEGER NOT NULL DEFAULT 0'],

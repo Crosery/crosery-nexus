@@ -45,7 +45,7 @@ function makeFixture(now: number, options: { rollup?: boolean; hours?: number } 
     user_agent TEXT NOT NULL DEFAULT '', client_type TEXT NOT NULL DEFAULT '', client_ip TEXT NOT NULL DEFAULT '',
     error_detail TEXT NOT NULL DEFAULT '', error_category TEXT NOT NULL DEFAULT '', upstream_request_id TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '', auth_index TEXT NOT NULL DEFAULT '', reasoning_effort TEXT NOT NULL DEFAULT '',
-    service_tier TEXT NOT NULL DEFAULT '', response_headers_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL)`)
+    service_tier TEXT NOT NULL DEFAULT '', response_model TEXT NOT NULL DEFAULT '', response_headers_json TEXT NOT NULL DEFAULT '{}', cost_usd REAL)`)
   db.exec('CREATE INDEX idx_usage_cache_rollup ON usage_events (success, lower(trim(provider)), CAST(timestamp_ms/3600000 AS INTEGER), CAST(timestamp_ms/60000 AS INTEGER), model, provider, client_type, timestamp_ms, input_tokens, cached_tokens, cache_write_tokens, output_tokens)')
   db.exec('CREATE INDEX idx_usage_latency_rollup ON usage_events (model, success, latency_ms, lower(trim(provider)), timestamp_ms, ttft_ms)')
   const insert = db.prepare(`INSERT INTO usage_events

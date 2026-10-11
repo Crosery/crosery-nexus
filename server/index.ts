@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser'
 import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/index.js'
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
-import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
+import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
 import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
@@ -67,6 +67,7 @@ import { addBufferedClient, clientCount, hasClientCapacity, heartbeat, sseClient
 import { clientTypeSql } from './clientAgent.js'
 import { isMonitoredAccountType, normalizeAccountQuota } from './accountQuota.js'
 import { clearAccountQuota, readAccountQuota, summarizeAccountQuota } from './accountQuotaReader.js'
+import { reconcileStaleCooldown } from './cooldownRecovery.js'
 import { maskProxyUserinfo, projectMonitorAccount } from './accountProjection.js'
 import { normalizeResetCredits, resolveChatgptAccountId } from './codexAccount.js'
 import { allowFreshInvalidation, mapWithConcurrency, syncRegistry } from './syncRegistry.js'
@@ -349,7 +350,7 @@ app.get('/v1/usage/requests', (req, res) => {
   const days = boundedInteger(req.query.days, 7, 1, config.usageRetentionDays)
   const limit = boundedInteger(req.query.limit, 50, 1, 200)
   const items = db.prepare(`
-    SELECT timestamp, model, endpoint, success, status_code statusCode, latency_ms latencyMs,
+    SELECT timestamp, model, response_model responseModel, endpoint, success, status_code statusCode, latency_ms latencyMs,
       ttft_ms ttftMs, input_tokens inputTokens, output_tokens outputTokens,
       reasoning_tokens reasoningTokens, cached_tokens cachedTokens, total_tokens totalTokens,
       upstream_request_id upstreamRequestId
@@ -819,6 +820,11 @@ app.get('/api/charts-latency', async (req, res) => {
 const loadMonitorPayload = async () => {
   const auths = await listAuthFiles()
   const files = (auths.files || []).filter((file) => isMonitoredAccountType(file.type))
+  const cooldownDeps = {
+    clear: clearAuthFileCooldown,
+    audit: addAudit,
+    log: (message: string) => console.warn(message),
+  }
   const accounts = await mapWithConcurrency(files, syncRegistry.policy.globalUpstreamConcurrency, async (file) => {
     const type = String(file.type)
     let quota: unknown = null
@@ -828,7 +834,10 @@ const loadMonitorPayload = async () => {
     } catch (error) {
       quota = { error: error instanceof Error ? error.message : '读取失败' }
     }
-    return { ...file, quota, normalizedQuota: normalizeAccountQuota(type, quota, resetCredits) }
+    const normalizedQuota = normalizeAccountQuota(type, quota, resetCredits)
+    // 上游额度已恢复、CPA 还挂着旧冷却（重置后被卡在旧 resets_at）：自动清掉，见 cooldownRecovery.ts。
+    await reconcileStaleCooldown({ file, quota, normalizedQuota }, cooldownDeps)
+    return { ...file, quota, normalizedQuota }
   })
   // 套餐额度不按美元计量，附带本窗口各 Key 的 token 占比，回答「额度是被谁用掉的」。
   // 占比查询失败不能拖垮账号状态本身。
@@ -1608,6 +1617,11 @@ const syncCenter = installSyncCenter(app, {
   },
 })
 app.get('/api/audit', (_req, res) => res.json({ items: db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100').all() }))
+const pluginRoutes = createPluginRoutes({ addAudit })
+app.get('/api/plugins', pluginRoutes.list)
+app.get('/api/plugins/store', pluginRoutes.store)
+app.post('/api/plugins/store/:id/install', pluginRoutes.install)
+app.delete('/api/plugins/:id', pluginRoutes.remove)
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }))
 
 const root = path.dirname(fileURLToPath(import.meta.url))

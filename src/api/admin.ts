@@ -7,6 +7,7 @@ import type {
   OAuthStatusResult,
   PulseData,
   RtkPlaneId,
+  UpstreamModelsPayload,
   VersionsData,
 } from '../types'
 import { ApiError, request } from './http'
@@ -27,6 +28,8 @@ export class RtkApiError extends ApiError {
 }
 
 const scoped = (path: string, days: number, keyId = '') => `${path}?days=${days}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}`
+export const modelUpstreamModelsUrl = (model: string, days = 7) =>
+  `/api/models/${encodeURIComponent(model)}/upstream-models?days=${days}`
 
 /** Admin-only endpoints (a key session gets 403 `forbidden_role` on every one of them). */
 export const adminApi = {
@@ -73,6 +76,9 @@ export const adminApi = {
   setCredentialProxy: (name: string, proxyUrl: string) =>
     request<{ proxyUrl: string }>(`/api/credentials/${encodeURIComponent(name)}/proxy`, { method: 'PATCH', body: JSON.stringify({ proxyUrl }) }),
   modelIndex: <T>(fresh = false) => request<T>(`/api/model-index${fresh ? '?fresh=1' : ''}`),
+  modelUpstreamModelsUrl,
+  modelUpstreamModels: <T = UpstreamModelsPayload>(model: string, days = 7, signal?: AbortSignal) =>
+    request<T>(modelUpstreamModelsUrl(model, days), { signal }),
   usageBreakdown: <T>(days: number, keyId = '') => request<T>(scoped('/api/usage-breakdown', days, keyId)),
   cacheAnalytics: <T>(days: number, model = '') => request<T>(`/api/cache-analytics?days=${days}${model ? `&model=${encodeURIComponent(model)}` : ''}`),
   cacheTrend: <T>(hours: number, model = '', client = '', keyId = '', provider = '') =>

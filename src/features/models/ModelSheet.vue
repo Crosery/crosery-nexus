@@ -19,6 +19,7 @@ import { fmtCompact, fmtInt, fmtPct, fmtTime, fmtUsd } from '../../ui/fmt'
 import { errorReason } from '../../lib/errors'
 import { api } from '../../api'
 import ModelPricingSources from './ModelPricingSources.vue'
+import ModelUpstreamModels from './ModelUpstreamModels.vue'
 import { errorWord, fmtWindow, hourLabel, type InsightProbe, type ModelMapping, type ModelRow } from './modelRows'
 import type { ModelIndexData } from '../../types'
 
@@ -197,6 +198,8 @@ const usageFacts = computed(() => {
           </li>
         </ul>
       </section>
+
+      <ModelUpstreamModels :model-key="row.key" :model-id="row.id" :active="open" />
 
       <section class="msh__sec">
         <h3 class="msh__h">近 7 天<span v-if="usageMissing" class="msh__h-note">◇ 用量读取失败</span></h3>

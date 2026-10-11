@@ -9,8 +9,12 @@ import type { CatalogModel } from './modelCatalog.js'
 import type { DiscoveryState, SharedCatalog } from './modelSync.js'
 import type { ReadOperation } from './sqliteReadWorker.js'
 
-const { buildChannelProbes, buildModelSpecs, buildUsageEvidence, createModelInsights } = await import('./modelInsights.js')
-const { loadUsageOverviewReport } = await import('./usageReports.js')
+import express from 'express'
+import { config } from './config.js'
+import { db as mainDb } from './db.js'
+import { buildChannelProbes, buildModelSpecs, buildUsageEvidence, createModelInsights, loadUpstreamModels, registerModelInsightsRoutes } from './modelInsights.js'
+import { persistUsageRecords } from './sync.js'
+import { loadUsageOverviewReport, loadUsageWorkspaceRequests } from './usageReports.js'
 
 const NOW = Date.UTC(2026, 9, 2, 6, 30, 0)
 const HOUR = 3_600_000
@@ -209,4 +213,143 @@ test('usage evidence: liveTopError names the top failure on current channels onl
   // rows without a channel (older callers) count as current
   const legacy = buildUsageEvidence([{ model: 'm', channel: 'codex', requests: 2, errors: 2, lastOkHour: null, lastErrorHour: NOW }], [{ model: 'm', status: 500, category: 'upstream_5xx', requests: 2 }], groups)
   assert.deepEqual(legacy[0].liveTopError, { status: 500, category: 'upstream_5xx', requests: 2 })
+})
+
+test('persistUsageRecords 落库 response_model，请求明细与 /api/models/:model/upstream-models 聚合正确（含 days 边界与空串排除）', async () => {
+  const now = Date.now()
+  const dayMs = 24 * 60 * 60 * 1000
+  const model = 'gemini-3.8-flash-high'
+  mainDb.exec(`DELETE FROM usage_events WHERE model LIKE '%gemini-3.8-flash-high%'; DELETE FROM usage_hourly_rollup WHERE model LIKE '%gemini-3.8-flash-high%'`)
+
+  persistUsageRecords([
+    {
+      request_id: 'up-model-1',
+      timestamp: new Date(now - 1 * dayMs).toISOString(),
+      model,
+      response_model: 'gemini-3.8-flash-exp-a',
+      auth_index: 'ag-1',
+      provider: 'antigravity',
+      tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      request_id: 'up-model-2',
+      timestamp: new Date(now - 2 * dayMs).toISOString(),
+      model: `google/${model}`,
+      response_model: 'gemini-3.8-flash-exp-a',
+      auth_index: 'ag-1',
+      provider: 'antigravity',
+      tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      request_id: 'up-model-3',
+      timestamp: new Date(now - 2 * dayMs).toISOString(),
+      model,
+      response_model: 'gemini-3.8-flash-exp-a',
+      auth_index: 'ag-2',
+      provider: 'antigravity',
+      tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      request_id: 'up-model-4',
+      timestamp: new Date(now - 3 * dayMs).toISOString(),
+      model,
+      response_model: 'gemini-3.8-flash-n',
+      auth_index: 'ag-1',
+      provider: 'antigravity',
+      tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      // 上游没报 response_model（空串）→ 落库为空串，但不计入 upstream-models 聚合
+      request_id: 'up-model-empty',
+      timestamp: new Date(now - 1 * dayMs).toISOString(),
+      model,
+      provider: 'antigravity',
+      tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+    {
+      // 超过 7 天窗口，但在 30 天窗口内
+      request_id: 'up-model-old',
+      timestamp: new Date(now - 10 * dayMs).toISOString(),
+      model,
+      response_model: 'gemini-3.8-flash-n',
+      auth_index: 'ag-3',
+      provider: 'antigravity',
+      tokens: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    },
+  ], groups)
+
+  const saved = mainDb.prepare('SELECT request_id, response_model FROM usage_events WHERE request_id IN (?, ?) ORDER BY request_id')
+    .all('up-model-1', 'up-model-empty') as Array<{ request_id: string; response_model: string }>
+  assert.deepEqual(saved.map((r) => [r.request_id, r.response_model]), [
+    ['up-model-1', 'gemini-3.8-flash-exp-a'],
+    ['up-model-empty', ''],
+  ])
+
+  const mainReader = {
+    async run(operations: readonly ReadOperation[]) {
+      return operations.map((op) => (op.method === 'all' ? mainDb.prepare(op.sql).all(...(op.params ?? [])) : mainDb.prepare(op.sql).get(...(op.params ?? []))))
+    },
+  }
+
+  // 请求明细带出 responseModel
+  const reqPage = await loadUsageWorkspaceRequests(
+    mainReader,
+    mainReader,
+    groups,
+    { days: 7, keyId: '', model, provider: '', client: '', currentOnly: false },
+    { status: '', category: '', page: 1, pageSize: 20 },
+    { timeZone: 'Asia/Shanghai', now },
+  )
+  const row1 = reqPage.requests.find((r) => r.requestId === 'up-model-1')
+  const rowEmpty = reqPage.requests.find((r) => r.requestId === 'up-model-empty')
+  assert.equal(row1?.responseModel, 'gemini-3.8-flash-exp-a')
+  assert.equal(rowEmpty?.responseModel, '')
+
+  // 7 天聚合：不含空串，不含 10 天前的记录，按 requests 降序
+  const d7 = await loadUpstreamModels(mainReader, model, 7, now)
+  assert.deepEqual(d7, {
+    requested: model,
+    days: 7,
+    total: 4,
+    served: [
+      {
+        model: 'gemini-3.8-flash-exp-a',
+        requests: 3,
+        accounts: [
+          { authIndex: 'ag-1', requests: 2 },
+          { authIndex: 'ag-2', requests: 1 },
+        ],
+      },
+      {
+        model: 'gemini-3.8-flash-n',
+        requests: 1,
+        accounts: [
+          { authIndex: 'ag-1', requests: 1 },
+        ],
+      },
+    ],
+  })
+
+  // 路由层 days 边界校验（<1 夹到 1，>usageRetentionDays 夹到 usageRetentionDays）
+  const app = express()
+  registerModelInsightsRoutes(app, { usageReader: mainReader })
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise<void>((resolve) => server.once('listening', () => resolve()))
+  try {
+    const address = server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    const resLow = await fetch(`http://127.0.0.1:${port}/api/models/${encodeURIComponent(model)}/upstream-models?days=0`)
+    assert.equal(resLow.status, 200)
+    const bodyLow = await resLow.json() as { days: number; total: number }
+    assert.equal(bodyLow.days, 1)
+    assert.equal(bodyLow.total, 0, '1 天内只有空串记录，不计入')
+
+    const resHigh = await fetch(`http://127.0.0.1:${port}/api/models/${encodeURIComponent(model)}/upstream-models?days=9999`)
+    assert.equal(resHigh.status, 200)
+    const bodyHigh = await resHigh.json() as { days: number; total: number }
+    assert.equal(bodyHigh.days, config.usageRetentionDays)
+    assert.equal(bodyHigh.total, 5, '包含 10 天前的记录')
+  } finally {
+    server.close()
+  }
 })

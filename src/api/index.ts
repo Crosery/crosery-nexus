@@ -6,7 +6,7 @@ import { rtkGlobalApi, rtkRelayApi, syncApi } from './sync'
 import { proxyApi } from './proxy'
 
 export { ApiError, setAuthHooks } from './http'
-export { RtkApiError } from './admin'
+export { RtkApiError, modelUpstreamModelsUrl } from './admin'
 
 /** Session (C1): shared by both roles. A failed login rejects with ApiError (`code` + `retryAfterSec` on 429). */
 const sessionApi = {

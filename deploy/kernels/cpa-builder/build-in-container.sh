@@ -1,5 +1,6 @@
 #!/bin/bash
-# 在 run.sh 钉死的 golang 容器里执行：构建 linux/amd64 静态二进制并跑全量测试。CGO_ENABLED=0、GOFLAGS=-buildvcs=false、
+# 在 run.sh 钉死的 golang 容器里执行：构建 linux/amd64 二进制并跑全量测试（CGO_ENABLED=1，宿主要能 dlopen 动态库插件；
+# 该镜像自带 gcc/g++/libc6-dev，无需额外安装）。GOFLAGS=-buildvcs=false、
 # GOOS/GOARCH 和 BUILD_DATE（HEAD 的提交时间）由 run.sh 传入；参数不要改，改了同一个 HEAD 就不再是同一个二进制。
 set -euo pipefail
 cd /src

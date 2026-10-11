@@ -1,3 +1,4 @@
+import type express from 'express'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -21,6 +22,8 @@ export type UsageRecord = {
   auth_index?: string
   reasoning_effort?: string
   service_tier?: string
+  /** 上游响应里实际出现的模型。渠道或上游改写模型时（Antigravity 的 flash-exp-a / -n 分组）靠它核对。 */
+  response_model?: string
   response_headers?: Record<string, string | string[]>
   /** 调用方 UA，用于区分 Pi / Claude Code / Codex CLI 等客户端。 */
   user_agent?: string
@@ -65,7 +68,10 @@ export class ManagementNotFoundError extends Error {
 
 async function cpaRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!config.cpaManagementKey) throw new Error('CPA_MANAGEMENT_KEY 未配置')
-  const response = await fetch(`${config.cpaBaseUrl}/v0/management${path}`, {
+  const url = /^\/v\d+\/management\//.test(path)
+    ? `${config.cpaBaseUrl}${path}`
+    : `${config.cpaBaseUrl}/v0/management${path}`
+  const response = await fetch(url, {
     ...init,
     signal: init.signal || AbortSignal.timeout(config.cpaRequestTimeoutMs),
     headers: {
@@ -835,4 +841,74 @@ export async function addProviderApiKey(provider: string, apiKey: string): Promi
     })
   }
   return { ok: true }
+}
+
+export async function listPlugins(): Promise<Record<string, unknown>> {
+  try {
+    return await cpaRequest<Record<string, unknown>>('/v8/management/plugins')
+  } catch (error) {
+    if (isUnsupportedManagementEndpoint(error)) {
+      return cpaRequest<Record<string, unknown>>('/v0/management/plugins')
+    }
+    throw error
+  }
+}
+
+export async function listPluginStore(): Promise<Record<string, unknown>> {
+  const endpoint = '/v8/management/plugins/store'
+  return cpaRequest<Record<string, unknown>>(endpoint)
+}
+
+export async function installPlugin(id: string, source?: string): Promise<Record<string, unknown>> {
+  const trimmed = source ? source.trim() : ''
+  const query = trimmed ? `?source=${encodeURIComponent(trimmed)}` : ''
+  return cpaRequest<Record<string, unknown>>(
+    `/v8/management/plugins/store/${encodeURIComponent(id.trim())}/install${query}`,
+    { method: 'POST' },
+  )
+}
+
+export async function deletePlugin(id: string): Promise<Record<string, unknown>> {
+  const target = encodeURIComponent(id.trim())
+  return cpaRequest<Record<string, unknown>>(`/v8/management/plugins/${target}`, { method: 'DELETE' })
+}
+
+export function createPluginRoutes(deps: { addAudit?: (action: string, target: string, detail?: string) => void } = {}) {
+  return {
+    list: async (_req: express.Request, res: express.Response) => {
+      try {
+        res.json(await listPlugins())
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : '读取插件列表失败' })
+      }
+    },
+    store: async (_req: express.Request, res: express.Response) => {
+      try {
+        res.json(await listPluginStore())
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : '读取插件商店失败' })
+      }
+    },
+    install: async (req: express.Request, res: express.Response) => {
+      try {
+        const id = String(req.params.id || '').trim()
+        const source = typeof req.body?.source === 'string' ? req.body.source.trim() : ''
+        const result = await installPlugin(id, source || undefined)
+        deps.addAudit?.('plugin-install', id, source || '')
+        res.json(result)
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : '安装插件失败' })
+      }
+    },
+    remove: async (req: express.Request, res: express.Response) => {
+      try {
+        const id = String(req.params.id || '').trim()
+        const result = await deletePlugin(id)
+        deps.addAudit?.('plugin-remove', id, '')
+        res.json(result)
+      } catch (error) {
+        res.status(502).json({ error: error instanceof Error ? error.message : '卸载插件失败' })
+      }
+    },
+  }
 }

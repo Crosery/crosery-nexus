@@ -120,7 +120,8 @@ for (const tag of ['v7.3.20', 'v7.4.0', 'v8.0.12']) {
     const committed = new Date(Number(b.git(b.src, 'log', '-1', '--format=%ct', 'HEAD')) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
     assert.ok(args.includes(image))
     assert.ok(args.includes(`BUILD_DATE=${committed}`), args.join(' '))
-    assert.ok(['CGO_ENABLED=0', 'GOFLAGS=-buildvcs=false', 'GOOS=linux', 'GOARCH=amd64'].every(arg => args.includes(arg)))
+    // 可复现构建参数：钉死镜像、BUILD_DATE 取提交时间；CGO_ENABLED=1 是插件宿主的前提（动态库 dlopen 需要 cgo）
+    assert.ok(['CGO_ENABLED=1', 'GOFLAGS=-buildvcs=false', 'GOOS=linux', 'GOARCH=amd64'].every(arg => args.includes(arg)))
     assert.deepEqual(stored.build, { go: 'go1.26.5', buildDate: committed, image })
     const uploaded = gunzipSync(await fs.readFile(path.join(b.root, 'upload-preview.gz')))
     assert.equal(createHash('sha256').update(uploaded).digest('hex'), stored.sha256, 'the gate receives the stored binary, gzip-compressed')

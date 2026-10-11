@@ -376,7 +376,7 @@ export async function loadAnalyticsReport(
     },
     {
       method: 'all',
-      sql: `SELECT u.request_id requestId,u.timestamp,u.provider,${canonicalModelSql('u')} model,u.endpoint,u.success,u.status_code statusCode,u.latency_ms latencyMs,u.ttft_ms ttftMs,u.input_tokens inputTokens,u.output_tokens outputTokens,u.reasoning_tokens reasoningTokens,u.cached_tokens cachedTokens,u.cache_write_tokens cacheWriteTokens,u.total_tokens totalTokens,u.error_detail errorDetail,u.error_category errorCategory,u.upstream_request_id upstreamRequestId,u.auth_index authIndex,u.reasoning_effort reasoningEffort,u.service_tier serviceTier,u.user_agent userAgent,${clientTypeSql('u')} clientType,u.client_ip clientIp,a.name keyName FROM usage_events u LEFT JOIN api_keys a ON a.key_hash=u.key_hash WHERE ${requestCurrentWhere} ORDER BY u.timestamp_ms DESC LIMIT 200`,
+      sql: `SELECT u.request_id requestId,u.timestamp,u.provider,${canonicalModelSql('u')} model,u.response_model responseModel,u.endpoint,u.success,u.status_code statusCode,u.latency_ms latencyMs,u.ttft_ms ttftMs,u.input_tokens inputTokens,u.output_tokens outputTokens,u.reasoning_tokens reasoningTokens,u.cached_tokens cachedTokens,u.cache_write_tokens cacheWriteTokens,u.total_tokens totalTokens,u.error_detail errorDetail,u.error_category errorCategory,u.upstream_request_id upstreamRequestId,u.auth_index authIndex,u.reasoning_effort reasoningEffort,u.service_tier serviceTier,u.user_agent userAgent,${clientTypeSql('u')} clientType,u.client_ip clientIp,a.name keyName FROM usage_events u LEFT JOIN api_keys a ON a.key_hash=u.key_hash WHERE ${requestCurrentWhere} ORDER BY u.timestamp_ms DESC LIMIT 80`,
       params: requestParams,
     },
     {
@@ -1693,6 +1693,7 @@ export type UsageWorkspaceRequestRow = {
   channel: string
   modelGroup: string
   model: string
+  responseModel: string
   endpoint: string
   success: number
   statusCode: number
@@ -1770,7 +1771,7 @@ export async function loadUsageWorkspaceRequests(
     eventReader.run([{
       method: 'all',
       sql: `SELECT u.request_id requestId, u.timestamp, u.timestamp_ms timestampMs, u.key_hash keyId, a.name keyName,
-          u.provider, u.model_group modelGroup, ${canonicalModelSql('u')} model, u.endpoint, u.success, u.status_code statusCode,
+          u.provider, u.model_group modelGroup, ${canonicalModelSql('u')} model, u.response_model responseModel, u.endpoint, u.success, u.status_code statusCode,
           u.latency_ms latencyMs, u.ttft_ms ttftMs, u.input_tokens inputTokens, u.output_tokens outputTokens,
           u.reasoning_tokens reasoningTokens, u.cached_tokens cachedTokens, u.cache_write_tokens cacheWriteTokens,
           u.total_tokens totalTokens, u.cost_usd costUsd, u.error_detail errorDetail, u.error_category errorCategory,
@@ -1847,6 +1848,7 @@ export async function loadUsageWorkspaceRequests(
       channel: usageChannelId(provider, groups),
       modelGroup: String(row.modelGroup || ''),
       model,
+      responseModel: String(row.responseModel || ''),
       endpoint: String(row.endpoint || ''),
       success: num(row.success),
       statusCode: num(row.statusCode),

@@ -17,7 +17,8 @@ async function run(argv, routes, { platform = 'linux', execute, extra = {} } = {
   const stdout = sink()
   const stderr = sink()
   const fetch = async (url, init) => {
-    const call = { method: init.method, path: new URL(url).pathname, cookie: init.headers.cookie || '', body: init.body ? JSON.parse(init.body) : undefined }
+    const parsedUrl = new URL(url)
+    const call = { method: init.method, path: parsedUrl.pathname, search: parsedUrl.search, cookie: init.headers.cookie || '', body: init.body ? JSON.parse(init.body) : undefined }
     calls.push(call)
     if (call.path === '/api/login') return json(200, { ok: true }, { 'set-cookie': `crosery_console_session=${routes.loginToken?.() ?? token()}` })
     if (call.path === '/api/logout') return json(200, { ok: true })
@@ -159,6 +160,42 @@ test('models ls --type：按服务端给的类型筛选，树里非对话模型�
   assert.equal(JSON.parse(legacyTable.stdout)[0].kind, null)
 })
 
+test('models upstream：表格与 --json 输出上游实际模型、次数与账号；缺少模型或非法 --days 退出 2', async () => {
+  const payload = {
+    requested: 'gemini-3.8-flash-high',
+    days: 14,
+    total: 5,
+    served: [
+      { model: 'gemini-3.8-flash-exp-a', requests: 3, accounts: [{ authIndex: 'ag-1', requests: 2 }, { authIndex: 'ag-2', requests: 1 }] },
+      { model: 'gemini-3.8-flash-n', requests: 2, accounts: [{ authIndex: 'ag-1', requests: 2 }] },
+    ],
+  }
+  const routes = {
+    'GET /api/models/gemini-3.8-flash-high/upstream-models': () => [200, payload],
+  }
+
+  const table = await run(['models', 'upstream', 'gemini-3.8-flash-high', '--days', '14'], routes)
+  assert.equal(table.code, 0, table.stderr)
+  const getCall = table.calls.find(call => call.path === '/api/models/gemini-3.8-flash-high/upstream-models')
+  assert.equal(getCall?.search, '?days=14')
+  assert.match(table.stdout, /gemini-3\.8-flash-exp-a/)
+  assert.match(table.stdout, /gemini-3\.8-flash-n/)
+  assert.match(table.stdout, /ag-1 \(2\), ag-2 \(1\)/)
+
+  const jsonRes = await run(['model', 'upstream', 'gemini-3.8-flash-high', '--json'], routes)
+  assert.equal(jsonRes.code, 0, jsonRes.stderr)
+  assert.equal(jsonRes.calls.find(call => call.path.endsWith('/upstream-models'))?.search, '?days=7')
+  assert.deepEqual(JSON.parse(jsonRes.stdout), payload)
+
+  const missing = await run(['models', 'upstream'], routes)
+  assert.equal(missing.code, 2)
+  assert.match(missing.stderr, /缺少 <模型>/)
+
+  const badDays = await run(['models', 'upstream', 'gemini-3.8-flash-high', '--days', '0'], routes)
+  assert.equal(badDays.code, 2)
+  assert.match(badDays.stderr, /--days/)
+})
+
 /* ── 自动升级：rtk auto / rtk upgrade ── */
 
 test('rtk auto：只读 /api/autoupdate 的 rtk 一项', async () => {
@@ -191,4 +228,94 @@ test('rtk upgrade --dry-run 显示下载与校验；rtk upgrade 需确认，确�
   assert.match(done.stdout, /✓ RTK  升级本机 rtk/)
   assert.doesNotMatch(held.stdout + held.stderr, /✓ RTK  升级本机 rtk/, 'a held upgrade is not shown as a done step')
   assert.match(held.stderr, /✗ RTK  升级本机 rtk.*409：v0\.51\.0 声明了破坏性变更/)
+})
+
+/* ── CPA 插件管理：plugins ls / store / install / rm ── */
+
+test('plugins ls 与 store：展示已装插件、商店来源与已装标记', async () => {
+  const routes = {
+    'GET /api/plugins': () => [200, {
+      plugins_enabled: true,
+      plugins_dir: 'plugins',
+      plugins: [
+        { id: 'opencode-session-mapper', path: 'plugins/opencode-session-mapper.so', registered: true, enabled: true, effective_enabled: true, metadata: { version: 'v0.3.2' } },
+        { id: 'pending-plugin', path: 'plugins/pending-plugin.so', registered: false, enabled: true, effective_enabled: false },
+      ],
+    }],
+    'GET /api/plugins/store': () => [200, {
+      plugins_enabled: true,
+      plugins_dir: 'plugins',
+      sources: [
+        { id: 'official', name: 'CLIProxyAPI Store', url: 'https://example.test/official/registry.json' },
+        { id: 'mirror', name: 'Community Mirror', url: 'https://example.test/mirror/registry.json' },
+      ],
+      plugins: [
+        { id: 'opencode-session-mapper', source_id: 'official', version: 'v0.3.2' },
+        { id: 'quota-guard', source_id: 'mirror', version: 'v1.0.0', installed: false },
+      ],
+    }],
+  }
+
+  const ls = await run(['plugins', 'ls'], routes)
+  assert.equal(ls.code, 0, ls.stderr)
+  assert.match(ls.stdout, /opencode-session-mapper/)
+  assert.match(ls.stdout, /v0\.3\.2/)
+  assert.match(ls.stdout, /plugins\/opencode-session-mapper\.so/)
+  assert.match(ls.stdout, /pending-plugin/)
+
+  const lsJson = await run(['plugin', 'ls', '--json'], routes)
+  assert.equal(lsJson.code, 0, lsJson.stderr)
+  const parsedLs = JSON.parse(lsJson.stdout)
+  assert.equal(parsedLs.plugins_enabled, true)
+  assert.equal(parsedLs.plugins.length, 2)
+  assert.equal(parsedLs.plugins[0].effective_enabled, true)
+
+  const store = await run(['plugins', 'store'], routes)
+  assert.equal(store.code, 0, store.stderr)
+  assert.match(store.stdout, /CLIProxyAPI Store/)
+  assert.match(store.stdout, /opencode-session-mapper.*已装/)
+  assert.match(store.stdout, /quota-guard.*未装/)
+})
+
+test('plugins install 与 rm：多来源冲突时报错列候选；带 --source 走 runPlan；rm 需确认', async () => {
+  const multiStore = {
+    sources: [
+      { id: 'official', name: 'Official' },
+      { id: 'community', name: 'Community' },
+    ],
+    plugins: [
+      { id: 'dup-plugin', source_id: 'official', version: '1.0.0' },
+      { id: 'dup-plugin', source_id: 'community', version: '1.0.0' },
+      { id: 'single-plugin', source_id: 'official', version: '2.0.0' },
+    ],
+  }
+  const routes = {
+    'GET /api/plugins/store': () => [200, multiStore],
+    'POST /api/plugins/store/dup-plugin/install': call => [200, { status: 'installed', id: 'dup-plugin', source_id: call.body?.source || '' }],
+    'POST /api/plugins/store/single-plugin/install': () => [200, { status: 'installed', id: 'single-plugin', source_id: 'official' }],
+    'DELETE /api/plugins/dup-plugin': () => [200, { status: 'deleted', id: 'dup-plugin' }],
+  }
+
+  const conflict = await run(['plugins', 'install', 'dup-plugin'], routes)
+  assert.equal(conflict.code, 2)
+  assert.match(conflict.stderr, /official.*community/)
+  assert.match(conflict.stderr, /--source/)
+  assert.ok(!conflict.calls.some(call => call.method === 'POST' && call.path.includes('/install')), '多来源未指定 --source 时不发安装请求')
+
+  const dry = await run(['plugins', 'install', 'dup-plugin', '--source', 'community', '--dry-run'], routes)
+  assert.equal(dry.code, 0, dry.stderr)
+  assert.ok(!dry.calls.some(call => call.method === 'POST' && call.path.includes('/install')))
+
+  const installed = await run(['plugins', 'install', 'dup-plugin', '--source', 'community'], routes)
+  assert.equal(installed.code, 0, installed.stderr)
+  const postCall = installed.calls.find(call => call.method === 'POST' && call.path === '/api/plugins/store/dup-plugin/install')
+  assert.deepEqual(postCall?.body, { source: 'community' })
+
+  const refusedRm = await run(['plugins', 'rm', 'dup-plugin'], routes)
+  assert.equal(refusedRm.code, 2)
+  assert.ok(!refusedRm.calls.some(call => call.method === 'DELETE'))
+
+  const removed = await run(['plugins', 'rm', 'dup-plugin', '--yes'], routes)
+  assert.equal(removed.code, 0, removed.stderr)
+  assert.ok(removed.calls.some(call => call.method === 'DELETE' && call.path === '/api/plugins/dup-plugin'))
 })

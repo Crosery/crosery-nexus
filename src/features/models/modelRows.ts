@@ -3,7 +3,7 @@
  * (tokens, the same query as /usage) and the optional insights evidence (success, spec, probes) into one row
  * per canonical model. Unknown stays null and renders `—`; a missing price is never `$0`.
  */
-import { clockParts, dayKey, fmtTime } from '../../ui/fmt.js'
+import { clockParts, dayKey, fmtInt, fmtPct, fmtTime } from '../../ui/fmt.js'
 import type { ModelKind } from '../../lib/modelKind.js'
 
 /*
@@ -528,4 +528,148 @@ export function legacyModelsQuery(query: Record<string, unknown>, pageSize = 50)
     else delete out.page
   }
   return out
+}
+
+/* ── /api/models/:model/upstream-models (实际响应的上游模型与账号分布) ── */
+
+export type UpstreamModelAccount = {
+  authIndex: string
+  requests: number
+}
+
+export type UpstreamServedModel = {
+  model: string
+  requests: number
+  accounts: UpstreamModelAccount[]
+}
+
+export type UpstreamModelsPayload = {
+  requested: string
+  days: number
+  total: number
+  served: UpstreamServedModel[]
+}
+
+export type UpstreamAccountView = {
+  key: string
+  authIndex: string
+  label: string
+  requests: number
+  share: number
+  shareText: string
+}
+
+export type UpstreamServedView = {
+  model: string
+  rewritten: boolean
+  requests: number
+  share: number
+  shareText: string
+  accountCount: number
+  accounts: UpstreamAccountView[]
+}
+
+export type UpstreamModelsView = {
+  requested: string
+  days: number
+  total: number
+  status: 'empty' | 'unchanged' | 'rewritten'
+  summary: string
+  rows: UpstreamServedView[]
+}
+
+/**
+ * 把 `/api/models/:model/upstream-models` 的聚合结果转成面板可直接渲染的视图模型：
+ * - `total` 为 0 或 `served` 为空 → `status: 'empty'`（暂无记录）
+ * - 只有 1 种上游模型且与请求模型一致（含 canonical 同名）→ `status: 'unchanged'`（上游未改写）
+ * - 其余（改写成了别的模型，或分流成了多种模型）→ `status: 'rewritten'`
+ */
+export function buildUpstreamModelsView(
+  payload: UpstreamModelsPayload | null | undefined,
+  fallbackRequested = '',
+  fallbackDays = 7,
+): UpstreamModelsView {
+  const requested = String(payload?.requested || fallbackRequested || '').trim()
+  const days = typeof payload?.days === 'number' && Number.isFinite(payload.days) && payload.days > 0 ? Math.floor(payload.days) : fallbackDays
+  const rawServed = Array.isArray(payload?.served) ? payload.served : []
+  const cleaned = rawServed
+    .map((item) => {
+      const model = String(item?.model ?? '').trim()
+      const requests = Math.max(0, Math.floor(Number(item?.requests) || 0))
+      const rawAccounts = Array.isArray(item?.accounts) ? item.accounts : []
+      const accounts = rawAccounts
+        .map((acc) => ({
+          authIndex: String(acc?.authIndex ?? '').trim(),
+          requests: Math.max(0, Math.floor(Number(acc?.requests) || 0)),
+        }))
+        .filter((acc) => acc.requests > 0)
+        .sort((a, b) => b.requests - a.requests || a.authIndex.localeCompare(b.authIndex))
+      return { model, requests, accounts }
+    })
+    .filter((item) => item.model !== '' && item.requests > 0)
+    .sort((a, b) => b.requests - a.requests || a.model.localeCompare(b.model))
+
+  const sumRequests = cleaned.reduce((sum, item) => sum + item.requests, 0)
+  const rawTotal = Math.max(0, Math.floor(Number(payload?.total) || 0))
+  const total = cleaned.length === 0 ? 0 : Math.max(rawTotal, sumRequests)
+
+  if (total <= 0 || cleaned.length === 0) {
+    return {
+      requested,
+      days,
+      total: 0,
+      status: 'empty',
+      summary: `近 ${days} 天暂无记录`,
+      rows: [],
+    }
+  }
+
+  const requestedCanonical = canonicalModel(requested)
+  const rows: UpstreamServedView[] = cleaned.map((item) => {
+    const share = total > 0 ? item.requests / total : 0
+    const rewritten = Boolean(requested) && item.model !== requested && canonicalModel(item.model) !== requestedCanonical
+    const accounts: UpstreamAccountView[] = item.accounts.map((acc, idx) => {
+      const accShare = item.requests > 0 ? acc.requests / item.requests : 0
+      return {
+        key: acc.authIndex || `__anon_${idx}`,
+        authIndex: acc.authIndex,
+        label: acc.authIndex || '未记录账号',
+        requests: acc.requests,
+        share: accShare,
+        shareText: fmtPct(accShare, accShare === 1 || accShare === 0 ? 0 : 1),
+      }
+    })
+    return {
+      model: item.model,
+      rewritten,
+      requests: item.requests,
+      share,
+      shareText: fmtPct(share, share === 1 || share === 0 ? 0 : 1),
+      accountCount: accounts.filter((acc) => acc.authIndex !== '').length || accounts.length,
+      accounts,
+    }
+  })
+
+  const unchanged = rows.length === 1 && !rows[0].rewritten
+  const summary = unchanged
+    ? '上游未改写'
+    : rows.length === 1
+      ? `上游已改写为 ${rows[0].model}`
+      : `上游分流为 ${fmtInt(rows.length)} 种实际模型`
+
+  return {
+    requested,
+    days,
+    total,
+    status: unchanged ? 'unchanged' : 'rewritten',
+    summary,
+    rows,
+  }
+}
+
+export function toggleUpstreamModelExpanded(expanded: ReadonlySet<string>, model: string): Set<string> {
+  const next = new Set(expanded)
+  if (next.has(model)) next.delete(model)
+  else next.add(model)
+  return next
 }

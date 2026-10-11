@@ -13,7 +13,10 @@
 #   （加了补丁、换了基底）就从那个 tag 重建 deploy 分支，旧分支留作 deploy-prev；打不上就停住，deploy 不动。
 #   没有补丁目录时沿用构建机上现有的 deploy 分支。
 #   可复现构建：Go 镜像按版本和 digest 钉死（CPA_GO_IMAGE 可换成镜像站，但必须带 @sha256:），BUILD_DATE 取 deploy HEAD 的
-#   提交时间（UTC），-trimpath、-s -w、CGO_ENABLED=0、-buildvcs=false：同一个 HEAD 总是同一个二进制。
+#   提交时间（UTC），-trimpath、-s -w、CGO_ENABLED=1、-buildvcs=false：同一个 HEAD 总是同一个二进制。
+#   CGO_ENABLED=1（gnu 镜像自带 gcc/glibc）：动态库插件宿主需要 cgo，静态构建加载不了任何 .so
+#   （pluginhost: standard dynamic library plugin loading requires cgo）。产物动态链接构建镜像的 glibc
+#   （bookworm = 2.36），两台目标机是 Ubuntu 24.04 / 26.04（2.39 / 2.43），向下兼容。
 set -uo pipefail
 ROOT=${CPA_PIPELINE_ROOT:-$HOME/cpa-pipeline}; SRC=$ROOT/src; STATE=$ROOT/state; LOG=$ROOT/logs/pipeline.log; TOOLS=$ROOT/tools
 STORE=$STATE/candidates
@@ -128,7 +131,7 @@ build_date=$(TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%
 if ! docker run --rm --platform linux/amd64 -v "$SRC:/src" -w /src \
      -v "$ROOT/cache/gomod:/go/pkg/mod" -v "$ROOT/cache/gobuild:/root/.cache/go-build" \
      -v "$ROOT/build-in-container.sh:/build.sh:ro" \
-     -e GOPROXY=https://goproxy.cn,direct -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false -e GOOS=linux -e GOARCH=amd64 \
+     -e GOPROXY=https://goproxy.cn,direct -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false -e GOOS=linux -e GOARCH=amd64 \
      -e VERSION="$version" -e COMMIT="$sha" -e BUILD_DATE="$build_date" \
      "$GO_IMAGE" bash /build.sh > "$STATE/build.out" 2>&1; then
   cat "$STATE/build.out" >> "$LOG"

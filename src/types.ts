@@ -226,6 +226,7 @@ export type RequestDetailItem = {
   provider?: string
   modelGroup?: string
   model: string
+  responseModel?: string
   endpoint: string
   success: number | boolean
   statusCode?: number
@@ -697,6 +698,7 @@ export type MeRequestItem = {
   id: string
   timestamp: string
   model: string
+  responseModel?: string
   endpoint: string
   success: boolean
   status: number | null
@@ -1094,4 +1096,23 @@ export type CredentialUploadResult = {
   skipped: number
   failed: number
   items: Array<{ name: string; label?: string; ok: boolean; skipped?: boolean; code?: string; message?: string }>
+}
+
+/** GET /api/models/:model/upstream-models (server/modelInsights.ts) */
+export type UpstreamModelAccount = {
+  authIndex: string
+  requests: number
+}
+
+export type UpstreamServedModel = {
+  model: string
+  requests: number
+  accounts: UpstreamModelAccount[]
+}
+
+export type UpstreamModelsPayload = {
+  requested: string
+  days: number
+  total: number
+  served: UpstreamServedModel[]
 }

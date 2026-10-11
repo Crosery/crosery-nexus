@@ -7,6 +7,7 @@ import config from './config.mjs'
 import doctor from './doctor.mjs'
 import keys from './keys.mjs'
 import models from './models.mjs'
+import plugins from './plugins.mjs'
 import proxy from './proxy.mjs'
 import rtk from './rtk.mjs'
 import settings from './settings.mjs'
@@ -15,7 +16,7 @@ import sync from './sync.mjs'
 import usage from './usage.mjs'
 import version from './version.mjs'
 
-export const COMMANDS = [status, channels, models, keys, accounts, proxy, usage, sync, rtk, settings, config, audit, login, logout, whoami, doctor, version]
+export const COMMANDS = [status, channels, models, keys, accounts, proxy, usage, sync, rtk, plugins, settings, config, audit, login, logout, whoami, doctor, version]
 
 export function findCommand(name) {
   const key = String(name || '').toLowerCase()
