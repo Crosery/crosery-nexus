@@ -60,7 +60,7 @@
 未完成（依赖外部条件）：
 1. ~~v8.0.23 补丁移植~~ **已完成并自验**：`deploy/kernels/cpa-patches/v8.0.23/`（0001–0012，SHA256SUMS + README）。干净 v8.0.23 检出 `git am` 12/12 干净、`sha256sum -c` 全 OK、`go build ./...` 通过，树 `d4de82c3`；0006/0008 的冲突在 `openai_compat_executor.go`：v8.0.23 把 TTFT 观测改成 `TrackHTTPClientRoundTripOnly` + `processFrame` 里的 `ObserveChatTokenEvent`，重写时把 relay 分流补成 `ObserveResponsesTokenEvent`（relay 与非 relay 各记各的）。
 2. ~~预发布验收（插件 + 注入 + 真 `oc-*` 200）~~ **已完成，见 §6**；剩构建机同步 `run.sh` / `build-in-container.sh` + 清同名候选，让正式那半走流水线。
-3. 控制台 0.2.5 出包（先预发布）：`cooldownRecovery` + 插件接口 + cradmin 都在这批里。
+3. ~~控制台 0.2.5 出包（先预发布）~~ **已完成**：提交 `4772c898e29d` 打 tag `v0.2.5-rc.1` → 预发布部署成功（切目录 5 秒健康，RTK 中转判定 keep）→ 验收通过 `api=passed`（网关 67 个模型；`gemini-3.8-flash`、`claude-sonnet-4-6` 各 JSON/SSE/工具往返全绿）。正式待所有者放行：`git branch -f main 4772c89` + `git tag v0.2.5` + `release plan/deploy/accept production`。
 4. 正式 `plugins.enabled` + 插件安装 + opencode 三个凭据的 `headers:`（等 cgo 内核）。
 
 ## 6. 预发布真上游验收（2026-10-11 16:01，已完成）
@@ -89,6 +89,6 @@
               alias: oc-deepseek-v4.1-flash
 ```
 
-**环境隔离**：验收用**临时入口 Key + 临时渠道**，只借正式的 opencode Go key 走一次真上游。验完立即撤：渠道块、入口 Key 及其在 `api-key-model-access` / `api-key-channel-access` 里被控制台补的条目、本地备份全部删除；复验 `session-echo` 测试架仍 200，`config.yaml` 里 opencode 残留为 0。（提醒：控制台会给新出现的 Key 显式补写访问条目，删 Key 时三处都要删。）
+**环境隔离与最终状态**：先用临时入口 Key + 临时渠道借正式的 opencode Go key 走通一次真上游，验完立即撤（渠道块、入口 Key 及其在 `api-key-model-access` / `api-key-channel-access` 里被控制台补的条目、备份全删；复验 `session-echo` 测试架仍 200）。随后预发布改装一把**预发布专用** opencode Go Key：渠道 `opencode-go` 常驻，11 个模型 alias 与正式同名，凭据条目 `proxy-url: "direct"` + 两条会话头映射。该 Key 实测：直连 `GET /zen/go/v1/models` → 200，直连 `chat/completions` → 200（真 completion），经 CPA 管理面 `/api-call` 转发上游 → **200**。（提醒：控制台会给新出现的入口 Key 显式补写访问条目，删 Key 时三处都要删。）
 
-**当时预发布状态**：内核 `8.0.23-patched.45a47198`（sha256 `19568dcd…`），`kernel-applier adopt` 已接入试运行台账（soak 到 `2026-10-12T07:53:28Z`），插件 `registered: true, effective_enabled: true`。
+**当时预发布状态**：内核 `8.0.23-patched.45a47198`（sha256 `19568dcd…`），`kernel-applier adopt` 已接入试运行台账（soak 到 `2026-10-12T07:53:28Z`），插件 `registered: true, effective_enabled: true`；控制台已切到 `v0.2.5-rc.1`（提交 `4772c898e29d`，验收 `api=passed`）。
