@@ -639,6 +639,17 @@ test('probe inputs: account types from the auth dir, probe keys, models, auth-di
   assert.equal(pickProbeModel(['claude-opus-4-1', 'claude-haiku-4-5', 'claude-sonnet-4-5']), 'claude-haiku-4-5')
   assert.equal(pickProbeModel(['gpt-image-1', 'gpt-5']), 'gpt-5')
   assert.equal(pickProbeModel([]), null)
+  const mixed = [
+    { id: 'antigravity/gemini-3.1-flash-lite', owned_by: 'antigravity' },
+    { id: 'claude-opus-4-6-thinking', owned_by: 'antigravity' },
+    { id: 'claude-opus-5', owned_by: 'anthropic' },
+    { id: 'codex/gpt-5.6-luna', owned_by: 'openai' },
+    { id: 'gpt-5.5', owned_by: 'openai' },
+    { id: 'oc-deepseek-v4.1-flash', owned_by: 'opencode-go' },
+  ]
+  assert.equal(pickProbeModel(mixed, 'antigravity'), 'antigravity/gemini-3.1-flash-lite')
+  assert.equal(pickProbeModel(mixed, 'claude'), 'claude-opus-5', 'claude probe skips antigravity-owned claude-* and antigravity/*')
+  assert.equal(pickProbeModel(mixed, 'codex'), 'codex/gpt-5.6-luna', 'codex probe prefers codex/* or openai-owned gpt-*')
 })
 
 test('probes: one request per type in parallel, skipped types say why, failures carry no key, the deadline bounds everything', async () => {

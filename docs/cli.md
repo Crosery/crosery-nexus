@@ -67,6 +67,7 @@ rm ~/.local/bin/cradmin                                        # 卸载
 ```text
 cradmin status                                   总览
 cradmin channels ls | show <渠道>
+cradmin channels keys <渠道> | keys add <渠道> --api-key-stdin | keys rm <渠道> <ref>
 cradmin channels models <渠道> [--enable p,…] [--disable p,…] [--only p,…]   模型开关（精确 id 或 * ? 通配）
 cradmin channels enable|disable <渠道>
 cradmin channels add <名称> --base-url <url> --api-key-stdin --models id[=别名],… [--protocol openai|claude|responses]   上游 Key 从 stdin 读
@@ -144,7 +145,7 @@ cradmin proxy export --with-secrets --out pool.json   # 迁移到另一台控制
 ## 暂不支持
 
 - 按 Key 单独的模型白名单：服务端没有这个概念，访问控制只到分组（渠道 / 账号池）；模型开关按渠道全局生效。
-- 编辑渠道（URL、上游 Key、别名）、给渠道加第二把上游 Key：变通是 `channels rm` 后 `add`（会丢停用快照）。
+- 编辑渠道基本信息（URL、别名）：变通是 `channels rm` 后 `add`（会丢停用快照）。已支持 `channels keys add/rm` 管理多把上游 Key。
 - 系统设置的写入：都是部署环境变量，`settings` 只读，改完重启控制台（CPA 全局代理可用 `proxy default` 改）。
 - 修改管理员密码、会话列表或批量吊销。
 - 审计只能拿到最近 100 条，没有操作者字段（CLI 与网页操作无法区分）。

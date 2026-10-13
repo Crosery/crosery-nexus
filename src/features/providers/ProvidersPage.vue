@@ -18,6 +18,7 @@ import { useIndicator } from '../../ui/composables/useIndicator'
 import { useLive } from '../../ui/composables/useLive'
 import { useNow } from '../../ui/composables/useNow'
 import { fmtDuration, fmtInt, fmtPct, NONE } from '../../ui/fmt'
+import { errorMessage } from '../../lib/errors'
 import { notify } from '../../ui/feedback/toast'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { api } from '../../api'
@@ -244,7 +245,7 @@ const channelRows = computed<ChannelRow[]>(() => {
       modelsOn: m.on,
       modelsTotal: m.total,
       sharedCount,
-      credsInfo: `${c.keyCount || 1} Key`,
+      credsInfo: c.keyCount > 0 ? `${c.keyCount} Key` : '无 Key',
       statusState: c.enabled ? cls.state : 'off',
       statusLabel: c.enabled ? cls.label : '停用',
       statusReason: c.enabled ? cls.reason : undefined,
@@ -306,7 +307,10 @@ const sharedColumns = computed<RowColumn<SharedModelRow>[]>(() => [
 /* ── 弹窗抽屉与真实操作 ── */
 const createChannelOpen = ref(false)
 const channelSheetOpen = ref(false)
-const focusedChannel = shallowRef<ChannelItem | null>(null)
+/** 只记渠道名，抽屉里的数据按名字从最新一次读里取：刷新后抽屉跟着更新，不用把旧对象钉住。 */
+const focusedChannelName = ref<string | null>(null)
+const focusedChannel = computed<ChannelItem | null>(() =>
+  channelsData.value.find((channel) => channel.name === focusedChannelName.value) ?? null)
 const addSharedOpen = ref(false)
 const searchModelQuery = ref('')
 
@@ -319,7 +323,7 @@ function setPending(key: string, on: boolean) {
 }
 
 function openChannelConfig(row: ChannelRow) {
-  focusedChannel.value = row.channelRef
+  focusedChannelName.value = row.name
   channelSheetOpen.value = true
 }
 
@@ -387,12 +391,105 @@ async function deleteChannel(channel: ChannelItem) {
     await api.deleteChannel(channel.name)
     notify(`✓ 已删除 ${channel.name}`)
     channelSheetOpen.value = false
-    focusedChannel.value = null
+    focusedChannelName.value = null
     await channelsLive.refresh()
   } catch {
     notify('删除失败', { tone: 'bad' })
   } finally {
     setPending(channel.name, false)
+  }
+}
+
+async function addKey(channel: ChannelItem, apiKey: string): Promise<boolean> {
+  const key = `${channel.name}\u0000add-key`
+  if (pending.value.has(key)) return false
+  setPending(key, true)
+  try {
+    await api.addChannelKey(channel.name, apiKey)
+    notify(`✓ 已为 ${channel.name} 添加上游 Key`)
+    await channelsLive.refresh()
+    return true
+  } catch (error) {
+    notify(`◆ 添加 Key 失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
+    return false
+  } finally {
+    setPending(key, false)
+  }
+}
+
+async function removeKey(channel: ChannelItem, ref: string): Promise<boolean> {
+  const key = `${channel.name}\u0000key:${ref}`
+  if (pending.value.has(key)) return false
+  const targetKey = channel.keys?.find((k) => k.ref === ref)
+  const ok = await confirmSheet({
+    title: `删除 ${channel.name} 的上游 Key？`,
+    facts: [
+      { k: '渠道', v: channel.name },
+      { k: 'Key', v: targetKey?.masked ?? ref },
+      { k: '标识', v: ref },
+    ],
+    consequence: '少一把上游凭据 · 渠道只剩一把 Key 时无法删除',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return false
+
+  setPending(key, true)
+  try {
+    await api.removeChannelKey(channel.name, ref)
+    notify(`✓ 已删除 ${channel.name} 的上游 Key`)
+    await channelsLive.refresh()
+    return true
+  } catch (error) {
+    notify(`◆ 删除 Key 失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
+    return false
+  } finally {
+    setPending(key, false)
+  }
+}
+
+/* ── 拉取模型：只探这一个渠道的上游 ──
+   每个渠道在抽屉里单独拉（截图那处）。与「同步中心 · 立即同步」的整表冷却分开：点一个渠道不该被
+   别人的全量探测挡住，服务端也不因为单渠道探测而推进任何目录状态。只加新模型，人工停用的不恢复。 */
+const pullingChannels = ref(new Set<string>())
+
+async function pullChannelModels(channel: ChannelItem) {
+  if (pullingChannels.value.has(channel.name)) return
+  if (!channel.enabled) {
+    notify('渠道已停用 · 启用后才能探测上游', { tone: 'note', id: 'cx-ch-pull' })
+    return
+  }
+  const ok = await confirmSheet({
+    title: `拉取 ${channel.name} 的模型？`,
+    facts: [
+      { k: '地址', v: hostOf(channel.baseUrl) },
+      { k: '现有', v: `${fmtInt(modelCounts(channel).total)} 个映射` },
+    ],
+    consequence: '向上游发一次 /models 探测 · 只加新模型 · 人工停用的模型不会被恢复',
+    confirmText: '拉取',
+  })
+  if (!ok) return
+  const next = new Set(pullingChannels.value)
+  next.add(channel.name)
+  pullingChannels.value = next
+  try {
+    const response = await api.syncChannelModels(channel.name)
+    const result = response.result
+    const tone = result.result === 'error' ? 'bad' : result.result === 'partial' ? 'warn' : 'ok'
+    notify(`${channel.name} · ${result.summary}${result.errors.length ? ` · ${result.errors.slice(0, 2).join('；')}` : ''}`, {
+      tone, id: 'cx-ch-pull', duration: tone === 'ok' ? undefined : 9000,
+    })
+    // 模型已经写进网关；只是 Key 白名单这轮没跟上，如实说一句，不把整次拉取说成失败
+    if (!response.reconciled) notify('◇ Key 模型白名单这次没同步上 · 下一轮定时同步会补', { tone: 'warn', id: 'cx-ch-pull-reconcile' })
+    await channelsLive.refresh()
+  } catch (error) {
+    const reason = (error as { reason?: string | null }).reason
+    if (reason === 'channel_not_found') notify(`◆ ${channel.name} 已不在网关里 · 可能是残留快照`, { tone: 'bad', id: 'cx-ch-pull' })
+    else notify(`◆ 拉取失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-pull' })
+  } finally {
+    const done = new Set(pullingChannels.value)
+    done.delete(channel.name)
+    pullingChannels.value = done
   }
 }
 
@@ -749,6 +846,9 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       :health-available="healthAvailable"
       :pending="pending"
       :toggle-model="toggleModel"
+      :pull-models="pullChannelModels"
+      :add-key="addKey"
+      :remove-key="removeKey"
       @toggle-channel="toggleChannel"
       @delete="deleteChannel"
     />

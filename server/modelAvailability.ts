@@ -300,7 +300,7 @@ export type ModelAvailabilityDeps = {
   /** 未经可用性过滤的渠道目录（含 available:false 的分组）。 */
   listCatalog: () => Promise<ConsoleGroup[]>
   /** 注册并钉住每个服务的探测 Key，返回服务 → Key。 */
-  ensureProbeKeys: (services: string[]) => Promise<Record<string, string>>
+  ensureProbeKeys: (services: string[], cpaChannels?: Record<string, string>) => Promise<Record<string, string>>
   probe: (key: string, model: string) => Promise<ProbeResponse>
   audit: (action: string, target: string, details: string) => void
   /** 有状态变化时调用（清缓存 + 立即对账）；失败只记日志，下一轮 15 秒对账会补上。 */
@@ -333,7 +333,8 @@ export async function runModelAvailabilityRound(
   const catalog = await deps.listCatalog()
   // 目录暂时为空的服务和账号归零的一样原样保留：不能因为一次空目录把已下线的模型忘掉、重新放行
   const live = catalog.filter((group) => group.available !== false && group.models.length > 0)
-  const keys = live.length ? await deps.ensureProbeKeys(live.map((group) => group.id)) : {}
+  const cpaChannels = Object.fromEntries(live.filter((group) => group.cpaChannel).map((group) => [group.id, group.cpaChannel!]))
+  const keys = live.length ? await deps.ensureProbeKeys(live.map((group) => group.id), cpaChannels) : {}
 
   const tasks = live.flatMap((group) => group.models.filter((model) => kindOf(model) === 'chat').map((model) => ({ service: group.id, model })))
   const responses = await mapWithConcurrency(tasks, PROBE_CONCURRENCY, async ({ service, model }) => {

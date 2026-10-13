@@ -1,4 +1,4 @@
-import { mergeChannelView } from './channelView.js'
+import { channelKeyRef, channelKeyViews, mergeChannelView, type ChannelKeyView } from './channelView.js'
 import type { ChannelSnapshotRow, ModelStateRow } from './channelView.js'
 import { apiCall, deleteAuthFile, deleteCompatChannel, getAuthFileModels, getCompatChannels, getExcludedModels, getProviderKeyEntries, listAuthFiles, modelId, providerChannelName, putCompatChannels, putExcludedModels, putProviderKeyEntries, setAuthFileDisabled, setAuthFileProxy, PROVIDER_KEY_ENDPOINTS, type ProviderKeyEndpoint, type ProviderKeyEntry } from './cpa.js'
 import type { CompatChannel, CompatModel } from './cpa.js'
@@ -296,6 +296,81 @@ export async function createChannel(input: {
   return { name, baseUrl, models }
 }
 
+/** 一个渠道最多几把上游 Key：够轮换与多上游分流，又不至于让渠道难读、探测成本失控。 */
+export const MAX_CHANNEL_KEYS = 8
+
+/** 上游 Key 增删的失败：status 给路由层映射 HTTP，reason 给前端与 CLI 分支。 */
+export class ChannelKeyError extends Error {
+  constructor(readonly status: number, readonly reason: string, message: string) {
+    super(message)
+    this.name = 'ChannelKeyError'
+  }
+}
+
+/**
+ * 找到兼容渠道在 CPA 表里的下标。找不到时分清三种「不存在」：
+ * 挂在原生端点（每渠道只有一把 Key，结构上就不支持多把）、面板停用（先启用）、真的没有（404）。
+ */
+async function requireCompatChannel(live: CompatChannel[], name: string): Promise<number> {
+  const index = live.findIndex((channel) => String(channel.name || '') === name)
+  if (index >= 0) return index
+  if ((await getProviderChannels()).some((channel) => String(channel.name || '') === name)) {
+    throw new ChannelKeyError(409, 'keys_unsupported', '这个渠道挂在 Anthropic / Codex 等原生端点下，每渠道只能有一把上游 Key')
+  }
+  if ((await listChannels()).some((channel) => channel.name === name)) {
+    throw new ChannelKeyError(409, 'channel_disabled', '渠道停用中 · 先启用再改上游 Key')
+  }
+  throw new ChannelKeyError(404, 'channel_not_found', '渠道不存在')
+}
+
+/**
+ * 加一把上游 Key。**先拿这把 Key 真打一次上游 /models**，探测不过就不落表——
+ * 加进去一把用不了的 Key，只会把渠道的失败率推高，还看不出是哪把坏的。
+ * 内核按条目轮询，多把 Key 之间是并列关系，没有主备顺序。
+ */
+export async function addChannelApiKey(name: string, apiKey: string): Promise<ChannelKeyView[]> {
+  const key = apiKey.trim()
+  if (!key) throw new ChannelKeyError(400, 'empty_key', '请输入 API Key')
+  invalidateGatewaySnapshot()
+  const live = await getCompatChannels()
+  const index = await requireCompatChannel(live, name)
+  const channel = live[index]
+  const entries = [...(channel['api-key-entries'] || [])]
+  if (entries.some((entry) => String(entry['api-key'] || '') === key)) {
+    throw new ChannelKeyError(409, 'key_exists', '这把 Key 已经在渠道里了')
+  }
+  if (entries.length >= MAX_CHANNEL_KEYS) {
+    throw new ChannelKeyError(409, 'key_limit', `一个渠道最多 ${MAX_CHANNEL_KEYS} 把上游 Key`)
+  }
+  const protocol: ChannelProtocol = String(channel['relay-mode'] || '') === 'responses' ? 'responses' : 'openai'
+  await discoverChannelModels(protocol, String(channel['base-url'] || ''), key)
+  live[index] = { ...channel, 'api-key-entries': [...entries, { 'api-key': key }] }
+  await putCompatChannels(live)
+  return channelKeyViews(live[index]['api-key-entries'])
+}
+
+/**
+ * 删一把上游 Key，按 sha256 前 12 位定位（见 channelKeyRef）。
+ * 禁止删到最后一把：渠道没有 Key 时所有请求都会失败，而那等同于删渠道——
+ * 要收掉整个渠道，走删除渠道，停用快照与模型开关一起清理干净。
+ */
+export async function removeChannelApiKey(name: string, ref: string): Promise<ChannelKeyView[]> {
+  invalidateGatewaySnapshot()
+  const live = await getCompatChannels()
+  const index = await requireCompatChannel(live, name)
+  const channel = live[index]
+  const entries = [...(channel['api-key-entries'] || [])]
+  const target = entries.findIndex((entry) => channelKeyRef(String(entry['api-key'] || '')) === ref)
+  if (target < 0) throw new ChannelKeyError(404, 'key_not_found', '渠道里没有这把 Key')
+  if (entries.length <= 1) {
+    throw new ChannelKeyError(409, 'last_key', '不能删掉最后一把上游 Key · 先加新 Key 再删旧的；要收掉整个渠道请删除渠道')
+  }
+  entries.splice(target, 1)
+  live[index] = { ...channel, 'api-key-entries': entries }
+  await putCompatChannels(live)
+  return channelKeyViews(live[index]['api-key-entries'])
+}
+
 /**
  * 清理已经不在网关里、也不是面板主动停用的残留渠道快照。
  * 只删本地记录，不碰 CPA——它们在 CPA 侧本就已经不存在了。
@@ -327,6 +402,9 @@ const cachedAuthFileModels = async (name: string) => {
   return models
 }
 
+/** 「拉取模型」的一次性读：不写也不读目录缓存，同一轮里同名的重复请求也会各打一次网关。 */
+const authFileModelsUncached = (name: string) => getAuthFileModels(name)
+
 /** 上一次拿到的非空 OAuth 模型目录，落库以便重启后仍能兜底。 */
 const OAUTH_MODELS_SETTING = 'oauth.models.lastKnown'
 
@@ -343,14 +421,37 @@ const writeLastKnownOAuthModels = (models: Record<string, string[]>) => {
     .run(OAUTH_MODELS_SETTING, JSON.stringify(merged))
 }
 
+/**
+ * 账号池「拉取模型」的落点：**重读网关下发的目录**，不是向上游探测。
+ * 订阅账号的模型由网关按凭据解析（/auth-files/models），控制台不持有 OAuth token，
+ * 也无从构造上游 /models 请求——所以这里只丢开 30s 目录缓存与 15s 网关快照真打一次网关。
+ * 人工停用的模型不受影响：目录只被读，停用走 oauth-excluded-models，与本函数无关。
+ */
+export async function refreshCredentialModels(): Promise<{
+  credentials: Awaited<ReturnType<typeof listCredentials>>
+  /** 有在线凭据却读到空目录、按规则沿用上次结果的 provider（网关抖动 / 凭据刚换） */
+  degraded: string[]
+  models: Record<string, string[]>
+}> {
+  invalidateGatewaySnapshot()
+  oauthModelCache = null
+  const credentials = await fetchCredentials({ force: true })
+  return { credentials, degraded: lastDegradedProviders, models: lastFetchedProviderModels }
+}
+
 /** OAuth 凭据（codex/claude/xai…）由网关原生支持禁用，直接透传。 */
-async function fetchCredentials() {
+let lastDegradedProviders: string[] = []
+let lastFetchedProviderModels: Record<string, string[]> = {}
+
+async function fetchCredentials(options: { force?: boolean } = {}) {
   const result = await listAuthFiles()
   const { credentials, models, degraded } = await attachCredentialModels(
     summarizeCredentialFiles(result.files || []),
-    cachedAuthFileModels,
+    options.force ? authFileModelsUncached : cachedAuthFileModels,
     { lastKnown: readLastKnownOAuthModels() },
   )
+  lastDegradedProviders = degraded
+  lastFetchedProviderModels = models
   if (degraded.length) console.warn(`[oauth-models] 网关未返回模型目录，沿用上一次结果: ${degraded.join(', ')}`)
   writeLastKnownOAuthModels(models)
   return credentials

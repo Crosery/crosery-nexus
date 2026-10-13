@@ -1,5 +1,6 @@
 // channels：渠道，以及每个渠道启用哪些模型。
 import { CliError, UsageError, listValue } from '../args.mjs'
+import { HttpError, request } from '../client.mjs'
 import { channelState, channelToggleItem, getChannels, getModelIndex, modelToggleItems, modelsOf, providerModels, providersOf } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
 import { planModelChanges, resolveChannel } from '../resolve.mjs'
@@ -13,6 +14,10 @@ const HELP = `cradmin channels <动作> [参数]
 动作：
   ls                         列出全部渠道与账号池（默认）：供应商 → API 渠道 / 订阅账号池，同控制台「供应商」页
   show <渠道>                渠道状态（含原因）、地址与模型开关（同控制台渠道详情）
+  keys <渠道>                列出渠道持有的上游 Key（打码 + ref 前缀）
+  keys add <渠道> --api-key-stdin
+                             为兼容渠道添加一把上游 Key（支持多 Key 轮询）
+  keys rm <渠道> <ref>       按 ref 删除渠道的一把上游 Key
   models <渠道>              只看模型开关；带下面的参数时改开关
       --enable p,…           启用匹配的模型（精确 id，或带 * ? 的通配）
       --disable p,…          停用匹配的模型
@@ -27,9 +32,12 @@ const HELP = `cradmin channels <动作> [参数]
 说明：
   模式一个模型都没匹配上时退出 2，不发任何请求；只为状态真正变化的模型发请求。
   启用只能恢复已归档的模型；新模型用 cradmin models sync 拉取。
-  暂不支持：编辑渠道（URL、上游 Key、别名）、给渠道加第二把上游 Key（变通：rm 后 add，会丢停用快照）。
+  暂不支持：编辑渠道基本信息（URL、别名；变通：rm 后 add，会丢停用快照）。
 
 示例：
+  cradmin channels keys <渠道>
+  cradmin channels keys add <渠道> --api-key-stdin < key.txt
+  cradmin channels keys rm <渠道> <ref> --yes
   cradmin channels models codex --only 'gpt-5*'
   cradmin channels models <渠道> --disable 'm*' --dry-run
   cradmin channels add <名称> --base-url https://api.example.com/v1 --api-key-stdin --models gpt-4o,gpt-4o-mini=mini < key.txt
@@ -66,11 +74,26 @@ async function detail(ctx, name) {
   const models = await modelsOf(ctx, resolved)
   if (resolved.kind === 'compat') {
     const { channel } = resolved
-    return { resolved, data: { name: channel.name, kind: 'compat', state: channelState(channel), enabled: Boolean(channel.enabled), stale: Boolean(channel.stale), baseUrl: channel.baseUrl, keyCount: channel.keyCount ?? null, models } }
+    return {
+      resolved,
+      data: {
+        name: channel.name,
+        kind: 'compat',
+        state: channelState(channel),
+        enabled: Boolean(channel.enabled),
+        stale: Boolean(channel.stale),
+        baseUrl: channel.baseUrl,
+        keyCount: channel.keyCount ?? (channel.keys ? channel.keys.length : null),
+        ...(Array.isArray(channel.keys) ? { keys: channel.keys } : {}),
+        models,
+      },
+    }
   }
   const provider = providersOf(payload).find(item => item.id === resolved.name)
   return { resolved, data: { name: resolved.name, kind: 'oauth', state: provider?.active ? '启用' : '无可用账号', accounts: provider?.accounts ?? 0, models } }
 }
+
+const formatChannelKey = key => (key.ref ? `${key.masked}（${key.ref.slice(0, 8)}）` : key.masked)
 
 /** 同一个模型挂了几条上游（控制台模型行的 ×N）；只有兼容渠道有。 */
 const upstreamsOf = resolved => new Map((resolved.kind === 'compat' ? resolved.channel.models || [] : []).map(model => [model.id, Number(model.upstreams) || 0]))
@@ -87,7 +110,7 @@ function renderDetail(ctx, data, { modelsOnly = false, upstreams = new Map() } =
       ui.kv('状态', ui.paint(cls.tone, cls.label))
       if (cls.reason) ui.kv('', ui.paint('muted', `${cls.reason}${cls.hint}`))
       ui.kv('地址', data.baseUrl || '—')
-      ui.kv('Key', `${data.keyCount ?? '—'} 个`)
+      ui.kv('Key', data.keys?.length ? data.keys.map(formatChannelKey).join('、') : `${data.keyCount ?? '—'} 个`)
     } else {
       const info = providerInfo(data.name)
       ui.kv('渠道', providerTitle(info, data.name))
@@ -170,6 +193,167 @@ async function addChannel(ctx, name) {
   ctx.output({ ...result, results: result.results.map(item => ({ ...item, result: item.result ? { name: item.result.name, baseUrl: item.result.baseUrl, models: item.result.models } : undefined })) })
 }
 
+const CHANNEL_KEY_REASONS = {
+  key_exists: '这把 Key 已经在渠道里了（重复 Key）',
+  last_key: '不能删掉最后一把上游 Key · 先加新 Key 再删旧的',
+  channel_not_found: '渠道不存在',
+  key_not_found: '渠道里没有这把 Key',
+  keys_unsupported: '该渠道挂在原生端点下，不支持多把上游 Key',
+  channel_disabled: '渠道停用中 · 先启用再改上游 Key',
+  key_limit: '一个渠道最多 8 把上游 Key',
+  empty_key: '缺少上游 API Key',
+}
+
+function translateChannelKeyError(error) {
+  if (error instanceof HttpError) {
+    if (error.reason && CHANNEL_KEY_REASONS[error.reason]) {
+      return new CliError(CHANNEL_KEY_REASONS[error.reason], 1)
+    }
+    if (error.status === 502) {
+      const detail = error.message.replace(/^服务端返回\s*502[：:]\s*/u, '').trim()
+      return new CliError(`上游探测失败：${detail || '该 Key 无法连接上游 /models'}`, 1)
+    }
+  }
+  return error
+}
+
+async function listChannelKeys(ctx, name) {
+  if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys <渠道>')
+  const payload = await getChannels(ctx)
+  const resolved = resolveChannel(payload, name)
+  if (resolved.kind !== 'compat') {
+    throw new UsageError(`${name} 是账号池，没有上游 Key 概念`)
+  }
+  const channel = resolved.channel
+  const keys = channel.keys || []
+  return void ctx.output({ channel: channel.name, keys }, () => {
+    ctx.ui.section(`${channel.name} 的上游 Key`, `${keys.length} 把`)
+    if (!keys.length) {
+      ctx.ui.note('— 这个渠道没有上游 Key')
+    } else {
+      ctx.ui.tree(keys.map(k => ({
+        kind: 'key',
+        cells: [formatChannelKey(k)],
+      })))
+    }
+    ctx.ui.note(`添加：cradmin channels keys add ${channel.name} --api-key-stdin`)
+    ctx.ui.note(`删除：cradmin channels keys rm ${channel.name} <ref>`)
+  })
+}
+
+async function addChannelKey(ctx, name) {
+  const { values } = ctx
+  if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys add <渠道> --api-key-stdin')
+  const payload = await getChannels(ctx)
+  const resolved = resolveChannel(payload, name)
+  if (resolved.kind !== 'compat') throw new UsageError(`${name} 是账号池，没有上游 Key 概念`)
+  if (!values['api-key-stdin']) throw new UsageError('需要 --api-key-stdin；不接受命令行里的明文 Key')
+  const apiKey = ctx.io.stdin.isTTY ? await ctx.prompter.secret('上游 API Key：') : await readAllStdin(ctx.io.stdin)
+  if (!apiKey) throw new UsageError('stdin 里没有读到上游 Key')
+
+  const count = resolved.channel.keys?.length ?? resolved.channel.keyCount ?? 0
+  const item = {
+    area: '渠道',
+    label: name,
+    from: `${count} 把 Key`,
+    to: '添加上游 Key',
+    method: 'POST',
+    path: `/api/channels/${encodeURIComponent(name)}/keys`,
+    body: { apiKey },
+    target: `渠道 ${name}`,
+    run: async () => {
+      try {
+        return await request(ctx, 'POST', `/api/channels/${encodeURIComponent(name)}/keys`, {
+          body: { apiKey },
+          target: `渠道 ${name}`,
+        })
+      } catch (error) {
+        throw translateChannelKeyError(error)
+      }
+    },
+  }
+
+  const result = await runPlan(ctx, {
+    level: 'A',
+    title: '添加上游 Key',
+    items: [item],
+  })
+  ctx.output(result)
+}
+
+async function removeChannelKey(ctx, name, rawRef) {
+  if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys rm <渠道> <ref>')
+  if (!rawRef) throw new UsageError('缺少 <ref>', '用法：cradmin channels keys rm <渠道> <ref>')
+  const payload = await getChannels(ctx)
+  const resolved = resolveChannel(payload, name)
+  if (resolved.kind !== 'compat') throw new UsageError(`${name} 是账号池，没有上游 Key 概念`)
+
+  const keys = resolved.channel.keys || []
+  let targetRef = rawRef
+  let targetMasked = rawRef
+  const matched = keys.filter(k => k.ref === rawRef || k.ref.startsWith(rawRef))
+  if (matched.length === 1) {
+    targetRef = matched[0].ref
+    targetMasked = matched[0].masked
+  } else if (matched.length > 1) {
+    throw new UsageError(`ref 前缀 ${rawRef} 对应多把 Key：${matched.map(k => `${k.masked}（${k.ref.slice(0, 8)}）`).join('、')}`)
+  }
+
+  const item = {
+    area: '渠道',
+    label: `${name}（${targetMasked}）`,
+    from: targetRef.slice(0, 8),
+    to: '删除',
+    method: 'DELETE',
+    path: `/api/channels/${encodeURIComponent(name)}/keys/${encodeURIComponent(targetRef)}`,
+    target: `渠道 ${name} 的 Key ${targetMasked}`,
+    run: async () => {
+      try {
+        return await request(ctx, 'DELETE', `/api/channels/${encodeURIComponent(name)}/keys/${encodeURIComponent(targetRef)}`, {
+          target: `渠道 ${name} 的 Key ${targetMasked}`,
+        })
+      } catch (error) {
+        throw translateChannelKeyError(error)
+      }
+    },
+  }
+
+  const result = await runPlan(ctx, {
+    level: 'C',
+    title: '删除上游 Key',
+    danger: '会少一把上游凭据',
+    items: [item],
+  })
+  ctx.output(result)
+}
+
+async function handleChannelKeys(ctx, args) {
+  if (!args.length) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys <渠道> 或 cradmin channels keys add|rm …')
+  const [first, ...rest] = args
+  if (first === 'add') {
+    const [name, ...extra] = rest
+    if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys add <渠道> --api-key-stdin')
+    if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+    return addChannelKey(ctx, name)
+  }
+  if (first === 'rm' || first === 'remove' || first === 'delete') {
+    const [name, ref, ...extra] = rest
+    if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys rm <渠道> <ref>')
+    if (!ref) throw new UsageError('缺少 <ref>', '用法：cradmin channels keys rm <渠道> <ref>')
+    if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+    return removeChannelKey(ctx, name, ref)
+  }
+  if (first === 'ls' || first === 'list') {
+    const [name, ...extra] = rest
+    if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels keys ls <渠道>')
+    if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+    return listChannelKeys(ctx, name)
+  }
+  const name = first
+  if (rest.length) throw new UsageError(`多余的参数：${rest.join(' ')}`)
+  return listChannelKeys(ctx, name)
+}
+
 export default {
   name: 'channels',
   aliases: ['channel', 'ch'],
@@ -185,11 +369,11 @@ export default {
     protocol: { type: 'string' },
   },
   async run(ctx) {
-    const [action = 'ls', name, ...extra] = ctx.positionals
-    if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+    const [action = 'ls', ...args] = ctx.positionals
     switch (action) {
       case 'ls':
       case 'list': {
+        if (args.length) throw new UsageError(`多余的参数：${args.join(' ')}`)
         const rows = await listView(ctx)
         return void ctx.output(rows, () => {
           if (!rows.length) return ctx.ui.note('还没有渠道')
@@ -200,16 +384,26 @@ export default {
         })
       }
       case 'show': {
+        const [name, ...extra] = args
         if (!name) throw new UsageError('缺少 <渠道>')
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
         const { resolved, data } = await detail(ctx, name)
         return void ctx.output(data, () => renderDetail(ctx, data, { upstreams: upstreamsOf(resolved) }))
       }
-      case 'models':
+      case 'keys':
+      case 'key':
+        return handleChannelKeys(ctx, args)
+      case 'models': {
+        const [name, ...extra] = args
         if (!name) throw new UsageError('缺少 <渠道>')
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
         return changeModels(ctx, name)
+      }
       case 'enable':
       case 'disable': {
+        const [name, ...extra] = args
         if (!name) throw new UsageError('缺少 <渠道>')
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
         const payload = await getChannels(ctx)
         const resolved = resolveChannel(payload, name)
         if (resolved.kind !== 'compat') throw new UsageError(`${name} 是账号池，不能整体启停；用 cradmin accounts pause|resume <账号>`)
@@ -222,12 +416,17 @@ export default {
         })
         return void ctx.output(result)
       }
-      case 'add':
+      case 'add': {
+        const [name, ...extra] = args
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
         return addChannel(ctx, name)
+      }
       case 'rm':
       case 'remove':
       case 'delete': {
+        const [name, ...extra] = args
         if (!name) throw new UsageError('缺少 <渠道>')
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
         const payload = await getChannels(ctx)
         const channel = (payload.channels || []).find(item => item.name === name)
         if (!channel) throw new UsageError(`找不到兼容渠道：${name}`)
@@ -238,6 +437,7 @@ export default {
         return void ctx.output(result)
       }
       case 'prune': {
+        if (args.length) throw new UsageError(`多余的参数：${args.join(' ')}`)
         const payload = await getChannels(ctx)
         const stale = (payload.channels || []).filter(channel => channel.stale)
         const result = await runPlan(ctx, {

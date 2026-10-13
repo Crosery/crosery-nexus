@@ -212,9 +212,9 @@ test('channel health: traffic first, idle enabled next, disabled last; failing t
   bad[34] = 4
   const rows: OverviewChannelRow[] = [{ provider: 'openai-compatible-openrouter', name: 'openrouter', requests: 14, errors: 5, p95Ms: 900, ticks, bad, lastAt: NOW }]
   const channels = [
-    { name: 'zeta', enabled: false, stale: false, keyCount: 1, baseUrl: '', models: [] },
-    { name: 'alpha', enabled: true, stale: false, keyCount: 1, baseUrl: '', models: [] },
-    { name: 'openrouter', enabled: true, stale: false, keyCount: 1, baseUrl: '', models: [] },
+    { name: 'zeta', enabled: false, stale: false, keyCount: 1, keys: [], baseUrl: '', models: [] },
+    { name: 'alpha', enabled: true, stale: false, keyCount: 1, keys: [], baseUrl: '', models: [] },
+    { name: 'openrouter', enabled: true, stale: false, keyCount: 1, keys: [], baseUrl: '', models: [] },
   ] as ChannelItem[]
   const h = channelHealth(rows, channels)
   assert.deepEqual(h.map((r: Loose) => [r.name, r.state]), [['openrouter', 'warn'], ['alpha', 'idle'], ['zeta', 'off']])

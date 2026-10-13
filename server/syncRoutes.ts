@@ -464,6 +464,14 @@ export function installSyncCenter(app: express.Express, deps: SyncCenterDeps, re
       if (config.modelDiscoveryScheduled) startModelCatalogWatcher(() => { void registry.run('model-discovery', 'watch').catch(() => undefined) })
     },
     /**
+     * `POST /api/channels/:name/models/sync`（单渠道「拉取模型」）用：把同一份持久化的探测状态交给
+     * `syncUpstreamModels({ only })`，否则那次运行会写进模块内的 `memoryState`，页面读到的「上次探测」
+     * 仍是上一次全量跑的值。任务没登记时返回空状态（探测照常工作，只是没有历史可继承）。
+     */
+    discoveryState(): DiscoveryState {
+      return registry.has('model-discovery') ? registry.jobData('model-discovery') as DiscoveryState : {}
+    },
+    /**
      * `POST /api/models/sync` 的兼容入口：与 `POST /api/sync/model-discovery/run` 走同一个准入（手动冷却、记 manualAt），
      * 被拒时返回 { status, body }（429 带 retryAfterSec），放行或正在运行时等这一次单飞运行的结果。
      * 正在运行时直接加入那次运行：不会多发任何上游请求，也不消耗冷却。

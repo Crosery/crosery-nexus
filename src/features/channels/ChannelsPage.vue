@@ -326,6 +326,56 @@ async function deleteChannel(channel: ChannelItem) {
   }
 }
 
+async function addKey(channel: ChannelItem, apiKey: string): Promise<boolean> {
+  const key = `${channel.name}\u0000add-key`
+  if (pending.value.has(key)) return false
+  setPending(key, true)
+  try {
+    await api.addChannelKey(channel.name, apiKey)
+    notify(`✓ 已为 ${channel.name} 添加上游 Key`)
+    await channels.refresh().catch(() => undefined)
+    await whenIdle(channels.loading)
+    return true
+  } catch (error) {
+    failToast('添加 Key 失败', error)
+    return false
+  } finally {
+    setPending(key, false)
+  }
+}
+
+async function removeKey(channel: ChannelItem, ref: string): Promise<boolean> {
+  const key = `${channel.name}\u0000key:${ref}`
+  if (pending.value.has(key)) return false
+  const targetKey = channel.keys?.find((k) => k.ref === ref)
+  const ok = await confirmSheet({
+    title: `删除 ${channel.name} 的上游 Key？`,
+    facts: [
+      { k: '渠道', v: channel.name },
+      { k: 'Key', v: targetKey?.masked ?? ref },
+      { k: '标识', v: ref },
+    ],
+    consequence: '少一把上游凭据 · 渠道只剩一把 Key 时无法删除',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return false
+
+  setPending(key, true)
+  try {
+    await api.removeChannelKey(channel.name, ref)
+    notify(`✓ 已删除 ${channel.name} 的上游 Key`)
+    await channels.refresh().catch(() => undefined)
+    await whenIdle(channels.loading)
+    return true
+  } catch (error) {
+    failToast('删除 Key 失败', error)
+    return false
+  } finally {
+    setPending(key, false)
+  }
+}
+
 /**
  * Always reachable: /api/channels drops enabled snapshots the gateway no longer has (server/channelView.ts), so the
  * list usually cannot count them — the server decides what is stale and reports what it removed.
@@ -581,7 +631,7 @@ function copyAddress(channel: ChannelItem) {
           <template #cell-name="{ row }">
             <span class="cx-2l">
               <button type="button" class="ui-link cx-name mono ellip" :title="`查看 ${row.name}`" @click.stop="openChannel(row)">{{ row.name }}</button>
-              <span class="cx-l2 mono ellip" :title="row.channel.baseUrl">{{ middleEllipsis(row.host, full ? 44 : 30) }}<template v-if="row.channel.keyCount > 1"> · {{ row.channel.keyCount }} Key</template></span>
+              <span class="cx-l2 mono ellip" :title="row.channel.baseUrl">{{ middleEllipsis(row.host, full ? 44 : 30) }}<template v-if="row.channel.keyCount > 1"> · {{ row.channel.keyCount }} Key</template><template v-else-if="row.channel.keyCount === 0"> · 无 Key</template></span>
             </span>
           </template>
 
@@ -733,6 +783,8 @@ function copyAddress(channel: ChannelItem) {
       :health-available="healthAvailable"
       :pending="pending"
       :toggle-model="toggleModel"
+      :add-key="addKey"
+      :remove-key="removeKey"
       @toggle-channel="(c: ChannelItem, v: boolean) => toggleChannel(c, v)"
       @delete="deleteChannel"
     />

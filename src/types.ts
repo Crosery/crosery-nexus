@@ -53,6 +53,7 @@ export type ChannelItem = {
   /** 上游协议：'responses' = Responses 原生中继渠道；'claude' = 挂在 Anthropic 端点；其余 'openai'。 */
   protocol?: 'openai' | 'claude' | 'responses'
   models: ChannelModel[]
+  keys: Array<{ ref: string; masked: string }>
 }
 
 export type CredentialItem = {
@@ -187,6 +188,24 @@ export type ModelSyncResult = {
     channelCount: number
     source: string
     syncedAt: string
+    /** ok = 全部成功 / partial = 部分失败或被上限挡掉 / error = 写入失败 / skipped = 本轮无到期渠道 */
+    result: 'ok' | 'partial' | 'error' | 'skipped'
+    /** 服务端拼好的一行中文摘要（模型数 · 新增 · 探测/失败 …） */
+    summary: string
+    probed: number
+    succeeded: number
+    failed: number
+    /** 到期但因主机退避或最小间隔推迟的渠道数 */
+    deferred: number
+    /** 凭据引用解析不了而未探测的渠道数（绝不匿名探测） */
+    missingCredential: number
+    /** 走代理因此未直连探测的渠道数 */
+    proxied: number
+    /** 因单渠道 500 上限没写入的模型数与 id */
+    capped: number
+    cappedModels: string[]
+    /** 本轮逐渠道失败的原因（每条一行） */
+    errors: string[]
   }
 }
 

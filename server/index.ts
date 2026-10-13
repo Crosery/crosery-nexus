@@ -7,7 +7,7 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, removeChannel, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
+import { addChannelApiKey, ChannelKeyError, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -1001,6 +1001,35 @@ app.delete('/api/channels/:name', async (req, res) => {
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '删除失败' }) }
 })
 
+/**
+ * 渠道的上游 Key：一个渠道可以持有多把，内核按条目轮询。
+ * 加 Key 先用这把 Key 真打一次上游 /models，探测不过不加（业务层 502）。
+ * 删 Key 按 sha256 前 12 位定位，密文从不经过这里；删到最后一会被业务层拦下（409）。
+ */
+app.post('/api/channels/:name/keys', async (req, res) => {
+  try {
+    const keys = await addChannelApiKey(req.params.name, String(req.body?.apiKey || ''))
+    invalidateControlPlaneCaches()
+    addAudit('add_channel_key', req.params.name, `keys=${keys.length}`)
+    res.json({ ok: true, keys })
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(502).json({ error: error instanceof Error ? error.message : '添加上游 Key 失败' })
+  }
+})
+
+app.delete('/api/channels/:name/keys/:ref', async (req, res) => {
+  try {
+    const keys = await removeChannelApiKey(req.params.name, req.params.ref)
+    invalidateControlPlaneCaches()
+    addAudit('remove_channel_key', req.params.name, `keys=${keys.length}`)
+    res.json({ ok: true, keys })
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(400).json({ error: error instanceof Error ? error.message : '删除上游 Key 失败' })
+  }
+})
+
 app.patch('/api/channels/:name/models/:model', async (req, res) => {
   try {
     // task-68：渠道不存在 → 404；渠道存在但未启用，仍由业务层给原有 400 文案
@@ -1275,6 +1304,30 @@ app.patch('/api/credentials/:name', async (req, res) => {
   }
 })
 
+/**
+ * 账号池「拉取模型」：强制重读网关下发的模型目录（丢开 15s 快照与 30s 目录缓存）。
+ * 与 API 渠道的 `/api/models/sync` 不是一回事——那一条向上游发 /models 探测（受手动冷却与退避约束），
+ * 这一条只问网关“这个凭据能用哪些模型”，不发任何上游请求，因此没有冷却也没有退避。
+ * 重复点击打的是网关（不是上游），30s 目录缓存已经让常规读取足够新鲜，故不另设节流。
+ */
+app.post('/api/credentials/models/refresh', async (_req, res) => {
+  try {
+    const { credentials, degraded } = await refreshCredentialModels()
+    invalidateControlPlaneCaches()
+    // 目录已经读到并落库；Key 授权对账是其后的事，失败不把这次拉取报成失败（下一轮同步会补上）。
+    const reconciled = await reconcileKeyModelAccess().then(() => true, (error: unknown) => {
+      console.warn(`[credentials] 拉取模型后的 Key 授权对账失败，下一轮同步会补上: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    })
+    const providers = [...new Set(credentials.map((credential) => credential.type).filter(Boolean))]
+    const totalModels = credentials.reduce((sum, credential) => sum + credential.modelCount, 0)
+    addAudit('refresh_credential_models', 'all', `providers=${providers.length}, models=${totalModels}${degraded.length ? `, degraded=${degraded.join(',')}` : ''}`)
+    res.json({ ok: true, providers, totalModels, degraded, reconciled })
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : '读取账号模型目录失败' })
+  }
+})
+
 app.delete('/api/credentials/:name', async (req, res) => {
   try {
     const name = requireCredentialName(req, res)
@@ -1459,6 +1512,36 @@ app.post('/api/cpa/oauth/cancel', async (req, res) => {
   }
 })
 
+/**
+ * 单个 API 渠道的「拉取模型」（渠道抽屉里的按钮）：只向这一个渠道的上游发 /models 探测。
+ *
+ * 与 `/api/models/sync`（全量）的区别，也是这里必须自己实现而不是复用 `admitManual` 的原因：
+ * - **不受任务级手动冷却与退避约束**：那 5 分钟冷却与整表任务绑定，点一个渠道不该被别人的全量探测挡住；
+ *   越过的是「主机最小间隔 / 退避」这类**自我节流**，那是为定时器批量扫描设计的，管理员明确点单个渠道时不需要。
+ * - 仍然只加新模型、跳过人工停用的墓碑、尊重单渠道上限——这些约束在 `syncUpstreamModels` 内部，不因 only 而放宽。
+ * - 渠道必须存在且启用：停用渠道不探测（推理不走它，探测结果没有意义），如实回 409。
+ */
+app.post('/api/channels/:name/models/sync', async (req, res) => {
+  const name = String(req.params.name)
+  try {
+    const channel = (await listChannels()).find((item) => item.name === name)
+    if (!channel || channel.stale) return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    if (!channel.enabled) return res.status(409).json({ error: '渠道已停用 · 启用后才能探测上游', reason: 'channel_disabled' })
+    const { syncUpstreamModels } = await import('./modelSync.js')
+    const result = await syncUpstreamModels({ only: name, force: true, state: syncCenter.discoveryState() })
+    invalidateControlPlaneCaches()
+    // 探测与写入已经落地；Key 授权对账是其后的事，它失败不能把这次拉取报成失败（那会让用户以为白拉了）。
+    const reconciled = await reconcileKeyModelAccess().then(() => true, (error: unknown) => {
+      console.warn(`[channels] ${name} 拉取模型后的 Key 授权对账失败，下一轮同步会补上: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    })
+    addAudit('sync_channel_models', name, `added=${result.addedModels.length}, probed=${result.probed}, failed=${result.failed}, reconciled=${reconciled}`)
+    res.json({ ok: true, result, reconciled })
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : '拉取渠道模型失败' })
+  }
+})
+
 app.post('/api/models/sync', async (_req, res) => {
   try {
     // 与 POST /api/sync/model-discovery/run 同一个准入：手动冷却期内 429（带 Retry-After），不再无限强制全量探测。
@@ -1602,9 +1685,9 @@ const syncCenter = installSyncCenter(app, {
     enabled: modelAvailabilityEnabled,
     run: (context) => runModelAvailabilityRound({
       listCatalog: listGroupCatalog,
-      ensureProbeKeys: async (services) => {
+      ensureProbeKeys: async (services, cpaChannels) => {
         const keys = await registerProbeKeys(services)
-        await withKeyAccessLock(() => pinProbeKeyChannels(keys))
+        await withKeyAccessLock(() => pinProbeKeyChannels(keys, cpaChannels))
         return keys
       },
       probe: (key, model) => probeChatModel(config.cpaBaseUrl, key, model),

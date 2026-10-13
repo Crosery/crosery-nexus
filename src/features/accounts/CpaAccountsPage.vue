@@ -20,12 +20,15 @@ import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { useElementWidth } from '../../ui/composables/useElementWidth'
 import { useLive } from '../../ui/composables/useLive'
 import { useNow } from '../../ui/composables/useNow'
-import { fmtTime } from '../../ui/fmt'
+import { fmtInt, fmtTime } from '../../ui/fmt'
 import { maskEmail, useMask } from '../../lib/privacy'
+import { describeError } from '../../lib/errors'
+import { notify } from '../../ui/feedback/toast'
 import { setNavCount } from '../../shell/badges'
 import { usePaletteCommands } from '../../shell/palette'
 import type { CommandItem, DataState, SegmentItem } from '../../ui/types'
 import { loadAccounts, type AccountsPayload } from './accountsApi'
+import { api } from '../../api'
 import { proxyApi } from '../../api/proxy'
 import type { EgressData } from '../../types'
 import AccountRow from './AccountRow.vue'
@@ -235,6 +238,29 @@ async function onRemove(row: AccountView) {
   }
 }
 
+/* ── 拉取模型：重读网关下发的目录 ──
+   订阅账号的模型由网关按凭据解析，控制台不持有 OAuth token、也不向上游发 /models，
+   所以这个按钮是「重读网关目录」而不是「探测上游」：没有冷却、没有退避，打的只是网关。
+   结果写进本行使用的 /api/channels 响应（credentials[].models），因此一次 refresh 就够。 */
+const pullingModels = ref(false)
+async function pullModels() {
+  if (pullingModels.value) return
+  pullingModels.value = true
+  try {
+    const result = await api.refreshCredentialModels()
+    notify(`✓ 已重读网关目录 · ${result.providers.length} 个服务 · ${fmtInt(result.totalModels)} 个模型`, { id: 'cx-acc-pull' })
+    if (result.degraded.length) {
+      notify(`◇ ${result.degraded.join('、')} 这次没返回模型目录 · 显示上次读到的`, { tone: 'warn', id: 'cx-acc-pull-degraded' })
+    }
+    if (!result.reconciled) notify('◇ Key 模型白名单这次没同步上 · 下一轮定时同步会补', { tone: 'warn', id: 'cx-acc-pull-reconcile' })
+    await refresh()
+  } catch (error) {
+    notify(`◆ 拉取模型失败 · ${describeError(error).title}`, { tone: 'bad', id: 'cx-acc-pull' })
+  } finally {
+    pullingModels.value = false
+  }
+}
+
 /* ── add sheet ── */
 const addOpen = ref(false)
 const addProvider = ref<string | null>(null)
@@ -318,6 +344,13 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       </template>
       <template v-if="props.embedded" #actions>
         <Segmented v-if="counts.all" v-model="mode" :items="MODE_ITEMS" label="额度显示已用或剩余" />
+        <TxButton
+          variant="subtle"
+          size="small"
+          :loading="pullingModels"
+          title="重新读取网关下发的模型目录（账号的模型由网关按凭据解析，不向上游发请求）"
+          @click="pullModels"
+        ><Icon name="refresh" :size="14" />拉取模型</TxButton>
         <TxButton variant="subtle" size="small" @click="openAdd()"><Icon name="plus" :size="14" />添加账号</TxButton>
       </template>
 

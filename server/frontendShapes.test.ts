@@ -121,6 +121,14 @@ test('管理员会话：主要页面的读接口与前端类型一致', async (t
     fits(TYPES, 'MonitorData', monitor)
   })
 
+  await t.test('供应商页「拉取模型」：/api/models/sync → ModelSyncResult，/api/credentials/models/refresh', async () => {
+    // 假 CPA 没有真实上游，两条都会读不到模型：这里只校验**响应形状**对得上前端类型
+    const synced = await api.syncUpstreamModels()
+    fits(TYPES, 'ModelSyncResult', synced)
+    const refreshed = await api.refreshCredentialModels()
+    nonEmpty(refreshed.providers, 'credentials/models/refresh.providers')
+  })
+
   await t.test('模型页 /api/model-index、/api/usage-overview、/api/models/insights', async () => {
     const index = await request<{ models: unknown[] }>('/api/model-index')
     nonEmpty(index.models, 'model-index.models')

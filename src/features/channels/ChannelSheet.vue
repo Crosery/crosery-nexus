@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { TxButton } from '@talex-touch/tuffex/button'
+import { TxButton, TxIconButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import Sheet from '../../ui/feedback/Sheet.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
@@ -8,11 +8,14 @@ import Pager from '../../ui/data/Pager.vue'
 import Segmented from '../../ui/form/Segmented.vue'
 import SearchField from '../../ui/form/SearchField.vue'
 import Switch from '../../ui/form/Switch.vue'
+import SecretField from '../../ui/form/SecretField.vue'
 import TickStrip from '../../ui/viz/TickStrip.vue'
+import Icon from '../../ui/Icon.vue'
 import { useNow } from '../../ui/composables/useNow'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { paginate } from '../../lib/listState'
 import { NONE, fmtAgo, fmtClock, fmtDuration, fmtInt, fmtPct } from '../../ui/fmt'
+import { copyText } from '../../ui/feedback/toast'
 import type { ChannelItem } from '../../types'
 import type { SegmentItem } from '../../ui/types'
 import {
@@ -33,6 +36,10 @@ const props = defineProps<{
   healthAvailable: boolean
   pending: ReadonlySet<string>
   toggleModel: (channel: ChannelItem, modelId: string, next: boolean) => Promise<boolean>
+  /** the page owns the write; it resolves true on success (the sheet only asks first) */
+  pullModels?: (channel: ChannelItem) => Promise<boolean>
+  addKey: (channel: ChannelItem, apiKey: string) => Promise<boolean>
+  removeKey: (channel: ChannelItem, ref: string) => Promise<boolean>
 }>()
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ (e: 'toggle-channel', channel: ChannelItem, next: boolean): void; (e: 'delete', channel: ChannelItem): void }>()
@@ -40,10 +47,36 @@ const emit = defineEmits<{ (e: 'toggle-channel', channel: ChannelItem, next: boo
 const now = useNow()
 const { isMobile } = useBreakpoint()
 const PAGE = 50
+/** the pull is in flight: the model switches stay inert so a click can't race the write */
+const pulling = ref(false)
+async function onPull() {
+  if (!shown.value || pulling.value || !props.pullModels) return
+  pulling.value = true
+  try {
+    await props.pullModels(shown.value)
+  } finally {
+    pulling.value = false
+  }
+}
 
-/* keep the last channel while the sheet animates out (the page clears ?focus first) */
+/* keep the last channel while the sheet animates out (the page clears the focus first);
+   a same-named update replaces it, so writes (模型开关 / 拉取模型) read back what the server now holds */
 const shown = ref<ChannelItem | null>(props.channel)
 watch(() => props.channel, (c) => { if (c) shown.value = c })
+
+const channelKeys = computed(() => shown.value?.keys ?? [])
+const newKey = ref('')
+const keySecret = ref<InstanceType<typeof SecretField> | null>(null)
+const keyBusy = ref(false)
+const addingKey = ref(false)
+const deletingRef = ref<string | null>(null)
+
+watch(open, (isOpen) => {
+  if (!isOpen) {
+    newKey.value = ''
+    keySecret.value?.mask()
+  }
+})
 
 const q = ref('')
 const filter = ref<'all' | 'on' | 'off'>('all')
@@ -52,6 +85,8 @@ watch(() => shown.value?.name, () => {
   q.value = ''
   filter.value = 'all'
   page.value = 1
+  newKey.value = ''
+  keySecret.value?.mask()
 })
 watch([q, filter], () => { page.value = 1 })
 
@@ -98,6 +133,46 @@ async function onModel(id: string, next: boolean) {
   if (!shown.value) return
   await props.toggleModel(shown.value, id, next)
 }
+
+function pendingKey(ref: string) {
+  if (!shown.value) return false
+  return deletingRef.value === ref || props.pending.has(`${shown.value.name}\u0000${ref}`) || props.pending.has(`${shown.value.name}\u0000key:${ref}`)
+}
+
+async function copyKey(masked: string) {
+  await copyText(masked, 'Key')
+}
+
+async function copyRef(ref: string) {
+  await copyText(ref, 'Key ref')
+}
+
+async function onAddKey() {
+  const raw = newKey.value.trim()
+  if (!raw || !shown.value || keyBusy.value) return
+  keyBusy.value = true
+  addingKey.value = true
+  newKey.value = ''
+  keySecret.value?.mask()
+  try {
+    await props.addKey(shown.value, raw)
+  } finally {
+    keyBusy.value = false
+    addingKey.value = false
+  }
+}
+
+async function onRemoveKey(ref: string) {
+  if (!shown.value || keyBusy.value) return
+  keyBusy.value = true
+  deletingRef.value = ref
+  try {
+    await props.removeKey(shown.value, ref)
+  } finally {
+    keyBusy.value = false
+    deletingRef.value = null
+  }
+}
 </script>
 
 <template>
@@ -114,8 +189,6 @@ async function onModel(id: string, next: boolean) {
         <dl class="ui-facts">
           <dt>地址</dt>
           <dd>{{ shown.baseUrl || NONE }}</dd>
-          <dt>Key</dt>
-          <dd>{{ fmtInt(shown.keyCount) }} 个</dd>
           <template v-if="!healthAvailable">
             <dt>健康</dt>
             <dd class="cx-sheet__sans">服务更新后可见</dd>
@@ -151,6 +224,68 @@ async function onModel(id: string, next: boolean) {
           </p>
           <pre v-if="lastError.detail" class="cx-sheet__detail">{{ lastError.detail }}</pre>
         </div>
+      </section>
+
+      <section class="cx-sheet__sec" aria-labelledby="cx-sec-keys">
+        <h3 id="cx-sec-keys" class="cx-sheet__h">
+          上游 Key <span class="dim num">{{ fmtInt(channelKeys.length) }} 把</span>
+        </h3>
+        <ul v-if="channelKeys.length" class="cx-keys" aria-label="上游 Key 列表">
+          <li v-for="k in channelKeys" :key="k.ref" class="cx-key">
+            <span class="cx-key__info ellip">
+              <span class="cx-key__masked mono ellip" :title="k.masked">{{ k.masked }}</span>
+              <button
+                type="button"
+                class="ui-link cx-key__ref mono dim"
+                :title="`复制 ref ${k.ref}`"
+                @click="copyRef(k.ref)"
+              >#{{ k.ref }}</button>
+            </span>
+            <span class="cx-key__actions">
+              <TxIconButton
+                :label="`复制 Key ${k.ref}`"
+                title="复制打码 Key"
+                size="sm"
+                @click="copyKey(k.masked)"
+              >
+                <Icon name="copy" />
+              </TxIconButton>
+              <TxButton
+                variant="ghost"
+                size="sm"
+                class="cx-key__del"
+                :loading="pendingKey(k.ref)"
+                :disabled="keyBusy"
+                @click="onRemoveKey(k.ref)"
+              >
+                删除
+              </TxButton>
+            </span>
+          </li>
+        </ul>
+        <p v-else class="cx-sheet__empty">— 没有上游 Key · 渠道无法转发请求</p>
+        <form class="cx-keys__add" @submit.prevent="onAddKey">
+          <SecretField
+            ref="keySecret"
+            v-model="newKey"
+            name="channel-api-key"
+            autocomplete="off"
+            noun="Key"
+            placeholder="添加上游 Key (sk-…)"
+            mono
+            :disabled="keyBusy"
+            class="cx-keys__input"
+          />
+          <TxButton
+            type="submit"
+            variant="secondary"
+            size="sm"
+            :loading="addingKey"
+            :disabled="!newKey.trim() || keyBusy"
+          >
+            添加 Key
+          </TxButton>
+        </form>
       </section>
 
       <section class="cx-sheet__sec" aria-labelledby="cx-sec-disc">
@@ -214,6 +349,14 @@ async function onModel(id: string, next: boolean) {
         <!-- the destructive confirm (signal) lives in the confirm sheet; this only opens it -->
         <TxButton variant="ghost" class="cx-sheet__del" :disabled="pending.has(shown.name)" @click="emit('delete', shown)">删除渠道</TxButton>
         <span class="cx-sheet__foot-r">
+          <TxButton
+            variant="ghost"
+            class="cx-sheet__pull"
+            :loading="pulling"
+            :disabled="!shown.enabled || shown.stale"
+            :title="shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 只加新模型 · 人工停用的模型不会被恢复' : '停用渠道不探测上游'"
+            @click="onPull"
+          ><Icon name="refresh" :size="14" />拉取模型</TxButton>
           <TxButton variant="secondary" @click="close">关闭</TxButton>
           <TxButton
             variant="secondary"
@@ -257,10 +400,26 @@ async function onModel(id: string, next: boolean) {
 .cx-model.is-off .cx-model__id { color: var(--ink-2); }
 .cx-model__sw { flex: none; display: inline-grid; place-items: center; min-width: 40px; min-height: 36px; }
 .cx-sheet__empty { margin: 10px 0; font-size: var(--fs-sm); color: var(--ink-3); }
+.cx-keys { list-style: none; margin: 0; padding: 0; }
+.cx-key {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 38px; border-bottom: 1px solid var(--rule); min-width: 0;
+}
+.cx-key:last-child { border-bottom: 0; }
+.cx-key__info { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.cx-key__masked { font-size: var(--fs-xs); color: var(--ink); user-select: text; }
+.cx-key__ref { font-size: var(--fs-xs); color: var(--ink-3); user-select: text; }
+.cx-key__actions { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+html:root .cx-key .tx-button.cx-key__del { padding: 0 6px; font-size: var(--fs-xs); color: var(--ink-2); }
+html:root .cx-key .tx-button.cx-key__del:hover:not(.disabled) { color: var(--signal-ink); background: transparent; }
+.cx-keys__add { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
+.cx-keys__add .ui-secret { flex: 1 1 auto; min-width: 0; }
 .cx-sheet__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
 .cx-sheet__foot-r { display: inline-flex; gap: 8px; }
 html:root .cx-sheet__foot .tx-button.cx-sheet__del { padding: 0 4px; color: var(--ink-2); }
 html:root .cx-sheet__foot .tx-button.cx-sheet__del:hover:not(.disabled) { color: var(--signal-ink); background: transparent; }
+html:root .cx-sheet__foot .tx-button.cx-sheet__pull { padding: 0 8px; color: var(--ink-2); }
+html:root .cx-sheet__foot .tx-button.cx-sheet__pull .tx-button__inner { gap: 5px; }
 .cx-sheet .sig, .cx-sheet__reason.sig { color: var(--signal-ink); }
 @media (max-width: 599px) {
   .cx-sheet__search { width: 100%; }

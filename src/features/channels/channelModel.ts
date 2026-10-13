@@ -57,6 +57,7 @@ export type ChannelLike = {
   enabled: boolean
   stale: boolean
   models: Array<{ id: string; enabled: boolean; upstreams: number }>
+  keys?: Array<{ ref: string; masked: string }>
 }
 
 /* ── windows ── */

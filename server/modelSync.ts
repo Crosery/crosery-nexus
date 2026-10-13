@@ -623,13 +623,16 @@ function summarize(result: Omit<ModelSyncResult, 'summary'>): string {
 
 const CAPPED_LIST_MAX = 50
 
-async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; deps?: ModelSyncDeps }): Promise<ModelSyncResult> {
+async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; deps?: ModelSyncDeps; only?: string }): Promise<ModelSyncResult> {
   const deps = { ...defaultDeps(), ...options.deps }
   const startedAt = deps.now()
   const state = sanitizeDiscoveryState((options.state ?? memoryState) as Record<string, unknown>, startedAt)
   state.channels ??= {}
   state.hosts ??= {}
   const force = options.force === true
+  /** 只探这一个渠道（渠道抽屉里的「拉取模型」）。`skipBackoff` 让管理员手动触发能越过退避与最小间隔。 */
+  const only = typeof options.only === 'string' && options.only.trim() ? options.only.trim() : null
+  const skipBackoff = only !== null
   const syncedAt = new Date(startedAt).toISOString()
   const errors: string[] = []
   let requests = 0
@@ -673,8 +676,8 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
 
   const catalog = deps.readCatalog()
   const catalogHash = catalogModelsHash(catalog)
-  const catalogChanged = Boolean(catalogHash) && catalogHash !== state.catalogHash
-  const catalogNewForProbe = Boolean(catalogHash) && catalogHash !== state.probedCatalogHash
+  const catalogChanged = only === null && Boolean(catalogHash) && catalogHash !== state.catalogHash
+  const catalogNewForProbe = only === null && Boolean(catalogHash) && catalogHash !== state.probedCatalogHash
   const additions = new Map<string, DiscoveredModel[]>()
   const pending = (name: string) => {
     let list = additions.get(name)
@@ -697,6 +700,7 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   const interval = DISCOVERY_POLICY.channelIntervalMs
 
   for (const channel of channels) {
+    if (only !== null && channel.name !== only) continue
     if (channel.disabled || !channel.baseUrl) continue
     const channelState = state.channels[channel.name] ??= {}
     const now = deps.now()
@@ -726,12 +730,12 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
     }
     const hostState = state.hosts[host] ??= {}
     const blockedUntil = Math.max(hostState.backoffUntil ?? 0, channelState.backoffUntil ?? 0)
-    if (blockedUntil > now) {
+    if (!skipBackoff && blockedUntil > now) {
       deferred += 1
       channelState.nextProbeAt = Math.max(channelState.nextProbeAt ?? 0, blockedUntil)
       continue
     }
-    if (hostState.lastRequestAt && now - hostState.lastRequestAt < DISCOVERY_POLICY.hostMinIntervalMs) {
+    if (!skipBackoff && hostState.lastRequestAt && now - hostState.lastRequestAt < DISCOVERY_POLICY.hostMinIntervalMs) {
       deferred += 1
       channelState.nextProbeAt = hostState.lastRequestAt + DISCOVERY_POLICY.hostMinIntervalMs
       continue
@@ -811,13 +815,13 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
     }
   }
 
-  if (catalogHash) state.probedCatalogHash = catalogHash
+  if (catalogHash && only === null) state.probedCatalogHash = catalogHash
 
   // 目录合入放在探测之后：本轮刚被渠道自己报出来的模型优先归属那个渠道。
   let catalogMode: CatalogMergeMode = 'none'
   let catalogTarget: SyncChannel | null = null
   const catalogIds = new Set<string>()
-  if (catalog && catalog.models.length && (catalogChanged || force)) {
+  if (only === null && catalog && catalog.models.length && (catalogChanged || force)) {
     const resolved = resolveCatalogTarget(channels, catalog, deps.catalogTarget)
     catalogMode = resolved.mode
     catalogTarget = resolved.target
@@ -866,12 +870,12 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
       errors.push(`写入渠道失败：${error instanceof Error ? error.message : '未知错误'}`)
     }
   }
-  // 写失败时不推进目录哈希：下一轮会重新尝试合入。
-  if (!commitFailed && catalogHash) state.catalogHash = catalogHash
+  // 写失败时不推进目录哈希：下一轮会重新尝试合入。单渠道探测根本不碰目录，不推进。
+  if (!commitFailed && catalogHash && only === null) state.catalogHash = catalogHash
 
   const catalogAdded = added.filter(id => catalogIds.has(id)).length
   const totalModels = committedTotal ?? channels.reduce((sum, channel) => sum + (channel.disabled ? 0 : channel.models.length), 0)
-  const silent = !force && !catalogChanged && probed === 0 && failed === 0 && missingCredential === 0 && proxied === 0 && added.length === 0
+  const silent = only !== null ? false : !force && !catalogChanged && probed === 0 && failed === 0 && missingCredential === 0 && proxied === 0 && added.length === 0
   const degraded = failed > 0 || missingCredential > 0 || capped > 0
   const result: ModelSyncOutcome = commitFailed ? 'error'
     : !degraded ? (probed > 0 || added.length > 0 ? 'ok' : 'skipped')
@@ -904,18 +908,26 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
 }
 
 const memoryState: DiscoveryState = {}
-let inflight: Promise<ModelSyncResult> | null = null
+/** 单飞中的运行。`only` 让「单渠道探测」有自己的槽位，否则会加入全量那次运行、什么也没探。 */
+let inflight: { only: string | null; run: Promise<ModelSyncResult> } | null = null
 
 /**
  * 动态发现上游模型（单飞：定时器、目录监听、手动按钮同时触发时共用一次运行）：
  * 1. 到期的渠道用**解析出来的真实凭据**、按渠道协议探测 base-url 的 /models（解析不了就跳过，绝不匿名打；走代理的不直连）；
  * 2. 共享目录（~/.agents/crosery/catalog.json）只在内容变化或手动触发时合入，目标见 resolveCatalogTarget；
  * 3. 新模型只加不删，跳过管理员停用过的，在写入前重新读取的渠道表上落盘，然后通知内核刷新 provider。
+ *
+ * `only`（渠道抽屉的「拉取模型」）只探这一个渠道：越过退避与主机最小间隔，不碰共享目录，也不推进目录哈希。
+ * 同名渠道的重复点击复用同一次运行；与全量运行互不合并——全量在跑时单渠道照常另跑（它只打一个渠道的上游）。
  */
-export function syncUpstreamModels(options: { force?: boolean; state?: DiscoveryState; deps?: ModelSyncDeps } = {}): Promise<ModelSyncResult> {
-  if (inflight) return inflight
-  inflight = runDiscovery(options).finally(() => { inflight = null })
-  return inflight
+export function syncUpstreamModels(options: { force?: boolean; state?: DiscoveryState; deps?: ModelSyncDeps; only?: string } = {}): Promise<ModelSyncResult> {
+  const only = typeof options.only === 'string' && options.only.trim() ? options.only.trim() : null
+  if (inflight && inflight.only === only) return inflight.run
+  const run = runDiscovery({ ...options, ...(only === null ? {} : { only }) })
+  const slot = { only, run }
+  inflight = slot
+  void run.finally(() => { if (inflight === slot) inflight = null }).catch(() => undefined)
+  return run
 }
 
 const stateEntries = <T>(record: unknown): T[] =>

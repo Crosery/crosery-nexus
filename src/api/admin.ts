@@ -68,9 +68,19 @@ export const adminApi = {
   deleteChannel: (name: string) => request(`/api/channels/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   setModelEnabled: (name: string, model: string, enabled: boolean) =>
     request(`/api/channels/${encodeURIComponent(name)}/models/${encodeURIComponent(model)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  addChannelKey: (name: string, apiKey: string) =>
+    request<{ ok: boolean; keys: Array<{ ref: string; masked: string }> }>(`/api/channels/${encodeURIComponent(name)}/keys`, { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  removeChannelKey: (name: string, ref: string) =>
+    request<{ ok: boolean; keys: Array<{ ref: string; masked: string }> }>(`/api/channels/${encodeURIComponent(name)}/keys/${encodeURIComponent(ref)}`, { method: 'DELETE' }),
   /** Account management on existing credentials (pause/resume, delete, proxy). Credential *import* is gone (C5). */
   setCredentialEnabled: (name: string, enabled: boolean) =>
     request(`/api/credentials/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  /**
+   * 订阅账号池的「拉取模型」：重读网关按凭据下发的模型目录（不是向上游探测，因此没有冷却与退避）。
+   * `degraded` 是有在线凭据却读到空目录、按规则沿用上次结果的 provider。
+   */
+  refreshCredentialModels: () =>
+    request<{ ok: boolean; providers: string[]; totalModels: number; degraded: string[]; reconciled: boolean }>('/api/credentials/models/refresh', { method: 'POST' }),
   deleteCredential: (name: string) => request(`/api/credentials/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   credentialProxy: (name: string) => request<{ proxyUrl: string }>(`/api/credentials/${encodeURIComponent(name)}/proxy`),
   setCredentialProxy: (name: string, proxyUrl: string) =>
@@ -94,6 +104,13 @@ export const adminApi = {
   /** fresh=true is honoured at most once per 60s per endpoint server-side. */
   version: (fresh = false) => request<VersionsData>(`/api/version${fresh ? '?fresh=1' : ''}`),
   syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
+  /**
+   * 单个渠道的「拉取模型」：只向这个渠道的上游发一次 /models 探测。
+   * 不走整表任务的手动冷却（点一个渠道不该被别人刚跑过的全量探测挡住），404 = 渠道已不在网关里，
+   * 409 `channel_disabled` = 渠道停用中、不探测上游。
+   */
+  syncChannelModels: (name: string) =>
+    request<ModelSyncResult & { reconciled: boolean }>(`/api/channels/${encodeURIComponent(name)}/models/sync`, { method: 'POST' }),
   /** 「自动更新」状态；升级由定时任务做（server/autoupdate.ts）。 */
   autoupdate: {
     get: () => request<AutoupdateView>('/api/autoupdate'),

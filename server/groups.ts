@@ -15,6 +15,8 @@ export type ConsoleGroup = {
   models: string[]
   /** false = 已知的 OAuth provider 暂时没有活跃账号；分组照留，模型为上次已知目录。缺省视为 true。 */
   available?: boolean
+  /** CPA `api-key-channel-access` 的底层渠道名（缺省与 `id` 相同；原生协议端点条目为 `claude`/`codex` 等）。 */
+  cpaChannel?: string
 }
 
 export type BuildGroupsOptions = {
@@ -58,6 +60,7 @@ export function buildGroups(channels: ChannelView[], oauth: OAuthProviderModels[
       kind: 'compat',
       models: channel.models.filter((model) => model.enabled).map((model) => model.id),
       available: true,
+      ...(channel.cpaChannel ? { cpaChannel: channel.cpaChannel } : {}),
     })
   }
 

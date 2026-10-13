@@ -52,7 +52,7 @@ CLIProxyAPI（下文简称 CPA）负责协议转换和上游转发，本项目�
 | 类型 | 说明 |
 | --- | --- |
 | 订阅账号 | 浏览器 OAuth 或 Device Code 授权：Codex、Claude、Antigravity、Kimi（国内站 / 国际站）、Grok、Devin、Meta AI。无法自动回调时可手动粘贴回调地址。也可以批量上传 `.json` / `.zip` 凭据文件。 |
-| API 渠道 | 支持 OpenAI、Claude、OpenAI Responses 三种协议；从上游探测渠道模型，逐个模型开关；按成功率和 p95 延迟展示渠道健康。 |
+| API 渠道 | 支持 OpenAI、Claude、OpenAI Responses 三种协议；支持多把上游 Key 轮询；从上游探测渠道模型，逐个模型开关；按成功率和 p95 延迟展示渠道健康。 |
 | 全局共享模型 | 默认对所有 Key 开放的模型列表。 |
 | 账号额度 | 展示 Codex、Claude、Antigravity 账号的额度窗口；支持兑现 Codex 重置次数与 Claude banked reset。 |
 | 出口代理 | 每个账号可单独指定代理、强制直连或继承全局设置；代理池可导入订阅链接、Clash 配置和分享链接，由控制台托管的 mihomo 进程提供本地出口，并做连通性检测。 |

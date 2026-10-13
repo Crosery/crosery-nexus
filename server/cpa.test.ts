@@ -181,7 +181,10 @@ test('系统 Key：探测 Key 读时隐藏、写时保留，只钉在自己的�
     assert.equal(await pinProbeKeyChannels(probes), true)
     assert.deepEqual(channels, { 'sk-real': ['codex'], [probes.codex]: ['codex'], [probes['Mox-AIGW']]: ['mox-aigw'] }, '钉在 CPA 的规范渠道名上')
     assert.equal(await pinProbeKeyChannels(probes), false, '已钉住时不再写')
-    assert.equal(channelPuts, 1)
+    assert.equal(await pinProbeKeyChannels(probes, { 'Mox-AIGW': 'claude' }), true, '底层渠道名不同时更新')
+    assert.deepEqual(channels[probes['Mox-AIGW']], ['claude'])
+    assert.equal(await pinProbeKeyChannels(probes, { 'Mox-AIGW': 'claude' }), false)
+    assert.equal(channelPuts, 2)
 
     await replaceCPAKeys([...(await getCPAKeys()).filter((key: string) => key !== userKey), orphan])
     assert.deepEqual(stored, ['sk-real', probes.codex, probes['Mox-AIGW']], '用户 Key 整表写入时带上探测 Key，调用方误传的系统 Key 被剔除')

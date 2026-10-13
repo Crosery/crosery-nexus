@@ -8,7 +8,7 @@ const channels = [
   {
     name: 'ollama',
     baseUrl: 'https://ollama.com/v1',
-    keyCount: 1,
+    keyCount: 1, keys: [],
     enabled: true,
     protocol: 'openai' as const,
     stale: false,
@@ -21,7 +21,7 @@ const channels = [
   {
     name: 'kimi',
     baseUrl: 'https://api.kimi.com/coding/v1',
-    keyCount: 1,
+    keyCount: 1, keys: [],
     enabled: true,
     protocol: 'openai' as const,
     stale: false,
@@ -52,8 +52,8 @@ test('a model served by two channels belongs to both groups independently', () =
 test('disabled or stale channels are not authorizable groups', () => {
   const groups = buildGroups([
     ...channels,
-    { name: 'paused', baseUrl: '', keyCount: 1, enabled: false, protocol: 'openai', stale: false, models: [{ id: 'paused-model', enabled: true, upstreams: 1 }] },
-    { name: 'gone', baseUrl: '', keyCount: 1, enabled: false, protocol: 'openai', stale: true, models: [{ id: 'gone-model', enabled: true, upstreams: 1 }] },
+    { name: 'paused', baseUrl: '', keyCount: 1, keys: [], enabled: false, protocol: 'openai', stale: false, models: [{ id: 'paused-model', enabled: true, upstreams: 1 }] },
+    { name: 'gone', baseUrl: '', keyCount: 1, keys: [], enabled: false, protocol: 'openai', stale: true, models: [{ id: 'gone-model', enabled: true, upstreams: 1 }] },
   ], oauth)
   assert.ok(!groups.some((group) => group.id === 'paused'))
   assert.ok(!groups.some((group) => group.id === 'gone'))

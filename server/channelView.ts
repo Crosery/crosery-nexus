@@ -1,12 +1,29 @@
 import type { CompatChannel } from './cpa.js'
-import { modelId } from './cpa.js'
+import { hashKey, maskKey, modelId } from './cpa.js'
 
 export type ChannelProtocolView = 'openai' | 'claude' | 'responses'
+
+/** 一把上游 Key 的可见形态： stable 引用 + 打码值。密文从不回传给浏览器或 CLI。 */
+export type ChannelKeyView = { ref: string; masked: string }
+
+/**
+ * 同一把 Key 的稳定引用（sha256 前 12 位）。按下标删会互相串位——删掉一把之后，
+ * 后面的 Key 下标全部前移， UI/CLI 手里那个旧下标就指到别人头上；引用不受增删影响。
+ */
+export const channelKeyRef = (apiKey: string) => hashKey(apiKey).slice(0, 12)
+
+export const channelKeyViews = (entries: CompatChannel['api-key-entries']): ChannelKeyView[] =>
+  (entries || [])
+    .map((entry) => String(entry?.['api-key'] || ''))
+    .filter((key) => key.length > 0)
+    .map((key) => ({ ref: channelKeyRef(key), masked: maskKey(key) }))
 
 export type ChannelView = {
   name: string
   baseUrl: string
   keyCount: number
+  /** 渠道持有的上游 Key（打码）。同一个渠道可以有多把，内核按条目轮询。 */
+  keys: ChannelKeyView[]
   enabled: boolean
   /**
    * 上游协议：'responses' = 渠道配了 Responses 原生中继（CPA 的 relay-mode）；
@@ -22,6 +39,8 @@ export type ChannelView = {
   stale: boolean
   /** upstreams：同一个对外模型名可能由多条上游条目轮询，开关按对外名生效。 */
   models: Array<{ id: string; enabled: boolean; upstreams: number }>
+  /** CPA `api-key-channel-access` 的真实渠道名（`claude-api-key` 挂載的条目在 CPA 里是 `claude`，`codex-api-key` 是 `codex`）。 */
+  cpaChannel?: string
 }
 
 export type ChannelSnapshotRow = { name: string; enabled: number; snapshot_json: string }
@@ -55,10 +74,15 @@ export function mergeChannelView(
       const name = String(channel.name || '')
       const enabled = liveNames.has(name) && channel.disabled !== true
       const relayMode = String(channel['relay-mode'] || '') === 'responses'
+      const endpoint = String(channel.__providerEndpoint || '')
       const protocol: ChannelProtocolView = relayMode ? 'responses'
-        : channel.__providerEndpoint === 'claude-api-key' ? 'claude'
+        : endpoint === 'claude-api-key' ? 'claude'
         : 'openai'
-      // 同一 alias 的多条上游折叠成一个开关，否则同名模型会重复出现。
+      const cpaChannel = endpoint === 'claude-api-key' ? 'claude'
+        : endpoint === 'codex-api-key' ? 'codex'
+        : endpoint === 'gemini-api-key' ? 'gemini'
+        : endpoint === 'vertex-api-key' ? 'vertex'
+        : undefined
       const upstreamCount = new Map<string, number>()
       for (const model of channel.models || []) {
         const id = modelId(model)
@@ -72,10 +96,12 @@ export function mergeChannelView(
         name,
         baseUrl: String(channel['base-url'] || ''),
         keyCount: (channel['api-key-entries'] || []).length,
+        keys: channelKeyViews(channel['api-key-entries']),
         enabled,
         protocol,
         stale: staleNames.has(name),
         models: [...liveModels, ...offModels].sort((a, b) => a.id.localeCompare(b.id)),
+        ...(cpaChannel ? { cpaChannel } : {}),
       }
     })
     .sort((a, b) => Number(b.enabled) - Number(a.enabled) || Number(a.stale) - Number(b.stale) || a.name.localeCompare(b.name))

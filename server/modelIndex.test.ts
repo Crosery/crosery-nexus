@@ -7,7 +7,7 @@ import { buildModelIndex } from './modelIndex.js'
 const channel = (name: string, enabled: boolean, models: Array<[string, boolean, number]>) => ({
   name,
   baseUrl: `https://${name}.example/v1`,
-  keyCount: 1,
+  keyCount: 1, keys: [],
   enabled,
   protocol: 'openai' as const,
   stale: false,

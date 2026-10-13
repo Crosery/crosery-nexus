@@ -164,13 +164,13 @@ export async function registerProbeKeys(services: string[]): Promise<Record<stri
  * 每把探测 Key 只钉在自己那一个服务上：同一个模型名可能挂在多个渠道，不钉住就测不出是哪个渠道坏了。
  * 合并写入，其它 Key 的条目原样保留。调用方负责先 registerProbeKeys（CPA 会丢弃未配置 Key 的条目）。
  */
-export async function pinProbeKeyChannels(pins: Record<string, string>) {
+export async function pinProbeKeyChannels(pins: Record<string, string>, cpaChannels: Record<string, string> = {}) {
   const current = await getChannelAccess()
   const desired = { ...current }
-  for (const [service, key] of Object.entries(pins)) desired[key] = [canonicalChannelName(service)]
+  for (const [service, key] of Object.entries(pins)) desired[key] = [canonicalChannelName(cpaChannels[service] || service)]
   // CPA 存的是规范渠道名，比较时同口径，否则大小写或前缀不同的渠道名每轮都会重写一次
   const changed = Object.entries(pins).some(([service, key]) =>
-    JSON.stringify((Array.isArray(current[key]) ? current[key] : []).map((name) => canonicalChannelName(String(name)))) !== JSON.stringify([canonicalChannelName(service)]))
+    JSON.stringify((Array.isArray(current[key]) ? current[key] : []).map((name) => canonicalChannelName(String(name)))) !== JSON.stringify([canonicalChannelName(cpaChannels[service] || service)]))
   if (changed) await putChannelAccess(desired)
   return changed
 }
@@ -294,6 +294,13 @@ export async function putCompatChannels(channels: CompatChannel[], options: { ex
 export const PROVIDER_KEY_ENDPOINTS = ['claude-api-key', 'codex-api-key', 'gemini-api-key', 'vertex-api-key'] as const
 export type ProviderKeyEndpoint = (typeof PROVIDER_KEY_ENDPOINTS)[number]
 
+/** CPA's `authChannelName` for provider-key entries uses `auth.Provider` (`claude`, `codex`, `gemini`, `vertex`), not `prefix`. */
+export const PROVIDER_ENDPOINT_CHANNEL: Record<ProviderKeyEndpoint, string> = {
+  'claude-api-key': 'claude',
+  'codex-api-key': 'codex',
+  'gemini-api-key': 'gemini',
+  'vertex-api-key': 'vertex',
+}
 export type ProviderKeyEntry = {
   'api-key'?: string
   prefix?: string

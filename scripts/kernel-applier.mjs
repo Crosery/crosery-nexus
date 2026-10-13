@@ -568,11 +568,38 @@ export async function readProbeKeys(file) {
 /** An auth file's `type` → the key in `probes`: CPA's canonical channel name (trim, lowercase, no openai-compatible-). */
 export const probeService = type => canonicalChannelName(type)
 
-/** Without a configured model: the cheapest-looking one the service's key may use, else the first in name order. */
-export function pickProbeModel(ids) {
-  const list = [...new Set(ids.filter(id => typeof id === 'string' && id))].sort()
-  return list.find(id => /(haiku|mini|flash|lite|nano|small)/i.test(id) && !/(image|embed|tts|audio|vision-preview)/i.test(id))
-    ?? list.find(id => !/(image|embed|tts|audio)/i.test(id)) ?? null
+/**
+ * Without a configured model: the cheapest-looking one the service's key may use, else the first in name order.
+ * `/v1/models` is filtered by `api-key-model-access` but not by `api-key-channel-access`, so when `service` is given
+ * and the catalog has models from other channels, narrow to models belonging to `service` (by `owned_by`, `service/`
+ * prefix, or OAuth family) before falling back to the unprefixed pool.
+ */
+const SERVICE_OWNER = { claude: 'anthropic', codex: 'openai', antigravity: 'antigravity', gemini: 'google', xai: 'xai' }
+const SERVICE_FAMILY = { claude: /^claude-/i, codex: /^(gpt-|o[134]-|codex-)/i, antigravity: /^(gemini-|claude-)/i, gemini: /^gemini-/i, xai: /^grok-/i }
+
+export function pickProbeModel(items, service = '') {
+  const svc = probeService(service)
+  const entries = (Array.isArray(items) ? items : []).map(item => (typeof item === 'string' ? { id: item, ownedBy: '' } : {
+    id: typeof item?.id === 'string' ? item.id : '',
+    ownedBy: typeof item?.owned_by === 'string' ? item.owned_by.trim().toLowerCase() : '',
+  })).filter(entry => entry.id && !/(image|embed|tts|audio)/i.test(entry.id))
+  const pick = ids => {
+    const list = [...new Set(ids)].sort()
+    return list.find(id => /(haiku|mini|flash|lite|nano|small)/i.test(id) && !/vision-preview/i.test(id)) ?? list[0] ?? null
+  }
+  if (!svc) return pick(entries.map(e => e.id))
+  const owner = SERVICE_OWNER[svc] ?? svc
+  const family = SERVICE_FAMILY[svc]
+  const ownPrefix = `${svc}/`
+  const sameOwner = e => !e.ownedBy || e.ownedBy === owner || e.ownedBy === svc
+  const unprefixed = e => !e.id.includes('/')
+  const tier1 = entries.filter(e => e.id.toLowerCase().startsWith(ownPrefix)).map(e => e.id)
+  if (tier1.length) return pick(tier1)
+  const tier2 = entries.filter(e => unprefixed(e) && sameOwner(e) && (!family || family.test(e.id))).map(e => e.id)
+  if (tier2.length) return pick(tier2)
+  const tier3 = entries.filter(e => unprefixed(e) && (!family || family.test(e.id))).map(e => e.id)
+  if (tier3.length) return pick(tier3)
+  return pick(entries.filter(unprefixed).map(e => e.id))
 }
 
 const scrub = (value, key) => String(value ?? '').split(key).join('***').replace(/\s+/g, ' ').slice(0, 160)
@@ -593,7 +620,7 @@ export async function runProbes({ types, keys, models = {}, reuse = {}, base, de
       try {
         const listed = await fetchImpl(`${base}/v1/models`, { headers, signal: AbortSignal.timeout(Math.min(5_000, timeout())) })
         const body = listed.ok ? await listed.json().catch(() => null) : (await listed.body?.cancel(), null)
-        model = pickProbeModel(Array.isArray(body?.data) ? body.data.map(item => item?.id) : [])
+        model = pickProbeModel(Array.isArray(body?.data) ? body.data : [], service)
       } catch { /* the completion below reports the failure */ }
     }
     if (!model) return { type, service, ok: false, detail: 'Key 没有可用模型（/v1/models 为空或不通）' }

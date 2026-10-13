@@ -344,7 +344,7 @@ test('FF-09 Key burn meter shows the tightest of 日 / 周 / 总', () => {
 })
 
 test('FF-20 the disabled-channels attention item links to a filter /channels knows', () => {
-  const r = overview.attention({ now: Date.now(), channels: [{ name: 'x', enabled: false, stale: false, keyCount: 1, baseUrl: 'https://x', models: [] }] })
+  const r = overview.attention({ now: Date.now(), channels: [{ name: 'x', enabled: false, stale: false, keyCount: 1, keys: [], baseUrl: 'https://x', models: [] }] })
   const item = r.items.find((it: Loose) => it.id === 'chan-off')
   assert.equal(item.action.to, '/channels?status=off')
 })

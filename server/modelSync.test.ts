@@ -626,3 +626,83 @@ test('SB-01 matched 目标本轮探测被推迟/失败时，目录 id 不合入�
   await syncUpstreamModels({ state, deps: deps({ store: memory.store, fetch, clock, readCatalog: () => catalog }) })
   assert.deepEqual(memory.channels[0].models.map(model => model.name), ['old', 'shared-new'], '探测成功后只补上这把 key 自己列出的模型')
 })
+
+/* ────────────────────────── 单渠道「拉取模型」（渠道抽屉里的按钮） ────────────────────────── */
+
+test('only：只探这一个渠道，其余渠道一个上游请求都不发', async () => {
+  const memory = memoryStore([
+    channel('wanted', 'https://wanted.example.test/v1', 'env:GOOD_KEY'),
+    channel('other', 'https://other.example.test/v1', 'env:GOOD_KEY'),
+  ])
+  const { fetch, calls } = fakeFetch(() => modelsResponse('m-1'))
+  const result = await syncUpstreamModels({ only: 'wanted', force: true, state: {}, deps: deps({ store: memory.store, fetch }) })
+
+  assert.deepEqual(calls.map(call => new URL(call.url).host), ['wanted.example.test'])
+  assert.equal(result.probed, 1)
+  assert.deepEqual(result.addedModels, ['m-1'])
+  assert.deepEqual(memory.channels.filter(c => c.models.length).map(c => c.name), ['wanted'])
+})
+
+test('only：越过主机退避与最小间隔（管理员明确点单个渠道），但仍只加不删、仍跳过人工停用的墓碑', async () => {
+  const clock = { now: 80_000_000 }
+  const memory = memoryStore([channel('one', 'https://one.example.test/v1', 'env:GOOD_KEY', ['kept'])])
+  const { fetch, calls } = fakeFetch(() => modelsResponse('kept', 'fresh'))
+  const state: DiscoveryState = {
+    channels: { one: { backoffUntil: clock.now + 30 * 60_000, backoffLevel: 2 } },
+    hosts: { 'one.example.test': { lastRequestAt: clock.now, backoffUntil: clock.now + 30 * 60_000, backoffLevel: 2 } },
+  }
+  // 墓碑：kept 之前被人工停用过（这里它仍在映射里，用另一个 id 验证墓碑过滤）
+  const tombstones = new Map([['one', new Set(['blocked'])]])
+  const result = await syncUpstreamModels({
+    only: 'one', force: true, state,
+    deps: deps({ store: memory.store, fetch, clock, disabledModels: () => tombstones }),
+  })
+
+  assert.equal(calls.length, 1, '退避与最小间隔都不该挡住一次明确的单渠道拉取')
+  assert.equal(result.deferred, 0)
+  assert.deepEqual(result.addedModels, ['fresh'])
+  assert.deepEqual(memory.channels[0].models.map(model => model.name), ['kept', 'fresh'], '只加不删')
+})
+
+test('only：单渠道拉取不碰共享目录，也不推进目录哈希（全量那一轮自己来）', async () => {
+  const catalog = catalogOf('https://gw.example.test/v1', ['shared-x'])
+  const memory = memoryStore([channel('gw', 'https://gw.example.test/v1', 'env:GOOD_KEY', ['kept'])])
+  const { fetch } = fakeFetch(() => modelsResponse('kept'))
+  const state: DiscoveryState = {}
+  await syncUpstreamModels({ only: 'gw', force: true, state, deps: deps({ store: memory.store, fetch, readCatalog: () => catalog }) })
+
+  assert.equal(state.catalogHash, undefined, '单渠道拉取不得声称目录已合入')
+  assert.equal(state.probedCatalogHash, undefined)
+  assert.deepEqual(memory.channels[0].models.map(model => model.name), ['kept'], 'shared-x 只能由全量那一轮（或 matched 目标）合入')
+})
+
+test('only：同一渠道的重复点击复用同一次运行；与全量运行互不合并', async () => {
+  const memory = memoryStore([
+    channel('one', 'https://one.example.test/v1', 'env:GOOD_KEY'),
+    channel('two', 'https://two.example.test/v1', 'env:GOOD_KEY'),
+  ])
+  let release: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const { fetch, calls } = fakeFetch(async (url) => { await gate; return modelsResponse(new URL(url).hostname.split('.')[0]) })
+  const depsOne = deps({ store: memory.store, fetch })
+
+  const first = syncUpstreamModels({ only: 'one', force: true, state: {}, deps: depsOne })
+  const again = syncUpstreamModels({ only: 'one', force: true, state: {}, deps: depsOne })
+  assert.equal(first, again, '同一渠道的重复点击必须单飞')
+  const whole = syncUpstreamModels({ force: true, state: {}, deps: depsOne })
+  assert.notEqual(first, whole, '单渠道与全量不能合并成一次运行——那会让「只探这一个」名不副实')
+  release()
+  await Promise.all([first, whole])
+  assert.deepEqual([...new Set(calls.map(call => new URL(call.url).host))].sort(), ['one.example.test', 'two.example.test'])
+})
+
+test('only：渠道名不存在时什么也不探，如实报告 skipped（路由层负责 404）', async () => {
+  const memory = memoryStore([channel('one', 'https://one.example.test/v1', 'env:GOOD_KEY')])
+  const { fetch, calls } = fakeFetch(() => modelsResponse('m-1'))
+  const result = await syncUpstreamModels({ only: 'gone', force: true, state: {}, deps: deps({ store: memory.store, fetch }) })
+
+  assert.equal(calls.length, 0)
+  assert.equal(result.probed, 0)
+  assert.equal(result.result, 'skipped')
+  assert.equal(result.silent, false, '管理员点的那一下永远进历史，不能被 silent 吞掉')
+})

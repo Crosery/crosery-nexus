@@ -87,3 +87,13 @@ test('已经一致时不产生写操作', () => {
   const merged = mergeChannelAccess(current, buildKeyChannelAccessPlan(GROUPS, [row('sk-feiyu', ['codex', 'antigravity'])], current, configured('sk-feiyu')))
   assert.equal(sameKeyAccess(current, merged), true)
 })
+
+test('挂在 claude-api-key / codex-api-key 下的渠道会同时放行底层 CPA 渠道名', () => {
+  const groups: ConsoleGroup[] = [
+    ...GROUPS,
+    { id: 'opencode-go-msg', name: 'opencode-go-msg', color: '#fff', kind: 'compat', models: ['oc-qwen3.8-flash'], cpaChannel: 'claude' },
+    { id: 'opencode-go-resp', name: 'opencode-go-resp', color: '#fff', kind: 'compat', models: ['oc-grok-4.6'], cpaChannel: 'codex' },
+  ]
+  const plan = buildKeyChannelAccessPlan(groups, [row('sk-oc', ['opencode-go-msg', 'opencode-go-resp'])], {}, configured('sk-oc'))
+  assert.deepEqual(plan['sk-oc'], ['claude', 'codex', 'opencode-go-msg', 'opencode-go-resp'])
+})
