@@ -66,19 +66,21 @@ function play(rounds: Array<ServiceRound[]>, start: AvailabilityFile | null = nu
   return { file: file!, applied }
 }
 
-test('连续 3 次可计数失败才下线；中性结果不计数也不清零；一次成功立即上线', () => {
+test('连续 5 次可计数失败才下线；中性结果不计数也不清零；一次成功立即上线', () => {
   const healthy: Array<[string, ProbeVerdict]> = [['keeper', OK]]
   const { file, applied } = play([
     [svc('codex', [...healthy, ['retired', FAIL]])],
     [svc('codex', [...healthy, ['retired', FAIL]])],
     [svc('codex', [...healthy, ['retired', NEUTRAL]])],
     [svc('codex', [...healthy, ['retired', FAIL]])],
+    [svc('codex', [...healthy, ['retired', FAIL]])],
+    [svc('codex', [...healthy, ['retired', FAIL]])],
   ])
-  assert.deepEqual(applied.map((item) => item.file.services.codex.retired.state), ['online', 'online', 'online', 'offline'])
-  assert.deepEqual(applied.map((item) => item.file.services.codex.retired.failures), [1, 2, 2, 3])
-  assert.deepEqual(applied.map((item) => item.transitions.length), [0, 0, 0, 1])
-  assert.deepEqual(applied[3].transitions[0], { service: 'codex', model: 'retired', from: 'online', to: 'offline', reason: '连续 3 次失败：HTTP 404: model_not_found' })
-  assert.equal(file.services.codex.retired.since, new Date(round(3)).toISOString())
+  assert.deepEqual(applied.map((item) => item.file.services.codex.retired.state), ['online', 'online', 'online', 'online', 'online', 'offline'])
+  assert.deepEqual(applied.map((item) => item.file.services.codex.retired.failures), [1, 2, 2, 3, 4, 5])
+  assert.deepEqual(applied.map((item) => item.transitions.length), [0, 0, 0, 0, 0, 1])
+  assert.deepEqual(applied[5].transitions[0], { service: 'codex', model: 'retired', from: 'online', to: 'offline', reason: '连续 5 次失败：HTTP 404: model_not_found' })
+  assert.equal(file.services.codex.retired.since, new Date(round(5)).toISOString())
 
   const back = applyProbeRound(file, { probed: [svc('codex', [...healthy, ['retired', OK]])], kept: [] }, round(4))
   assert.equal(back.file.services.codex.retired.state, 'online')
@@ -105,22 +107,22 @@ test('非对话模型记为 unprobed，不计数也不下线', () => {
 
 test('一轮之内不允许把服务全部下线：本轮下线不生效、保留原状态、记告警（持续故障只首轮进审计）', () => {
   const allFail = [svc('antigravity', [['gemini-3-pro', FAIL], ['gemini-3-flash', FAIL], ['imagen-4', null]])]
-  const { file, applied } = play([allFail, allFail, allFail, allFail])
-  const third = applied[2]
-  assert.deepEqual(third.transitions, [])
-  assert.equal(third.alarms.length, 1)
-  assert.deepEqual(third.alarms[0].models, ['gemini-3-pro', 'gemini-3-flash'])
-  assert.equal(third.freshAlarms.length, 1)
+  const { file, applied } = play([allFail, allFail, allFail, allFail, allFail, allFail])
+  const fifth = applied[4]
+  assert.deepEqual(fifth.transitions, [])
+  assert.equal(fifth.alarms.length, 1)
+  assert.deepEqual(fifth.alarms[0].models, ['gemini-3-pro', 'gemini-3-flash'])
+  assert.equal(fifth.freshAlarms.length, 1)
   assert.equal(file.services.antigravity['gemini-3-pro'].state, 'online')
-  assert.equal(file.services.antigravity['gemini-3-pro'].failures, 4, '失败计数照记，留作证据')
-  assert.equal(applied[3].freshAlarms.length, 0, '连续第二轮告警不再重复审计')
+  assert.equal(file.services.antigravity['gemini-3-pro'].failures, 6, '失败计数照记，留作证据')
+  assert.equal(applied[5].freshAlarms.length, 0, '连续第二轮告警不再重复审计')
   assert.equal(file.alarms.length, 2)
 })
 
 test('逐个下线到只剩最后一个时，最后一个也不能下线', () => {
   const start = applyProbeRound(null, { probed: [svc('mox', [['a', OK], ['b', OK]])], kept: [] }, round(0)).file
-  start.services.mox.a = { ...start.services.mox.a, state: 'offline', failures: 3 }
-  start.services.mox.b = { ...start.services.mox.b, failures: 2 }
+  start.services.mox.a = { ...start.services.mox.a, state: 'offline', failures: 5 }
+  start.services.mox.b = { ...start.services.mox.b, failures: 4 }
   const result = applyProbeRound(start, { probed: [svc('mox', [['a', FAIL], ['b', FAIL]])], kept: [] }, round(1))
   assert.equal(result.file.services.mox.b.state, 'online')
   assert.equal(result.alarms.length, 1)
@@ -129,7 +131,7 @@ test('逐个下线到只剩最后一个时，最后一个也不能下线', () =>
 
 test('部分下线照常生效；未探测的服务原样保留，目录里没有的服务与模型被移除', () => {
   const start = play([[svc('codex', [['a', OK], ['b', FAIL]]), svc('claude', [['opus', OK]]), svc('gone', [['x', OK]])]]).file
-  start.services.codex.b.failures = 2
+  start.services.codex.b.failures = 4
   const result = applyProbeRound(start, { probed: [svc('codex', [['a', OK], ['b', FAIL]])], kept: ['claude'] }, round(1))
   assert.equal(result.file.services.codex.b.state, 'offline')
   assert.deepEqual(result.file.services.claude, start.services.claude)
@@ -220,7 +222,7 @@ test('整轮：目录暂时为空的服务原样保留，已下线的模型不�
     listCatalog: async () => [group('codex', empty ? [] : ['gpt-5.6-sol', 'gpt-retired'])],
     responses: (_key, model) => (model === 'gpt-retired' ? http(404, { error: { message: 'model_not_found' } }) : http(200, reply)),
   })
-  for (let index = 0; index < 3; index += 1) await runModelAvailabilityRound(h.deps, h.context)
+  for (let index = 0; index < 5; index += 1) await runModelAvailabilityRound(h.deps, h.context)
   empty = true
   await runModelAvailabilityRound(h.deps, h.context)
   assert.equal(h.state().stored!.services.codex['gpt-retired'].state, 'offline')
@@ -240,13 +242,13 @@ test('整轮：下线与恢复写审计（服务、模型、前后状态、原�
     listCatalog: async () => [group('codex', ['gpt-5.6-sol', 'gpt-retired'])],
     responses: (_key, model) => (model === 'gpt-retired' && broken ? http(404, { error: { message: 'model_not_found' } }) : http(200, reply)),
   })
-  for (let index = 0; index < 3; index += 1) await runModelAvailabilityRound(h.deps, h.context)
+  for (let index = 0; index < 5; index += 1) await runModelAvailabilityRound(h.deps, h.context)
   assert.equal(h.state().stored!.services.codex['gpt-retired'].state, 'offline')
   assert.equal(h.audits.length, 1)
   const [action, target, details] = h.audits[0]
   assert.equal(action, 'model_availability')
   assert.equal(target, 'codex/gpt-retired')
-  assert.deepEqual(JSON.parse(details), { from: 'online', to: 'offline', reason: '连续 3 次失败：HTTP 404: model_not_found' })
+  assert.deepEqual(JSON.parse(details), { from: 'online', to: 'offline', reason: '连续 5 次失败：HTTP 404: model_not_found' })
   assert.equal(h.state().reconciles, 1)
 
   broken = false
@@ -259,9 +261,9 @@ test('整轮：下线与恢复写审计（服务、模型、前后状态、原�
 test('整轮：单模型服务连续失败只告警不下线，结果为 partial，告警只审计一次', async () => {
   const h = harness({ responses: (_key, model) => (model === 'kimi-k3' ? http(400, { error: { message: 'model is not supported' } }) : http(200, reply)) })
   const outcomes = []
-  for (let index = 0; index < 4; index += 1) outcomes.push(await runModelAvailabilityRound(h.deps, h.context))
-  assert.deepEqual(outcomes.map((outcome) => outcome.result), ['ok', 'ok', 'partial', 'partial'])
-  assert.match(outcomes[2].error ?? '', /^kimi：本轮将使全部 1 个对话模型下线/)
+  for (let index = 0; index < 6; index += 1) outcomes.push(await runModelAvailabilityRound(h.deps, h.context))
+  assert.deepEqual(outcomes.map((outcome) => outcome.result), ['ok', 'ok', 'ok', 'ok', 'partial', 'partial'])
+  assert.match(outcomes[4].error ?? '', /^kimi：本轮将使全部 1 个对话模型下线/)
   assert.equal(h.state().stored!.services.kimi['kimi-k3'].state, 'online')
   assert.deepEqual(h.audits.map(([action, target]) => `${action}:${target}`), ['model_availability_alarm:kimi'])
   assert.equal(h.state().reconciles, 0)

@@ -54,6 +54,8 @@ export type ChannelItem = {
   protocol?: 'openai' | 'claude' | 'responses'
   models: ChannelModel[]
   keys: Array<{ ref: string; masked: string }>
+  /** 渠道出口代理：'direct' 强制直连，或代理地址；未设置则为空或 undefined 继承全局。 */
+  proxyUrl?: string
 }
 
 export type CredentialItem = {
@@ -85,6 +87,7 @@ export type ModelSource = {
   enabled: boolean
   upstreams: number
   channelEnabled: boolean
+  priority?: number
 }
 
 /** 单个价格来源的单价（task-79；金额单位由 `unit` 说明，缺失字段一律 undefined，不补 0）。 */

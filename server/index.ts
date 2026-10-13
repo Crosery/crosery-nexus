@@ -7,7 +7,7 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { addChannelApiKey, ChannelKeyError, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled } from './channels.js'
+import { addChannelApiKey, ChannelKeyError, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -968,6 +968,7 @@ app.post('/api/channels', async (req, res) => {
       baseUrl: String(req.body?.baseUrl || ''),
       apiKey: String(req.body?.apiKey || ''),
       models: req.body?.models,
+      proxyUrl: req.body?.proxyUrl !== undefined ? String(req.body.proxyUrl) : undefined,
     })
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
@@ -989,6 +990,19 @@ app.patch('/api/channels/:name', async (req, res) => {
     addAudit(enabled ? 'enable_channel' : 'disable_channel', req.params.name)
     res.json({ ok: true })
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
+})
+
+app.patch('/api/channels/:name/proxy', async (req, res) => {
+  try {
+    if (!(await listChannels()).some(channel => channel.name === req.params.name)) {
+      return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    }
+    const proxyUrl = String(req.body?.proxyUrl ?? '')
+    await setChannelProxy(req.params.name, proxyUrl)
+    invalidateControlPlaneCaches()
+    addAudit('set_channel_proxy', req.params.name, `proxy=${proxyUrl || 'inherit'}`)
+    res.json({ ok: true, proxyUrl })
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '设置渠道代理失败' }) }
 })
 
 app.delete('/api/channels/:name', async (req, res) => {
@@ -1274,10 +1288,17 @@ app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
       ? (await listCredentials()).some(credential => credential.type === req.params.channel)
       : (await listChannels()).some(channel => channel.name === req.params.channel)
     if (!known) return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
-    await setModelSourceEnabled(req.params.model, req.params.channel, kind, Boolean(req.body?.enabled))
+    if (typeof req.body?.enabled === 'boolean') {
+      await setModelSourceEnabled(req.params.model, req.params.channel, kind, Boolean(req.body.enabled))
+      addAudit(req.body.enabled ? 'enable_model_source' : 'disable_model_source', `${req.params.model}@${req.params.channel}`)
+    }
+    if (req.body?.priority !== undefined && (typeof req.body?.priority === 'number' || typeof req.body?.priority === 'string')) {
+      const p = Math.max(0, Math.min(1000, Math.round(Number(req.body.priority) || 100)))
+      setModelSourcePriority(req.params.model, req.params.channel, kind, p)
+      addAudit('set_model_source_priority', `${req.params.model}@${req.params.channel}`, `priority=${p}`)
+    }
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
-    addAudit(req.body?.enabled ? 'enable_model_source' : 'disable_model_source', `${req.params.model}@${req.params.channel}`)
     res.json({ ok: true })
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
 })

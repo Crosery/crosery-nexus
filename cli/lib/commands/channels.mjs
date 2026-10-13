@@ -26,8 +26,9 @@ const HELP = `cradmin channels <动作> [参数]
   add <名称> --base-url <url> --api-key-stdin --models id[=别名],…
                              新建 OpenAI 兼容渠道；上游 Key 从 stdin 读（终端里隐藏输入）
       --protocol openai|claude|responses
+  proxy <渠道> <url|direct|inherit>
+                             设置渠道出口代理（direct = 强制直连；inherit = 继承全局；支持 http/socks5）
   rm <渠道>                  删除渠道（连停用快照一起删，不可撤销）
-  prune                      清理失效渠道（不可撤销）
 
 说明：
   模式一个模型都没匹配上时退出 2，不发任何请求；只为状态真正变化的模型发请求。
@@ -84,8 +85,9 @@ async function detail(ctx, name) {
         stale: Boolean(channel.stale),
         baseUrl: channel.baseUrl,
         keyCount: channel.keyCount ?? (channel.keys ? channel.keys.length : null),
+        ...(channel.proxyUrl ? { proxyUrl: channel.proxyUrl } : {}),
         ...(Array.isArray(channel.keys) ? { keys: channel.keys } : {}),
-        models,
+        models: models || [],
       },
     }
   }
@@ -101,7 +103,8 @@ const upstreamsOf = resolved => new Map((resolved.kind === 'compat' ? resolved.c
 // 词照控制台渠道详情（src/features/channels/ChannelSheet.vue）；data.state 是 --json 的旧字段，不在这里显示
 function renderDetail(ctx, data, { modelsOnly = false, upstreams = new Map() } = {}) {
   const { ui } = ctx
-  const on = data.models.filter(model => model.enabled).length
+  const models = data.models || []
+  const on = models.filter(model => model.enabled).length
   if (!modelsOnly) {
     if (data.kind === 'compat') {
       const cls = channelClass({ stale: data.stale, enabled: data.enabled, enabledModels: on })
@@ -111,6 +114,7 @@ function renderDetail(ctx, data, { modelsOnly = false, upstreams = new Map() } =
       if (cls.reason) ui.kv('', ui.paint('muted', `${cls.reason}${cls.hint}`))
       ui.kv('地址', data.baseUrl || '—')
       ui.kv('Key', data.keys?.length ? data.keys.map(formatChannelKey).join('、') : `${data.keyCount ?? '—'} 个`)
+      if (data.proxyUrl) ui.kv('出口代理', data.proxyUrl === 'direct' ? '直连 (direct)' : data.proxyUrl)
     } else {
       const info = providerInfo(data.name)
       ui.kv('渠道', providerTitle(info, data.name))
@@ -120,9 +124,9 @@ function renderDetail(ctx, data, { modelsOnly = false, upstreams = new Map() } =
     }
   }
   if (data.kind === 'compat' && !data.enabled && !data.stale) ui.warn(`渠道停用中 · 启用后才能单独开关模型：cradmin channels enable ${data.name}`)
-  ui.section(modelsOnly ? `${data.name} 的模型` : '模型', `${on} / ${data.models.length} 开着`)
-  if (!data.models.length) return ui.note('— 这个渠道没有模型')
-  ui.tree(data.models.map(model => {
+  ui.section(modelsOnly ? `${data.name} 的模型` : '模型', `${on} / ${models.length} 开着`)
+  if (!models.length) return ui.note('— 这个渠道没有模型')
+  ui.tree(models.map(model => {
     const n = upstreams.get(model.id) || 0
     return {
       kind: 'model',
@@ -137,7 +141,7 @@ async function changeModels(ctx, name) {
   const disable = listValue(ctx.values.disable)
   const only = listValue(ctx.values.only)
   const { resolved, data } = await detail(ctx, name)
-  const changes = planModelChanges(data.models, { enable, disable, only })
+  const changes = planModelChanges(data.models || [], { enable, disable, only })
   if (!changes) {
     ctx.output(data, () => renderDetail(ctx, data, { modelsOnly: true, upstreams: upstreamsOf(resolved) }))
     return
@@ -354,6 +358,32 @@ async function handleChannelKeys(ctx, args) {
   return listChannelKeys(ctx, name)
 }
 
+async function setProxy(ctx, name, rawProxy) {
+  if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels proxy <渠道> <url|direct|inherit>')
+  if (rawProxy === undefined) throw new UsageError('缺少代理地址', '用法：cradmin channels proxy <渠道> <url|direct|inherit>')
+  const { validateProxy } = await import('../resolve.mjs')
+  const proxyUrl = validateProxy(rawProxy)
+  const payload = await getChannels(ctx)
+  const resolved = resolveChannel(payload, name)
+  if (resolved.kind !== 'compat') throw new UsageError(`${name} 是账号池，设置账号代理请用 cradmin accounts proxy <账号> <url>`)
+  const current = resolved.channel.proxyUrl || '继承全局'
+  const targetLabel = proxyUrl ? (proxyUrl === 'direct' ? '直连 (direct)' : proxyUrl) : '继承全局'
+  const result = await runPlan(ctx, {
+    level: 'B',
+    title: `设置渠道 ${name} 的出口代理`,
+    items: [{
+      area: '渠道',
+      label: name,
+      from: current,
+      to: targetLabel,
+      method: 'PATCH',
+      path: `/api/channels/${encodeURIComponent(name)}/proxy`,
+      body: { proxyUrl },
+    }],
+  })
+  ctx.output(result)
+}
+
 export default {
   name: 'channels',
   aliases: ['channel', 'ch'],
@@ -393,6 +423,11 @@ export default {
       case 'keys':
       case 'key':
         return handleChannelKeys(ctx, args)
+      case 'proxy': {
+        const [name, proxyArg, ...extra] = args
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+        return setProxy(ctx, name, proxyArg)
+      }
       case 'models': {
         const [name, ...extra] = args
         if (!name) throw new UsageError('缺少 <渠道>')

@@ -23,9 +23,9 @@ const HELP = `cradmin models <动作> [参数]
   show <模型>                来源、价格、双源价格
   upstream <模型>            查看该请求模型在上游实际响应成了哪些模型（按次数与账号分布）
       --days <N>             统计天数（默认 7）
+  priority <模型> <渠道> [数值]  查看或调整该渠道提供此模型的调度优先级（0~1000，默认 100；最高优先级独占主力流量）
   sync                       探测各渠道上游的 /models，拉取新模型（后台任务 model-discovery，等它跑完，最多 10 分钟；
                              有冷却，冷却中退出 4）
-
 说明：每个渠道启用哪些模型用 cradmin channels models <渠道> 调整。价格不能在这里改（来自价格表与外部目录）。
 
 示例：
@@ -75,8 +75,39 @@ export default {
     days: { type: 'string' },
   },
   async run(ctx) {
-    const [action = 'ls', id, ...extra] = ctx.positionals
-    if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+    const [action = 'ls', id, arg2, arg3, ...extra] = ctx.positionals
+    if (action === 'priority') {
+      const modelId = id
+      const channelName = arg2
+      const rawPrio = arg3
+      if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+      if (!modelId || !channelName) throw new UsageError('用法：cradmin models priority <模型> <渠道> [数值]')
+      const index = await getModelIndex(ctx)
+      const model = (index.models || []).find(item => item.id === modelId)
+      if (!model) throw new UsageError(`找不到模型：${modelId}`)
+      const source = (model.sources || []).find(item => item.channel === channelName)
+      if (!source) throw new UsageError(`模型 ${modelId} 没有渠道来源：${channelName}`)
+      if (rawPrio === undefined) {
+        return void ctx.output({ model: modelId, channel: channelName, priority: source.priority ?? 100 }, () => {
+          ctx.ui.kv('模型', modelId)
+          ctx.ui.kv('渠道', channelName)
+          ctx.ui.kv('优先级', String(source.priority ?? 100))
+        })
+      }
+      const priority = Math.max(0, Math.min(1000, numberValue(rawPrio, '优先级')))
+      const result = await runPlan(ctx, {
+        level: 'C',
+        title: `调整模型 ${modelId} 在 ${channelName} 的调度优先级`,
+        items: [{
+          area: '模型映射', label: `${modelId}@${channelName}`,
+          from: String(source.priority ?? 100), to: String(priority),
+          method: 'PATCH', path: `/api/model-index/${encodeURIComponent(modelId)}/sources/${encodeURIComponent(channelName)}`,
+          body: { kind: source.kind, priority },
+        }],
+      })
+      return void ctx.output(result)
+    }
+    if (arg2 || arg3 || extra.length) throw new UsageError(`多余的参数：${[arg2, arg3, ...extra].filter(Boolean).join(' ')}`)
     if (action === 'ls' || action === 'list') {
       const type = ctx.values.type === undefined ? null : String(ctx.values.type).trim().toLowerCase()
       if (type !== null && !isKind(type)) throw new UsageError(`未知类型：${ctx.values.type}`, `可选：${Object.keys(MODEL_KIND_LABEL).join(' / ')}`)

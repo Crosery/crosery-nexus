@@ -94,6 +94,38 @@ async function toggle(mapping: ModelMapping, next: boolean) {
   }
 }
 
+const editingPriority = ref<string | null>(null)
+const editingPriorityValue = ref<number>(100)
+
+function formatPriorityLabel(p: number): string {
+  if (p >= 100) return `主力 · ${p}`
+  if (p >= 50) return `次级 · ${p}`
+  return `备用 · ${p}`
+}
+
+function startEditPriority(m: ModelMapping) {
+  editingPriority.value = mappingKey(m)
+  editingPriorityValue.value = m.priority ?? 100
+}
+
+async function savePriority(m: ModelMapping) {
+  if (editingPriority.value !== mappingKey(m)) return
+  const val = Math.max(0, Math.min(1000, Math.round(Number(editingPriorityValue.value) || 100)))
+  editingPriority.value = null
+  if (val === (m.priority ?? 100)) return
+  busy.value = mappingKey(m)
+  try {
+    await api.setModelSourcePriority(m.model, m.channel, m.kind, val)
+    notify(`✓ 已将 ${m.channel} 优先级设为 ${val}`, { tone: 'ok', description: m.model })
+    if (props.reload) await props.reload().catch(() => undefined)
+    else emit('changed')
+  } catch (error) {
+    notify(`◆ ${m.channel} 优先级更新失败`, { tone: 'bad', description: `${errorReason(error)} · ${m.model}` })
+  } finally {
+    busy.value = ''
+  }
+}
+
 const spec = computed(() => props.row?.spec ?? null)
 /** the catalog's display name only when it says something the id does not */
 const displayName = computed(() => {
@@ -171,7 +203,7 @@ const usageFacts = computed(() => {
       </section>
 
       <section class="msh__sec">
-        <h3 class="msh__h">渠道映射 <span class="num msh__h-n">{{ row.enabledChannels }}/{{ row.channels }}</span><span v-if="row.contested" class="msh__h-note">◇ 同一 id 多渠道轮询</span></h3>
+        <h3 class="msh__h">渠道映射 <span class="num msh__h-n">{{ row.enabledChannels }}/{{ row.channels }}</span><span v-if="row.contested" class="msh__h-note">◇ 同一 id 按优先级分档调度</span></h3>
         <p v-if="!row.mappings.length" class="msh__empty">— 没有渠道提供 · 只在价格源里出现</p>
         <ul v-else class="msh__maps">
           <li v-for="m in row.mappings" :key="mappingKey(m)" class="msh__map" :class="{ 'is-off': !m.enabled }">
@@ -179,6 +211,25 @@ const usageFacts = computed(() => {
               <div class="msh__map-1">
                 <span class="msh__ch num">{{ m.channel }}</span>
                 <TxTag size="sm" variant="plain" :label="KIND[m.kind]" />
+                <span
+                  v-if="editingPriority !== mappingKey(m)"
+                  class="msh__prio"
+                  :class="{ 'is-pri': (m.priority ?? 100) >= 100, 'is-sec': (m.priority ?? 100) < 100 && (m.priority ?? 100) >= 50, 'is-bak': (m.priority ?? 100) < 50 }"
+                  :title="`调度优先级 ${m.priority ?? 100} · 点击修改；最高优先级独占流量，全冷却才顺延备用`"
+                  @click.stop="startEditPriority(m)"
+                >
+                  {{ formatPriorityLabel(m.priority ?? 100) }}
+                </span>
+                <input
+                  v-else
+                  v-model.number="editingPriorityValue"
+                  type="number"
+                  min="0"
+                  max="1000"
+                  class="msh__prio-in mono num"
+                  @blur="savePriority(m)"
+                  @keyup.enter="savePriority(m)"
+                />
                 <span v-if="m.upstreams > 1" class="msh__dim num">×{{ m.upstreams }}</span>
                 <span v-if="m.model !== row.id" class="msh__dim num msh__exact" :title="m.model">{{ m.model }}</span>
               </div>
@@ -247,4 +298,29 @@ const usageFacts = computed(() => {
 .msh__dim { color: var(--ink-3); font-size: var(--fs-xs); white-space: nowrap; }
 .msh__exact { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .msh__link { justify-self: start; }
+.msh__prio {
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  background: var(--paper-2);
+  color: var(--ink-2);
+  border: 1px solid var(--rule);
+}
+.msh__prio:hover { border-color: var(--ink-3); color: var(--ink); }
+.msh__prio.is-pri { color: var(--accent-ink, #2563eb); background: var(--accent-subtle, rgba(37, 99, 235, 0.08)); border-color: transparent; }
+.msh__prio.is-sec { color: var(--warn-ink, #d97706); background: var(--warn-subtle, rgba(217, 119, 6, 0.08)); border-color: transparent; }
+.msh__prio.is-bak { color: var(--ink-3); border-color: var(--rule-2); }
+.msh__prio-in {
+  width: 60px;
+  height: 22px;
+  font-size: var(--fs-xs);
+  border: 1px solid var(--accent, #2563eb);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
 </style>

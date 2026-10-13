@@ -10,7 +10,7 @@ import { mapWithConcurrency, sanitizeSyncError, upstreamLimiter, type SyncOutcom
  * 模型可用性探测：每个服务（OAuth provider / 兼容渠道）的每个对话模型，经本机网关发一次最小请求。
  *
  * 保护规则（单测见 modelAvailability.test.ts）：
- * - 连续 3 次「可计数失败」才下线；一次成功立即上线；
+ * - 连续 5 次「可计数失败」才下线；一次成功立即上线；
  * - 中性结果（限流/额度/余额、上游 401/403、账号冷却、超时与网络错误、502/503/504）既不计数也不清零；
  * - 一轮之内不允许把一个服务的对话模型全部下线：本轮这个服务的下线一律不生效，保持原状态并记告警；
  * - 网关整轮不可达或读不到渠道目录：本轮作废，状态文件原样保留。
@@ -26,7 +26,7 @@ export type AvailabilityFile = {
   alarms: AvailabilityAlarm[]
 }
 
-export const OFFLINE_AFTER_FAILURES = 3
+export const OFFLINE_AFTER_FAILURES = 5
 export const PROBE_INTERVAL_MS = 30 * 60_000
 export const PROBE_TIMEOUT_MS = 30_000
 export const PROBE_CONCURRENCY = 2

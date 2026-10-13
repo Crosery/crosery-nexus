@@ -13,7 +13,7 @@ const props = withDefaults(defineProps<{ group?: ProviderGroup | null; provider:
   group: null,
   compact: false,
 })
-const emit = defineEmits<{ add: [] }>()
+const emit = defineEmits<{ add: []; config: [] }>()
 const total = computed(() => props.group?.accounts.length ?? 0)
 const facts = computed(() => {
   const g = props.group
@@ -31,14 +31,24 @@ const facts = computed(() => {
     <span v-if="!compact" class="acc-ph__vendor">{{ vendor }}</span>
     <TxTag v-if="provider?.risk && !compact" size="sm" variant="outline" label="登录有风控风险" title="通过网关共享订阅账号可能违反供应商条款" />
     <span v-if="facts" class="acc-ph__facts num">{{ compact ? `${total}` : facts }}</span>
-    <button
-      v-if="provider"
-      type="button"
-      class="ui-link acc-ph__add"
-      :aria-label="`添加 ${provider.name} 账号`"
-      :title="flowLabel(provider)"
-      @click="emit('add')"
-    ><Icon name="plus" :size="14" />{{ compact ? '添加' : '添加账号' }}</button>
+    <span class="acc-ph__r">
+      <button
+        v-if="provider"
+        type="button"
+        class="ui-link acc-ph__cfg"
+        :aria-label="`配置 ${provider.name} 模型`"
+        title="查看并配置该账号池的模型"
+        @click="emit('config')"
+      ><Icon name="settings" :size="14" />{{ compact ? '配置' : '配置模型' }}</button>
+      <button
+        v-if="provider"
+        type="button"
+        class="ui-link acc-ph__add"
+        :aria-label="`添加 ${provider.name} 账号`"
+        :title="flowLabel(provider)"
+        @click="emit('add')"
+      ><Icon name="plus" :size="14" />{{ compact ? '添加' : '添加账号' }}</button>
+    </span>
   </header>
 </template>
 
@@ -47,7 +57,8 @@ const facts = computed(() => {
 .acc-ph__name { margin: 0; font-size: var(--fs-md); font-weight: 600; white-space: nowrap; }
 .acc-ph__vendor { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .acc-ph__facts { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; }
-.acc-ph__add { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); flex: none; min-height: 28px; }
+.acc-ph__r { margin-left: auto; display: inline-flex; align-items: center; gap: 12px; flex: none; }
+.acc-ph__cfg, .acc-ph__add { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); flex: none; min-height: 28px; }
 .acc-ph.is-compact { min-height: 44px; gap: 8px; }
 @media (pointer: coarse) { .acc-ph__add { min-height: var(--tap); padding: 0 4px; } }
 </style>

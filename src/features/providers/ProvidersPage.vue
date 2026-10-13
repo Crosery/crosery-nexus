@@ -173,6 +173,7 @@ type SharedModelRow = {
 const sharedModelsList = computed<SharedModelRow[]>(() => {
   const active = sharedLive.data.value?.activeModels ?? []
   const defaults = new Set(sharedLive.data.value?.defaultModels ?? [])
+  const credentials = channelsLive.data.value?.credentials ?? []
 
   return active.map((modelId) => {
     let providerName = '全局接入网关'
@@ -187,7 +188,15 @@ const sharedModelsList = computed<SharedModelRow[]>(() => {
         break
       }
     }
-
+    if (providerName === '全局接入网关') {
+      for (const cred of credentials) {
+        if (!cred.disabled && cred.models && cred.models.includes(modelId)) {
+          providerName = cred.type || '订阅账号'
+          providerKind = '订阅账号池'
+          break
+        }
+      }
+    }
     return {
       id: modelId,
       provider: providerName,
@@ -519,11 +528,16 @@ const availableModelCandidates = computed(() => {
   const activeSet = new Set(sharedLive.data.value?.activeModels ?? [])
   const list: Array<{ id: string; channel: string; isShared: boolean }> = []
 
+  const seen = new Set<string>()
+  // 1. API 渠道模型
   for (const c of channelsData.value) {
     if (!c.enabled || !c.models) continue
     for (const m of c.models) {
       if (m.enabled === false) continue
       if (q && !m.id.toLowerCase().includes(q) && !c.name.toLowerCase().includes(q)) continue
+      const key = `${c.name}:${m.id}`
+      if (seen.has(key)) continue
+      seen.add(key)
       list.push({
         id: m.id,
         channel: c.name,
@@ -531,7 +545,23 @@ const availableModelCandidates = computed(() => {
       })
     }
   }
-  return list
+  // 2. 订阅账号池模型 (Codex, Claude, Antigravity 等)
+  const credentials = channelsLive.data.value?.credentials ?? []
+  for (const cred of credentials) {
+    if (cred.disabled || !cred.models) continue
+    const providerName = cred.type || 'oauth'
+    for (const mId of cred.models) {
+      if (q && !mId.toLowerCase().includes(q) && !providerName.toLowerCase().includes(q)) continue
+      const key = `${providerName}:${mId}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      list.push({
+        id: mId,
+        channel: `${providerName} (订阅账号)`,
+        isShared: activeSet.has(mId),
+      })
+    }
+  }
 })
 
 /* ── 顶部滑块指示器：完全对齐用量页面 UsageWorkspace ── */

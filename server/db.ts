@@ -111,6 +111,15 @@ db.exec(`
     PRIMARY KEY (channel, model)
   );
 
+  CREATE TABLE IF NOT EXISTS channel_model_priorities (
+    channel TEXT NOT NULL,
+    model TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'compat',
+    priority INTEGER NOT NULL DEFAULT 100,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (channel, model, kind)
+  );
+
   CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

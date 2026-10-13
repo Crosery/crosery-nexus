@@ -269,7 +269,7 @@ test('socks5 failures: wrong password, missing auth, REP codes, hang, refused, u
   assert.deepEqual([timeout.code, timeout.stage], ['timeout', 'proxy'])
   const refused = await failure(probeRequest({ kind: 'socks5', host: '127.0.0.1', port: await closedPort() }, `http://x.test:${target}/ok`))
   assert.deepEqual([refused.code, refused.stage], ['proxy-down', 'proxy'])
-  const dns = await failure(probeRequest({ kind: 'socks5', host: 'no-such-proxy.invalid', port: 1080 }, `http://x.test:${target}/ok`))
+  const dns = await failure(probeRequest({ kind: 'socks5', host: 'no-such-proxy.local', port: 1080 }, `http://x.test:${target}/ok`))
   assert.deepEqual([dns.code, dns.stage], ['dns', 'proxy'])
 })
 

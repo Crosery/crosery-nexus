@@ -41,6 +41,8 @@ export type ChannelView = {
   models: Array<{ id: string; enabled: boolean; upstreams: number }>
   /** CPA `api-key-channel-access` 的真实渠道名（`claude-api-key` 挂載的条目在 CPA 里是 `claude`，`codex-api-key` 是 `codex`）。 */
   cpaChannel?: string
+  /** 渠道绑定的出口代理（'direct' 强制直连，或代理地址；未设置则为空或 undefined 继承全局）。 */
+  proxyUrl?: string
 }
 
 export type ChannelSnapshotRow = { name: string; enabled: number; snapshot_json: string }
@@ -102,6 +104,7 @@ export function mergeChannelView(
         stale: staleNames.has(name),
         models: [...liveModels, ...offModels].sort((a, b) => a.id.localeCompare(b.id)),
         ...(cpaChannel ? { cpaChannel } : {}),
+        ...(String(channel['api-key-entries']?.[0]?.['proxy-url'] || channel['proxy-url'] || '').trim() ? { proxyUrl: String(channel['api-key-entries']?.[0]?.['proxy-url'] || channel['proxy-url'] || '').trim() } : {}),
       }
     })
     .sort((a, b) => Number(b.enabled) - Number(a.enabled) || Number(a.stale) - Number(b.stale) || a.name.localeCompare(b.name))

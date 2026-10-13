@@ -15,9 +15,11 @@ import { useNow } from '../../ui/composables/useNow'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { paginate } from '../../lib/listState'
 import { NONE, fmtAgo, fmtClock, fmtDuration, fmtInt, fmtPct } from '../../ui/fmt'
-import { copyText } from '../../ui/feedback/toast'
-import type { ChannelItem } from '../../types'
+import { copyText, notify } from '../../ui/feedback/toast'
+import { errorReason } from '../../lib/errors'
+import { api } from '../../api'
 import type { SegmentItem } from '../../ui/types'
+import type { ChannelItem } from '../../types'
 import {
   discoveryErrorWords, errorWords, modelCounts, poolSlots, type ChannelHealthClass, type ChannelHealthItem,
 } from './channelModel'
@@ -173,6 +175,23 @@ async function onRemoveKey(ref: string) {
     deletingRef.value = null
   }
 }
+
+const proxyBusy = ref(false)
+async function onToggleProxy() {
+  if (!shown.value || proxyBusy.value) return
+  const current = shown.value.proxyUrl
+  const next = current === 'direct' ? '' : 'direct'
+  proxyBusy.value = true
+  try {
+    await api.setChannelProxy(shown.value.name, next)
+    notify(`✓ 已将 ${shown.value.name} 出口代理设为 ${next === 'direct' ? '直连 (direct)' : '继承全局'}`)
+    shown.value.proxyUrl = next || undefined
+  } catch (error) {
+    notify(`◆ 设置代理失败 · ${errorReason(error)}`, { tone: 'bad' })
+  } finally {
+    proxyBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -189,6 +208,20 @@ async function onRemoveKey(ref: string) {
         <dl class="ui-facts">
           <dt>地址</dt>
           <dd>{{ shown.baseUrl || NONE }}</dd>
+          <dt>出口代理</dt>
+          <dd>
+            <span class="cx-sheet__proxy-box">
+              <span class="mono">{{ shown.proxyUrl === 'direct' ? '直连 (direct)' : (shown.proxyUrl || '继承全局') }}</span>
+              <button
+                type="button"
+                class="ui-link cx-sheet__proxy-btn"
+                :disabled="proxyBusy"
+                @click="onToggleProxy"
+              >
+                {{ shown.proxyUrl === 'direct' ? '设为继承全局' : '设为强制直连' }}
+              </button>
+            </span>
+          </dd>
           <template v-if="!healthAvailable">
             <dt>健康</dt>
             <dd class="cx-sheet__sans">服务更新后可见</dd>
@@ -424,4 +457,6 @@ html:root .cx-sheet__foot .tx-button.cx-sheet__pull .tx-button__inner { gap: 5px
 @media (max-width: 599px) {
   .cx-sheet__search { width: 100%; }
 }
+.cx-sheet__proxy-box { display: inline-flex; align-items: center; gap: 8px; }
+.cx-sheet__proxy-btn { font-size: var(--fs-xs); color: var(--accent-ink, #2563eb); }
 </style>

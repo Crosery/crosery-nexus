@@ -3,12 +3,12 @@ import type { ChannelSnapshotRow, ModelStateRow } from './channelView.js'
 import { apiCall, deleteAuthFile, deleteCompatChannel, getAuthFileModels, getCompatChannels, getExcludedModels, getProviderKeyEntries, listAuthFiles, modelId, providerChannelName, putCompatChannels, putExcludedModels, putProviderKeyEntries, setAuthFileDisabled, setAuthFileProxy, PROVIDER_KEY_ENDPOINTS, type ProviderKeyEndpoint, type ProviderKeyEntry } from './cpa.js'
 import type { CompatChannel, CompatModel } from './cpa.js'
 import { buildGroups } from './groups.js'
-import { buildModelIndex } from './modelIndex.js'
+import { buildModelIndex, priorityKey } from './modelIndex.js'
 import { gatewayPricingMap } from './modelCatalog.js'
 import type { OAuthProviderModels } from './modelIndex.js'
 import { db } from './db.js'
 import { attachCredentialModels, summarizeCredentialFiles } from './credentials.js'
-import { discoveryFailure, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
+import { discoveryFailure, isDirectPreferred, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { ReportingGroupStore } from './reportingGroups.js'
 import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
@@ -234,9 +234,21 @@ export async function discoverChannelModels(protocol: ChannelProtocol, baseUrl: 
 }> {
   if (!apiKey.trim()) throw new Error('请输入 API Key')
   const errors: string[] = []
+  const directFirst = isDirectPreferred(baseUrl)
   for (const endpoint of modelDiscoveryUrls(protocol, baseUrl)) {
     try {
-      const result = await apiCall(undefined, endpoint, { header: discoveryHeaders(protocol, apiKey.trim()) })
+      let result: Awaited<ReturnType<typeof apiCall>> | null = null
+      const firstProxy = directFirst ? 'direct' : undefined
+      const secondProxy = directFirst ? undefined : 'direct'
+      try {
+        result = await apiCall(undefined, endpoint, { header: discoveryHeaders(protocol, apiKey.trim()), proxyUrl: firstProxy })
+        const status = Number(result?.status_code ?? result?.statusCode ?? 0)
+        if (status === 502 || status === 504 || (status === 0 && !directFirst)) {
+          result = await apiCall(undefined, endpoint, { header: discoveryHeaders(protocol, apiKey.trim()), proxyUrl: secondProxy })
+        }
+      } catch {
+        result = await apiCall(undefined, endpoint, { header: discoveryHeaders(protocol, apiKey.trim()), proxyUrl: secondProxy })
+      }
       const status = Number(result.status_code ?? result.statusCode ?? 0)
       if (status < 200 || status >= 300) {
         errors.push(`${endpoint}: HTTP ${status || '未知'}`)
@@ -261,6 +273,7 @@ export async function createChannel(input: {
   baseUrl: string
   apiKey: string
   models: unknown
+  proxyUrl?: string
 }) {
   invalidateGatewaySnapshot()
   const name = validateChannelName(input.name)
@@ -281,10 +294,13 @@ export async function createChannel(input: {
     }])
   } else {
     const channels = await getCompatChannels()
+    const pUrl = typeof input.proxyUrl === 'string' ? input.proxyUrl.trim() : ''
+    const effectiveProxy = pUrl || (isDirectPreferred(baseUrl) ? 'direct' : undefined)
     await putCompatChannels([...channels, {
       name,
       'base-url': baseUrl,
-      'api-key-entries': [{ 'api-key': apiKey }],
+      ...(effectiveProxy ? { 'proxy-url': effectiveProxy } : {}),
+      'api-key-entries': [{ 'api-key': apiKey, ...(effectiveProxy ? { 'proxy-url': effectiveProxy } : {}) }],
       models: models.map((model) => ({ name: model.id, alias: model.alias })),
       // Responses 中继：CPA 内核（补丁 0008）按 relay-mode 把请求直发上游 /responses。
       ...(input.protocol === 'responses' ? { 'relay-mode': 'responses' } : {}),
@@ -344,7 +360,8 @@ export async function addChannelApiKey(name: string, apiKey: string): Promise<Ch
   }
   const protocol: ChannelProtocol = String(channel['relay-mode'] || '') === 'responses' ? 'responses' : 'openai'
   await discoverChannelModels(protocol, String(channel['base-url'] || ''), key)
-  live[index] = { ...channel, 'api-key-entries': [...entries, { 'api-key': key }] }
+  const direct = isDirectPreferred(String(channel['base-url'] || ''))
+  live[index] = { ...channel, 'api-key-entries': [...entries, { 'api-key': key, ...(direct ? { 'proxy-url': 'direct' } : {}) }] }
   await putCompatChannels(live)
   return channelKeyViews(live[index]['api-key-entries'])
 }
@@ -369,6 +386,27 @@ export async function removeChannelApiKey(name: string, ref: string): Promise<Ch
   live[index] = { ...channel, 'api-key-entries': entries }
   await putCompatChannels(live)
   return channelKeyViews(live[index]['api-key-entries'])
+}
+
+/** 设置渠道的出口代理（'direct'、指定代理地址或空串继承全局）。 */
+export async function setChannelProxy(channelName: string, proxyUrl: string) {
+  invalidateGatewaySnapshot()
+  const live = await getCompatChannels()
+  const index = live.findIndex((channel) => String(channel.name || '') === channelName)
+  if (index < 0) throw new Error('渠道不存在')
+  const p = proxyUrl.trim()
+  const channel = live[index]
+  const entries = (channel['api-key-entries'] || []).map((e) => {
+    const updated = { ...e }
+    if (p) updated['proxy-url'] = p
+    else delete updated['proxy-url']
+    return updated
+  })
+  const updated: CompatChannel = { ...channel, 'api-key-entries': entries }
+  if (p) updated['proxy-url'] = p
+  else delete updated['proxy-url']
+  live[index] = updated
+  await putCompatChannels(live)
 }
 
 /**
@@ -573,11 +611,19 @@ export async function listCredentials() {
   return (await gatewaySnapshot()).credentials
 }
 
+export function readChannelModelPriorities(): Map<string, number> {
+  const rows = db.prepare('SELECT channel, model, kind, priority FROM channel_model_priorities').all() as Array<{ channel: string; model: string; kind: string; priority: number }>
+  const map = new Map<string, number>()
+  for (const row of rows) map.set(priorityKey(row.channel, row.model, row.kind), row.priority)
+  return map
+}
+
 export async function listModelIndex() {
   const { channels, credentials, excluded } = await gatewaySnapshot()
   // 价格取网关下发的 cost；控制面暂时取不到时不阻断页面，回落静态表。
   const gatewayPricing = await gatewayPricingMap().catch(() => undefined)
-  return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing), channels, credentials }
+  const priorities = readChannelModelPriorities()
+  return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing, priorities), channels, credentials }
 }
 
 /** 渠道目录本身（不经可用性过滤）：可用性探测要靠它把下线模型继续测下去，报表按它归组。 */
@@ -616,4 +662,15 @@ export async function setModelSourceEnabled(model: string, channel: string, kind
   const next = { ...excluded, [channel]: [...current] }
   if (!next[channel].length) delete next[channel]
   await putExcludedModels(next)
+}
+
+/** 设置某个渠道对特定模型的调度优先级（0~1000，默认 100）。 */
+export function setModelSourcePriority(model: string, channel: string, kind: 'compat' | 'oauth', priority: number) {
+  const p = Math.max(0, Math.min(1000, Math.round(Number(priority) || 100)))
+  const now = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO channel_model_priorities (channel, model, kind, priority, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(channel, model, kind) DO UPDATE SET priority=excluded.priority, updated_at=excluded.updated_at
+  `).run(channel, model, kind, p, now)
 }

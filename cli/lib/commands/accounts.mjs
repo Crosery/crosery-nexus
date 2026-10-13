@@ -18,8 +18,11 @@ const HELP = `cradmin accounts <动作> [参数]
   reset <账号>               重置额度窗口（codex / claude；会消耗一次上游重置额度，并访问外部服务）
   add <provider>             OAuth 添加账号：打印授权地址，在浏览器完成授权
       --callback-url <url> --state <state>   提交浏览器回调地址（两步脚本用法）
+  models <provider>          查看或调整该账号池启用的模型
+      --enable p,…           启用匹配的模型（精确 id，或带 * ? 的通配）
+      --disable p,…          停用匹配的模型
+      --only p,…             只启用匹配的模型，其余全部停用
   rm <账号>                  删除凭据文件（不可撤销）
-
 说明：不开浏览器添加账号只支持 OAuth；上传凭据文件已移除。
 
 示例：
@@ -113,6 +116,9 @@ export default {
     quota: { type: 'boolean' },
     'callback-url': { type: 'string' },
     state: { type: 'string' },
+    enable: { type: 'string', multiple: true },
+    disable: { type: 'string', multiple: true },
+    only: { type: 'string', multiple: true },
   },
   async run(ctx) {
     const [action = 'ls', ...args] = ctx.positionals
@@ -212,6 +218,10 @@ export default {
           items: [{ area: '账号', label: `${credential.label || credential.name}（${credential.name}）`, from: credential.disabled ? '暂停' : '启用', to: '删除', method: 'DELETE', path: `/api/credentials/${encodeURIComponent(credential.name)}`, target: `账号 ${credential.name}` }],
         })
         return void ctx.output(result)
+      }
+      case 'models': {
+        const { default: channelsCmd } = await import('./channels.mjs')
+        return channelsCmd.run(ctx)
       }
       default:
         throw new UsageError(`未知动作：accounts ${action}`, '运行 cradmin accounts -h 查看用法')

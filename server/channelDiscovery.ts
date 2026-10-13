@@ -19,6 +19,27 @@ export function normalizeBaseUrl(value: string) {
 }
 
 /**
+ * 判断一个上游地址是否应优先/默认直连（无需经过 CPA 的全局海外代理）。
+ * 覆盖：
+ * 1. 本机与回环（localhost, 127.0.0.1, ::1）
+ * 2. 私有与内网网段（10.*, 192.168.*, 172.16-31.*, *.lan, *.local, *.internal）
+ * 3. 组织自建主域名（*.crosery.com）
+ * 4. 国内直连云厂商及大模型 API（*.cn, minimaxi.com, deepseek.com, moonshot.cn, stepfun.com, zhipu.ai, volcengine.com, aliyuncs.com, baidubce.com, tencentcloudapi.com）
+ */
+export function isDirectPreferred(urlStr: string): boolean {
+  try {
+    const { hostname } = new URL(urlStr.trim())
+    if (/^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/i.test(hostname)) return true
+    if (/\.(lan|local|internal)($|\.)/i.test(hostname)) return true
+    if (/\.(crosery\.com)$/i.test(hostname)) return true
+    if (/\.(cn|minimaxi\.com|deepseek\.com|moonshot\.cn|stepfun\.com|zhipu\.ai|volcengine\.com|aliyuncs\.com|baidubce\.com|tencentcloudapi\.com)$/i.test(hostname)) return true
+    return false
+  } catch {
+    return false
+  }
+}
+
+/**
  * 一次探测失败的原因。CPA 的 /api-call 连不上上游（域名、拒绝连接、证书）时回 502 `{"error":"request failed"}`，
  * 原样给填表的人看不懂，换成一句话。
  */

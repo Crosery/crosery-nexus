@@ -60,11 +60,13 @@ export const adminApi = {
   channels: <T>(fresh = false) => request<T>(`/api/channels${fresh ? '?fresh=1' : ''}`),
   discoverChannelModels: (body: { protocol: 'openai' | 'claude' | 'responses'; baseUrl: string; apiKey: string }) =>
     request<{ models: Array<{ id: string; alias: string }>; endpoint: string }>('/api/channels/discover', { method: 'POST', body: JSON.stringify(body) }),
-  createChannel: (body: { name: string; protocol: 'openai' | 'claude' | 'responses'; baseUrl: string; apiKey: string; models: Array<{ id: string; alias: string }> }) =>
+  createChannel: (body: { name: string; protocol: 'openai' | 'claude' | 'responses'; baseUrl: string; apiKey: string; models: Array<{ id: string; alias: string }>; proxyUrl?: string }) =>
     request('/api/channels', { method: 'POST', body: JSON.stringify(body) }),
   pruneStaleChannels: () => request<{ removed: string[] }>('/api/channels/prune-stale', { method: 'POST' }),
   setChannelEnabled: (name: string, enabled: boolean) =>
     request(`/api/channels/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
+  setChannelProxy: (name: string, proxyUrl: string) =>
+    request<{ ok: boolean; proxyUrl: string }>(`/api/channels/${encodeURIComponent(name)}/proxy`, { method: 'PATCH', body: JSON.stringify({ proxyUrl }) }),
   deleteChannel: (name: string) => request(`/api/channels/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   setModelEnabled: (name: string, model: string, enabled: boolean) =>
     request(`/api/channels/${encodeURIComponent(name)}/models/${encodeURIComponent(model)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
@@ -98,6 +100,8 @@ export const adminApi = {
     `/api/cache-live?limit=${limit}${model ? `&model=${encodeURIComponent(model)}` : ''}${client ? `&client=${encodeURIComponent(client)}` : ''}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}${provider ? `&provider=${encodeURIComponent(provider)}` : ''}`,
   setModelSourceEnabled: (model: string, channel: string, kind: 'compat' | 'oauth', enabled: boolean) =>
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
+  setModelSourcePriority: (model: string, channel: string, kind: 'compat' | 'oauth', priority: number) =>
+    request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, priority }) }),
   sharedModels: () => request<{ defaultModels: string[]; customModels: string[]; activeModels: string[] }>('/api/shared-models'),
   addSharedModel: (modelId: string) => request<{ ok: boolean; activeModels: string[] }>('/api/shared-models', { method: 'POST', body: JSON.stringify({ modelId }) }),
   removeSharedModel: (modelId: string) => request<{ ok: boolean; activeModels: string[] }>(`/api/shared-models/${encodeURIComponent(modelId)}`, { method: 'DELETE' }),

@@ -36,8 +36,19 @@ const PROTOCOLS: SegmentItem[] = [
 ]
 
 const protocol = ref<Protocol>('openai')
+const proxyOption = ref<'auto' | 'direct' | 'inherit'>('auto')
+const PROXY_OPTIONS: SegmentItem[] = [
+  { value: 'auto', label: '智能识别' },
+  { value: 'direct', label: '强制直连' },
+  { value: 'inherit', label: '继承全局' },
+]
+const isDirectHost = (urlStr: string) => /\.(lan|local|internal)($|\.)|\.(crosery\.com|cn)$|localhost|127\.\d+|10\.\d+|192\.168\./i.test(urlStr.trim())
+const proxyHint = computed(() =>
+  proxyOption.value === 'auto'
+    ? (isDirectHost(baseUrl.value) ? '检测到内网 / 国内域名 · 自动直连' : '默认跟随网关全局代理规则')
+    : proxyOption.value === 'direct' ? '强制直连，不走网关海外代理（内网/国内上游推荐）' : '强制使用网关全局代理出口'
+)
 const baseUrl = ref('')
-const apiKey = ref('')
 const name = ref('')
 const nameTouched = ref(false)
 const probing = ref(false)
@@ -58,8 +69,8 @@ const secret = ref<InstanceType<typeof SecretField> | null>(null)
 
 function reset() {
   protocol.value = 'openai'
+  proxyOption.value = 'auto'
   baseUrl.value = ''
-  apiKey.value = ''
   name.value = ''
   nameTouched.value = false
   probing.value = false
@@ -183,6 +194,7 @@ async function create() {
     baseUrl: baseUrl.value.trim(),
     apiKey: apiKey.value.trim(),
     models: discovered.value.filter((m) => selected.value.has(m.id)).map((m) => ({ id: m.id, alias: m.alias || m.id })),
+    proxyUrl: proxyOption.value === 'direct' ? 'direct' : proxyOption.value === 'inherit' ? '' : undefined,
   }
   await write.run(() => api.createChannel(payload), {
     done: (_result, current) => {
@@ -227,6 +239,12 @@ async function create() {
         <label class="cx-new__label" :for="`${uid}-key`">上游 Key</label>
         <SecretField :id="`${uid}-key`" ref="secret" v-model="apiKey" name="channel-key" autocomplete="off" noun="Key" placeholder="sk-…" mono :describedby="`${uid}-key-hint`" />
         <span :id="`${uid}-key-hint`" class="cx-new__hint">只用于探测和保存 · 不会显示在页面上</span>
+      </div>
+
+      <div class="cx-new__field">
+        <span class="cx-new__label">出口代理</span>
+        <Segmented v-model="proxyOption" :items="PROXY_OPTIONS" label="出口代理" />
+        <span class="cx-new__hint">{{ proxyHint }}</span>
       </div>
 
       <div class="cx-new__probe">

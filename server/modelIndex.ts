@@ -11,6 +11,8 @@ export type ModelSource = {
   upstreams: number
   /** 渠道整体是否可用；渠道停用时其下模型不可单独启用。 */
   channelEnabled: boolean
+  /** 渠道对该模型的调度优先级（默认 100；数值越大越优先作为主力渠道）。 */
+  priority: number
 }
 
 export type ModelEntry = {
@@ -98,7 +100,14 @@ export function mergePriceSourceEntries(models: ModelEntry[]): ModelEntry[] {
   return extra.length ? [...models, ...extra].sort((left, right) => left.id.localeCompare(right.id)) : models
 }
 
-export function buildModelIndex(channels: ChannelView[], oauth: OAuthProviderModels[], gatewayPricing?: Map<string, ModelPricing>): ModelEntry[] {
+export const priorityKey = (channel: string, model: string, kind: string): string => `${channel}:${model}:${kind}`
+
+export function buildModelIndex(
+  channels: ChannelView[],
+  oauth: OAuthProviderModels[],
+  gatewayPricing?: Map<string, ModelPricing>,
+  priorities?: Map<string, number>,
+): ModelEntry[] {
   const index = new Map<string, ModelSource[]>()
 
   const push = (id: string, source: ModelSource) => {
@@ -118,6 +127,7 @@ export function buildModelIndex(channels: ChannelView[], oauth: OAuthProviderMod
         enabled: channel.enabled && model.enabled,
         upstreams: model.upstreams,
         channelEnabled: channel.enabled,
+        priority: priorities?.get(priorityKey(channel.name, model.id, 'compat')) ?? 100,
       })
     }
   }
@@ -131,13 +141,14 @@ export function buildModelIndex(channels: ChannelView[], oauth: OAuthProviderMod
         enabled: !excluded.has(id) && provider.activeAccounts > 0,
         upstreams: provider.activeAccounts,
         channelEnabled: provider.activeAccounts > 0,
+        priority: priorities?.get(priorityKey(provider.provider, id, 'oauth')) ?? 100,
       })
     }
   }
 
   return [...index]
     .map(([id, sources]) => {
-      const ordered = [...sources].sort((a, b) => a.channel.localeCompare(b.channel))
+      const ordered = [...sources].sort((a, b) => (b.priority - a.priority) || a.channel.localeCompare(b.channel))
       const enabledSources = ordered.filter((source) => source.enabled).length
       return {
         id,

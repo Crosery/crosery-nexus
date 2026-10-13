@@ -434,7 +434,7 @@ export type ApiCallResult = {
 export async function apiCall(
   authIndex: string | undefined,
   url: string,
-  options: { method?: string; header?: Record<string, string>; data?: string } = {},
+  options: { method?: string; header?: Record<string, string>; data?: string; proxyUrl?: string } = {},
 ) {
   return cpaRequest<ApiCallResult>('/api-call', {
     method: 'POST',
@@ -448,6 +448,7 @@ export async function apiCall(
         'anthropic-beta': 'oauth-2025-04-20',
       },
       ...(options.data === undefined ? {} : { data: options.data }),
+      ...(options.proxyUrl !== undefined ? { proxy_url: options.proxyUrl } : {}),
     }),
   })
 }

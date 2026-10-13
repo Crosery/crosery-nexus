@@ -36,6 +36,8 @@ import AccountCard from './AccountCard.vue'
 import AccountDetail from './AccountDetail.vue'
 import ProviderHead from './ProviderHead.vue'
 import AddAccountSheet from './AddAccountSheet.vue'
+import ProviderModelSheet, { type ProviderModelItem } from './ProviderModelSheet.vue'
+import type { ModelIndexData } from '../../types'
 import { useAccountActions } from './useAccountActions'
 import {
   buildAccounts, countBy, filterGroups, groupAccounts, mergeAccountsPayload, PROVIDERS, providerById, verifyOutcome,
@@ -261,6 +263,61 @@ async function pullModels() {
   }
 }
 
+/* ── provider model config sheet ── */
+const providerSheetOpen = ref(false)
+const selectedProviderGroup = ref<ProviderGroup | null>(null)
+const selectedProviderInfo = ref<ProviderInfo | null>(null)
+const providerModelIndex = ref<ModelIndexData | null>(null)
+
+async function openProviderConfig(group: ProviderGroup) {
+  selectedProviderGroup.value = group
+  selectedProviderInfo.value = group.provider
+  providerSheetOpen.value = true
+  try {
+    providerModelIndex.value = await api.modelIndex()
+  } catch { /* keep last good */ }
+}
+
+const currentProviderModels = computed<ProviderModelItem[]>(() => {
+  const pId = selectedProviderInfo.value?.id
+  if (!pId) return []
+  const list: ProviderModelItem[] = []
+  if (providerModelIndex.value) {
+    for (const m of providerModelIndex.value.models) {
+      const src = (m.sources || []).find((s) => s.channel === pId && s.kind === 'oauth')
+      if (src) list.push({ id: m.id, enabled: src.enabled })
+    }
+  }
+  return list.sort((a, b) => a.id.localeCompare(b.id))
+})
+
+async function handlePullProviderModels() {
+  pullingModels.value = true
+  try {
+    const result = await api.refreshCredentialModels()
+    notify(`✓ 已从网关拉取最新模型 · ${result.totalModels} 个模型`, { id: 'cx-acc-pull' })
+    await refresh()
+    providerModelIndex.value = await api.modelIndex(true)
+  } catch (error) {
+    notify(`◆ 拉取模型失败 · ${describeError(error).title}`, { tone: 'bad', id: 'cx-acc-pull' })
+  } finally {
+    pullingModels.value = false
+  }
+}
+
+async function handleToggleProviderModel(modelId: string, next: boolean) {
+  const pId = selectedProviderInfo.value?.id
+  if (!pId) return
+  try {
+    await api.setModelSourceEnabled(modelId, pId, 'oauth', next)
+    notify(`✓ ${next ? '已开启' : '已停用'} ${modelId}`, { tone: 'ok' })
+    providerModelIndex.value = await api.modelIndex(true)
+  } catch (error) {
+    notify(`◆ 切换失败 · ${describeError(error).title}`, { tone: 'bad' })
+  }
+}
+
+/* ── add sheet ── */
 /* ── add sheet ── */
 const addOpen = ref(false)
 const addProvider = ref<string | null>(null)
@@ -344,13 +401,6 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       </template>
       <template v-if="props.embedded" #actions>
         <Segmented v-if="counts.all" v-model="mode" :items="MODE_ITEMS" label="额度显示已用或剩余" />
-        <TxButton
-          variant="subtle"
-          size="small"
-          :loading="pullingModels"
-          title="重新读取网关下发的模型目录（账号的模型由网关按凭据解析，不向上游发请求）"
-          @click="pullModels"
-        ><Icon name="refresh" :size="14" />拉取模型</TxButton>
         <TxButton variant="subtle" size="small" @click="openAdd()"><Icon name="plus" :size="14" />添加账号</TxButton>
       </template>
 
@@ -363,7 +413,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
         <StateBlock v-else-if="!counts.all" class="acc-empty" state="empty" empty-text="还没有账号 · 选一个服务添加，额度、重置次数和冷却会出现在这里" />
 
         <section v-for="g in groups" :key="g.key" class="acc-group" :aria-labelledby="`acc-g-${g.key}`">
-          <ProviderHead :group="g" :provider="g.provider" :name="g.name" :vendor="g.vendor" :compact="isMobile" :heading-id="`acc-g-${g.key}`" @add="openAdd(g.provider?.id ?? null)" />
+          <ProviderHead :group="g" :provider="g.provider" :name="g.name" :vendor="g.vendor" :compact="isMobile" :heading-id="`acc-g-${g.key}`" @config="openProviderConfig(g)" @add="openAdd(g.provider?.id ?? null)" />
           <StateBlock v-if="!g.accounts.length" class="acc-group__none" state="empty" :empty-text="`没有 ${g.name} 账号`" />
           <ul v-else-if="!isMobile" class="acc-rows">
             <AccountRow
@@ -460,6 +510,16 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
     </Sheet>
 
     <AddAccountSheet v-model="addOpen" :provider="addProvider" :reauth-email="reauthEmail" :verify="verifyAdded" :egress="egress" @done="onAdded" @egress="egressLive.refresh()" @imported="refresh()" />
+
+    <ProviderModelSheet
+      v-model="providerSheetOpen"
+      :provider="selectedProviderInfo"
+      :group="selectedProviderGroup"
+      :models="currentProviderModels"
+      :loading="pullingModels"
+      @pull="handlePullProviderModels"
+      @toggle="handleToggleProviderModel"
+    />
   </div>
 </template>
 
