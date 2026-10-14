@@ -110,6 +110,8 @@ export function mergePriceSourceEntries(models: ModelEntry[]): ModelEntry[] {
   return extra.length ? [...models, ...extra].sort((left, right) => left.id.localeCompare(right.id)) : models
 }
 
+const ROUTE_ALIAS = /^rt-[a-z0-9-]+\//
+
 export function buildModelIndex(
   channels: ChannelView[],
   oauth: OAuthProviderModels[],
@@ -119,6 +121,8 @@ export function buildModelIndex(
 
   const push = (id: string, source: ModelSource) => {
     if (!id) return
+    // 网关把带 prefix 的账号/渠道也列成 `前缀/模型`：那只是同一个来源的定向入口（中转层用），不是另一个模型或渠道。
+    if (ROUTE_ALIAS.test(id) || (source.kind === 'oauth' && id.startsWith(`${source.channel}/`))) return
     const list = index.get(id)
     if (list) list.push(source)
     else index.set(id, [source])

@@ -154,3 +154,8 @@ test('同名模型多个来源：按权重升序排，权重小的先用；账�
   assert.equal(sources[0].weightMixed, true)
   assert.equal(sources[1].weightMixed, undefined)
 })
+
+test('网关列出的 `rt-前缀/模型`、`账号池/模型` 只是同一来源的定向入口，不进模型目录', () => {
+  const models = buildModelIndex([], [{ provider: 'codex', models: ['gpt-x', 'rt-codex/gpt-x', 'codex/gpt-x'], excluded: [], activeAccounts: 1 }])
+  assert.deepEqual(models.map((model) => model.id), ['gpt-x'])
+})
