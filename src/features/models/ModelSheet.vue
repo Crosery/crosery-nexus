@@ -98,7 +98,8 @@ async function toggle(mapping: ModelMapping, next: boolean) {
 /* 模型级路由：这个模型自己的来源顺序（越靠前越优先）。权重小的先用；同权重按列表先后，开了「同档轮询」才轮流。
    顺序、权重都存在控制台，中转层按它把请求定向到来源，网关只转发。别名 id（另一个模型名）的映射不参与排序。 */
 const sortable = computed(() => props.row?.mappings.filter((m) => m.model === props.row?.id) ?? [])
-const fixed = computed(() => props.row?.mappings.filter((m) => m.model !== props.row?.id) ?? [])
+/** 另一个模型名（别名 id）上的映射不属于这个模型的排序；只有启用着的才有必要列出来，停用的不显示 */
+const fixed = computed(() => props.row?.mappings.filter((m) => m.model !== props.row?.id && m.enabled) ?? [])
 const canOrder = computed(() => sortable.value.length > 1)
 const dragFrom = ref(-1)
 const dragOver = ref(-1)
