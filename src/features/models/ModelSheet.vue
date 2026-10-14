@@ -10,6 +10,7 @@ import Sheet from '../../ui/feedback/Sheet.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
 import ProviderMark from '../../ui/data/ProviderMark.vue'
 import Switch from '../../ui/form/Switch.vue'
+import Segmented from '../../ui/form/Segmented.vue'
 import Icon from '../../ui/Icon.vue'
 import { TxIconButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -22,6 +23,7 @@ import ModelPricingSources from './ModelPricingSources.vue'
 import ModelUpstreamModels from './ModelUpstreamModels.vue'
 import { errorWord, fmtWindow, hourLabel, type InsightProbe, type ModelMapping, type ModelRow } from './modelRows'
 import type { ModelIndexData } from '../../types'
+import type { SegmentItem } from '../../ui/types'
 
 const props = defineProps<{
   row: ModelRow | null
@@ -94,29 +96,24 @@ async function toggle(mapping: ModelMapping, next: boolean) {
   }
 }
 
-const editingPriority = ref<string | null>(null)
-const editingPriorityValue = ref<number>(100)
-
-function formatPriorityLabel(p: number): string {
-  if (p >= 100) return `主力 · ${p}`
-  if (p >= 50) return `次级 · ${p}`
-  return `备用 · ${p}`
+/* 同一 id 多条映射时才有意义：三档代替 0~1000 的裸数字；老数据按阈值落到对应档位 */
+const TIERS: SegmentItem[] = [
+  { value: 100, label: '主力' },
+  { value: 50, label: '次级' },
+  { value: 10, label: '备用' },
+]
+const tierOf = (priority: number | undefined) => {
+  const p = priority ?? 100
+  return p >= 100 ? 100 : p >= 50 ? 50 : 10
 }
 
-function startEditPriority(m: ModelMapping) {
-  editingPriority.value = mappingKey(m)
-  editingPriorityValue.value = m.priority ?? 100
-}
-
-async function savePriority(m: ModelMapping) {
-  if (editingPriority.value !== mappingKey(m)) return
-  const val = Math.max(0, Math.min(1000, Math.round(Number(editingPriorityValue.value) || 100)))
-  editingPriority.value = null
-  if (val === (m.priority ?? 100)) return
+async function setTier(m: ModelMapping, value: string | number | null) {
+  const next = Number(value)
+  if (!Number.isFinite(next) || busy.value || next === tierOf(m.priority)) return
   busy.value = mappingKey(m)
   try {
-    await api.setModelSourcePriority(m.model, m.channel, m.kind, val)
-    notify(`✓ 已将 ${m.channel} 优先级设为 ${val}`, { tone: 'ok', description: m.model })
+    await api.setModelSourcePriority(m.model, m.channel, m.kind, next)
+    notify(`✓ ${m.channel} 设为${TIERS.find((tier) => tier.value === next)?.label ?? next}`, { tone: 'ok', description: m.model })
     if (props.reload) await props.reload().catch(() => undefined)
     else emit('changed')
   } catch (error) {
@@ -211,25 +208,6 @@ const usageFacts = computed(() => {
               <div class="msh__map-1">
                 <span class="msh__ch num">{{ m.channel }}</span>
                 <TxTag size="sm" variant="plain" :label="KIND[m.kind]" />
-                <span
-                  v-if="editingPriority !== mappingKey(m)"
-                  class="msh__prio"
-                  :class="{ 'is-pri': (m.priority ?? 100) >= 100, 'is-sec': (m.priority ?? 100) < 100 && (m.priority ?? 100) >= 50, 'is-bak': (m.priority ?? 100) < 50 }"
-                  :title="`调度优先级 ${m.priority ?? 100} · 点击修改；最高优先级独占流量，全冷却才顺延备用`"
-                  @click.stop="startEditPriority(m)"
-                >
-                  {{ formatPriorityLabel(m.priority ?? 100) }}
-                </span>
-                <input
-                  v-else
-                  v-model.number="editingPriorityValue"
-                  type="number"
-                  min="0"
-                  max="1000"
-                  class="msh__prio-in mono num"
-                  @blur="savePriority(m)"
-                  @keyup.enter="savePriority(m)"
-                />
                 <span v-if="m.upstreams > 1" class="msh__dim num">×{{ m.upstreams }}</span>
                 <span v-if="m.model !== row.id" class="msh__dim num msh__exact" :title="m.model">{{ m.model }}</span>
               </div>
@@ -239,6 +217,15 @@ const usageFacts = computed(() => {
                 <span v-if="useText(m.channel)">{{ useText(m.channel) }}</span>
               </div>
             </div>
+            <Segmented
+              v-if="row.mappings.length > 1"
+              class="msh__tier"
+              :model-value="tierOf(m.priority)"
+              :items="TIERS"
+              :label="`${m.channel} 的调度档位`"
+              :disabled="busy !== ''"
+              @update:model-value="(v) => setTier(m, v ?? null)"
+            />
             <Switch
               :model-value="m.enabled"
               :disabled="(!m.channelEnabled && !m.enabled) || (busy !== '' && busy !== mappingKey(m))"
@@ -298,29 +285,10 @@ const usageFacts = computed(() => {
 .msh__dim { color: var(--ink-3); font-size: var(--fs-xs); white-space: nowrap; }
 .msh__exact { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .msh__link { justify-self: start; }
-.msh__prio {
-  font-size: var(--fs-xs);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  background: var(--paper-2);
-  color: var(--ink-2);
-  border: 1px solid var(--rule);
-}
-.msh__prio:hover { border-color: var(--ink-3); color: var(--ink); }
-.msh__prio.is-pri { color: var(--accent-ink, #2563eb); background: var(--accent-subtle, rgba(37, 99, 235, 0.08)); border-color: transparent; }
-.msh__prio.is-sec { color: var(--warn-ink, #d97706); background: var(--warn-subtle, rgba(217, 119, 6, 0.08)); border-color: transparent; }
-.msh__prio.is-bak { color: var(--ink-3); border-color: var(--rule-2); }
-.msh__prio-in {
-  width: 60px;
-  height: 22px;
-  font-size: var(--fs-xs);
-  border: 1px solid var(--accent, #2563eb);
-  border-radius: var(--radius-sm);
-  padding: 0 4px;
-  background: var(--paper);
-  color: var(--ink);
+.msh__tier { flex: none; }
+@media (max-width: 599px) {
+  .msh__map { flex-wrap: wrap; }
+  .msh__map-l { flex-basis: 100%; }
+  .msh__tier { margin-right: auto; }
 }
 </style>

@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileBackedSecret, positiveInteger } from './config.js'
 import { CompatChannelsConflictError, compatChannelsFingerprint, getCompatChannels, getGlobalProxy, putCompatChannels, type CompatChannel } from './cpa.js'
-import { invalidateGatewaySnapshot } from './channels.js'
+import { invalidateGatewaySnapshot, readAutoSyncChannels } from './channels.js'
 import { modelDiscoveryUrls, normalizeDiscoveredModels, defaultModelAlias, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { db } from './db.js'
 import { applySharedPricing, type PriceSourceId, type SourcePrice } from './pricing.js'
@@ -14,6 +14,8 @@ export type ModelSyncOutcome = 'ok' | 'partial' | 'error' | 'skipped'
 
 export type ModelSyncResult = {
   addedModels: string[]
+  /** 上游下架后从渠道里摘掉的映射（上游 id）。 */
+  removedModels: string[]
   /** 写入后**启用渠道**上的模型映射条数（每渠道各算一条；同一 id 挂在两个渠道上算 2）。 */
   totalModels: number
   channelCount: number
@@ -31,6 +33,8 @@ export type ModelSyncResult = {
   missingCredential: number
   /** 走代理的渠道数：控制台没有与推理一致的代理出口，不直连探测（推理走内核/CPA 的代理）。 */
   proxied: number
+  /** 没开「自动同步」、本轮整表任务跳过的启用渠道数。 */
+  optedOut: number
   /** 因单渠道 500 上限没写进去的模型数与 id（最多列 50 个）；>0 时 result 至少是 partial。 */
   capped: number
   cappedModels: string[]
@@ -143,6 +147,10 @@ export const DISCOVERY_POLICY = {
   timeoutMs: 6_000,
   /** applyAdditions 的单渠道默认上限：超出的不写入，如实报告。 */
   maxModelsPerChannel: 500,
+  /** 一次探测里消失的模型 ≥ 这么多且超过上次列表一半时，按上游故障处理，本轮不下架。 */
+  delistGuardMin: 5,
+  /** 持久化的 listed 上限（防止异常上游把状态文件撑大）。 */
+  maxListed: 5000,
 }
 
 export type DiscoveryChannelState = {
@@ -159,6 +167,11 @@ export type DiscoveryChannelState = {
   emptyLevel?: number
   /** 渠道所属主机（同步中心判断「是否全部在退避」用）。 */
   host?: string
+  /**
+   * 上一次成功探测时上游列出的模型（小写 id）。下架只认「上次列过、这次没列」的：
+   * 上游从没列过的映射（手工加的隐藏模型）永远不会被自动摘掉。
+   */
+  listed?: string[]
 }
 
 export type DiscoveryHostState = {
@@ -194,8 +207,13 @@ export type SyncChannel = {
 /** 渠道名 → 管理员停用过的模型（小写 id 与别名），即 `channel_model_states` 里 enabled=0 的墓碑。 */
 export type BlockedModels = Map<string, Set<string>>
 
+/** 渠道名 → 要摘掉的上游 id（小写，按映射的 name 匹配）。 */
+export type Removals = Map<string, Set<string>>
+
 export type CommitResult = {
   added: string[]
+  /** 真正摘掉的映射（上游 id）。 */
+  removed?: string[]
   capped: number
   /** 被单渠道上限挡掉的模型 id。 */
   cappedIds?: string[]
@@ -206,10 +224,10 @@ export type CommitResult = {
 export type ChannelStore = {
   read: () => Promise<SyncChannel[]>
   /**
-   * 在**写入前重新读取的**最新渠道表上追加模型（只加不删），返回真正写入的模型 id。
+   * 在**写入前重新读取的**最新渠道表上追加模型、摘掉上游已下架的映射，返回真正写入/摘掉的模型 id。
    * 探测期间管理员改过渠道也不会被这份旧快照覆盖；`blocked` 在写入那一刻重新读取停用墓碑。
    */
-  commit: (additions: Map<string, DiscoveredModel[]>, guard?: { blocked?: () => BlockedModels }) => Promise<CommitResult>
+  commit: (additions: Map<string, DiscoveredModel[]>, guard?: { blocked?: () => BlockedModels; removals?: Removals }) => Promise<CommitResult>
 }
 
 export type ModelSyncDeps = {
@@ -224,6 +242,10 @@ export type ModelSyncDeps = {
   store?: ChannelStore
   /** 管理员停用过的模型（每次运行开始与写入前各读一次）。 */
   disabledModels?: () => BlockedModels
+  /** 参与定时同步的渠道名；null = 全部参与（只给测试用）。单渠道拉取不看这个。 */
+  autoSyncChannels?: () => Set<string> | null
+  /** 某渠道的停用墓碑：对外名 + 能匹配上的所有 id/别名（小写）。拉取预览用它把上游条目对回对外名。 */
+  disabledEntries?: (channel: string) => DisabledEntry[]
   /** 全局上游并发闸门（与账号额度共享）。 */
   limit?: <T>(task: () => Promise<T>) => Promise<T>
   afterWrite?: () => Promise<void>
@@ -306,6 +328,9 @@ export function sanitizeDiscoveryState(raw: Record<string, unknown>, now: number
       assign(clean, 'backoffLevel', level(entry.backoffLevel))
       assign(clean, 'emptyLevel', level(entry.emptyLevel))
       assign(clean, 'host', text(entry.host, 255))
+      if (Array.isArray(entry.listed)) {
+        assign(clean, 'listed', entry.listed.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 300).slice(0, DISCOVERY_POLICY.maxListed))
+      }
       channels[name] = clean as DiscoveryChannelState
     }
   }
@@ -452,6 +477,41 @@ export function readDisabledModels(): BlockedModels {
   return blocked
 }
 
+export type DisabledEntry = { model: string; keys: string[] }
+
+/** 一个渠道的停用墓碑，带对外名（channel_model_states.model）与快照里的原始 id/别名。 */
+export function readDisabledEntries(channel: string): DisabledEntry[] {
+  const rows = db.prepare('SELECT model, snapshot_json FROM channel_model_states WHERE channel=? AND enabled=0').all(channel) as Array<{ model: string; snapshot_json: string | null }>
+  return rows.map((row) => {
+    const keys = new Set<string>([lower(String(row.model))])
+    let snapshot: unknown = null
+    try { snapshot = JSON.parse(row.snapshot_json || 'null') } catch { snapshot = null }
+    for (const item of Array.isArray(snapshot) ? snapshot : snapshot ? [snapshot] : []) {
+      if (!plainObject(item)) continue
+      if (typeof item.name === 'string' && item.name) keys.add(lower(item.name))
+      if (typeof item.alias === 'string' && item.alias) keys.add(lower(item.alias))
+    }
+    return { model: String(row.model), keys: [...keys] }
+  })
+}
+
+/** 纯函数：按上游 id（映射的 name，小写）从 channels 里摘掉映射（原地），返回摘掉的 id。 */
+export function applyRemovals<T extends { name?: string; models?: Array<{ name?: string; alias?: string }> }>(channels: T[], removals: Removals | undefined): string[] {
+  const removed: string[] = []
+  if (!removals?.size) return removed
+  for (const channel of channels) {
+    const targets = channel.name ? removals.get(channel.name) : undefined
+    if (!targets?.size || !channel.models?.length) continue
+    channel.models = channel.models.filter((model) => {
+      const name = String(model.name || model.alias || '')
+      if (!targets.has(lower(name))) return true
+      if (!removed.includes(name)) removed.push(name)
+      return false
+    })
+  }
+  return removed
+}
+
 /**
  * 纯函数：把 additions 合进 channels（原地），尊重单渠道上限与停用墓碑；
  * 返回写入的 id、被上限挡掉的数量与 id、写入后启用渠道上的映射条数。
@@ -536,8 +596,9 @@ function cpaStore(): ChannelStore {
       for (let attempt = 0; attempt < CPA_COMMIT_ATTEMPTS; attempt += 1) {
         const channels = await getCompatChannels()
         const expected = compatChannelsFingerprint(channels)
-        const result = applyAdditions(channels, additions, Number.POSITIVE_INFINITY, guard?.blocked?.())
-        if (!result.added.length) return result
+        const removed = applyRemovals(channels, guard?.removals)
+        const result = { ...applyAdditions(channels, additions, Number.POSITIVE_INFINITY, guard?.blocked?.()), removed }
+        if (!result.added.length && !removed.length) return result
         try {
           await putCompatChannels(channels, { expected })
           return result
@@ -570,6 +631,8 @@ function defaultDeps(): Required<ModelSyncDeps> {
     readCatalog: readSharedCatalog,
     store: cpaStore(),
     disabledModels: readDisabledModels,
+    disabledEntries: readDisabledEntries,
+    autoSyncChannels: readAutoSyncChannels,
     limit: (task) => upstreamLimiter.run(task),
     afterWrite: async () => {
       invalidateGatewaySnapshot()
@@ -612,16 +675,64 @@ function channelHeaders(headers: Record<string, string> | undefined, resolve: (r
 function summarize(result: Omit<ModelSyncResult, 'summary'>): string {
   const parts = [`${result.totalModels} 模型`]
   if (result.addedModels.length) parts.push(`+${result.addedModels.length}`)
+  if (result.removedModels.length) parts.push(`下架 ${result.removedModels.length}`)
   if (result.capped) parts.push(`上限丢弃 ${result.capped}`)
   if (result.probed) parts.push(`探测 ${result.succeeded}/${result.probed}`)
   if (result.deferred) parts.push(`退避 ${result.deferred}`)
   if (result.missingCredential) parts.push(`缺凭据 ${result.missingCredential}`)
   if (result.proxied) parts.push(`代理 ${result.proxied} 未探测`)
-  if (!result.probed && !result.deferred && !result.missingCredential && !result.proxied && !result.addedModels.length) parts.push('无到期渠道')
+  if (result.optedOut) parts.push(`未开自动同步 ${result.optedOut}`)
+  if (!result.probed && !result.deferred && !result.missingCredential && !result.proxied && !result.addedModels.length && !result.removedModels.length) parts.push('无到期渠道')
   return parts.join(' · ')
 }
 
 const CAPPED_LIST_MAX = 50
+
+/**
+ * 把一次探测的结果记进渠道/主机状态（成功清退避、记 listed；空表逐次拉长间隔；401/403 只退避渠道，其余退避主机）。
+ * 返回失败原因（成功时为 null）。
+ */
+function recordProbe(channelState: DiscoveryChannelState, hostState: DiscoveryHostState, outcome: ProbeOutcome, finishedAt: number, random: () => number): string | null {
+  const interval = DISCOVERY_POLICY.channelIntervalMs
+  channelState.lastProbeAt = finishedAt
+  channelState.nextProbeAt = finishedAt + jittered(interval, random)
+  if (outcome.kind === 'ok') {
+    channelState.workingUrl = outcome.url
+    channelState.lastStatus = 200
+    channelState.lastError = null
+    channelState.discovered = outcome.models.length
+    channelState.listed = [...new Set(outcome.models.map(item => lower(item.id)))].slice(0, DISCOVERY_POLICY.maxListed)
+    channelState.backoffLevel = 0
+    channelState.backoffUntil = 0
+    channelState.emptyLevel = 0
+    hostState.backoffLevel = 0
+    hostState.backoffUntil = 0
+    hostState.lastStatus = 200
+    return null
+  }
+  if (outcome.kind === 'empty') {
+    channelState.lastStatus = null
+    channelState.lastError = 'no_models'
+    // 一直不给模型列表的渠道（没有 /models、或总是空表）不该永远每 30 分钟打两次：逐次翻倍到 24h。
+    channelState.emptyLevel = Math.min(MAX_LEVEL, (channelState.emptyLevel ?? 0) + 1)
+    const stretched = Math.min(DISCOVERY_POLICY.emptyMaxIntervalMs, interval * 2 ** (channelState.emptyLevel - 1))
+    channelState.nextProbeAt = finishedAt + jittered(stretched, random)
+    return '未返回模型列表'
+  }
+  if (outcome.status === 401 || outcome.status === 403) {
+    applyBackoff(channelState, outcome.status, outcome.retryAfterMs, finishedAt)
+    channelState.lastStatus = outcome.status
+    channelState.lastError = `http_${outcome.status}`
+    channelState.nextProbeAt = Math.max(channelState.nextProbeAt, channelState.backoffUntil ?? 0)
+    return `HTTP ${outcome.status}，渠道退避`
+  }
+  applyBackoff(hostState, outcome.status, outcome.retryAfterMs, finishedAt)
+  hostState.lastStatus = outcome.status || null
+  channelState.lastStatus = outcome.status || null
+  channelState.lastError = outcome.status ? `http_${outcome.status}` : 'network'
+  channelState.nextProbeAt = Math.max(channelState.nextProbeAt, hostState.backoffUntil ?? 0)
+  return `${outcome.status ? `HTTP ${outcome.status}` : '网络错误'}，主机退避`
+}
 
 async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; deps?: ModelSyncDeps; only?: string }): Promise<ModelSyncResult> {
   const deps = { ...defaultDeps(), ...options.deps }
@@ -642,8 +753,8 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   }
 
   const fail = (message: string, summary: string): ModelSyncResult => ({
-    addedModels: [], totalModels: 0, channelCount: 0, source: 'none', syncedAt, result: 'error',
-    probed: 0, succeeded: 0, failed: 0, deferred: 0, missingCredential: 0, proxied: 0, capped: 0, cappedModels: [], requests: 0, errors: [message],
+    addedModels: [], removedModels: [], totalModels: 0, channelCount: 0, source: 'none', syncedAt, result: 'error',
+    probed: 0, succeeded: 0, failed: 0, deferred: 0, missingCredential: 0, proxied: 0, optedOut: 0, capped: 0, cappedModels: [], requests: 0, errors: [message],
     catalog: { mode: 'none', target: null, added: 0, changed: false }, silent: false, summary,
   })
 
@@ -660,6 +771,15 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   } catch (error) {
     return fail(`读取模型停用记录失败：${error instanceof Error ? error.message : '未知错误'}`, '读取停用记录失败')
   }
+
+  // 整表任务（定时/手动「模型目录」）只碰开了自动同步的渠道：聚合渠道的上游列表里大多是不该自动接入的付费模型。
+  let autoSync: Set<string> | null
+  try {
+    autoSync = only === null ? deps.autoSyncChannels() : null
+  } catch (error) {
+    return fail(`读取自动同步设置失败：${error instanceof Error ? error.message : '未知错误'}`, '读取自动同步设置失败')
+  }
+  const participates = (channel: SyncChannel) => autoSync === null || autoSync.has(channel.name)
 
   const discoveryUrls = (channel: SyncChannel) => modelDiscoveryUrls(channel.protocol ?? 'openai', channel.baseUrl)
   // 删掉/停用的渠道不再参与「下次到期」与「整体退避」的计算；主机只在仍有渠道用、或还在退避时保留。
@@ -690,6 +810,7 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   const knownKeys = new Map(channels.map(channel => [channel.name, modelKeys(channel.models)]))
   /** 本轮探测成功的渠道 → 它自己报出的模型（小写）。 */
   const listed = new Map<string, Set<string>>()
+  const removals: Removals = new Map()
 
   let probed = 0
   let succeeded = 0
@@ -697,11 +818,16 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   let deferred = 0
   let missingCredential = 0
   let proxied = 0
+  let optedOut = 0
   const interval = DISCOVERY_POLICY.channelIntervalMs
 
   for (const channel of channels) {
     if (only !== null && channel.name !== only) continue
     if (channel.disabled || !channel.baseUrl) continue
+    if (!participates(channel)) {
+      optedOut += 1
+      continue
+    }
     const channelState = state.channels[channel.name] ??= {}
     const now = deps.now()
     const due = force || catalogNewForProbe || !channelState.nextProbeAt || now >= channelState.nextProbeAt
@@ -761,22 +887,11 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
       onRequest()
     }
     const outcome = await probeChannel(ordered, probeHeaders(channel.protocol ?? 'openai', key, headers), { fetch: deps.fetch, now: deps.now, limit: deps.limit, onRequest: send })
-    const finishedAt = deps.now()
-    channelState.lastProbeAt = finishedAt
-    channelState.nextProbeAt = finishedAt + jittered(interval, deps.random)
+    const previous = channelState.listed ? new Set(channelState.listed) : null
+    const failure = recordProbe(channelState, hostState, outcome, deps.now(), deps.random)
 
     if (outcome.kind === 'ok') {
       succeeded += 1
-      channelState.workingUrl = outcome.url
-      channelState.lastStatus = 200
-      channelState.lastError = null
-      channelState.discovered = outcome.models.length
-      channelState.backoffLevel = 0
-      channelState.backoffUntil = 0
-      channelState.emptyLevel = 0
-      hostState.backoffLevel = 0
-      hostState.backoffUntil = 0
-      hostState.lastStatus = 200
       const keys = knownKeys.get(channel.name) ?? new Set<string>()
       const own = new Set<string>()
       for (const item of outcome.models) {
@@ -788,30 +903,23 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
       }
       knownKeys.set(channel.name, keys)
       listed.set(channel.name, own)
-    } else if (outcome.kind === 'empty') {
-      failed += 1
-      channelState.lastStatus = null
-      channelState.lastError = 'no_models'
-      // 一直不给模型列表的渠道（没有 /models、或总是空表）不该永远每 30 分钟打两次：逐次翻倍到 24h。
-      channelState.emptyLevel = Math.min(MAX_LEVEL, (channelState.emptyLevel ?? 0) + 1)
-      const stretched = Math.min(DISCOVERY_POLICY.emptyMaxIntervalMs, interval * 2 ** (channelState.emptyLevel - 1))
-      channelState.nextProbeAt = finishedAt + jittered(stretched, deps.random)
-      errors.push(`${channel.name}: 未返回模型列表`)
-    } else if (outcome.status === 401 || outcome.status === 403) {
-      failed += 1
-      applyBackoff(channelState, outcome.status, outcome.retryAfterMs, finishedAt)
-      channelState.lastStatus = outcome.status
-      channelState.lastError = `http_${outcome.status}`
-      channelState.nextProbeAt = Math.max(channelState.nextProbeAt, channelState.backoffUntil ?? 0)
-      errors.push(`${channel.name}: HTTP ${outcome.status}，渠道退避`)
+
+      // 下架：只摘「上次列过、这次没列」的映射。一次少掉一大半更像上游故障（中转站后端掉线时 /models 会临时缩水），
+      // 这一轮不摘，并把上次的列表并进来，等下一次正常的列表再判断。
+      if (previous) {
+        const current = new Set(outcome.models.map(item => lower(item.id)))
+        const vanished = [...previous].filter(id => !current.has(id))
+        const gone = channel.models.filter(model => previous.has(lower(model.name)) && !current.has(lower(model.name)))
+        if (vanished.length >= DISCOVERY_POLICY.delistGuardMin && vanished.length * 2 > previous.size) {
+          channelState.listed = [...new Set([...previous, ...current])].slice(0, DISCOVERY_POLICY.maxListed)
+          if (gone.length) errors.push(`${channel.name}: 上游一次少了 ${vanished.length}/${previous.size} 个模型，疑似上游故障，本轮不下架`)
+        } else if (gone.length) {
+          removals.set(channel.name, new Set(gone.map(model => lower(model.name))))
+        }
+      }
     } else {
       failed += 1
-      applyBackoff(hostState, outcome.status, outcome.retryAfterMs, finishedAt)
-      hostState.lastStatus = outcome.status || null
-      channelState.lastStatus = outcome.status || null
-      channelState.lastError = outcome.status ? `http_${outcome.status}` : 'network'
-      channelState.nextProbeAt = Math.max(channelState.nextProbeAt, hostState.backoffUntil ?? 0)
-      errors.push(`${channel.name}: ${outcome.status ? `HTTP ${outcome.status}` : '网络错误'}，主机退避`)
+      if (failure) errors.push(`${channel.name}: ${failure}`)
     }
   }
 
@@ -822,7 +930,7 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   let catalogTarget: SyncChannel | null = null
   const catalogIds = new Set<string>()
   if (only === null && catalog && catalog.models.length && (catalogChanged || force)) {
-    const resolved = resolveCatalogTarget(channels, catalog, deps.catalogTarget)
+    const resolved = resolveCatalogTarget(channels.filter(participates), catalog, deps.catalogTarget)
     catalogMode = resolved.mode
     catalogTarget = resolved.target
     // 目标渠道本轮自己报过模型表：它没列出的 id 它就不提供，不能靠目录挂上去占名额。
@@ -846,23 +954,25 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
   }
 
   let added: string[] = []
+  let removed: string[] = []
   let cappedIds: string[] = []
   let capped = 0
   let committedTotal: number | null = null
   let commitFailed = false
-  if ([...additions.values()].some(list => list.length)) {
+  if ([...additions.values()].some(list => list.length) || removals.size) {
     try {
-      const committed = await deps.store.commit(additions, { blocked: deps.disabledModels })
+      const committed = await deps.store.commit(additions, { blocked: deps.disabledModels, removals })
       added = committed.added
+      removed = committed.removed ?? []
       cappedIds = committed.cappedIds ?? []
       capped = Math.max(committed.capped, cappedIds.length)
-      // 只加不删、绝不自动腾位置：被上限挡掉的模型如实报出来（partial），由管理员决定清哪些旧映射。
+      // 绝不为了腾位置自动摘映射：被上限挡掉的模型如实报出来（partial），由管理员决定清哪些旧映射。
       if (capped) {
         const preview = cappedIds.slice(0, 10).join(', ')
         errors.push(`${capped} 个模型因单渠道上限（${DISCOVERY_POLICY.maxModelsPerChannel}）未写入、不可路由${preview ? `：${preview}${capped > 10 ? ' …' : ''}` : ''}`)
       }
       if (typeof committed.total === 'number') committedTotal = committed.total
-      if (added.length) await deps.afterWrite()
+      if (added.length || removed.length) await deps.afterWrite()
     } catch (error) {
       commitFailed = true
       capped = 0
@@ -875,7 +985,7 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
 
   const catalogAdded = added.filter(id => catalogIds.has(id)).length
   const totalModels = committedTotal ?? channels.reduce((sum, channel) => sum + (channel.disabled ? 0 : channel.models.length), 0)
-  const silent = only !== null ? false : !force && !catalogChanged && probed === 0 && failed === 0 && missingCredential === 0 && proxied === 0 && added.length === 0
+  const silent = only !== null ? false : !force && !catalogChanged && probed === 0 && failed === 0 && missingCredential === 0 && proxied === 0 && added.length === 0 && removed.length === 0
   const degraded = failed > 0 || missingCredential > 0 || capped > 0
   const result: ModelSyncOutcome = commitFailed ? 'error'
     : !degraded ? (probed > 0 || added.length > 0 ? 'ok' : 'skipped')
@@ -883,6 +993,7 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
 
   const base: Omit<ModelSyncResult, 'summary'> = {
     addedModels: added,
+    removedModels: removed,
     totalModels,
     channelCount: channels.length,
     source: catalog ? (catalogAdded > 0 ? 'merged' : 'shared-catalog') : 'channel-probe',
@@ -894,6 +1005,7 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
     deferred,
     missingCredential,
     proxied,
+    optedOut,
     capped,
     cappedModels: cappedIds.slice(0, CAPPED_LIST_MAX),
     requests,
@@ -901,10 +1013,110 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
     catalog: { mode: catalogMode, target: catalogTarget?.name ?? null, added: catalogAdded, changed: catalogChanged },
     silent,
   }
-  if (added.length) {
-    console.log(JSON.stringify({ event: 'upstream_models_auto_synced', addedCount: added.length, models: added.slice(0, 50), total: totalModels }))
+  if (added.length || removed.length) {
+    console.log(JSON.stringify({ event: 'upstream_models_auto_synced', addedCount: added.length, models: added.slice(0, 50), removedCount: removed.length, removed: removed.slice(0, 50), total: totalModels }))
   }
   return { ...base, summary: summarize(base) }
+}
+
+/* ────────────────────────── 拉取预览（渠道抽屉） ────────────────────────── */
+
+/**
+ * 预览里一行：上游 id、对外名与它和渠道现状的关系。
+ * - `on`：已接入且开着；`off`：人工停用（墓碑）；`new`：渠道里还没有；
+ * - `gone`：渠道里有、这次上游列表里没有（可能是上游下架，也可能是上游 /models 不列的隐藏模型）。
+ */
+export type ChannelModelPreviewRow = { id: string; model: string; state: 'on' | 'off' | 'new' | 'gone' }
+
+export type ChannelModelPreview = {
+  channel: string
+  endpoint: string
+  probedAt: string
+  rows: ChannelModelPreviewRow[]
+}
+
+export class ChannelPreviewError extends Error {
+  constructor(message: string, readonly reason: string, readonly status = 502) {
+    super(message)
+  }
+}
+
+/**
+ * 「拉取模型」第一步：只向这一个渠道的上游发一次 /models，**不写入**，把结果对成渠道现状交给抽屉勾选。
+ * 越过退避与主机最小间隔（管理员明确点的单个渠道），但照常记录探测状态（上次/下次、listed）：
+ * 管理员看过并做了取舍，之后的自动同步就以这份列表为准，不会把他保留的模型当成「刚下架」摘掉。
+ */
+export async function previewChannelModels(name: string, options: { state?: DiscoveryState; deps?: ModelSyncDeps } = {}): Promise<ChannelModelPreview> {
+  const deps = { ...defaultDeps(), ...options.deps }
+  const startedAt = deps.now()
+  const state = sanitizeDiscoveryState((options.state ?? memoryState) as Record<string, unknown>, startedAt)
+  state.channels ??= {}
+  state.hosts ??= {}
+
+  const channel = (await deps.store.read()).find(item => item.name === name)
+  if (!channel) throw new ChannelPreviewError('这个渠道不在兼容渠道表里 · 原生协议渠道暂不支持拉取模型', 'channel_not_supported', 409)
+  if (channel.disabled) throw new ChannelPreviewError('渠道已停用 · 启用后才能探测上游', 'channel_disabled', 409)
+  if (channel.proxy) {
+    throw new ChannelPreviewError(channel.proxy === UNKNOWN_PROXY ? '读不到网关全局代理 · 出口未知，不直连探测' : '渠道走代理 · 控制台不直连探测，改为强制直连后再拉取', 'proxy_not_supported', 409)
+  }
+  let urls: string[]
+  let host: string
+  try {
+    urls = modelDiscoveryUrls(channel.protocol ?? 'openai', channel.baseUrl)
+    host = new URL(urls[0]).host
+  } catch {
+    throw new ChannelPreviewError('渠道地址无效', 'invalid_base_url', 400)
+  }
+  const key = await channelCredential(channel.keyRef, deps.resolveCredential)
+  const headers = key ? channelHeaders(channel.headers, deps.resolveSecret) : null
+  if (!key || !headers) throw new ChannelPreviewError(key ? '自定义请求头不可用 · 未探测' : '渠道凭据不可用 · 未探测', key ? 'header_unavailable' : 'credential_unavailable', 409)
+
+  const channelState = state.channels[name] ??= {}
+  const hostState = state.hosts[host] ??= {}
+  channelState.host = host
+  const ordered = channelState.workingUrl && urls.includes(channelState.workingUrl)
+    ? [channelState.workingUrl, ...urls.filter(url => url !== channelState.workingUrl)]
+    : urls
+  const outcome = await probeChannel(ordered, probeHeaders(channel.protocol ?? 'openai', key, headers), {
+    fetch: deps.fetch, now: deps.now, limit: deps.limit,
+    onRequest: () => {
+      hostState.lastRequestAt = deps.now()
+      deps.countRequest()
+    },
+  })
+  const finishedAt = deps.now()
+  const failure = recordProbe(channelState, hostState, outcome, finishedAt, deps.random)
+  if (outcome.kind !== 'ok') throw new ChannelPreviewError(`上游探测失败 · ${failure ?? '未知错误'}`, 'probe_failed', 502)
+
+  const live = new Map<string, { exposed: string; name: string }>()
+  for (const model of channel.models) {
+    const entry = { exposed: model.alias || model.name, name: lower(model.name) }
+    live.set(lower(model.name), entry)
+    if (model.alias && !live.has(lower(model.alias))) live.set(lower(model.alias), entry)
+  }
+  const disabled = deps.disabledEntries(name)
+  const rows: ChannelModelPreviewRow[] = []
+  const seen = new Set<string>()
+  for (const item of outcome.models) {
+    const id = lower(item.id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    const on = live.get(id) ?? live.get(lower(item.alias))
+    if (on) {
+      seen.add(on.name)
+      rows.push({ id: item.id, model: on.exposed, state: 'on' })
+      continue
+    }
+    const off = disabled.find(entry => entry.keys.includes(id) || entry.keys.includes(lower(item.alias)))
+    rows.push(off ? { id: item.id, model: off.model, state: 'off' } : { id: item.id, model: item.alias || item.id, state: 'new' })
+  }
+  for (const model of channel.models) {
+    if (seen.has(lower(model.name))) continue
+    seen.add(lower(model.name))
+    rows.push({ id: model.name, model: model.alias || model.name, state: 'gone' })
+  }
+  rows.sort((a, b) => a.model.localeCompare(b.model))
+  return { channel: name, endpoint: outcome.url, probedAt: new Date(finishedAt).toISOString(), rows }
 }
 
 const memoryState: DiscoveryState = {}
@@ -915,7 +1127,9 @@ let inflight: { only: string | null; run: Promise<ModelSyncResult> } | null = nu
  * 动态发现上游模型（单飞：定时器、目录监听、手动按钮同时触发时共用一次运行）：
  * 1. 到期的渠道用**解析出来的真实凭据**、按渠道协议探测 base-url 的 /models（解析不了就跳过，绝不匿名打；走代理的不直连）；
  * 2. 共享目录（~/.agents/crosery/catalog.json）只在内容变化或手动触发时合入，目标见 resolveCatalogTarget；
- * 3. 新模型只加不删，跳过管理员停用过的，在写入前重新读取的渠道表上落盘，然后通知内核刷新 provider。
+ * 3. 新模型跳过管理员停用过的；上次列过、这次没列的映射摘掉（一次少一半以上按上游故障不摘）；
+ *    在写入前重新读取的渠道表上落盘，然后通知内核刷新 provider。
+ * 整表运行（定时/手动「模型目录」）只碰开了「自动同步」的渠道；`only` 不看这个开关。
  *
  * `only`（渠道抽屉的「拉取模型」）只探这一个渠道：越过退避与主机最小间隔，不碰共享目录，也不推进目录哈希。
  * 同名渠道的重复点击复用同一次运行；与全量运行互不合并——全量在跑时单渠道照常另跑（它只打一个渠道的上游）。

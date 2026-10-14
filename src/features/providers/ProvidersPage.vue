@@ -22,7 +22,7 @@ import { errorMessage } from '../../lib/errors'
 import { notify } from '../../ui/feedback/toast'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { api } from '../../api'
-import type { ChannelItem, ChannelsData } from '../../types'
+import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelsData } from '../../types'
 import type { RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 import ChannelSheet from '../channels/ChannelSheet.vue'
 import CreateChannelSheet from '../channels/CreateChannelSheet.vue'
@@ -457,48 +457,55 @@ async function removeKey(channel: ChannelItem, ref: string): Promise<boolean> {
   }
 }
 
-/* ── 拉取模型：只探这一个渠道的上游 ──
-   每个渠道在抽屉里单独拉（截图那处）。与「同步中心 · 立即同步」的整表冷却分开：点一个渠道不该被
-   别人的全量探测挡住，服务端也不因为单渠道探测而推进任何目录状态。只加新模型，人工停用的不恢复。 */
-const pullingChannels = ref(new Set<string>())
-
-async function pullChannelModels(channel: ChannelItem) {
-  if (pullingChannels.value.has(channel.name)) return
+/* ── 拉取模型：先探这一个渠道的上游（不写入），抽屉里勾完再一次性写入 ──
+   与「同步中心 · 模型目录」的整表冷却分开：点一个渠道不该被别人的全量探测挡住。 */
+async function previewChannelModels(channel: ChannelItem): Promise<ChannelModelPreview | null> {
   if (!channel.enabled) {
     notify('渠道已停用 · 启用后才能探测上游', { tone: 'note', id: 'cx-ch-pull' })
-    return
+    return null
   }
-  const ok = await confirmSheet({
-    title: `拉取 ${channel.name} 的模型？`,
-    facts: [
-      { k: '地址', v: hostOf(channel.baseUrl) },
-      { k: '现有', v: `${fmtInt(modelCounts(channel).total)} 个映射` },
-    ],
-    consequence: '向上游发一次 /models 探测 · 只加新模型 · 人工停用的模型不会被恢复',
-    confirmText: '拉取',
-  })
-  if (!ok) return
-  const next = new Set(pullingChannels.value)
-  next.add(channel.name)
-  pullingChannels.value = next
   try {
-    const response = await api.syncChannelModels(channel.name)
-    const result = response.result
-    const tone = result.result === 'error' ? 'bad' : result.result === 'partial' ? 'warn' : 'ok'
-    notify(`${channel.name} · ${result.summary}${result.errors.length ? ` · ${result.errors.slice(0, 2).join('；')}` : ''}`, {
-      tone, id: 'cx-ch-pull', duration: tone === 'ok' ? undefined : 9000,
-    })
-    // 模型已经写进网关；只是 Key 白名单这轮没跟上，如实说一句，不把整次拉取说成失败
-    if (!response.reconciled) notify('◇ Key 模型白名单这次没同步上 · 下一轮定时同步会补', { tone: 'warn', id: 'cx-ch-pull-reconcile' })
-    await channelsLive.refresh()
+    const preview = await api.previewChannelModels(channel.name)
+    if (!preview.rows.length) notify(`${channel.name} · 上游没有返回模型`, { tone: 'warn', id: 'cx-ch-pull' })
+    return preview
   } catch (error) {
     const reason = (error as { reason?: string | null }).reason
     if (reason === 'channel_not_found') notify(`◆ ${channel.name} 已不在网关里 · 可能是残留快照`, { tone: 'bad', id: 'cx-ch-pull' })
-    else notify(`◆ 拉取失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-pull' })
-  } finally {
-    const done = new Set(pullingChannels.value)
-    done.delete(channel.name)
-    pullingChannels.value = done
+    else notify(`◆ 拉取失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-pull', duration: 9000 })
+    return null
+  }
+}
+
+async function applyChannelModels(channel: ChannelItem, changes: ChannelModelChanges): Promise<boolean> {
+  try {
+    const done = await api.applyChannelModels(channel.name, changes)
+    const words = [
+      done.added ? `接入 ${fmtInt(done.added)}` : '',
+      done.declined ? `不接入 ${fmtInt(done.declined)}` : '',
+      done.enabled ? `恢复 ${fmtInt(done.enabled)}` : '',
+      done.disabled ? `停用 ${fmtInt(done.disabled)}` : '',
+      done.removed ? `摘掉 ${fmtInt(done.removed)}` : '',
+    ].filter(Boolean).join(' · ')
+    notify(`✓ ${channel.name} · ${words || '没有变化'}`, { id: 'cx-ch-pull' })
+    // 模型已经写进网关；只是 Key 白名单这轮没跟上，如实说一句，不把整次写入说成失败
+    if (!done.reconciled) notify('◇ Key 模型白名单这次没同步上 · 下一轮定时同步会补', { tone: 'warn', id: 'cx-ch-pull-reconcile' })
+    await channelsLive.refresh()
+    return true
+  } catch (error) {
+    notify(`◆ 应用失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-pull' })
+    return false
+  }
+}
+
+async function setChannelAutoSync(channel: ChannelItem, next: boolean): Promise<boolean> {
+  try {
+    await api.setChannelAutoSync(channel.name, next)
+    notify(`✓ ${channel.name} · 自动同步${next ? '已开启' : '已关闭'}`)
+    await channelsLive.refresh()
+    return true
+  } catch (error) {
+    notify(`◆ 自动同步设置失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
+    return false
   }
 }
 
@@ -876,7 +883,9 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       :health-available="healthAvailable"
       :pending="pending"
       :toggle-model="toggleModel"
-      :pull-models="pullChannelModels"
+      :preview-models="previewChannelModels"
+      :apply-models="applyChannelModels"
+      :set-auto-sync="setChannelAutoSync"
       :add-key="addKey"
       :remove-key="removeKey"
       @toggle-channel="toggleChannel"

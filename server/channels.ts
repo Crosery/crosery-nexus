@@ -8,7 +8,7 @@ import { gatewayPricingMap } from './modelCatalog.js'
 import type { OAuthProviderModels } from './modelIndex.js'
 import { db } from './db.js'
 import { attachCredentialModels, summarizeCredentialFiles } from './credentials.js'
-import { discoveryFailure, isDirectPreferred, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
+import { defaultModelAlias, discoveryFailure, isDirectPreferred, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { ReportingGroupStore } from './reportingGroups.js'
 import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
@@ -205,6 +205,120 @@ export async function setChannelModelEnabled(channelName: string, model: string,
   await putCompatChannels(live)
 }
 
+export type ChannelModelChanges = {
+  /** 上游有、渠道里没有的模型：enabled=true 接入；false 记成人工停用（自动同步不会再加回来）。 */
+  add: Array<{ id: string; alias: string; enabled: boolean }>
+  /** 对外名：从人工停用恢复。 */
+  enable: string[]
+  /** 对外名：人工停用（摘映射 + 写墓碑）。 */
+  disable: string[]
+  /** 上游 id（映射的 name）：直接摘掉，不写墓碑——上游以后又列出来时自动同步会照常加回。 */
+  remove: string[]
+}
+
+const MAX_MODEL_CHANGES = 2000
+const modelText = (value: unknown, field: string): string => {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text || text.length > 300 || /[\u0000-\u001f]/.test(text)) throw new ChannelKeyError(400, 'invalid_changes', `${field} 不合法`)
+  return text
+}
+
+export function validateModelChanges(input: unknown): ChannelModelChanges {
+  const body = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const list = (value: unknown, field: string): unknown[] => {
+    if (value === undefined) return []
+    if (!Array.isArray(value) || value.length > MAX_MODEL_CHANGES) throw new ChannelKeyError(400, 'invalid_changes', `${field} 必须是不超过 ${MAX_MODEL_CHANGES} 项的数组`)
+    return value
+  }
+  const add = list(body.add, 'add').map((item) => {
+    const row = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    const id = modelText(row.id, 'add.id')
+    return { id, alias: row.alias === undefined || row.alias === '' ? defaultModelAlias(id) : modelText(row.alias, 'add.alias'), enabled: row.enabled !== false }
+  })
+  const changes = {
+    add,
+    enable: list(body.enable, 'enable').map((value) => modelText(value, 'enable')),
+    disable: list(body.disable, 'disable').map((value) => modelText(value, 'disable')),
+    remove: list(body.remove, 'remove').map((value) => modelText(value, 'remove')),
+  }
+  if (!changes.add.length && !changes.enable.length && !changes.disable.length && !changes.remove.length) {
+    throw new ChannelKeyError(400, 'no_changes', '没有要应用的变更')
+  }
+  return changes
+}
+
+/**
+ * 「拉取模型」第二步：把抽屉里勾选的结果一次写进兼容渠道（一次 PUT，而不是逐个模型各写一次整表）。
+ * 停用与「不接入」的墓碑在 PUT 之前写：并发的自动同步读到墓碑就不会把它们加回去；恢复在 PUT 成功后才翻墓碑。
+ */
+export async function applyChannelModelChanges(channelName: string, input: unknown) {
+  const changes = validateModelChanges(input)
+  invalidateGatewaySnapshot()
+  const live = await getCompatChannels()
+  const index = live.findIndex((channel) => String(channel.name || '') === channelName)
+  if (index < 0) {
+    if ((await getProviderChannels()).some((channel) => String(channel.name || '') === channelName)) {
+      throw new ChannelKeyError(409, 'channel_not_supported', '原生协议渠道暂不支持按上游列表勾选模型')
+    }
+    if ((await listChannels()).some((channel) => channel.name === channelName)) {
+      throw new ChannelKeyError(409, 'channel_disabled', '渠道停用中 · 先启用再调整模型')
+    }
+    throw new ChannelKeyError(404, 'channel_not_found', '渠道不存在')
+  }
+
+  const channel = live[index]
+  let models = [...(channel.models || [])]
+  const key = (value: string) => value.trim().toLowerCase()
+  const has = (value: string) => models.some((item) => key(String(item.name || '')) === key(value) || key(modelId(item)) === key(value))
+  const stamp = now()
+  const tombstone = db.prepare('INSERT INTO channel_model_states (channel,model,enabled,snapshot_json,updated_at) VALUES (?,?,0,?,?) ON CONFLICT(channel,model) DO UPDATE SET enabled=0,snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at')
+  const restored: string[] = []
+  const done = { added: 0, declined: 0, enabled: 0, disabled: 0, removed: 0 }
+
+  for (const exposed of changes.disable) {
+    const targets = models.filter((item) => modelId(item) === exposed)
+    if (!targets.length) continue
+    tombstone.run(channelName, exposed, JSON.stringify(targets), stamp)
+    models = models.filter((item) => modelId(item) !== exposed)
+    done.disabled += 1
+  }
+  for (const id of changes.remove) {
+    const before = models.length
+    models = models.filter((item) => key(String(item.name || item.alias || '')) !== key(id))
+    if (models.length < before) done.removed += 1
+  }
+  for (const exposed of changes.enable) {
+    if (models.some((item) => modelId(item) === exposed)) continue
+    const row = db.prepare('SELECT * FROM channel_model_states WHERE channel=? AND model=?').get(channelName, exposed) as ModelSnapshotRow | undefined
+    const stored = row?.snapshot_json ? parse<CompatModel | CompatModel[] | null>(row.snapshot_json, null) : null
+    const snapshot = Array.isArray(stored) ? stored : stored ? [stored] : []
+    if (!snapshot.length) continue
+    models = [...models, ...snapshot]
+    restored.push(exposed)
+    done.enabled += 1
+  }
+  for (const item of changes.add) {
+    if (has(item.id) || has(item.alias)) continue
+    const entry: CompatModel = { name: item.id, alias: item.alias }
+    if (item.enabled) {
+      models.push(entry)
+      done.added += 1
+    } else {
+      tombstone.run(channelName, item.alias, JSON.stringify([entry]), stamp)
+      done.declined += 1
+    }
+  }
+
+  if (done.added || done.enabled || done.disabled || done.removed) {
+    channel.models = models
+    live[index] = channel
+    await putCompatChannels(live)
+  }
+  const reopen = db.prepare('UPDATE channel_model_states SET enabled=1, updated_at=? WHERE channel=? AND model=?')
+  for (const exposed of restored) reopen.run(now(), channelName, exposed)
+  return done
+}
+
 export async function removeChannel(name: string) {
   invalidateGatewaySnapshot()
   const live = await getCompatChannels()
@@ -222,6 +336,20 @@ export async function removeChannel(name: string) {
   }
   db.prepare('DELETE FROM channel_states WHERE name=?').run(name)
   db.prepare('DELETE FROM channel_model_states WHERE channel=?').run(name)
+  db.prepare('DELETE FROM channel_sync_policies WHERE channel=?').run(name)
+}
+
+/** 参与定时模型同步的渠道名。 */
+export function readAutoSyncChannels(): Set<string> {
+  const rows = db.prepare('SELECT channel FROM channel_sync_policies WHERE auto_sync=1').all() as Array<{ channel: string }>
+  return new Set(rows.map((row) => String(row.channel)))
+}
+
+export function setChannelAutoSync(name: string, enabled: boolean) {
+  db.prepare(`
+    INSERT INTO channel_sync_policies (channel, auto_sync, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(channel) DO UPDATE SET auto_sync=excluded.auto_sync, updated_at=excluded.updated_at
+  `).run(name, enabled ? 1 : 0, now())
 }
 
 const discoveryHeaders = (protocol: ChannelProtocol, apiKey: string): Record<string, string> => protocol === 'claude'

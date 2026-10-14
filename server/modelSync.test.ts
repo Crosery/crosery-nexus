@@ -5,8 +5,8 @@ import test from 'node:test'
 import { config } from './config.js'
 import { db } from './db.js'
 import {
-  applyAdditions, catalogModelsHash, cpaSyncChannel, discoveryBackoff, DISCOVERY_POLICY, nextDiscoveryAt, parseRetryAfter, readDisabledModels, readSharedCatalog, UNKNOWN_PROXY,
-  resolveCatalogTarget, sanitizeDiscoveryState, sharedCatalogPath, syncUpstreamModels,
+  applyAdditions, applyRemovals, catalogModelsHash, cpaSyncChannel, discoveryBackoff, DISCOVERY_POLICY, nextDiscoveryAt, parseRetryAfter, readDisabledModels, readSharedCatalog, UNKNOWN_PROXY,
+  resolveCatalogTarget, sanitizeDiscoveryState, sharedCatalogPath, syncUpstreamModels, previewChannelModels, ChannelPreviewError,
   type ChannelStore, type DiscoveryState, type ModelSyncDeps, type SharedCatalog, type SyncChannel,
 } from './modelSync.js'
 
@@ -45,8 +45,9 @@ function memoryStore(initial: SyncChannel[]) {
   const store: ChannelStore = {
     read: async () => structuredClone(channels),
     commit: async (additions, guard) => {
-      const result = applyAdditions(channels, additions, undefined, guard?.blocked?.())
-      if (result.added.length) writes += 1
+      const removed = applyRemovals(channels, guard?.removals)
+      const result = { ...applyAdditions(channels, additions, undefined, guard?.blocked?.()), removed }
+      if (result.added.length || removed.length) writes += 1
       return result
     },
   }
@@ -82,6 +83,8 @@ function deps(overrides: ModelSyncDeps & { clock?: { now: number } }): ModelSync
     },
     readCatalog: () => null,
     disabledModels: () => new Map(),
+    disabledEntries: () => [],
+    autoSyncChannels: () => null,
     afterWrite: async () => undefined,
     catalogTarget: '',
     ...overrides,
@@ -705,4 +708,103 @@ test('only：渠道名不存在时什么也不探，如实报告 skipped（路�
   assert.equal(result.probed, 0)
   assert.equal(result.result, 'skipped')
   assert.equal(result.silent, false, '管理员点的那一下永远进历史，不能被 silent 吞掉')
+})
+
+/* ────────────────────────── 下架、自动同步开关、拉取预览 ────────────────────────── */
+
+test('下架：只摘「上次列过、这次没列」的映射；第一次探测只记列表；上游从没列过的手工映射不动', async () => {
+  const clock = { now: 90_000_000 }
+  const memory = memoryStore([channel('one', 'https://one.example.test/v1', 'env:GOOD_KEY', ['a', 'b', 'hidden'])])
+  let listedNow = ['a', 'b']
+  const { fetch } = fakeFetch(() => modelsResponse(...listedNow))
+  const state: DiscoveryState = {}
+  const first = await syncUpstreamModels({ force: true, state, deps: deps({ store: memory.store, fetch, clock }) })
+  assert.deepEqual(first.removedModels, [], '没有上一份列表时不判断下架')
+  assert.deepEqual(state.channels?.one?.listed, ['a', 'b'])
+
+  listedNow = ['a', 'c']
+  clock.now += 60 * 60_000
+  const second = await syncUpstreamModels({ force: true, state, deps: deps({ store: memory.store, fetch, clock }) })
+  assert.deepEqual(second.removedModels, ['b'])
+  assert.deepEqual(second.addedModels, ['c'])
+  assert.deepEqual(memory.channels[0].models.map(model => model.name), ['a', 'hidden', 'c'], 'hidden 从没被上游列过，不能当成下架')
+  assert.match(second.summary, /下架 1/)
+})
+
+test('下架保护：一次少掉一半以上（≥5 个）按上游故障处理，本轮不摘，列表合并留待下次判断', async () => {
+  const clock = { now: 95_000_000 }
+  const all = ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8']
+  const memory = memoryStore([channel('relay', 'https://relay.example.test/v1', 'env:GOOD_KEY', all)])
+  const { fetch } = fakeFetch(() => modelsResponse('m1', 'm2'))
+  const state: DiscoveryState = { channels: { relay: { listed: all } } }
+  const result = await syncUpstreamModels({ force: true, state, deps: deps({ store: memory.store, fetch, clock }) })
+  assert.deepEqual(result.removedModels, [])
+  assert.equal(memory.channels[0].models.length, all.length)
+  assert.ok(result.errors.some(error => error.includes('疑似上游故障')))
+  assert.deepEqual([...(state.channels?.relay?.listed ?? [])].sort(), all, '保留上次的列表，下次正常时再判断')
+})
+
+test('自动同步开关：整表任务跳过没开的渠道（含目录合入目标），单渠道拉取不受影响', async () => {
+  const memory = memoryStore([
+    channel('aggregator', 'https://agg.example.test/v1', 'env:GOOD_KEY', ['free']),
+    channel('relay', 'https://relay.example.test/v1', 'env:GOOD_KEY', ['r1']),
+  ])
+  const { fetch, calls } = fakeFetch(() => modelsResponse('free', 'paid-1', 'r1', 'r2'))
+  const optIn = () => new Set(['relay'])
+  const full = await syncUpstreamModels({ force: true, state: {}, deps: deps({ store: memory.store, fetch, autoSyncChannels: optIn }) })
+  assert.deepEqual(calls.map(call => new URL(call.url).host), ['relay.example.test'])
+  assert.equal(full.optedOut, 1)
+  assert.match(full.summary, /未开自动同步 1/)
+  assert.deepEqual(memory.channels[0].models.map(model => model.name), ['free'], '聚合渠道的付费模型不能被整表任务接入')
+
+  const single = await syncUpstreamModels({ only: 'aggregator', force: true, state: {}, deps: deps({ store: memory.store, fetch, autoSyncChannels: optIn }) })
+  assert.equal(single.probed, 1)
+  assert.equal(single.optedOut, 0)
+})
+
+test('状态文件里的 listed：非字符串条目丢弃，超长截断到上限', () => {
+  const now = 1_000_000
+  const raw = { channels: { one: { listed: ['ok', 3, null, '', 'x'.repeat(301), 'fine'] }, two: { listed: Array.from({ length: DISCOVERY_POLICY.maxListed + 10 }, (_, i) => `m${i}`) } } }
+  const state = sanitizeDiscoveryState(raw as Record<string, unknown>, now)
+  assert.deepEqual(state.channels?.one?.listed, ['ok', 'fine'])
+  assert.equal(state.channels?.two?.listed?.length, DISCOVERY_POLICY.maxListed)
+})
+
+test('拉取预览：只探不写，把上游列表对成 on/off/new/gone；记录探测状态与 listed', async () => {
+  const clock = { now: 99_000_000 }
+  const memory = memoryStore([{
+    name: 'one', baseUrl: 'https://one.example.test/v1', keyRef: 'env:GOOD_KEY', disabled: false,
+    models: [{ name: 'Vendor/Live', alias: 'live' }, { name: 'manual-only' }],
+  }])
+  const { fetch, calls } = fakeFetch(() => modelsResponse('Vendor/Live', 'blocked-up', 'brand-new'))
+  const state: DiscoveryState = {
+    channels: { one: { backoffUntil: clock.now + 60 * 60_000, backoffLevel: 3 } },
+  }
+  const preview = await previewChannelModels('one', {
+    state,
+    deps: deps({ store: memory.store, fetch, clock, disabledEntries: () => [{ model: 'blocked', keys: ['blocked', 'blocked-up'] }] }),
+  })
+  assert.equal(calls.length, 1, '渠道退避挡不住管理员明确点的拉取')
+  assert.equal(memory.writes, 0, '预览不写渠道表')
+  assert.deepEqual(preview.rows, [
+    { id: 'blocked-up', model: 'blocked', state: 'off' },
+    { id: 'brand-new', model: 'brand-new', state: 'new' },
+    { id: 'Vendor/Live', model: 'live', state: 'on' },
+    { id: 'manual-only', model: 'manual-only', state: 'gone' },
+  ])
+  assert.equal(state.channels?.one?.lastStatus, 200)
+  assert.equal(state.channels?.one?.backoffUntil, 0)
+  assert.deepEqual([...(state.channels?.one?.listed ?? [])].sort(), ['blocked-up', 'brand-new', 'vendor/live'])
+})
+
+test('拉取预览：渠道不在表里、走代理、上游失败都如实报错', async () => {
+  const memory = memoryStore([
+    { ...channel('proxied', 'https://p.example.test/v1', 'env:GOOD_KEY'), proxy: 'socks5://127.0.0.1:1080' },
+    channel('down', 'https://down.example.test/v1', 'env:GOOD_KEY'),
+  ])
+  const { fetch } = fakeFetch(() => new Response('nope', { status: 503 }))
+  const run = (name: string) => previewChannelModels(name, { state: {}, deps: deps({ store: memory.store, fetch }) })
+  await assert.rejects(run('missing'), (error: unknown) => error instanceof ChannelPreviewError && error.reason === 'channel_not_supported')
+  await assert.rejects(run('proxied'), (error: unknown) => error instanceof ChannelPreviewError && error.reason === 'proxy_not_supported')
+  await assert.rejects(run('down'), (error: unknown) => error instanceof ChannelPreviewError && error.reason === 'probe_failed' && /503/.test(error.message))
 })

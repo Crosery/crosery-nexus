@@ -56,6 +56,28 @@ export type ChannelItem = {
   keys: Array<{ ref: string; masked: string }>
   /** 渠道出口代理：'direct' 强制直连，或代理地址；未设置则为空或 undefined 继承全局。 */
   proxyUrl?: string
+  /** 是否参与定时模型同步（上游新增自动接入、下架自动摘掉）；老服务端不带这个字段。 */
+  autoSync?: boolean
+}
+
+/**
+ * 「拉取模型」预览里的一行：上游 id、对外名与它和渠道现状的关系。
+ * on = 已接入开着 · off = 人工停用 · new = 渠道里没有 · gone = 渠道里有、这次上游列表里没有
+ */
+export type ChannelModelPreviewRow = { id: string; model: string; state: 'on' | 'off' | 'new' | 'gone' }
+
+export type ChannelModelPreview = {
+  channel: string
+  endpoint: string
+  probedAt: string
+  rows: ChannelModelPreviewRow[]
+}
+
+export type ChannelModelChanges = {
+  add: Array<{ id: string; alias: string; enabled: boolean }>
+  enable: string[]
+  disable: string[]
+  remove: string[]
 }
 
 export type CredentialItem = {

@@ -7,7 +7,7 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { addChannelApiKey, ChannelKeyError, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
+import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, readAutoSyncChannels, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -947,7 +947,8 @@ app.get('/api/channels', async (req, res) => {
       listCredentials(),
       globalProxyCoordinator.run('global-proxy', getGlobalProxy),
     ])
-    res.json({ channels, credentials, proxyPresets: config.proxyPresets, globalProxy })
+    const autoSync = readAutoSyncChannels()
+    res.json({ channels: channels.map((channel) => ({ ...channel, autoSync: autoSync.has(channel.name) })), credentials, proxyPresets: config.proxyPresets, globalProxy })
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取渠道失败' }) }
 })
 
@@ -1539,7 +1540,8 @@ app.post('/api/cpa/oauth/cancel', async (req, res) => {
  * 与 `/api/models/sync`（全量）的区别，也是这里必须自己实现而不是复用 `admitManual` 的原因：
  * - **不受任务级手动冷却与退避约束**：那 5 分钟冷却与整表任务绑定，点一个渠道不该被别人的全量探测挡住；
  *   越过的是「主机最小间隔 / 退避」这类**自我节流**，那是为定时器批量扫描设计的，管理员明确点单个渠道时不需要。
- * - 仍然只加新模型、跳过人工停用的墓碑、尊重单渠道上限——这些约束在 `syncUpstreamModels` 内部，不因 only 而放宽。
+ * - 仍然跳过人工停用的墓碑、尊重单渠道上限、只摘上次列过这次没列的映射——这些约束在 `syncUpstreamModels` 内部，不因 only 而放宽。
+ * - 控制台抽屉已改走 preview + apply（先勾选再写入）；这条保留给 CLI 与脚本。
  * - 渠道必须存在且启用：停用渠道不探测（推理不走它，探测结果没有意义），如实回 409。
  */
 app.post('/api/channels/:name/models/sync', async (req, res) => {
@@ -1560,6 +1562,59 @@ app.post('/api/channels/:name/models/sync', async (req, res) => {
     res.json({ ok: true, result, reconciled })
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : '拉取渠道模型失败' })
+  }
+})
+
+/**
+ * 渠道抽屉「拉取模型」第一步：探测这个渠道的上游 /models，**不写入**，返回对好渠道现状的勾选列表。
+ * 第二步是下面的 apply：管理员勾完一次性写入。
+ */
+app.post('/api/channels/:name/models/preview', async (req, res) => {
+  const name = String(req.params.name)
+  try {
+    const channel = (await listChannels()).find((item) => item.name === name)
+    if (!channel || channel.stale) return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    if (!channel.enabled) return res.status(409).json({ error: '渠道已停用 · 启用后才能探测上游', reason: 'channel_disabled' })
+    const { previewChannelModels } = await import('./modelSync.js')
+    const preview = await previewChannelModels(name, { state: syncCenter.discoveryState() })
+    addAudit('preview_channel_models', name, `rows=${preview.rows.length}`)
+    res.json({ ok: true, ...preview })
+  } catch (error) {
+    const { ChannelPreviewError } = await import('./modelSync.js')
+    if (error instanceof ChannelPreviewError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(502).json({ error: error instanceof Error ? error.message : '拉取渠道模型失败' })
+  }
+})
+
+/** 渠道是否参与定时模型同步：开着的渠道上游新增自动接入、下架自动摘掉；关着的只在手动拉取时变化。 */
+app.patch('/api/channels/:name/auto-sync', async (req, res) => {
+  const name = String(req.params.name)
+  if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'enabled 必须是布尔值', reason: 'invalid_body' })
+  try {
+    const channel = (await listChannels()).find((item) => item.name === name)
+    if (!channel || channel.stale) return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
+    setChannelAutoSync(name, req.body.enabled)
+    addAudit('set_channel_auto_sync', name, `enabled=${req.body.enabled}`)
+    res.json({ ok: true, autoSync: req.body.enabled })
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '保存失败' })
+  }
+})
+
+app.post('/api/channels/:name/models/apply', async (req, res) => {
+  const name = String(req.params.name)
+  try {
+    const done = await applyChannelModelChanges(name, req.body)
+    invalidateControlPlaneCaches()
+    const reconciled = await reconcileKeyModelAccess().then(() => true, (error: unknown) => {
+      console.warn(`[channels] ${name} 应用模型勾选后的 Key 授权对账失败，下一轮同步会补上: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    })
+    addAudit('apply_channel_models', name, `added=${done.added}, declined=${done.declined}, enabled=${done.enabled}, disabled=${done.disabled}, removed=${done.removed}, reconciled=${reconciled}`)
+    res.json({ ok: true, ...done, reconciled })
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(502).json({ error: error instanceof Error ? error.message : '应用模型变更失败' })
   }
 })
 

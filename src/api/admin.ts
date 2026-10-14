@@ -1,5 +1,7 @@
 import type {
   AutoupdateView,
+  ChannelModelChanges,
+  ChannelModelPreview,
   CredentialUploadResult,
   KernelsView,
   ModelSyncResult,
@@ -72,6 +74,14 @@ export const adminApi = {
     request(`/api/channels/${encodeURIComponent(name)}/models/${encodeURIComponent(model)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
   addChannelKey: (name: string, apiKey: string) =>
     request<{ ok: boolean; keys: Array<{ ref: string; masked: string }> }>(`/api/channels/${encodeURIComponent(name)}/keys`, { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  /** 「拉取模型」第一步：探测这个渠道的上游 /models，不写入，返回对好现状的勾选列表。 */
+  previewChannelModels: (name: string) =>
+    request<ChannelModelPreview & { ok: boolean }>(`/api/channels/${encodeURIComponent(name)}/models/preview`, { method: 'POST' }),
+  /** 「拉取模型」第二步：勾选结果一次写入。 */
+  applyChannelModels: (name: string, changes: ChannelModelChanges) =>
+    request<{ ok: boolean; added: number; declined: number; enabled: number; disabled: number; removed: number; reconciled: boolean }>(`/api/channels/${encodeURIComponent(name)}/models/apply`, { method: 'POST', body: JSON.stringify(changes) }),
+  setChannelAutoSync: (name: string, enabled: boolean) =>
+    request<{ ok: boolean; autoSync: boolean }>(`/api/channels/${encodeURIComponent(name)}/auto-sync`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
   removeChannelKey: (name: string, ref: string) =>
     request<{ ok: boolean; keys: Array<{ ref: string; masked: string }> }>(`/api/channels/${encodeURIComponent(name)}/keys/${encodeURIComponent(ref)}`, { method: 'DELETE' }),
   /** Account management on existing credentials (pause/resume, delete, proxy). Credential *import* is gone (C5). */
@@ -108,13 +118,6 @@ export const adminApi = {
   /** fresh=true is honoured at most once per 60s per endpoint server-side. */
   version: (fresh = false) => request<VersionsData>(`/api/version${fresh ? '?fresh=1' : ''}`),
   syncUpstreamModels: () => request<ModelSyncResult>('/api/models/sync', { method: 'POST' }),
-  /**
-   * 单个渠道的「拉取模型」：只向这个渠道的上游发一次 /models 探测。
-   * 不走整表任务的手动冷却（点一个渠道不该被别人刚跑过的全量探测挡住），404 = 渠道已不在网关里，
-   * 409 `channel_disabled` = 渠道停用中、不探测上游。
-   */
-  syncChannelModels: (name: string) =>
-    request<ModelSyncResult & { reconciled: boolean }>(`/api/channels/${encodeURIComponent(name)}/models/sync`, { method: 'POST' }),
   /** 「自动更新」状态；升级由定时任务做（server/autoupdate.ts）。 */
   autoupdate: {
     get: () => request<AutoupdateView>('/api/autoupdate'),

@@ -11,6 +11,7 @@ import Switch from '../../ui/form/Switch.vue'
 import SecretField from '../../ui/form/SecretField.vue'
 import TickStrip from '../../ui/viz/TickStrip.vue'
 import Icon from '../../ui/Icon.vue'
+import ChannelModelPicker from './ChannelModelPicker.vue'
 import { useNow } from '../../ui/composables/useNow'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { paginate } from '../../lib/listState'
@@ -19,7 +20,7 @@ import { copyText, notify } from '../../ui/feedback/toast'
 import { errorReason } from '../../lib/errors'
 import { api } from '../../api'
 import type { SegmentItem } from '../../ui/types'
-import type { ChannelItem } from '../../types'
+import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelModelPreviewRow } from '../../types'
 import {
   discoveryErrorWords, errorWords, modelCounts, poolSlots, type ChannelHealthClass, type ChannelHealthItem,
 } from './channelModel'
@@ -27,7 +28,7 @@ import {
 /**
  * Channel detail sheet (right 560px ≥960, bottom sheet below): health facts for the selected window, the newest
  * failure in plain words, the discovery probe, and the model mapping list with a per-model switch.
- * Models a person turns off stay off — the discovery job only ever adds models.
+ * Models a person turns off stay off. 拉取模型 = probe (no write) → pick from the upstream list → one apply.
  * Mutations belong to the page (it owns the lists); `toggleModel` resolves true on success.
  */
 const props = defineProps<{
@@ -38,8 +39,11 @@ const props = defineProps<{
   healthAvailable: boolean
   pending: ReadonlySet<string>
   toggleModel: (channel: ChannelItem, modelId: string, next: boolean) => Promise<boolean>
-  /** the page owns the write; it resolves true on success (the sheet only asks first) */
-  pullModels?: (channel: ChannelItem) => Promise<boolean>
+  /** 拉取模型 step 1: probe the upstream without writing; null = failed (the page already said why) */
+  previewModels?: (channel: ChannelItem) => Promise<ChannelModelPreview | null>
+  /** step 2: write the picked result in one go; resolves true on success */
+  applyModels?: (channel: ChannelItem, changes: ChannelModelChanges) => Promise<boolean>
+  setAutoSync?: (channel: ChannelItem, next: boolean) => Promise<boolean>
   addKey: (channel: ChannelItem, apiKey: string) => Promise<boolean>
   removeKey: (channel: ChannelItem, ref: string) => Promise<boolean>
 }>()
@@ -49,15 +53,76 @@ const emit = defineEmits<{ (e: 'toggle-channel', channel: ChannelItem, next: boo
 const now = useNow()
 const { isMobile } = useBreakpoint()
 const PAGE = 50
-/** the pull is in flight: the model switches stay inert so a click can't race the write */
 const pulling = ref(false)
+/** the pull result being picked; while it is open the model section shows the picker instead of the switches */
+const picker = ref<{ channel: string; preview: ChannelModelPreview; selected: Set<string> } | null>(null)
+const applying = ref(false)
+
+/** what is checked by default: keep everything as it is now, take the new ones, keep what the upstream no longer lists */
+const defaultPicked = (rows: ChannelModelPreviewRow[]) => new Set(rows.filter((row) => row.state !== 'off').map((row) => row.id))
+
 async function onPull() {
-  if (!shown.value || pulling.value || !props.pullModels) return
+  if (!shown.value || pulling.value || !props.previewModels) return
   pulling.value = true
+  const channel = shown.value
   try {
-    await props.pullModels(shown.value)
+    const preview = await props.previewModels(channel)
+    if (preview && shown.value?.name === channel.name) picker.value = { channel: channel.name, preview, selected: defaultPicked(preview.rows) }
   } finally {
     pulling.value = false
+  }
+}
+
+const changes = computed<ChannelModelChanges | null>(() => {
+  const p = picker.value
+  if (!p) return null
+  const out: ChannelModelChanges = { add: [], enable: [], disable: [], remove: [] }
+  for (const row of p.preview.rows) {
+    const on = p.selected.has(row.id)
+    if (row.state === 'new') out.add.push({ id: row.id, alias: row.model, enabled: on })
+    else if (row.state === 'on' && !on) out.disable.push(row.model)
+    else if (row.state === 'off' && on) out.enable.push(row.model)
+    else if (row.state === 'gone' && !on) out.remove.push(row.id)
+  }
+  return out
+})
+const changeWords = computed(() => {
+  const c = changes.value
+  if (!c) return ''
+  const taken = c.add.filter((item) => item.enabled).length
+  const parts = [
+    taken ? `接入 ${fmtInt(taken)}` : '',
+    c.add.length - taken ? `不接入 ${fmtInt(c.add.length - taken)}` : '',
+    c.enable.length ? `恢复 ${fmtInt(c.enable.length)}` : '',
+    c.disable.length ? `停用 ${fmtInt(c.disable.length)}` : '',
+    c.remove.length ? `摘掉 ${fmtInt(c.remove.length)}` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : '和渠道现状一致 · 没有要写入的'
+})
+const hasChanges = computed(() => {
+  const c = changes.value
+  return Boolean(c && (c.add.length || c.enable.length || c.disable.length || c.remove.length))
+})
+
+async function onApply() {
+  const p = picker.value
+  if (!shown.value || !p || !changes.value || !hasChanges.value || applying.value || !props.applyModels) return
+  applying.value = true
+  try {
+    if (await props.applyModels(shown.value, changes.value)) picker.value = null
+  } finally {
+    applying.value = false
+  }
+}
+
+const autoSyncBusy = ref(false)
+async function onAutoSync(next: boolean) {
+  if (!shown.value || autoSyncBusy.value || !props.setAutoSync) return
+  autoSyncBusy.value = true
+  try {
+    await props.setAutoSync(shown.value, next)
+  } finally {
+    autoSyncBusy.value = false
   }
 }
 
@@ -77,6 +142,7 @@ watch(open, (isOpen) => {
   if (!isOpen) {
     newKey.value = ''
     keySecret.value?.mask()
+    picker.value = null
   }
 })
 
@@ -89,6 +155,7 @@ watch(() => shown.value?.name, () => {
   page.value = 1
   newKey.value = ''
   keySecret.value?.mask()
+  picker.value = null
 })
 watch([q, filter], () => { page.value = 1 })
 
@@ -122,6 +189,7 @@ const lastError = computed(() => h.value?.lastError ?? null)
 const nextProbe = computed(() => {
   const d = props.health?.discovery
   if (!d) return NONE
+  if (shown.value?.autoSync === false) return '不参与定时同步 · 只在手动拉取时探测'
   if (d.hostBackoffUntil && Date.parse(d.hostBackoffUntil) > now.value) return `退避至 ${fmtClock(d.hostBackoffUntil, now.value)} · 主机失败后自动顺延`
   if (!d.nextProbeAt) return NONE
   const at = Date.parse(d.nextProbeAt)
@@ -323,6 +391,19 @@ async function onToggleProxy() {
 
       <section class="cx-sheet__sec" aria-labelledby="cx-sec-disc">
         <h3 id="cx-sec-disc" class="cx-sheet__h">模型发现</h3>
+        <div v-if="shown.autoSync !== undefined && setAutoSync" class="cx-sheet__auto">
+          <span class="cx-sheet__auto-l">
+            <span class="cx-sheet__auto-t">自动同步</span>
+            <span class="cx-sheet__auto-d">{{ shown.autoSync ? '每 30m 对一次上游列表 · 新增的自动接入，上次列过、这次没列的自动摘掉' : '关闭 · 只在点「拉取模型」时变化' }}</span>
+          </span>
+          <Switch
+            :model-value="shown.autoSync"
+            :aria-label="`${shown.autoSync ? '关闭' : '开启'} ${shown.name} 的自动同步`"
+            :disabled="!shown.enabled || shown.stale"
+            :loading="autoSyncBusy"
+            @update:model-value="onAutoSync"
+          />
+        </div>
         <dl class="ui-facts">
           <template v-if="!shown.enabled">
             <dt>状态</dt>
@@ -347,10 +428,18 @@ async function onToggleProxy() {
             <dd class="cx-sheet__sans">{{ healthAvailable ? '等待首次探测' : '服务更新后可见' }}</dd>
           </template>
         </dl>
-        <p class="cx-sheet__note">发现只加新模型 · 人工停用的模型不会被恢复</p>
+        <p class="cx-sheet__note">人工停用的模型不会被自动同步恢复 · 聚合渠道（上游列表里大多是付费模型）别开自动同步，用「拉取模型」挑</p>
       </section>
 
-      <section class="cx-sheet__sec" aria-labelledby="cx-sec-models">
+      <section v-if="picker" class="cx-sheet__sec" aria-labelledby="cx-sec-pick">
+        <h3 id="cx-sec-pick" class="cx-sheet__h">
+          拉取结果 <span class="dim num">上游返回 {{ fmtInt(picker.preview.rows.filter((row) => row.state !== 'gone').length) }} 个 · {{ fmtClock(picker.preview.probedAt, now) }}</span>
+        </h3>
+        <p class="cx-sheet__note">勾上的接入并开着 · 新模型不勾记为人工停用 · 「上游没有」的不勾就从渠道摘掉 · 点「应用」才写入</p>
+        <ChannelModelPicker v-model="picker.selected" :rows="picker.preview.rows" />
+      </section>
+
+      <section v-else class="cx-sheet__sec" aria-labelledby="cx-sec-models">
         <h3 id="cx-sec-models" class="cx-sheet__h">模型 <span class="dim num">{{ fmtInt(counts.on) }} / {{ fmtInt(counts.total) }} 开着</span></h3>
         <p v-if="!shown.enabled" class="cx-sheet__note">渠道停用中 · 启用后才能单独开关模型</p>
         <div class="cx-sheet__tools">
@@ -378,7 +467,14 @@ async function onToggleProxy() {
     </div>
 
     <template #footer="{ close }">
-      <div v-if="shown" class="cx-sheet__foot">
+      <div v-if="shown && picker" class="cx-sheet__foot">
+        <span class="cx-sheet__foot-hint num">{{ changeWords }}</span>
+        <span class="cx-sheet__foot-r">
+          <TxButton variant="secondary" :disabled="applying" @click="picker = null">取消</TxButton>
+          <TxButton variant="primary" :loading="applying" :disabled="!hasChanges" @click="onApply">应用</TxButton>
+        </span>
+      </div>
+      <div v-else-if="shown" class="cx-sheet__foot">
         <!-- the destructive confirm (signal) lives in the confirm sheet; this only opens it -->
         <TxButton variant="ghost" class="cx-sheet__del" :disabled="pending.has(shown.name)" @click="emit('delete', shown)">删除渠道</TxButton>
         <span class="cx-sheet__foot-r">
@@ -386,8 +482,8 @@ async function onToggleProxy() {
             variant="ghost"
             class="cx-sheet__pull"
             :loading="pulling"
-            :disabled="!shown.enabled || shown.stale"
-            :title="shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 只加新模型 · 人工停用的模型不会被恢复' : '停用渠道不探测上游'"
+            :disabled="!shown.enabled || shown.stale || !previewModels"
+            :title="shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 先列出来勾选，应用后才写入' : '停用渠道不探测上游'"
             @click="onPull"
           ><Icon name="refresh" :size="14" />拉取模型</TxButton>
           <TxButton variant="secondary" @click="close">关闭</TxButton>
@@ -448,7 +544,12 @@ html:root .cx-key .tx-button.cx-key__del:hover:not(.disabled) { color: var(--sig
 .cx-keys__add { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
 .cx-keys__add .ui-secret { flex: 1 1 auto; min-width: 0; }
 .cx-sheet__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
-.cx-sheet__foot-r { display: inline-flex; gap: 8px; }
+.cx-sheet__foot-r { display: inline-flex; gap: 8px; flex: none; }
+.cx-sheet__foot-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--ink-2); }
+.cx-sheet__auto { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; margin-bottom: 4px; }
+.cx-sheet__auto-l { display: grid; gap: 2px; min-width: 0; }
+.cx-sheet__auto-t { font-size: var(--fs-sm); color: var(--ink); }
+.cx-sheet__auto-d { font-size: var(--fs-xs); color: var(--ink-3); }
 html:root .cx-sheet__foot .tx-button.cx-sheet__del { padding: 0 4px; color: var(--ink-2); }
 html:root .cx-sheet__foot .tx-button.cx-sheet__del:hover:not(.disabled) { color: var(--signal-ink); background: transparent; }
 html:root .cx-sheet__foot .tx-button.cx-sheet__pull { padding: 0 8px; color: var(--ink-2); }
