@@ -7,7 +7,7 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncChannels, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
+import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncPolicy, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -27,6 +27,8 @@ import { registerAutoupdateRoutes } from './autoupdate.js'
 import { kernelPaths, registerKernelRoutes } from './kernels.js'
 import { accountsService, registerAccountsRoutes } from './accountsRoutes.js'
 import { proxyService, registerProxyRoutes } from './proxyRoutes.js'
+import { ProxyError } from './proxyPoolStore.js'
+import { presetIndex } from './proxyEgress.js'
 import { installCredentialProxyHook, registerProxyPoolJobs } from './proxyPoolJobs.js'
 import { installProxyChecks } from './proxyCheckPool.js'
 import { startManagedMihomo } from './mihomoPool.js'
@@ -947,8 +949,16 @@ app.get('/api/channels', async (req, res) => {
       listCredentials(),
       globalProxyCoordinator.run('global-proxy', getGlobalProxy),
     ])
-    const autoSync = readAutoSyncChannels()
-    res.json({ channels: channels.map((channel) => ({ ...channel, autoSync: autoSync.has(channel.name) })), credentials, proxyPresets: config.proxyPresets, globalProxy })
+    const autoSync = readAutoSyncPolicy()
+    const pool = proxyService()
+    // 渠道出口只给显示用：地址 userinfo 打码，并带上它对应的代理池条目 / 预设（比对用原地址）；写入走 PATCH /api/channels/:name/proxy
+    const view = (channel: (typeof channels)[number]) => {
+      const raw = channel.proxyUrl ?? ''
+      const proxyEntryId = pool.entryIdForUrl(raw)
+      const proxyPreset = presetIndex(config.proxyPresets, raw)
+      return { ...channel, ...(raw ? { proxyUrl: maskProxyUserinfo(raw) } : {}), ...(proxyEntryId ? { proxyEntryId } : {}), ...(proxyPreset !== null ? { proxyPreset } : {}), autoSync: autoSync(channel) }
+    }
+    res.json({ channels: channels.map(view), credentials, proxyPresets: config.proxyPresets, globalProxy })
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : '读取渠道失败' }) }
 })
 
@@ -998,12 +1008,19 @@ app.patch('/api/channels/:name/proxy', async (req, res) => {
     if (!(await listChannels()).some(channel => channel.name === req.params.name)) {
       return res.status(404).json({ error: '渠道不存在', reason: 'channel_not_found' })
     }
-    const proxyUrl = String(req.body?.proxyUrl ?? '')
+    // 选了代理池里的出口（target = 条目 id）：地址由服务端按池解析，不经浏览器
+    const proxyUrl = typeof req.body?.target === 'string' && req.body.target.trim()
+      ? proxyService().resolveEntryUrl(req.body.target)
+      : normalizeProxyUrl(String(req.body?.proxyUrl ?? ''))
+    if (proxyUrl === null) return res.status(400).json({ error: '代理地址必须是 http/https/socks5 开头的完整地址，或填 direct 强制直连', reason: 'invalid_proxy' })
     await setChannelProxy(req.params.name, proxyUrl)
     invalidateControlPlaneCaches()
-    addAudit('set_channel_proxy', req.params.name, `proxy=${proxyUrl || 'inherit'}`)
+    addAudit('set_channel_proxy', req.params.name, `proxy=${maskProxyUserinfo(proxyUrl) || 'inherit'}`)
     res.json({ ok: true, proxyUrl })
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '设置渠道代理失败' }) }
+  } catch (error) {
+    if (error instanceof ProxyError) return res.status(error.status).json({ error: error.message, reason: error.code })
+    res.status(400).json({ error: error instanceof Error ? error.message : '设置渠道代理失败' })
+  }
 })
 
 app.delete('/api/channels/:name', async (req, res) => {

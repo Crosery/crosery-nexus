@@ -15,11 +15,11 @@ import { ProxyParseError } from './proxyParse.js'
 import { parseShareLink } from './proxyParseUri.js'
 import { maskSubscriptionUrl } from './proxyParseSubscription.js'
 import { buildPreview, commitImport, previewView, refreshSubscription, takePreview, type PreviewDeps } from './proxyPoolImport.js'
-import { assignAccounts, assignWarnings, checkAssignable, linkedRefs, reapplyUrlEdit, resolveTarget, unassignAccounts, type AssignContext } from './proxyPoolAssign.js'
+import { assignAccounts, assignWarnings, checkAssignable, linkedRefs, reapplyUrlEdit, resolveTarget, targetUrl, unassignAccounts, type AssignContext } from './proxyPoolAssign.js'
 import { defaultControlPlane, type ProxyControlPlane } from './proxyPoolControl.js'
 import { kernelView, notifyPoolChanged, proxyChecker, proxyKernel } from './proxyPoolHooks.js'
 import {
-  ENTRY_ID, fingerprintOf, isManagedPort, matchEntryForUrl, observeAccount, proxyMode, ProxyError, proxyPoolStore, retirePort,
+  effectiveProxyUrl, ENTRY_ID, fingerprintOf, isManagedPort, matchEntryForUrl, observeAccount, proxyMode, ProxyError, proxyPoolStore, retirePort,
   scrubProxySecrets, SUBSCRIPTION_ID, type ProxyEntry, type ProxyPoolStore,
 } from './proxyPoolStore.js'
 import { entryDisplay, entryView, managedRange, maskAccountProxy, maskedExport, projectKernelView, secretExport, subscriptionView, usageByEntry } from './proxyPoolView.js'
@@ -334,6 +334,27 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
     }
   }
 
+  /** 渠道出口选了代理池里的出口：校验这个出口现在能分配，返回要写进渠道的地址（地址只在服务端流转）。 */
+  function resolveEntryUrl(raw: unknown): string {
+    const pool = store().read()
+    const target = resolveTarget(pool, raw)
+    checkAssignable(target, context())
+    return targetUrl(pool, target)
+  }
+
+  /** 渠道当前出口对应的池条目 id（按地址比对，比不上返回 null）。 */
+  function entryIdForUrl(raw: string): string | null {
+    const value = raw.trim()
+    if (!value || value.toLowerCase() === 'direct') return null
+    const pool = store().read()
+    for (const entry of pool.entries) {
+      try {
+        if (effectiveProxyUrl(pool, entry).trim() === value) return entry.id
+      } catch { /* 内核没起的条目没有地址，对不上 */ }
+    }
+    return null
+  }
+
   async function unassign(body: Record<string, unknown>) {
     if (body.confirm !== true) throw new ProxyError(409, 'confirm_required')
     try {
@@ -535,7 +556,7 @@ export function createProxyService(deps: ProxyServiceDeps = {}) {
   return {
     store, control, view, options, accounts, parse, importPreview, updateEntry, removeEntry, assign, unassign, setDefault,
     migrate, unignore, exportMasked, exportSecrets, updateSubscription, removeSubscription, refresh, test, kernelAction,
-    noteCredentialProxy, validateAndReload, egress, egressAccount,
+    noteCredentialProxy, validateAndReload, egress, egressAccount, resolveEntryUrl, entryIdForUrl,
   }
 }
 

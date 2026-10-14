@@ -339,10 +339,21 @@ export async function removeChannel(name: string) {
   db.prepare('DELETE FROM channel_sync_policies WHERE channel=?').run(name)
 }
 
-/** 参与定时模型同步的渠道名。 */
-export function readAutoSyncChannels(): Set<string> {
-  const rows = db.prepare('SELECT channel FROM channel_sync_policies WHERE auto_sync=1').all() as Array<{ channel: string }>
-  return new Set(rows.map((row) => String(row.channel)))
+/** 聚合渠道（上游列表里大多是付费模型）没有明确设置时默认不参与：OpenRouter 一次整表同步会接入几百个付费模型。 */
+const AGGREGATOR_HOST = /(^|\.)openrouter\.ai$/i
+export function autoSyncDefault(baseUrl: string | undefined): boolean {
+  try {
+    return !AGGREGATOR_HOST.test(new URL(String(baseUrl ?? '')).hostname)
+  } catch {
+    return true
+  }
+}
+
+/** 渠道是否参与定时模型同步：显式设置优先，没有设置过的默认参与（聚合渠道除外）。读一次库，返回判断函数。 */
+export function readAutoSyncPolicy(): (channel: { name: string; baseUrl?: string }) => boolean {
+  const rows = db.prepare('SELECT channel, auto_sync FROM channel_sync_policies').all() as Array<{ channel: string; auto_sync: number }>
+  const explicit = new Map(rows.map((row) => [String(row.channel), Number(row.auto_sync) === 1]))
+  return (channel) => explicit.get(channel.name) ?? autoSyncDefault(channel.baseUrl)
 }
 
 export function setChannelAutoSync(name: string, enabled: boolean) {

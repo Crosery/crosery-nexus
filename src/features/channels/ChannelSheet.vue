@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { TxButton, TxIconButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
+import { TxInput } from '@talex-touch/tuffex/input'
 import Sheet from '../../ui/feedback/Sheet.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
 import Pager from '../../ui/data/Pager.vue'
@@ -9,6 +10,7 @@ import Segmented from '../../ui/form/Segmented.vue'
 import SearchField from '../../ui/form/SearchField.vue'
 import Switch from '../../ui/form/Switch.vue'
 import SecretField from '../../ui/form/SecretField.vue'
+import FilterField from '../../ui/form/FilterField.vue'
 import TickStrip from '../../ui/viz/TickStrip.vue'
 import Icon from '../../ui/Icon.vue'
 import PulledModelsDialog, { type PulledModelRow } from '../models/PulledModelsDialog.vue'
@@ -17,10 +19,9 @@ import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { paginate } from '../../lib/listState'
 import { NONE, fmtAgo, fmtClock, fmtDuration, fmtInt, fmtPct } from '../../ui/fmt'
 import { copyText, notify } from '../../ui/feedback/toast'
-import { errorReason } from '../../lib/errors'
-import { api } from '../../api'
 import type { SegmentItem } from '../../ui/types'
-import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelModelPreviewRow } from '../../types'
+import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelModelPreviewRow, EgressData, ProxyPreset } from '../../types'
+import { CHANNEL_CUSTOM, PROXY_URL_RE, channelChoice, channelOptions, channelWrite, type ChannelProxyWrite } from './channelProxy'
 import {
   discoveryErrorWords, errorWords, modelCounts, poolSlots, type ChannelHealthClass, type ChannelHealthItem,
 } from './channelModel'
@@ -44,6 +45,11 @@ const props = defineProps<{
   /** step 2: write the picked result in one go; resolves true on success */
   applyModels?: (channel: ChannelItem, changes: ChannelModelChanges) => Promise<boolean>
   setAutoSync?: (channel: ChannelItem, next: boolean) => Promise<boolean>
+  /** 代理池里的出口（国家、检测结果）和网关预设：渠道出口是和账号一样的下拉 */
+  egress?: EgressData | null
+  presets?: ProxyPreset[]
+  /** 写渠道出口；成功返回 true（页面负责提示和刷新） */
+  setProxy?: (channel: ChannelItem, write: ChannelProxyWrite) => Promise<boolean>
   addKey: (channel: ChannelItem, apiKey: string) => Promise<boolean>
   removeKey: (channel: ChannelItem, ref: string) => Promise<boolean>
 }>()
@@ -152,11 +158,14 @@ const newKey = ref('')
 const keySecret = ref<InstanceType<typeof SecretField> | null>(null)
 const keyBusy = ref(false)
 const addingKey = ref(false)
+/** 添加 Key 的输入行默认收着：只有点「添加 Key」才展开，成功后收回 */
+const keyAdding = ref(false)
 const deletingRef = ref<string | null>(null)
 
 watch(open, (isOpen) => {
   if (!isOpen) {
     newKey.value = ''
+    keyAdding.value = false
     keySecret.value?.mask()
     pickOpen.value = false
     picker.value = null
@@ -171,6 +180,7 @@ watch(() => shown.value?.name, () => {
   filter.value = 'all'
   page.value = 1
   newKey.value = ''
+  keyAdding.value = false
   keySecret.value?.mask()
   pickOpen.value = false
   picker.value = null
@@ -235,6 +245,17 @@ async function copyRef(ref: string) {
   await copyText(ref, 'Key ref')
 }
 
+async function openKeyAdd() {
+  keyAdding.value = true
+  await nextTick()
+  keySecret.value?.focus()
+}
+function closeKeyAdd() {
+  keyAdding.value = false
+  newKey.value = ''
+  keySecret.value?.mask()
+}
+
 async function onAddKey() {
   const raw = newKey.value.trim()
   if (!raw || !shown.value || keyBusy.value) return
@@ -243,7 +264,8 @@ async function onAddKey() {
   newKey.value = ''
   keySecret.value?.mask()
   try {
-    await props.addKey(shown.value, raw)
+    if (await props.addKey(shown.value, raw)) keyAdding.value = false
+    else newKey.value = raw
   } finally {
     keyBusy.value = false
     addingKey.value = false
@@ -262,21 +284,40 @@ async function onRemoveKey(ref: string) {
   }
 }
 
+/* ── 出口代理：和账号一样的下拉（继承 / 直连 / 代理池出口 / 预设 / 自定义），自定义地址填完点保存 ── */
 const proxyBusy = ref(false)
-async function onToggleProxy() {
-  if (!shown.value || proxyBusy.value) return
-  const current = shown.value.proxyUrl
-  const next = current === 'direct' ? '' : 'direct'
+const proxyDraft = ref('')
+const customOpen = ref(false)
+const proxyPresets = computed(() => props.presets ?? [])
+const proxyChoiceNow = computed(() => (shown.value ? channelChoice(shown.value, props.egress ?? null) : ''))
+const proxyItems = computed(() => (shown.value ? channelOptions(shown.value, props.egress ?? null, proxyPresets.value) : []))
+const showCustom = computed(() => customOpen.value || proxyChoiceNow.value === CHANNEL_CUSTOM)
+const draftOk = computed(() => PROXY_URL_RE.test(proxyDraft.value.trim()))
+watch(() => shown.value?.name, () => { proxyDraft.value = ''; customOpen.value = false })
+async function writeProxy(write: ChannelProxyWrite) {
+  if (!shown.value || !props.setProxy || proxyBusy.value) return
   proxyBusy.value = true
   try {
-    await api.setChannelProxy(shown.value.name, next)
-    notify(`✓ 已将 ${shown.value.name} 出口代理设为 ${next === 'direct' ? '直连 (direct)' : '继承全局'}`)
-    shown.value.proxyUrl = next || undefined
-  } catch (error) {
-    notify(`◆ 设置代理失败 · ${errorReason(error)}`, { tone: 'bad' })
+    if (await props.setProxy(shown.value, write)) {
+      proxyDraft.value = ''
+      customOpen.value = false
+    }
   } finally {
     proxyBusy.value = false
   }
+}
+function onProxyChoice(value: string) {
+  if (value === CHANNEL_CUSTOM) {
+    customOpen.value = true
+    return
+  }
+  customOpen.value = false
+  if (value === proxyChoiceNow.value) return
+  const write = channelWrite(value, proxyPresets.value)
+  if (write) void writeProxy(write)
+}
+function saveCustom() {
+  if (draftOk.value) void writeProxy({ proxyUrl: proxyDraft.value.trim() })
 }
 </script>
 
@@ -294,20 +335,6 @@ async function onToggleProxy() {
         <dl class="ui-facts">
           <dt>地址</dt>
           <dd>{{ shown.baseUrl || NONE }}</dd>
-          <dt>出口代理</dt>
-          <dd>
-            <span class="cx-sheet__proxy-box">
-              <span class="mono">{{ shown.proxyUrl === 'direct' ? '直连 (direct)' : (shown.proxyUrl || '继承全局') }}</span>
-              <button
-                type="button"
-                class="ui-link cx-sheet__proxy-btn"
-                :disabled="proxyBusy"
-                @click="onToggleProxy"
-              >
-                {{ shown.proxyUrl === 'direct' ? '设为继承全局' : '设为强制直连' }}
-              </button>
-            </span>
-          </dd>
           <template v-if="!healthAvailable">
             <dt>健康</dt>
             <dd class="cx-sheet__sans">服务更新后可见</dd>
@@ -345,10 +372,35 @@ async function onToggleProxy() {
         </div>
       </section>
 
+      <section v-if="setProxy" class="cx-sheet__sec" aria-labelledby="cx-sec-proxy">
+        <h3 id="cx-sec-proxy" class="cx-sheet__h">出口代理</h3>
+        <div class="cx-proxy">
+          <FilterField
+            class="cx-proxy__pick"
+            label="出口"
+            :all-label="null"
+            :options="proxyItems"
+            :model-value="showCustom ? CHANNEL_CUSTOM : proxyChoiceNow"
+            :inert="proxyBusy || undefined"
+            @update:model-value="onProxyChoice"
+          />
+          <form v-if="showCustom" class="cx-proxy__custom" @submit.prevent="saveCustom">
+            <TxInput v-model="proxyDraft" type="url" inputmode="url" autocomplete="off" spellcheck="false" :placeholder="shown.proxyUrl && proxyChoiceNow === CHANNEL_CUSTOM ? '新地址 · socks5://host:port' : 'socks5://host:port'" aria-label="自定义代理地址" />
+            <TxButton type="submit" variant="secondary" size="sm" :loading="proxyBusy" :disabled="!draftOk || proxyBusy">保存</TxButton>
+          </form>
+        </div>
+        <p class="cx-sheet__note">出口决定这个渠道的请求从哪里出去 · 代理池和预设在「设置」里管理 · 走代理的渠道控制台不直连探测上游</p>
+      </section>
+
       <section class="cx-sheet__sec" aria-labelledby="cx-sec-keys">
-        <h3 id="cx-sec-keys" class="cx-sheet__h">
-          上游 Key <span class="dim num">{{ fmtInt(channelKeys.length) }} 把</span>
-        </h3>
+        <div class="cx-sheet__sech">
+          <h3 id="cx-sec-keys" class="cx-sheet__h">
+            上游 Key <span class="dim num">{{ fmtInt(channelKeys.length) }} 把 · 多把按顺序轮询</span>
+          </h3>
+          <TxButton v-if="!keyAdding" variant="ghost" size="sm" class="cx-keys__open" :disabled="keyBusy" @click="openKeyAdd">
+            <Icon name="plus" :size="14" />添加 Key
+          </TxButton>
+        </div>
         <ul v-if="channelKeys.length" class="cx-keys" aria-label="上游 Key 列表">
           <li v-for="k in channelKeys" :key="k.ref" class="cx-key">
             <span class="cx-key__info ellip">
@@ -383,27 +435,23 @@ async function onToggleProxy() {
           </li>
         </ul>
         <p v-else class="cx-sheet__empty">— 没有上游 Key · 渠道无法转发请求</p>
-        <form class="cx-keys__add" @submit.prevent="onAddKey">
+        <form v-if="keyAdding" class="cx-keys__add" @submit.prevent="onAddKey">
           <SecretField
             ref="keySecret"
             v-model="newKey"
             name="channel-api-key"
             autocomplete="off"
             noun="Key"
-            placeholder="添加上游 Key (sk-…)"
+            placeholder="上游 Key · sk-…"
+            label="新的上游 Key"
             mono
             :disabled="keyBusy"
             class="cx-keys__input"
           />
-          <TxButton
-            type="submit"
-            variant="secondary"
-            size="sm"
-            :loading="addingKey"
-            :disabled="!newKey.trim() || keyBusy"
-          >
-            添加 Key
-          </TxButton>
+          <span class="cx-keys__add-act">
+            <TxButton variant="ghost" size="sm" :disabled="keyBusy" @click="closeKeyAdd">取消</TxButton>
+            <TxButton type="submit" variant="primary" size="sm" :loading="addingKey" :disabled="!newKey.trim() || keyBusy">添加</TxButton>
+          </span>
         </form>
       </section>
 
@@ -446,7 +494,7 @@ async function onToggleProxy() {
             <dd class="cx-sheet__sans">{{ healthAvailable ? '等待首次探测' : '服务更新后可见' }}</dd>
           </template>
         </dl>
-        <p class="cx-sheet__note">人工停用的模型不会被自动同步恢复 · 聚合渠道（上游列表里大多是付费模型）别开自动同步，用「拉取模型」挑</p>
+        <p class="cx-sheet__note">人工停用的模型不会被自动同步恢复 · 聚合渠道（OpenRouter 这类，上游列表里大多是付费模型）默认关着，用「拉取模型」挑着接入</p>
       </section>
 
       <section class="cx-sheet__sec" aria-labelledby="cx-sec-models">
@@ -558,8 +606,20 @@ async function onToggleProxy() {
 .cx-key__actions { display: inline-flex; align-items: center; gap: 4px; flex: none; }
 html:root .cx-key .tx-button.cx-key__del { padding: 0 6px; font-size: var(--fs-xs); color: var(--ink-2); }
 html:root .cx-key .tx-button.cx-key__del:hover:not(.disabled) { color: var(--signal-ink); background: transparent; }
+.cx-sheet__sech { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 6px; min-height: 28px; }
+.cx-sheet__sech .cx-sheet__h { margin: 0; }
+html:root .cx-sheet__sech .tx-button.cx-keys__open { padding: 0 6px; color: var(--ink-2); white-space: nowrap; flex: none; }
+html:root .cx-sheet__sech .tx-button.cx-keys__open .tx-button__inner { gap: 4px; }
+/* the field takes the row; the two actions never shrink, so no label is ever cut */
 .cx-keys__add { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
-.cx-keys__add .ui-secret { flex: 1 1 auto; min-width: 0; }
+.cx-keys__add .ui-secret { flex: 1 1 0; min-width: 0; }
+.cx-keys__add-act { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+html:root .cx-keys__add-act .tx-button { white-space: nowrap; flex: none; }
+.cx-proxy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+html:root .cx-proxy__pick .tuff-select { width: 300px; max-width: 100%; }
+.cx-proxy__custom { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; min-width: 0; }
+.cx-proxy__custom .tx-input { flex: 1 1 0; min-width: 0; }
+html:root .cx-proxy__custom .tx-button { white-space: nowrap; flex: none; }
 .cx-sheet__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
 .cx-sheet__foot-r { display: inline-flex; gap: 8px; flex: none; }
 .cx-sheet__auto { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; margin-bottom: 4px; }
@@ -573,7 +633,8 @@ html:root .cx-sheet__foot .tx-button.cx-sheet__pull .tx-button__inner { gap: 5px
 .cx-sheet .sig, .cx-sheet__reason.sig { color: var(--signal-ink); }
 @media (max-width: 599px) {
   .cx-sheet__search { width: 100%; }
+  html:root .cx-proxy__pick .tuff-select { width: auto; }
+  .cx-keys__add { flex-wrap: wrap; }
+  .cx-keys__add-act { flex: 1 0 100%; justify-content: flex-end; }
 }
-.cx-sheet__proxy-box { display: inline-flex; align-items: center; gap: 8px; }
-.cx-sheet__proxy-btn { font-size: var(--fs-xs); color: var(--accent-ink, #2563eb); }
 </style>

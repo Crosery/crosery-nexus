@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileBackedSecret, positiveInteger } from './config.js'
 import { CompatChannelsConflictError, compatChannelsFingerprint, getCompatChannels, getGlobalProxy, putCompatChannels, type CompatChannel } from './cpa.js'
-import { invalidateGatewaySnapshot, readAutoSyncChannels } from './channels.js'
+import { invalidateGatewaySnapshot, readAutoSyncPolicy } from './channels.js'
 import { modelDiscoveryUrls, normalizeDiscoveredModels, defaultModelAlias, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { db } from './db.js'
 import { applySharedPricing, type PriceSourceId, type SourcePrice } from './pricing.js'
@@ -242,8 +242,8 @@ export type ModelSyncDeps = {
   store?: ChannelStore
   /** 管理员停用过的模型（每次运行开始与写入前各读一次）。 */
   disabledModels?: () => BlockedModels
-  /** 参与定时同步的渠道名；null = 全部参与（只给测试用）。单渠道拉取不看这个。 */
-  autoSyncChannels?: () => Set<string> | null
+  /** 渠道是否参与定时同步的判断；null = 全部参与（只给测试用）。单渠道拉取不看这个。 */
+  autoSyncChannels?: () => ((channel: { name: string; baseUrl?: string }) => boolean) | null
   /** 某渠道的停用墓碑：对外名 + 能匹配上的所有 id/别名（小写）。拉取预览用它把上游条目对回对外名。 */
   disabledEntries?: (channel: string) => DisabledEntry[]
   /** 全局上游并发闸门（与账号额度共享）。 */
@@ -632,7 +632,7 @@ function defaultDeps(): Required<ModelSyncDeps> {
     store: cpaStore(),
     disabledModels: readDisabledModels,
     disabledEntries: readDisabledEntries,
-    autoSyncChannels: readAutoSyncChannels,
+    autoSyncChannels: readAutoSyncPolicy,
     limit: (task) => upstreamLimiter.run(task),
     afterWrite: async () => {
       invalidateGatewaySnapshot()
@@ -772,14 +772,14 @@ async function runDiscovery(options: { force?: boolean; state?: DiscoveryState; 
     return fail(`读取模型停用记录失败：${error instanceof Error ? error.message : '未知错误'}`, '读取停用记录失败')
   }
 
-  // 整表任务（定时/手动「模型目录」）只碰开了自动同步的渠道：聚合渠道的上游列表里大多是不该自动接入的付费模型。
-  let autoSync: Set<string> | null
+  // 整表任务（定时/手动「模型目录」）只碰开着自动同步的渠道（默认开；聚合渠道默认关：上游列表里大多是不该自动接入的付费模型）。
+  let autoSync: ((channel: { name: string; baseUrl?: string }) => boolean) | null
   try {
     autoSync = only === null ? deps.autoSyncChannels() : null
   } catch (error) {
     return fail(`读取自动同步设置失败：${error instanceof Error ? error.message : '未知错误'}`, '读取自动同步设置失败')
   }
-  const participates = (channel: SyncChannel) => autoSync === null || autoSync.has(channel.name)
+  const participates = (channel: SyncChannel) => autoSync === null || autoSync(channel)
 
   const discoveryUrls = (channel: SyncChannel) => modelDiscoveryUrls(channel.protocol ?? 'openai', channel.baseUrl)
   // 删掉/停用的渠道不再参与「下次到期」与「整体退避」的计算；主机只在仍有渠道用、或还在退避时保留。
@@ -1129,7 +1129,7 @@ let inflight: { only: string | null; run: Promise<ModelSyncResult> } | null = nu
  * 2. 共享目录（~/.agents/crosery/catalog.json）只在内容变化或手动触发时合入，目标见 resolveCatalogTarget；
  * 3. 新模型跳过管理员停用过的；上次列过、这次没列的映射摘掉（一次少一半以上按上游故障不摘）；
  *    在写入前重新读取的渠道表上落盘，然后通知内核刷新 provider。
- * 整表运行（定时/手动「模型目录」）只碰开了「自动同步」的渠道；`only` 不看这个开关。
+ * 整表运行（定时/手动「模型目录」）只碰开着「自动同步」的渠道；`only` 不看这个开关。
  *
  * `only`（渠道抽屉的「拉取模型」）只探这一个渠道：越过退避与主机最小间隔，不碰共享目录，也不推进目录哈希。
  * 同名渠道的重复点击复用同一次运行；与全量运行互不合并——全量在跑时单渠道照常另跑（它只打一个渠道的上游）。

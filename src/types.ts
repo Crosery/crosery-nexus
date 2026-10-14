@@ -58,6 +58,9 @@ export type ChannelItem = {
   proxyUrl?: string
   /** 是否参与定时模型同步（上游新增自动接入、下架自动摘掉）；老服务端不带这个字段。 */
   autoSync?: boolean
+  /** 当前出口对应的代理池条目 id / 网关预设下标（按地址比对）；都对不上就是自定义地址。 */
+  proxyEntryId?: string
+  proxyPreset?: number
 }
 
 /**

@@ -32,7 +32,10 @@ test('拉取模型的勾选结果一次写入；自动同步开关随渠道列�
     }
     const liveNames = () => ((cpa.compat.find(channel => channel.name === 'contract-relay')?.models ?? []) as Array<{ name?: string }>).map(model => String(model.name))
 
-    assert.equal((await relay()).autoSync, false, '默认不参与定时同步')
+    assert.equal((await relay()).autoSync, true, '没设置过的渠道默认参与定时同步')
+    const off = await app.send('PATCH', '/api/channels/contract-relay/auto-sync', { cookie: app.adminCookie, body: { enabled: false } })
+    assert.equal(off.status, 200, off.text)
+    assert.equal((await relay()).autoSync, false)
     const toggled = await app.send('PATCH', '/api/channels/contract-relay/auto-sync', { cookie: app.adminCookie, body: { enabled: true } })
     assert.equal(toggled.status, 200, toggled.text)
     assert.equal((await relay()).autoSync, true)
@@ -103,6 +106,40 @@ test('账号池批量停用新模型一次写 oauth-excluded-models', { timeout:
     assert.equal((await disable('codex', { disable: [] })).status, 400)
     assert.equal((await disable('codex', { disable: 'gpt-5.1' })).status, 400)
     assert.equal(puts, 2, '校验失败不写')
+  } finally {
+    await app.stop()
+    await cpa.stop()
+  }
+})
+
+/** 渠道出口：列表里地址 userinfo 打码；非法地址 400；池条目 id 不存在 404（地址只在服务端流转）。 */
+test('渠道出口代理：列表打码、非法地址与未知池条目被拒', { timeout: 120_000 }, async () => {
+  const cpa = await startContractCpa()
+  const base = cpa.extra
+  cpa.extra = (method, route, url, raw) => {
+    if (route === '/openai-compatibility' && method === 'PUT') {
+      cpa.compat = JSON.parse(raw || '[]') as typeof cpa.compat
+      return { status: 200, body: { status: 'ok' } }
+    }
+    return base?.(method, route, url, raw)
+  }
+  const app = await launchConsole({ CPA_BASE_URL: cpa.base, CPA_MANAGEMENT_KEY: cpa.key })
+  try {
+    const patch = (body: unknown) => app.send('PATCH', '/api/channels/contract-relay/proxy', { cookie: app.adminCookie, body })
+    const listed = async () => {
+      const reply = await app.send('GET', '/api/channels?fresh=1', { cookie: app.adminCookie })
+      return (reply.body.channels as Array<{ name: string; proxyUrl?: string }>).find(item => item.name === 'contract-relay')!
+    }
+    assert.equal((await patch({ proxyUrl: 'socks5://user:secret@exit.example.test:1080' })).status, 200)
+    assert.equal((cpa.compat[0]['proxy-url'] as string), 'socks5://user:secret@exit.example.test:1080', '网关里存完整地址')
+    assert.equal((await listed()).proxyUrl, 'socks5://***@exit.example.test:1080', '列表只给打码后的地址')
+    assert.equal((await patch({ proxyUrl: 'ftp://exit.example.test' })).status, 400)
+    const unknown = await patch({ target: 'px_aaaaaaaaaa' })
+    assert.equal(unknown.status, 404, unknown.text)
+    assert.equal((await patch({ proxyUrl: 'direct' })).status, 200)
+    assert.equal((await listed()).proxyUrl, 'direct')
+    assert.equal((await patch({ proxyUrl: '' })).status, 200)
+    assert.equal((await listed()).proxyUrl, undefined)
   } finally {
     await app.stop()
     await cpa.stop()

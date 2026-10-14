@@ -750,7 +750,7 @@ test('自动同步开关：整表任务跳过没开的渠道（含目录合入�
     channel('relay', 'https://relay.example.test/v1', 'env:GOOD_KEY', ['r1']),
   ])
   const { fetch, calls } = fakeFetch(() => modelsResponse('free', 'paid-1', 'r1', 'r2'))
-  const optIn = () => new Set(['relay'])
+  const optIn = () => (channel: { name: string }) => channel.name === 'relay'
   const full = await syncUpstreamModels({ force: true, state: {}, deps: deps({ store: memory.store, fetch, autoSyncChannels: optIn }) })
   assert.deepEqual(calls.map(call => new URL(call.url).host), ['relay.example.test'])
   assert.equal(full.optedOut, 1)
@@ -807,4 +807,12 @@ test('拉取预览：渠道不在表里、走代理、上游失败都如实报�
   await assert.rejects(run('missing'), (error: unknown) => error instanceof ChannelPreviewError && error.reason === 'channel_not_supported')
   await assert.rejects(run('proxied'), (error: unknown) => error instanceof ChannelPreviewError && error.reason === 'proxy_not_supported')
   await assert.rejects(run('down'), (error: unknown) => error instanceof ChannelPreviewError && error.reason === 'probe_failed' && /503/.test(error.message))
+})
+
+test('自动同步默认：没设置过的渠道参与，聚合渠道（OpenRouter）默认不参与', async () => {
+  const { autoSyncDefault } = await import('./channels.js')
+  assert.equal(autoSyncDefault('https://relay.example.test/v1'), true)
+  assert.equal(autoSyncDefault('https://openrouter.ai/api/v1'), false)
+  assert.equal(autoSyncDefault('https://eu.openrouter.ai/api/v1'), false)
+  assert.equal(autoSyncDefault(''), true)
 })

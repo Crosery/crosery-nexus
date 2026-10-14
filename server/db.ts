@@ -120,7 +120,7 @@ db.exec(`
     PRIMARY KEY (channel, model, kind)
   );
 
-  -- 渠道是否参与定时模型同步（模型目录任务）。没有行 = 不参与：聚合渠道（OpenRouter）上百个付费模型不能被自动接入。
+  -- 渠道是否参与定时模型同步（模型目录任务）。没有行 = 默认参与（聚合渠道 OpenRouter 除外，见 autoSyncDefault）；显式关掉才有 auto_sync=0 的行。
   CREATE TABLE IF NOT EXISTS channel_sync_policies (
     channel TEXT PRIMARY KEY,
     auto_sync INTEGER NOT NULL DEFAULT 0,

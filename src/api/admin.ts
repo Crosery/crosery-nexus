@@ -67,8 +67,9 @@ export const adminApi = {
   pruneStaleChannels: () => request<{ removed: string[] }>('/api/channels/prune-stale', { method: 'POST' }),
   setChannelEnabled: (name: string, enabled: boolean) =>
     request(`/api/channels/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
-  setChannelProxy: (name: string, proxyUrl: string) =>
-    request<{ ok: boolean; proxyUrl: string }>(`/api/channels/${encodeURIComponent(name)}/proxy`, { method: 'PATCH', body: JSON.stringify({ proxyUrl }) }),
+  /** 渠道出口：`{ proxyUrl }`（'' 继承 / 'direct' / 完整地址）或 `{ target }`（代理池条目 id，地址由服务端解析） */
+  setChannelProxy: (name: string, write: { proxyUrl: string } | { target: string }) =>
+    request<{ ok: boolean; proxyUrl: string }>(`/api/channels/${encodeURIComponent(name)}/proxy`, { method: 'PATCH', body: JSON.stringify(write) }),
   deleteChannel: (name: string) => request(`/api/channels/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   setModelEnabled: (name: string, model: string, enabled: boolean) =>
     request(`/api/channels/${encodeURIComponent(name)}/models/${encodeURIComponent(model)}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),

@@ -22,7 +22,9 @@ import { errorMessage } from '../../lib/errors'
 import { notify } from '../../ui/feedback/toast'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { api } from '../../api'
-import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelsData } from '../../types'
+import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelsData, EgressData } from '../../types'
+import { proxyApi } from '../../api/proxy'
+import type { ChannelProxyWrite } from '../channels/channelProxy'
 import type { RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 import ChannelSheet from '../channels/ChannelSheet.vue'
 import CreateChannelSheet from '../channels/CreateChannelSheet.vue'
@@ -103,6 +105,9 @@ watch(() => [route.query.status, route.query.show], ([status, show]) => {
 
 /* ── 核心数据读取 ── */
 const channelsLive = useLive<ChannelsData>(() => api.channels<ChannelsData>(), { intervalMs: 30_000 })
+/** 代理池里的出口（国家、检测结果）：渠道抽屉的出口下拉和账号用同一份 */
+const egressLive = useLive<EgressData>((signal) => proxyApi.egress(signal), { intervalMs: 60_000, isEmpty: () => false })
+const egressData = computed(() => egressLive.data.value ?? null)
 const healthLive = useLive<HealthResult>((signal) => fetchChannelHealth('24', signal), { intervalMs: 30_000 })
 const sharedLive = useLive(() => api.sharedModels(), { intervalMs: 30_000 })
 
@@ -497,6 +502,18 @@ async function applyChannelModels(channel: ChannelItem, changes: ChannelModelCha
   }
 }
 
+async function setChannelProxy(channel: ChannelItem, write: ChannelProxyWrite): Promise<boolean> {
+  try {
+    await api.setChannelProxy(channel.name, write)
+    notify(`✓ ${channel.name} · 出口已更新`, { id: 'cx-ch-proxy' })
+    await Promise.all([channelsLive.refresh(), egressLive.refresh()])
+    return true
+  } catch (error) {
+    notify(`◆ 出口设置失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-proxy' })
+    return false
+  }
+}
+
 async function setChannelAutoSync(channel: ChannelItem, next: boolean): Promise<boolean> {
   try {
     await api.setChannelAutoSync(channel.name, next)
@@ -886,6 +903,9 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       :preview-models="previewChannelModels"
       :apply-models="applyChannelModels"
       :set-auto-sync="setChannelAutoSync"
+      :egress="egressData"
+      :presets="channelsLive.data.value?.proxyPresets ?? []"
+      :set-proxy="setChannelProxy"
       :add-key="addKey"
       :remove-key="removeKey"
       @toggle-channel="toggleChannel"
