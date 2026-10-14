@@ -4,6 +4,7 @@ import { TxDrawer } from '@talex-touch/tuffex/drawer'
 import { TxIconButton } from '@talex-touch/tuffex/button'
 import Icon from '../Icon.vue'
 import { useBreakpoint } from '../composables/useBreakpoint'
+import { useBodyScrollLock } from '../composables/useBodyScrollLock'
 
 /**
  * Sheet (DESIGN.md §5.2 feedback/Sheet, motion recipe 9) over TxDrawer: bottom sheet below 960px (grip,
@@ -28,6 +29,7 @@ const props = withDefaults(
 )
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ close: [] }>()
+useBodyScrollLock(open)
 const { isMobile } = useBreakpoint()
 const bottom = computed(() => props.side === 'bottom' || (props.side === 'auto' && isMobile.value))
 

@@ -547,8 +547,8 @@ function saveCustom() {
             variant="ghost"
             class="cx-sheet__pull"
             :loading="pulling"
-            :disabled="!shown.enabled || shown.stale || !previewModels"
-            :title="shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 弹窗里勾选新模型，确定后才写入' : '停用渠道不探测上游'"
+            :disabled="!shown.enabled || shown.stale || !previewModels || shown.protocol === 'claude'"
+            :title="shown.protocol === 'claude' ? '原生协议渠道（claude-api-key 这类）不支持拉取模型' : shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 弹窗里勾选新模型，确定后才写入' : '停用渠道不探测上游'"
             @click="onPull"
           ><Icon name="refresh" :size="14" />拉取模型</TxButton>
           <TxButton variant="secondary" @click="close">关闭</TxButton>

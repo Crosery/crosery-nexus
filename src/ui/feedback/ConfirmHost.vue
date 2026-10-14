@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { clearConfirmTrigger, confirmState, getConfirmTrigger, settleConfirm } from '../../lib/confirm'
+import { useBodyScrollLock } from '../composables/useBodyScrollLock'
 
 /**
  * The one global confirm host (mount once in App.vue, replaces src/components/ConfirmHost.vue).
@@ -10,6 +11,7 @@ import { clearConfirmTrigger, confirmState, getConfirmTrigger, settleConfirm } f
  */
 const ConfirmSheet = defineAsyncComponent(() => import('./ConfirmSheet.vue'))
 const used = ref(confirmState.open)
+useBodyScrollLock(computed(() => confirmState.open))
 
 async function restoreFocus() {
   const trigger = getConfirmTrigger()

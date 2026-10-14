@@ -8,6 +8,7 @@ import Sheet from '../../ui/feedback/Sheet.vue'
 import SearchField from '../../ui/form/SearchField.vue'
 import Segmented from '../../ui/form/Segmented.vue'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
+import { useBodyScrollLock } from '../../ui/composables/useBodyScrollLock'
 import { focusInModal } from '../../lib/focus'
 import { fmtInt } from '../../ui/fmt'
 import type { SegmentItem } from '../../ui/types'
@@ -46,6 +47,7 @@ const props = defineProps<{
 const open = defineModel<boolean>({ default: false })
 const selected = defineModel<Set<string>>('selected', { required: true })
 const emit = defineEmits<{ apply: [] }>()
+useBodyScrollLock(open)
 const { isMobile } = useBreakpoint()
 const words = computed(() => props.words ?? { fresh: '新增', have: '已有' })
 const body = useTemplateRef<HTMLElement>('body')
