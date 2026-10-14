@@ -80,7 +80,7 @@ export function sameKeyAccess(left: Record<string, string[]>, right: Record<stri
  * 以当前实时分组为唯一真相源重建所有 Key 白名单。
  * 已关闭/已删除渠道不会进入 groups，因此会从 Key 的选择中清掉；若一项都不剩则拒绝全部模型。
  */
-export function buildKeyAccessPlan(groups: ConsoleGroup[], rows: KeyAccessRow[], custom: string[] = getCustomSharedModels()): KeyAccessPlan {
+export function buildKeyAccessPlan(groups: ConsoleGroup[], rows: KeyAccessRow[], custom: string[] = getCustomSharedModels(), routed: ReadonlyMap<string, string[]> = new Map()): KeyAccessPlan {
   const knownGroups = new Set(groups.map((group) => group.id))
   const access: Record<string, string[]> = {}
   const normalizedGroups = new Map<string, string[]>()
@@ -90,7 +90,9 @@ export function buildKeyAccessPlan(groups: ConsoleGroup[], rows: KeyAccessRow[],
     const selected = [...new Set(row.groups.filter((group) => knownGroups.has(group)))].sort()
     normalizedGroups.set(row.keyValue, selected)
     if (!row.enabled) continue
-    const models = [...new Set([...modelsForGroups(groups, selected), ...defaults])].sort()
+    const plain = [...new Set([...modelsForGroups(groups, selected), ...defaults])]
+    // 中转层把多来源模型改写成 `prefix/模型` 再发给网关，网关按原始字符串查白名单：带前缀的名字要跟着放行。
+    const models = [...new Set([...plain, ...plain.flatMap((model) => routed.get(model) ?? [])])].sort()
     access[row.keyValue] = models.length ? models : [DENY_ALL_MODEL]
   }
 

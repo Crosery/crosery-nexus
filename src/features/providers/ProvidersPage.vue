@@ -500,18 +500,6 @@ async function applyChannelModels(channel: ChannelItem, changes: ChannelModelCha
   }
 }
 
-async function setChannelWeight(channel: ChannelItem, weight: number): Promise<boolean> {
-  try {
-    await api.setChannelWeight(channel.name, weight)
-    notify(`✓ ${channel.name} · 权重 ${weight}`, { id: 'cx-ch-weight' })
-    await channelsLive.refresh()
-    return true
-  } catch (error) {
-    notify(`◆ 权重设置失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-weight' })
-    return false
-  }
-}
-
 async function setChannelProxy(channel: ChannelItem, write: ChannelProxyWrite): Promise<boolean> {
   try {
     await api.setChannelProxy(channel.name, write)
@@ -886,7 +874,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       :egress="egressData"
       :presets="channelsLive.data.value?.proxyPresets ?? []"
       :set-proxy="setChannelProxy"
-      :set-weight="setChannelWeight"
       :add-key="addKey"
       :remove-key="removeKey"
       @toggle-channel="toggleChannel"

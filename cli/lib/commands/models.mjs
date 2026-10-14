@@ -23,9 +23,10 @@ const HELP = `cradmin models <动作> [参数]
   show <模型>                来源、价格、双源价格
   upstream <模型>            查看该请求模型在上游实际响应成了哪些模型（按次数与账号分布）
       --days <N>             统计天数（默认 7）
-  weight <模型> <渠道> [权重]  查看或调整该渠道的调度权重（整数，默认 0，越小越优先；同名模型多个渠道时先用权重最小的那档）
-                             兼容渠道的权重是整个渠道一个值；账号池 = 池里全部账号设成同一个值
+  weight <模型> <渠道> [权重]  查看或调整这个模型里该来源的权重（整数，默认 0，越小越优先；同权重按列表先后，开了同档轮询才轮流）
+                             只影响这个模型；顺序和权重存在控制台，由中转层执行
   priority                   weight 的旧名，同一个命令
+  round-robin <模型> [on|off]  查看或切换这个模型的「同档轮询」（默认关闭）
   sync                       探测开着「自动同步」的渠道上游 /models，接入新模型、摘掉上游下架的（后台任务 model-discovery，等它跑完，最多 10 分钟；
                              有冷却，冷却中退出 4）
 说明：每个渠道启用哪些模型用 cradmin channels models <渠道> 调整。价格不能在这里改（来自价格表与外部目录）。
@@ -98,15 +99,35 @@ export default {
       }
       const weight = numberValue(rawPrio, '权重')
       if (!Number.isInteger(weight) || Math.abs(weight) > 100000) throw new UsageError('权重必须是 -100000 到 100000 的整数')
+      // 权重改完按（权重、原先后）重排，整份顺序一次写回
+      const order = (model.sources || []).map((item, position) => ({ channel: item.channel, kind: item.kind, weight: item.channel === channelName && item.kind === source.kind ? weight : item.weight ?? 0, position }))
+        .sort((left, right) => left.weight - right.weight || left.position - right.position)
+        .map(({ channel, kind, weight: value }) => ({ channel, kind, weight: value }))
       const result = await runPlan(ctx, {
         level: 'C',
-        title: `调整渠道 ${channelName} 的调度权重（越小越优先）`,
+        title: `调整 ${modelId} 里 ${channelName} 的权重（越小越优先）`,
         items: [{
-          area: '模型映射', label: `${modelId}@${channelName}`,
+          area: '模型路由', label: `${modelId}@${channelName}`,
           from: String(source.weight ?? 0), to: String(weight),
-          method: 'PATCH', path: `/api/model-index/${encodeURIComponent(modelId)}/sources/${encodeURIComponent(channelName)}`,
-          body: { kind: source.kind, weight },
+          method: 'PUT', path: `/api/model-routes/${encodeURIComponent(modelId)}`,
+          body: { order },
         }],
+      })
+      return void ctx.output(result)
+    }
+    if (action === 'round-robin') {
+      if (!id) throw new UsageError('用法：cradmin models round-robin <模型> [on|off]')
+      if (arg3 || extra.length) throw new UsageError(`多余的参数：${[arg3, ...extra].filter(Boolean).join(' ')}`)
+      const index = await getModelIndex(ctx)
+      const model = (index.models || []).find(item => item.id === id)
+      if (!model) throw new UsageError(`找不到模型：${id}`)
+      if (arg2 === undefined) return void ctx.output({ model: id, roundRobin: Boolean(model.roundRobin) }, () => ctx.ui.kv('同档轮询', model.roundRobin ? '开' : '关'))
+      if (arg2 !== 'on' && arg2 !== 'off') throw new UsageError('只能是 on 或 off')
+      const order = (model.sources || []).map(item => ({ channel: item.channel, kind: item.kind, weight: item.weight ?? 0 }))
+      const result = await runPlan(ctx, {
+        level: 'C',
+        title: `${arg2 === 'on' ? '打开' : '关闭'} ${id} 的同档轮询`,
+        items: [{ area: '模型路由', label: id, from: model.roundRobin ? 'on' : 'off', to: arg2, method: 'PUT', path: `/api/model-routes/${encodeURIComponent(id)}`, body: { order, roundRobin: arg2 === 'on' } }],
       })
       return void ctx.output(result)
     }

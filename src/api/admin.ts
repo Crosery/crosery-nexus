@@ -115,10 +115,9 @@ export const adminApi = {
   setModelSourceEnabled: (model: string, channel: string, kind: 'compat' | 'oauth', enabled: boolean) =>
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
   /** 来源权重：兼容渠道 = 渠道权重（整个渠道一个值）；账号池 = 池里全部账号设成同一个值 */
-  setModelSourceWeight: (model: string, channel: string, kind: 'compat' | 'oauth', weight: number) =>
-    request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, weight }) }),
-  setChannelWeight: (name: string, weight: number) =>
-    request<{ ok: boolean; weight: number }>(`/api/channels/${encodeURIComponent(name)}/weight`, { method: 'PATCH', body: JSON.stringify({ weight }) }),
+  /** 模型级路由：order 的先后 = 优先级；weight 小的先用，同权重按先后（roundRobin 开启才轮流）。 */
+  setModelRoute: (model: string, order: Array<{ channel: string; kind: 'compat' | 'oauth'; weight: number }>, roundRobin?: boolean) =>
+    request(`/api/model-routes/${encodeURIComponent(model)}`, { method: 'PUT', body: JSON.stringify({ order, ...(roundRobin === undefined ? {} : { roundRobin }) }) }),
   setCredentialWeight: (name: string, weight: number) =>
     request<{ ok: boolean; weight: number }>(`/api/credentials/${encodeURIComponent(name)}/weight`, { method: 'PATCH', body: JSON.stringify({ weight }) }),
   sharedModels: () => request<{ defaultModels: string[]; customModels: string[]; activeModels: string[] }>('/api/shared-models'),

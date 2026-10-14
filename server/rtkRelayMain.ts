@@ -6,6 +6,7 @@ import { createRelayCompressionProxy } from './relayCompressionProxy.js'
 import { parseRelayEnv, RELAY_HEARTBEAT_MS, writeRelayStatus, type RelayProcessState } from './rtkRelayConfig.js'
 import { RELAY_ENABLED_SETTING, RelayLedgerBuffer } from './rtkRelayLedger.js'
 import { compressRequestToolOutputs } from './toolCompress.js'
+import { planAttempts, type RelayRouteRow } from './relayRoutePlan.js'
 
 /**
  * RTK relay process (deploy/systemd/crosery-rtk-relay.service, docs/ops/rtk-relay.md). Runs apart from the
@@ -60,6 +61,24 @@ const skipped = { lookup: 0, compress: 0 }
 // Prepared on first use: a console that has not migrated yet makes lookups fail (counted), never requests.
 let readSetting: StatementSync | undefined
 let readKey: StatementSync | undefined
+let readRoutes: StatementSync | undefined
+
+// Routes change on console edits only; a short cache keeps SQLite off the request path.
+const ROUTE_TTL_MS = 3_000
+let routeCache: { at: number; models: Map<string, RelayRouteRow[]> } | undefined
+const turns = new Map<string, number>()
+function routeTable() {
+  if (routeCache && Date.now() - routeCache.at < ROUTE_TTL_MS) return routeCache.models
+  readRoutes ??= reader.prepare('SELECT model, prefix, weight, round_robin FROM relay_routes ORDER BY model, rank')
+  const models = new Map<string, RelayRouteRow[]>()
+  for (const row of readRoutes.all() as Array<RelayRouteRow & { model: string }>) {
+    const list = models.get(row.model) || []
+    list.push(row)
+    models.set(row.model, list)
+  }
+  routeCache = { at: Date.now(), models }
+  return models
+}
 
 server = createRelayCompressionProxy({
   target: env.target,
@@ -70,6 +89,16 @@ server = createRelayCompressionProxy({
     // Same digest as cpa.ts hashKey.
     const row = readKey.get(createHash('sha256').update(token).digest('hex')) as { enabled: number; rtk_compress: number } | undefined
     return Boolean(row?.enabled) && row?.rtk_compress === 1
+  },
+  routing: () => {
+    try { return routeTable().size > 0 } catch { return false }
+  },
+  route: (model) => {
+    const rows = routeTable().get(model)
+    if (!rows) return null
+    const turn = turns.get(model) ?? 0
+    turns.set(model, turn + 1)
+    return planAttempts(model, rows, turn)
   },
   compress: (body) => compressRequestToolOutputs(body).saved,
   saved: (savedTokens) => ledger.saved(savedTokens),

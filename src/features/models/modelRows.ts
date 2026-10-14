@@ -20,6 +20,7 @@ export type IndexModel = {
   sources: IndexSource[]
   enabledSources: number
   contested: boolean
+  roundRobin?: boolean
   pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceQuote>>
   unpriced?: boolean
   availableOnGateway?: boolean
@@ -113,6 +114,8 @@ export type ModelRow = {
   multi: boolean
   /** one exact id served by ≥2 enabled channels (the gateway splits that id) */
   contested: boolean
+  /** 同档轮询（主 id 的模型路由设置） */
+  roundRobin: boolean
   catalogOnly: boolean
   billing: IndexPricing | null
   sources: Partial<Record<PriceSourceKey, PriceQuote>>
@@ -315,7 +318,7 @@ export function buildModelRows(input: ModelRowInput): ModelRow[] {
     const ranked = [...members].sort((a, b) => b.enabledSources - a.enabledSources || b.sources.length - a.sources.length || a.id.length - b.id.length || a.id.localeCompare(b.id))
     const primary = ranked[0]
     const mappings: ModelMapping[] = ranked.flatMap((member) => member.sources.map((source) => ({ ...source, model: member.id })))
-      .sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.channel.localeCompare(b.channel) || a.model.localeCompare(b.model))
+      .sort((a, b) => Number(b.enabled) - Number(a.enabled))
     const channels = new Set(mappings.map((m) => m.channel)).size
     const enabledChannels = new Set(mappings.filter((m) => m.enabled).map((m) => m.channel)).size
     const billing = ranked.find((member) => member.pricing)?.pricing ?? null
@@ -343,6 +346,7 @@ export function buildModelRows(input: ModelRowInput): ModelRow[] {
       inUse,
       multi: enabledChannels >= 2,
       contested: ranked.some((member) => member.enabledSources > 1),
+      roundRobin: Boolean(primary.roundRobin),
       catalogOnly: mappings.length === 0,
       billing,
       sources,

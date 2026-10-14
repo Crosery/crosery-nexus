@@ -7,6 +7,8 @@ import { getCPAKeys, getChannelAccess, getModelAccess, hashKey, isUnsupportedMan
 import { resolveGroupForModel } from './groups.js'
 import { isActiveProvider } from './currentChannels.js'
 import { markKeyModelAccess } from './managementCapability.js'
+import { publishedRouteNames } from './modelRoutes.js'
+import { publishRelayRoutes } from './relayRoutePublisher.js'
 import { buildKeyAccessPlan, getCustomSharedModels, sameKeyAccess } from './keyModelAccess.js'
 import { buildKeyChannelAccessPlan, mergeChannelAccess } from './keyChannelAccess.js'
 import { extractKeySlug } from './keyNaming.js'
@@ -147,7 +149,9 @@ async function reconcileKeyAccessOnce() {
     groups: (() => { try { return JSON.parse(row.groups_json) as string[] } catch { return [] } })(),
   }))
   const customShared = getCustomSharedModels()
-  const plan = buildKeyAccessPlan(groups, accessRows, customShared)
+  // 先发布模型路由（并保证来源带 prefix），白名单才能把带前缀的名字放进去；发布失败沿用上次结果。
+  await publishRelayRoutes().catch((error) => logCycleError('relay_routes.failed', 'relay_routes', error))
+  const plan = buildKeyAccessPlan(groups, accessRows, customShared, publishedRouteNames())
 
   const updateGroups = db.prepare('UPDATE api_keys SET groups_json=?, updated_at=? WHERE key_value=?')
   const now = new Date().toISOString()

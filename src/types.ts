@@ -116,9 +116,8 @@ export type ModelSource = {
   enabled: boolean
   upstreams: number
   channelEnabled: boolean
-  /** 调度权重：越小越优先，默认 0；兼容渠道 = 渠道自己的值，账号池 = 在线账号里最小的 */
+  /** 这个模型里该来源的权重（模型级路由，默认 0，越小越优先）；数组里的先后就是优先级顺序 */
   weight?: number
-  /** 账号池里各账号权重不一致（单独分过档）：weight 只是其中最小的，要改去账号上改 */
   weightMixed?: boolean
 }
 
@@ -139,6 +138,8 @@ export type ModelEntry = {
   sources: ModelSource[]
   enabledSources: number
   contested: boolean
+  /** 同档轮询：权重相同的来源轮流用；默认关闭，关闭时按列表先后 */
+  roundRobin?: boolean
   /** 双源价格：openrouter / models.dev 各自保存，缺失即缺席（**不写 0 冒充免费**）。 */
   pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceSourceEntry>>
   /** 两个来源都没有价格 ⇒ true。UI 写「未收录」而不是 0。 */

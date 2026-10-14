@@ -7,7 +7,8 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncPolicy, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourceWeight, setChannelWeight, setCredentialWeight } from './channels.js'
+import { saveRoute } from './modelRoutes.js'
+import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncPolicy, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setCredentialWeight } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -1310,10 +1311,6 @@ app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
       await setModelSourceEnabled(req.params.model, req.params.channel, kind, Boolean(req.body.enabled))
       addAudit(req.body.enabled ? 'enable_model_source' : 'disable_model_source', `${req.params.model}@${req.params.channel}`)
     }
-    if (req.body?.weight !== undefined) {
-      const done = await setModelSourceWeight(req.params.channel, kind, req.body.weight)
-      addAudit('set_model_source_weight', `${req.params.model}@${req.params.channel}`, `weight=${done.weight}${kind === 'oauth' ? ` accounts=${'accounts' in done ? done.accounts : 0}` : ''}`)
-    }
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
     res.json({ ok: true })
@@ -1323,16 +1320,27 @@ app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
   }
 })
 
-/** 渠道调度权重（越小越优先，默认 0）：写成 CPA 渠道条目的 priority，整个渠道一个值。 */
-app.patch('/api/channels/:name/weight', async (req, res) => {
+/**
+ * 模型级路由：这个模型的来源顺序（数组先后 = 优先级）、每个来源的权重（小的先用；同权重按先后，开了同档轮询才轮流）。
+ * 中转层按它定向，网关只转发。
+ */
+app.put('/api/model-routes/:model', async (req, res) => {
   try {
-    const done = await setChannelWeight(req.params.name, req.body?.weight)
+    const model = String(req.params.model || '').trim()
+    const order = Array.isArray(req.body?.order) ? req.body.order as Array<{ channel?: unknown; kind?: unknown; weight?: unknown }> : null
+    if (!model || !order || order.length > 200) return res.status(400).json({ error: '参数不对', reason: 'invalid_route' })
+    const entry = (await listModelIndex()).models.find((item) => item.id === model)
+    if (!entry) return res.status(404).json({ error: '模型不存在', reason: 'model_not_found' })
+    const known = new Set(entry.sources.map((source) => `${source.kind}:${source.channel}`))
+    const items = order.map((item) => ({ channel: String(item.channel ?? ''), kind: item.kind === 'oauth' ? 'oauth' as const : 'compat' as const, weight: Number(item.weight ?? 0) }))
+    if (items.some((item) => !known.has(`${item.kind}:${item.channel}`))) return res.status(400).json({ error: '包含这个模型没有的来源', reason: 'unknown_source' })
+    saveRoute(model, items, typeof req.body?.roundRobin === 'boolean' ? req.body.roundRobin : undefined)
+    addAudit('set_model_route', model, `${items.map((item) => `${item.channel}:${item.weight}`).join(' > ')}${typeof req.body?.roundRobin === 'boolean' ? ` rr=${req.body.roundRobin}` : ''}`)
     invalidateControlPlaneCaches()
-    addAudit('set_channel_weight', req.params.name, `weight=${done.weight}`)
-    res.json({ ok: true, ...done })
+    await reconcileKeyModelAccess()
+    res.json({ ok: true })
   } catch (error) {
-    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
-    res.status(502).json({ error: error instanceof Error ? error.message : '设置渠道权重失败' })
+    res.status(400).json({ error: error instanceof Error ? error.message : '保存失败' })
   }
 })
 

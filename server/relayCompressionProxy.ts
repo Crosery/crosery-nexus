@@ -27,9 +27,19 @@ export type RelayDependencies = {
   saved: (savedTokens: number) => void
   /** Compression was skipped because a step failed; the request itself went through unchanged. */
   failed: (stage: RelayFailureStage) => void
+  /** True when any model has a published route; false keeps requests streaming through untouched. */
+  routing?: () => boolean
+  /**
+   * Ordered `prefix/model` names to try for a request's model, or null when the model has no route.
+   * Throwing counts as a lookup failure and forwards the request unchanged.
+   */
+  route?: (model: string) => string[] | null
   maxBodyBytes?: number
   maxCompressBytes?: number
 }
+
+/** A failed attempt that another source may still serve: throttling, upstream errors, or a route the gateway does not know yet. */
+const retryable = (status: number) => status === 408 || status === 425 || status === 429 || status >= 500 || status === 403 || status === 404
 
 export function relayTarget(value: string): URL {
   let target: URL | undefined
@@ -237,20 +247,57 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
     }
   }
 
-  /** Compressed body, or null to forward the original bytes. */
-  function rewrite(payload: Buffer): { payload: Buffer; savedTokens: number } | null {
+  /** Parsed JSON object body; invalid JSON keeps the upstream's own error response. */
+  function parseBody(payload: Buffer): Record<string, unknown> | null {
     let body: unknown
-    // Invalid JSON keeps the upstream's own error response.
     try { body = JSON.parse(payload.toString('utf8')) } catch { return null }
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+    return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+  }
+
+  /** Compresses tool outputs in place; the saved byte count (0 = nothing changed or compression failed). */
+  function compressBody(body: Record<string, unknown>): number {
     try {
-      const savedBytes = deps.compress(body as Record<string, unknown>)
-      if (!(savedBytes > 0)) return null
-      return { payload: Buffer.from(JSON.stringify(body)), savedTokens: Math.floor(savedBytes / 4) }
+      const savedBytes = deps.compress(body)
+      return savedBytes > 0 ? savedBytes : 0
     } catch {
       fail('compress')
+      return 0
+    }
+  }
+
+  function routing() {
+    try { return Boolean(deps.routing?.()) } catch { fail('lookup'); return false }
+  }
+
+  function routeFor(body: Record<string, unknown>): string[] | null {
+    if (typeof body.model !== 'string' || !body.model) return null
+    try {
+      const names = deps.route?.(body.model)
+      return names?.length ? names : null
+    } catch {
+      fail('lookup')
       return null
     }
+  }
+
+  /** One buffered attempt against the gateway. */
+  function attempt(headers: string[], payload: Buffer, path: string, signal: AbortSignal, hold: (child: ClientRequest) => void) {
+    return new Promise<IncomingMessage>((resolve, reject) => {
+      const child = request(target, { method: 'POST', path, headers, agent, signal }, resolve)
+      hold(child)
+      child.once('error', reject)
+      child.end(payload)
+    })
+  }
+
+  async function failure(upstream: IncomingMessage) {
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of upstream as AsyncIterable<Buffer>) {
+      size += chunk.length
+      if (size <= 1024 * 1024) chunks.push(chunk)
+    }
+    return { status: upstream.statusCode || 502, message: upstream.statusMessage, headers: forward(upstream.rawHeaders, dropSet(upstream.headers, ['transfer-encoding', 'content-length'])), body: Buffer.concat(chunks) }
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
@@ -269,20 +316,57 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
       let payload: Buffer | undefined
       let prefix: Buffer[] = []
       let savedTokens = 0
-      if (token && declared <= maxCompress && optedIn(token)) {
+      let attempts: string[] | null = null
+      let parsed: Record<string, unknown> | null = null
+      const compressing = Boolean(token) && declared <= maxCompress && optedIn(token)
+      if (token && declared <= maxCompress && (compressing || routing())) {
         const buffered = await bufferUpTo(req, maxCompress)
         if (buffered.ended) {
           payload = Buffer.concat(buffered.chunks)
-          const rewritten = rewrite(payload)
-          if (rewritten) {
-            payload = rewritten.payload
-            savedTokens = rewritten.savedTokens
-            headers = forward(headers, new Set(['content-length', 'transfer-encoding', 'accept-encoding']),
-              ['Content-Length', String(payload.length), 'Accept-Encoding', 'identity'])
+          parsed = parseBody(payload)
+          if (parsed) {
+            attempts = routeFor(parsed)
+            const savedBytes = compressing ? compressBody(parsed) : 0
+            if (savedBytes > 0) savedTokens = Math.floor(savedBytes / 4)
+            if (savedBytes > 0 && !attempts) {
+              payload = Buffer.from(JSON.stringify(parsed))
+              headers = forward(headers, new Set(['content-length', 'transfer-encoding', 'accept-encoding']),
+                ['Content-Length', String(payload.length), 'Accept-Encoding', 'identity'])
+            }
           }
         } else prefix = buffered.chunks
       }
-      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+      type Failed = Awaited<ReturnType<typeof failure>>
+      let replay: Failed | undefined
+      const routed = payload && parsed && attempts
+        ? await (async () => {
+            const original = String(parsed.model)
+            let seen: Failed | undefined
+            let real: Failed | undefined
+            for (let index = 0; index <= attempts.length; index++) {
+              const fallback = index === attempts.length
+              // The plain name is the last resort only when the prefixed routes looked unknown or forbidden (gateway config not applied yet).
+              if (fallback && !(seen && (seen.status === 403 || seen.status === 404))) break
+              parsed.model = fallback ? original : attempts[index]
+              const body = Buffer.from(JSON.stringify(parsed))
+              const sendHeaders = forward(headers, new Set(['content-length', 'transfer-encoding', 'accept-encoding']),
+                ['Content-Length', String(body.length), 'Accept-Encoding', 'identity'])
+              const response = await attempt(sendHeaders, body, req.url || '/', abort.signal, (c) => { child = c })
+              if (!retryable(response.statusCode || 502)) return response
+              const failed = await failure(response)
+              seen ??= failed
+              if (failed.status !== 403 && failed.status !== 404) real ??= failed
+            }
+            replay = real ?? seen
+            return undefined
+          })()
+        : undefined
+      if (replay) {
+        res.writeHead(replay.status, replay.message, replay.headers)
+        res.end(replay.body)
+        return
+      }
+      const upstream = routed ?? await new Promise<IncomingMessage>((resolve, reject) => {
         child = request(target, { method: req.method, path: req.url, headers, agent, signal: abort.signal }, resolve)
         child.once('error', reject)
         if (payload) { child.end(payload); return }

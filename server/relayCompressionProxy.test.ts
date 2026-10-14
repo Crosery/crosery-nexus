@@ -441,3 +441,78 @@ test('drain: idle keep-alive connections close, an open stream may finish, the b
   }
   await close(upstream.server)
 })
+
+/** 模型级路由：多来源模型改写成 `prefix/模型` 依次尝试，响应头发出之前遇到 429/5xx 换下一个。 */
+async function sendJson(base: string, body: unknown, token = 'off') {
+  const response = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+  return { status: response.status, text: await response.text() }
+}
+const modelsSeen = (seen: Seen[]) => seen.map((entry) => JSON.parse(entry.body.toString('utf8')).model)
+
+test('模型路由：按顺序改写模型名；第一个来源 429 就换下一个，客户端只看到成功响应', async () => {
+  const upstream = await recordingUpstream((_req, res, entry) => {
+    const model = JSON.parse(entry.body.toString('utf8')).model as string
+    if (model.startsWith('rt-a/')) return void res.writeHead(429, { 'content-type': 'application/json' }).end('{"error":"limit"}')
+    res.writeHead(200, { 'content-type': 'application/json' }).end(completeChat)
+  })
+  const { server } = relay(upstream.base, { routing: () => true, route: (model) => (model === 'm' ? ['rt-a/m', 'rt-b/m'] : null) })
+  const base = await listen(server)
+  try {
+    const routed = await sendJson(base, { model: 'm', messages: [] })
+    assert.equal(routed.status, 200)
+    assert.deepEqual(modelsSeen(upstream.seen), ['rt-a/m', 'rt-b/m'])
+    const plain = await sendJson(base, { model: 'other', messages: [] })
+    assert.equal(plain.status, 200)
+    assert.equal(modelsSeen(upstream.seen).at(-1), 'other', '没有路由的模型原样转发')
+  } finally {
+    await close(server)
+    await close(upstream.server)
+  }
+})
+
+test('模型路由：全部来源都失败时回放第一个真实错误；403/404 只在前缀没生效时退回原模型名', async () => {
+  const upstream = await recordingUpstream((_req, res, entry) => {
+    const model = JSON.parse(entry.body.toString('utf8')).model as string
+    if (model === 'm') return void res.writeHead(200, { 'content-type': 'application/json' }).end(completeChat)
+    res.writeHead(model.startsWith('rt-a/') ? 429 : 503, { 'content-type': 'application/json' }).end(JSON.stringify({ error: model }))
+  })
+  const { server } = relay(upstream.base, { routing: () => true, route: () => ['rt-a/x', 'rt-b/x'] })
+  const base = await listen(server)
+  try {
+    const failed = await sendJson(base, { model: 'x', messages: [] })
+    assert.equal(failed.status, 429)
+    assert.match(failed.text, /rt-a\/x/)
+    assert.deepEqual(modelsSeen(upstream.seen), ['rt-a/x', 'rt-b/x'], '429/503 不退回原模型名')
+  } finally {
+    await close(server)
+    await close(upstream.server)
+  }
+
+  const gated = await recordingUpstream((_req, res, entry) => {
+    const model = JSON.parse(entry.body.toString('utf8')).model as string
+    if (model === 'y') return void res.writeHead(200, { 'content-type': 'application/json' }).end(completeChat)
+    res.writeHead(403, { 'content-type': 'application/json' }).end('{"error":"model_not_allowed"}')
+  })
+  const second = relay(gated.base, { routing: () => true, route: () => ['rt-a/y'] })
+  const secondBase = await listen(second.server)
+  try {
+    assert.equal((await sendJson(secondBase, { model: 'y', messages: [] })).status, 200)
+    assert.deepEqual(modelsSeen(gated.seen), ['rt-a/y', 'y'], '前缀被 403 拒绝 = 配置还没生效 → 退回原模型名')
+  } finally {
+    await close(second.server)
+    await close(gated.server)
+  }
+})
+
+test('模型路由：路由表为空时不缓冲请求体，也不改写', async () => {
+  const upstream = await recordingUpstream()
+  const { server } = relay(upstream.base, { routing: () => false, route: () => ['rt-a/m'] })
+  const base = await listen(server)
+  try {
+    assert.equal((await sendJson(base, { model: 'm', messages: [] })).status, 200)
+    assert.deepEqual(modelsSeen(upstream.seen), ['m'])
+  } finally {
+    await close(server)
+    await close(upstream.server)
+  }
+})

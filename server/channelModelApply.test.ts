@@ -16,8 +16,11 @@ test('拉取模型的勾选结果一次写入；自动同步开关随渠道列�
   let puts = 0
   cpa.extra = (method, route, url, raw) => {
     if (route === '/openai-compatibility' && method === 'PUT') {
-      puts += 1
-      cpa.compat = JSON.parse(raw || '[]') as typeof cpa.compat
+      const next = JSON.parse(raw || '[]') as typeof cpa.compat
+      // 给来源补 prefix 的写入（模型路由发布）不算「勾选结果」那一次写
+      const prefixOnly = next.length === cpa.compat.length && next.every((entry, index) => JSON.stringify({ ...entry, prefix: undefined }) === JSON.stringify({ ...cpa.compat[index], prefix: undefined }))
+      if (!prefixOnly) puts += 1
+      cpa.compat = next
       return { status: 200, body: { status: 'ok' } }
     }
     return base?.(method, route, url, raw)
@@ -146,8 +149,8 @@ test('渠道出口代理：列表打码、非法地址与未知池条目被拒',
   }
 })
 
-/** 权重 = -CPA priority：渠道写进渠道条目的 priority（0 不写），账号写进 auth 文件；越小越优先；非法值 400。 */
-test('调度权重：渠道与账号写成 CPA priority，列表和模型索引读回权重', { timeout: 120_000 }, async () => {
+/** 账号权重 = -CPA priority（写进 auth 文件）；模型级路由由控制台自存，并给来源打上 prefix 发布给中转层。 */
+test('调度：账号权重写成 CPA priority；模型路由保存顺序、同档轮询并给来源打 prefix', { timeout: 120_000 }, async () => {
   const cpa = await startContractCpa()
   const base = cpa.extra
   cpa.extra = (method, route, url, raw) => {
@@ -160,32 +163,24 @@ test('调度权重：渠道与账号写成 CPA priority，列表和模型索引�
   const app = await launchConsole({ CPA_BASE_URL: cpa.base, CPA_MANAGEMENT_KEY: cpa.key })
   try {
     const send = (method: string, path: string, body?: unknown) => app.send(method, path, { cookie: app.adminCookie, body })
-    const channelOf = async () => ((await send('GET', '/api/channels?fresh=1')).body.channels as Array<{ name: string; weight?: number }>).find(item => item.name === 'contract-relay')!
-
-    assert.equal((await channelOf()).weight, 0, '默认权重 0')
-    assert.equal((await send('PATCH', '/api/channels/contract-relay/weight', { weight: 5 })).status, 200)
-    assert.equal(cpa.compat[0].priority, -5, '渠道权重 5 写成 CPA priority -5（CPA 数值大的先用）')
-    assert.equal((await channelOf()).weight, 5)
-    assert.equal((await send('PATCH', '/api/channels/contract-relay/weight', { weight: 0 })).status, 200)
-    assert.equal('priority' in cpa.compat[0], false, '权重 0 不写 priority')
-
-    for (const bad of [1.5, 'x', 1_000_000, null]) assert.equal((await send('PATCH', '/api/channels/contract-relay/weight', { weight: bad })).status, 400, `weight=${String(bad)}`)
-    assert.equal((await send('PATCH', '/api/channels/nope/weight', { weight: 1 })).status, 404)
-
     assert.equal((await send('PATCH', '/api/credentials/codex-contract.json/weight', { weight: 3 })).status, 200)
     assert.equal(cpa.credentials.get('codex-contract.json')?.priority, -3)
     assert.equal((await send('PATCH', '/api/credentials/nope.json/weight', { weight: 1 })).status, 404)
 
-    const index = await send('GET', '/api/model-index?fresh=1')
-    const sources = (index.body.models as Array<{ id: string; sources: Array<{ channel: string; kind: string; weight: number }> }>).find(model => model.id === 'gpt-5.1')!.sources
-    assert.equal(sources.find(item => item.channel === 'codex')?.weight, 3, '账号池来源读到账号权重')
+    type Entry = { id: string; roundRobin?: boolean; sources: Array<{ channel: string; kind: string; weight: number }> }
+    const entryOf = async () => ((await send('GET', '/api/model-index?fresh=1')).body.models as Entry[]).find(model => model.id === 'gpt-5.1')!
+    assert.deepEqual((await entryOf()).sources.map(item => item.weight), [0, 0], '没存过顺序：权重全 0')
 
-    const viaModel = await send('PATCH', '/api/model-index/gpt-5.1/sources/contract-relay', { kind: 'compat', weight: 2 })
-    assert.equal(viaModel.status, 200, viaModel.text)
-    assert.equal(cpa.compat[0].priority, -2)
-    const pool = await send('PATCH', '/api/model-index/gpt-5.1/sources/codex', { kind: 'oauth', weight: 1 })
-    assert.equal(pool.status, 200, pool.text)
-    assert.equal(cpa.credentials.get('codex-contract.json')?.priority, -1)
+    const saved = await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'contract-relay', kind: 'compat', weight: 0 }, { channel: 'codex', kind: 'oauth', weight: 1 }], roundRobin: true })
+    assert.equal(saved.status, 200, saved.text)
+    const entry = await entryOf()
+    assert.deepEqual(entry.sources.map(item => `${item.channel}:${item.weight}`), ['contract-relay:0', 'codex:1'])
+    assert.equal(entry.roundRobin, true)
+    assert.equal(cpa.compat[0].prefix, 'rt-contract-relay', '兼容渠道写上 prefix')
+
+    assert.equal((await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'nope', kind: 'compat', weight: 0 }] })).status, 400)
+    assert.equal((await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'codex', kind: 'oauth', weight: 1.5 }] })).status, 400)
+    assert.equal((await send('PUT', '/api/model-routes/nope-model', { order: [] })).status, 404)
   } finally {
     await app.stop()
     await cpa.stop()

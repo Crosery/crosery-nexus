@@ -208,7 +208,7 @@ test('models weight：查询与修改调度权重，参数校验与 --yes 要求
   }
   const routes = {
     'GET /api/model-index': () => [200, modelIndex],
-    'PATCH /api/model-index/gpt-5.6-luna/sources/codex': (req) => [200, { ok: true, weight: req.body?.weight }],
+    'PUT /api/model-routes/gpt-5.6-luna': () => [200, { ok: true }],
   }
 
   // 1. 查询
@@ -223,7 +223,12 @@ test('models weight：查询与修改调度权重，参数校验与 --yes 要求
   // 3. 修改：带 --yes 成功
   const patchRes = await run(['models', 'weight', 'gpt-5.6-luna', 'codex', '2', '--yes'], routes)
   assert.equal(patchRes.code, 0, patchRes.stderr)
-  assert.ok(patchRes.calls.some(call => call.method === 'PATCH' && call.path.includes('gpt-5.6-luna') && call.body?.weight === 2))
+  const put = patchRes.calls.find(call => call.method === 'PUT' && call.path.includes('gpt-5.6-luna'))
+  assert.deepEqual(put?.body?.order, [{ channel: 'codex', kind: 'oauth', weight: 2 }, { channel: 'openrouter', kind: 'compat', weight: 5 }], '改完权重整份顺序写回')
+
+  const rr = await run(['models', 'round-robin', 'gpt-5.6-luna', 'on', '--yes'], routes)
+  assert.equal(rr.code, 0, rr.stderr)
+  assert.equal(rr.calls.find(call => call.method === 'PUT')?.body?.roundRobin, true)
 
   // 4. 缺少参数
   const missing = await run(['models', 'weight', 'gpt-5.6-luna'], routes)

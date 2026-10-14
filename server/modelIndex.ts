@@ -39,6 +39,8 @@ export type ModelEntry = {
   availableOnGateway?: boolean
   /** 按输出分的模型类型（server/modelKind.ts：输出模态元数据优先，名字兜底）；buildModelIndex / 并集总会带上。 */
   kind?: ModelKind
+  /** 同档轮询（server/modelRoutes.ts）：权重相同的来源轮流用；关闭时按列表先后。 */
+  roundRobin?: boolean
 }
 
 export type OAuthProviderModels = {

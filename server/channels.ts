@@ -4,6 +4,7 @@ import { apiCall, deleteAuthFile, deleteCompatChannel, getAuthFileModels, getCom
 import type { CompatChannel, CompatModel } from './cpa.js'
 import { buildGroups } from './groups.js'
 import { buildModelIndex } from './modelIndex.js'
+import { applyRoutes } from './modelRoutes.js'
 import { gatewayPricingMap } from './modelCatalog.js'
 import type { OAuthProviderModels } from './modelIndex.js'
 import { db } from './db.js'
@@ -757,7 +758,7 @@ export async function listModelIndex() {
   const { channels, credentials, excluded } = await gatewaySnapshot()
   // 价格取网关下发的 cost；控制面暂时取不到时不阻断页面，回落静态表。
   const gatewayPricing = await gatewayPricingMap().catch(() => undefined)
-  return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing), channels, credentials }
+  return { models: applyRoutes(buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing)), channels, credentials }
 }
 
 /** 渠道目录本身（不经可用性过滤）：可用性探测要靠它把下线模型继续测下去，报表按它归组。 */
@@ -832,46 +833,10 @@ export function parseWeight(value: unknown): number {
 }
 const weightToPriority = (weight: number): number => (weight === 0 ? 0 : -weight)
 
-/**
- * 渠道权重写成 CPA 渠道条目的 priority（= -权重，0 = 不写）。CPA 对同名模型的多个渠道只用最高优先级的一档，
- * 同档内才轮询：权重就是「谁先用、谁兜底」。整个渠道一个值，改它会影响这个渠道的所有模型。
- */
-export async function setChannelWeight(channelName: string, input: unknown) {
-  const weight = parseWeight(input)
-  invalidateGatewaySnapshot()
-  const live = await getCompatChannels()
-  const index = live.findIndex((channel) => String(channel.name || '') === channelName)
-  if (index < 0) {
-    if ((await listChannels()).some((channel) => channel.name === channelName)) throw new ChannelKeyError(409, 'channel_disabled', '渠道停用中 · 先启用再调权重')
-    throw new ChannelKeyError(404, 'channel_not_found', '渠道不存在')
-  }
-  const updated: CompatChannel = { ...live[index] }
-  if (weight === 0) delete updated.priority
-  else updated.priority = weightToPriority(weight)
-  live[index] = updated
-  await putCompatChannels(live)
-  return { weight }
-}
-
 /** 单个订阅账号的权重 → auth 文件的 priority。 */
 export async function setCredentialWeight(name: string, input: unknown) {
   const weight = parseWeight(input)
   invalidateGatewaySnapshot()
   await setAuthFilePriority(name, weightToPriority(weight))
   return { weight }
-}
-
-/** 一个账号池（provider）所有账号设成同一个权重；返回写了几个。 */
-export async function setProviderWeight(provider: string, input: unknown) {
-  const weight = parseWeight(input)
-  const files = (await listCredentials()).filter((credential) => credential.type === provider)
-  if (!files.length) throw new ChannelKeyError(404, 'channel_not_found', '账号池不存在')
-  invalidateGatewaySnapshot()
-  for (const file of files) await setAuthFilePriority(file.name, weightToPriority(weight))
-  return { weight, accounts: files.length }
-}
-
-/** 模型详情里改某个来源的权重：兼容渠道 = 渠道权重；账号池 = 池里全部账号。 */
-export async function setModelSourceWeight(channel: string, kind: 'compat' | 'oauth', input: unknown) {
-  return kind === 'oauth' ? setProviderWeight(channel, input) : setChannelWeight(channel, input)
 }

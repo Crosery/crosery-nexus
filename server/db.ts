@@ -120,6 +120,31 @@ db.exec(`
     PRIMARY KEY (channel, model, kind)
   );
 
+  -- 模型级路由（控制台自管，CPA 只转发）：每个模型自己的来源顺序与权重；权重相同的来源在「同档轮询」打开时轮流，关闭时按 position。
+  CREATE TABLE IF NOT EXISTS model_route_order (
+    model TEXT NOT NULL,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'compat',
+    position INTEGER NOT NULL,
+    weight INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (model, source, kind)
+  );
+
+  CREATE TABLE IF NOT EXISTS model_route_settings (
+    model TEXT PRIMARY KEY,
+    round_robin INTEGER NOT NULL DEFAULT 0
+  );
+
+  -- 发布给中转层（relay 只读）：每个有多个启用来源的模型，按尝试顺序列出带前缀的来源。
+  CREATE TABLE IF NOT EXISTS relay_routes (
+    model TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    weight INTEGER NOT NULL DEFAULT 0,
+    prefix TEXT NOT NULL,
+    round_robin INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (model, rank)
+  );
+
   -- 渠道是否参与定时模型同步（模型目录任务）。没有行 = 默认参与（聚合渠道 OpenRouter 除外，见 autoSyncDefault）；显式关掉才有 auto_sync=0 的行。
   CREATE TABLE IF NOT EXISTS channel_sync_policies (
     channel TEXT PRIMARY KEY,

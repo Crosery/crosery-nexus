@@ -354,6 +354,11 @@ export async function setAuthFilePriority(name: string, priority: number) {
   return cpaRequest('/auth-files/fields', { method: 'PATCH', body: JSON.stringify({ name, priority }) })
 }
 
+/** 账号的 CPA prefix（auth 文件顶层 prefix）：请求 `prefix/模型` 时只会选到带这个前缀的账号。 */
+export async function setAuthFilePrefix(name: string, prefix: string) {
+  return cpaRequest('/auth-files/fields', { method: 'PATCH', body: JSON.stringify({ name, prefix }) })
+}
+
 export async function setAuthFileProxy(name: string, proxyUrl: string) {
   return cpaRequest('/auth-files/fields', { method: 'PATCH', body: JSON.stringify({ name, proxy_url: proxyUrl }) })
 }
