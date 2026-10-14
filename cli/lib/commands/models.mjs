@@ -26,7 +26,11 @@ const HELP = `cradmin models <动作> [参数]
   weight <模型> <渠道> [权重]  查看或调整这个模型里该来源的权重（整数，默认 0，越小越优先；同权重按列表先后，开了同档轮询才轮流）
                              只影响这个模型；顺序和权重存在控制台，由中转层执行
   priority                   weight 的旧名，同一个命令
+  order <模型> [渠道…]         查看这个模型的来源顺序（越靠前越优先）；给了渠道名就把它们排到最前，其余保持原先后，权重按位置重排（同控制台拖拽）
   round-robin <模型> [on|off]  查看或切换这个模型的「同档轮询」（默认关闭）
+  shared [ls]                列出共享模型（对所有 Key 开放，与渠道分组无关）
+  shared add <模型…>         加入共享模型
+  shared rm <模型>           移出共享模型
   sync                       探测开着「自动同步」的渠道上游 /models，接入新模型、摘掉上游下架的（后台任务 model-discovery，等它跑完，最多 10 分钟；
                              有冷却，冷却中退出 4）
 说明：每个渠道启用哪些模型用 cradmin channels models <渠道> 调整。价格不能在这里改（来自价格表与外部目录）。
@@ -114,6 +118,57 @@ export default {
         }],
       })
       return void ctx.output(result)
+    }
+    if (action === 'order') {
+      if (!id) throw new UsageError('用法：cradmin models order <模型> [渠道…]')
+      const index = await getModelIndex(ctx)
+      const model = (index.models || []).find(item => item.id === id)
+      if (!model) throw new UsageError(`找不到模型：${id}`)
+      const sources = model.sources || []
+      const names = [arg2, arg3, ...extra].filter(Boolean)
+      if (!names.length) {
+        const rows = sources.map((source, position) => ({ position: position + 1, channel: source.channel, kind: source.kind, weight: source.weight ?? 0, enabled: Boolean(source.enabled) && source.channelEnabled !== false }))
+        return void ctx.output({ model: id, roundRobin: Boolean(model.roundRobin), sources: rows }, () => {
+          ctx.ui.section(`来源顺序 · ${id}`, `同档轮询 ${model.roundRobin ? '开' : '关'}`)
+          ctx.ui.tree(rows.map(row => ({ kind: 'source', cells: [`${row.position}. ${row.channel}`, row.kind === 'oauth' ? '账号池' : '兼容渠道', `权重 ${row.weight}`, row.enabled ? { text: '启用', tone: 'ok' } : { text: '停用', tone: 'muted' }] })))
+        })
+      }
+      const picked = names.map(name => {
+        const source = sources.find(item => item.channel === name)
+        if (!source) throw new UsageError(`模型 ${id} 没有渠道来源：${name}`, `可选：${sources.map(item => item.channel).join('、')}`)
+        return source
+      })
+      if (new Set(picked).size !== picked.length) throw new UsageError('渠道重复')
+      const order = [...picked, ...sources.filter(source => !picked.includes(source))].map((source, position) => ({ channel: source.channel, kind: source.kind, weight: position }))
+      const result = await runPlan(ctx, {
+        level: 'C', title: `调整 ${id} 的来源顺序`,
+        items: [{ area: '模型路由', label: id, from: sources.map(source => source.channel).join(' > '), to: order.map(item => item.channel).join(' > '), method: 'PUT', path: `/api/model-routes/${encodeURIComponent(id)}`, body: { order } }],
+      })
+      return void ctx.output(result)
+    }
+    if (action === 'shared') {
+      const sub = id ?? 'ls'
+      const rest = [arg2, arg3, ...extra].filter(Boolean)
+      if (sub === 'ls' || sub === 'list') {
+        if (rest.length) throw new UsageError(`多余的参数：${rest.join(' ')}`)
+        const data = await ctx.get('/api/shared-models')
+        return void ctx.output(data, () => {
+          ctx.ui.section('共享模型', `生效 ${(data.activeModels || []).length}`)
+          const group = (title, list) => ({ kind: 'section', cells: [{ text: title, bold: true }, { text: String(list.length), tone: 'muted' }], children: list.map(model => ({ kind: 'model', cells: [model] })) })
+          ctx.ui.tree([group('默认开放', data.defaultModels || []), group('自定义', data.customModels || [])])
+        })
+      }
+      if (sub === 'add') {
+        if (!rest.length) throw new UsageError('用法：cradmin models shared add <模型…>')
+        const result = await runPlan(ctx, { level: 'A', title: '加入共享模型', items: [{ area: '共享模型', label: rest.join('、'), from: '-', to: '共享', method: 'POST', path: '/api/shared-models', body: { modelIds: rest } }] })
+        return void ctx.output(result)
+      }
+      if (sub === 'rm' || sub === 'remove') {
+        if (rest.length !== 1) throw new UsageError('用法：cradmin models shared rm <模型>')
+        const result = await runPlan(ctx, { level: 'C', title: '移出共享模型', items: [{ area: '共享模型', label: rest[0], from: '共享', to: '-', method: 'DELETE', path: `/api/shared-models/${encodeURIComponent(rest[0])}` }] })
+        return void ctx.output(result)
+      }
+      throw new UsageError(`未知动作：models shared ${sub}`, '用法：cradmin models shared [ls|add|rm]')
     }
     if (action === 'round-robin') {
       if (!id) throw new UsageError('用法：cradmin models round-robin <模型> [on|off]')

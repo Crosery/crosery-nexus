@@ -21,6 +21,7 @@ export type IndexModel = {
   enabledSources: number
   contested: boolean
   roundRobin?: boolean
+  routed?: boolean
   pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceQuote>>
   unpriced?: boolean
   availableOnGateway?: boolean
@@ -116,6 +117,8 @@ export type ModelRow = {
   contested: boolean
   /** 同档轮询（主 id 的模型路由设置） */
   roundRobin: boolean
+  /** 主 id 存过来源顺序 */
+  routed: boolean
   catalogOnly: boolean
   billing: IndexPricing | null
   sources: Partial<Record<PriceSourceKey, PriceQuote>>
@@ -347,6 +350,7 @@ export function buildModelRows(input: ModelRowInput): ModelRow[] {
       multi: enabledChannels >= 2,
       contested: ranked.some((member) => member.enabledSources > 1),
       roundRobin: Boolean(primary.roundRobin),
+      routed: Boolean(primary.routed),
       catalogOnly: mappings.length === 0,
       billing,
       sources,

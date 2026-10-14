@@ -358,3 +358,42 @@ test('plugins install 与 rm：多来源冲突时报错列候选；带 --source 
   assert.equal(removed.code, 0, removed.stderr)
   assert.ok(removed.calls.some(call => call.method === 'DELETE' && call.path === '/api/plugins/dup-plugin'))
 })
+
+test('models order / shared、channels auto-sync / pull、accounts weight：读写都走对应接口', async () => {
+  const modelIndex = { models: [{ id: 'm1', roundRobin: false, sources: [
+    { channel: 'a', kind: 'compat', weight: 0, enabled: true, channelEnabled: true },
+    { channel: 'b', kind: 'oauth', weight: 1, enabled: true, channelEnabled: true },
+  ] }] }
+  const channelsPayload = { channels: [{ name: 'a', enabled: true, autoSync: true, models: [] }], credentials: [{ name: 'acc.json', type: 'codex', label: 'acc', weight: 0 }] }
+  const routes = {
+    'GET /api/model-index': () => [200, modelIndex],
+    'GET /api/channels': () => [200, channelsPayload],
+    'PUT /api/model-routes/m1': () => [200, { ok: true }],
+    'GET /api/shared-models': () => [200, { defaultModels: ['x'], customModels: ['y'], activeModels: ['x', 'y'] }],
+    'POST /api/shared-models': () => [200, { ok: true }],
+    'DELETE /api/shared-models/y': () => [200, { ok: true }],
+    'PATCH /api/channels/a/auto-sync': () => [200, { ok: true }],
+    'POST /api/channels/a/models/preview': () => [200, { rows: [{ id: 'n1', model: 'n1', state: 'new' }, { id: 'old', model: 'old', state: 'gone' }, { id: 'k', model: 'k', state: 'on' }], endpoint: 'x', probedAt: 't' }],
+    'POST /api/channels/a/models/apply': () => [200, { ok: true }],
+    'PATCH /api/credentials/acc.json/weight': () => [200, { ok: true }],
+  }
+  const order = await run(['models', 'order', 'm1', 'b', '--yes'], routes)
+  assert.equal(order.code, 0, order.stderr)
+  assert.deepEqual(order.calls.find(call => call.method === 'PUT')?.body?.order, [{ channel: 'b', kind: 'oauth', weight: 0 }, { channel: 'a', kind: 'compat', weight: 1 }])
+  assert.equal((await run(['models', 'order', 'm1'], routes)).code, 0)
+
+  assert.equal((await run(['models', 'shared'], routes)).code, 0)
+  const add = await run(['models', 'shared', 'add', 'p', 'q', '--yes'], routes)
+  assert.deepEqual(add.calls.find(call => call.path === '/api/shared-models' && call.method === 'POST')?.body, { modelIds: ['p', 'q'] })
+  assert.equal((await run(['models', 'shared', 'rm', 'y', '--yes'], routes)).code, 0)
+
+  const sync = await run(['channels', 'auto-sync', 'a', 'off', '--yes'], routes)
+  assert.equal(sync.calls.find(call => call.method === 'PATCH')?.body?.enabled, false)
+
+  assert.equal((await run(['channels', 'pull', 'a'], routes)).code, 0)
+  const pull = await run(['channels', 'pull', 'a', '--add-all', '--remove-gone', '--yes'], routes)
+  assert.deepEqual(pull.calls.find(call => call.path.endsWith('/apply'))?.body, { add: [{ id: 'n1', enabled: true }], remove: ['old'] })
+
+  const weight = await run(['accounts', 'weight', 'acc.json', '3', '--yes'], routes)
+  assert.equal(weight.calls.find(call => call.method === 'PATCH')?.body?.weight, 3)
+})

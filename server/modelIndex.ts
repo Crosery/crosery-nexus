@@ -41,6 +41,8 @@ export type ModelEntry = {
   kind?: ModelKind
   /** 同档轮询（server/modelRoutes.ts）：权重相同的来源轮流用；关闭时按列表先后。 */
   roundRobin?: boolean
+  /** 存过顺序（中转层按它走）。false = 控制台不介入，网关自己在同名来源之间选。 */
+  routed?: boolean
 }
 
 export type OAuthProviderModels = {

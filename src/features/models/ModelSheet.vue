@@ -230,7 +230,8 @@ const usageFacts = computed(() => {
             <Switch :model-value="row.roundRobin" :disabled="busy !== ''" aria-label="同档轮询" @update:model-value="setRoundRobin" />
           </label>
         </h3>
-        <p v-if="canOrder" class="msh__hint">拖动调整先后，越靠前越优先；权重小的先用，权重相同按列表先后。</p>
+        <p v-if="canOrder && row.routed" class="msh__hint">拖动调整先后，越靠前越优先；权重小的先用，权重相同按列表先后。</p>
+        <p v-else-if="canOrder" class="msh__hint">还没设置顺序 · 现在由网关自己在这几个来源之间轮流；拖动或改权重保存后，就按这里的顺序走。</p>
         <p v-if="!row.mappings.length" class="msh__empty">— 没有渠道提供 · 只在价格源里出现</p>
         <ul v-else class="msh__maps">
           <li

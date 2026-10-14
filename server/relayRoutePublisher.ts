@@ -36,7 +36,7 @@ async function publishOnce() {
   const needPools = new Set<string>()
   for (const model of models) {
     const active = model.sources.filter((source) => source.enabled && source.channelEnabled)
-    if (active.length < 2) continue
+    if (active.length < 2 || !model.routed) continue
     if (!active.every((source) => source.kind === 'oauth' || compat.has(source.channel))) continue
     for (const source of active) {
       routes.push({ model: model.id, weight: source.weight, prefix: routePrefix(source.channel), roundRobin: Boolean(model.roundRobin) })

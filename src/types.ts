@@ -140,6 +140,8 @@ export type ModelEntry = {
   contested: boolean
   /** 同档轮询：权重相同的来源轮流用；默认关闭，关闭时按列表先后 */
   roundRobin?: boolean
+  /** 存过顺序（中转层按它走）；false = 网关自己在同名来源之间选 */
+  routed?: boolean
   /** 双源价格：openrouter / models.dev 各自保存，缺失即缺席（**不写 0 冒充免费**）。 */
   pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceSourceEntry>>
   /** 两个来源都没有价格 ⇒ true。UI 写「未收录」而不是 0。 */

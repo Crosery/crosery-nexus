@@ -3,7 +3,7 @@ import { CliError, UsageError, listValue } from '../args.mjs'
 import { HttpError, request } from '../client.mjs'
 import { channelState, channelToggleItem, getChannels, getModelIndex, modelToggleItems, modelsOf, providerModels, providersOf } from '../ops.mjs'
 import { runPlan } from '../plan.mjs'
-import { planModelChanges, resolveChannel } from '../resolve.mjs'
+import { globToRegExp, planModelChanges, resolveChannel } from '../resolve.mjs'
 import { channelClass, channelType, channelsTree, providerInfo, providerTitle } from '../tree.mjs'
 
 const HELP = `cradmin channels <动作> [参数]
@@ -28,6 +28,10 @@ const HELP = `cradmin channels <动作> [参数]
       --protocol openai|claude|responses
   proxy <渠道> <url|direct|inherit>
                              设置渠道出口代理（direct = 强制直连；inherit = 继承全局；支持 http/socks5）
+  auto-sync <渠道> [on|off]  查看或切换渠道的「自动同步」（默认开；开着时定时探测上游 /models，接入新模型、摘掉下架的）
+  pull <渠道>                探测上游 /models（只读，不写入）：新增 / 已有 / 上游没列 三类，同控制台「拉取模型」弹窗
+      --add p,… | --add-all  把匹配的新模型接入（精确 id 或通配；--add-all = 全部新增）；接入时不带这两个参数只预览
+      --remove-gone          同时摘掉上游已经没列出的模型
   rm <渠道>                  删除渠道（连停用快照一起删，不可撤销）
 
 说明：
@@ -397,6 +401,9 @@ export default {
     'api-key-stdin': { type: 'boolean' },
     models: { type: 'string', multiple: true },
     protocol: { type: 'string' },
+    add: { type: 'string', multiple: true },
+    'add-all': { type: 'boolean' },
+    'remove-gone': { type: 'boolean' },
   },
   async run(ctx) {
     const [action = 'ls', ...args] = ctx.positionals
@@ -433,6 +440,53 @@ export default {
         if (!name) throw new UsageError('缺少 <渠道>')
         if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
         return changeModels(ctx, name)
+      }
+      case 'auto-sync': {
+        const [name, value, ...extra] = args
+        if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels auto-sync <渠道> [on|off]')
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+        const payload = await getChannels(ctx)
+        const resolved = resolveChannel(payload, name)
+        if (resolved.kind !== 'compat') throw new UsageError(`${name} 是账号池，没有自动同步开关`)
+        const current = resolved.channel.autoSync !== false
+        if (value === undefined) return void ctx.output({ channel: name, autoSync: current }, () => ctx.ui.kv('自动同步', current ? '开' : '关'))
+        if (value !== 'on' && value !== 'off') throw new UsageError('只能是 on 或 off')
+        const to = value === 'on'
+        const items = current === to ? [] : [{ area: '渠道', label: name, from: current ? 'on' : 'off', to: value, method: 'PATCH', path: `/api/channels/${encodeURIComponent(name)}/auto-sync`, body: { enabled: to } }]
+        const result = await runPlan(ctx, { level: 'C', title: `${to ? '打开' : '关闭'}渠道 ${name} 的自动同步`, items, empty: `自动同步已是${to ? '开' : '关'}` })
+        return void ctx.output(result)
+      }
+      case 'pull': {
+        const [name, ...extra] = args
+        if (!name) throw new UsageError('缺少 <渠道>', '用法：cradmin channels pull <渠道> [--add p,… | --add-all] [--remove-gone]')
+        if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
+        const payload = await getChannels(ctx)
+        const resolved = resolveChannel(payload, name)
+        if (resolved.kind !== 'compat') throw new UsageError(`${name} 是账号池；账号池的模型用 cradmin accounts models ${name}`)
+        const preview = await request(ctx, 'POST', `/api/channels/${encodeURIComponent(name)}/models/preview`, { target: `渠道 ${name} 的上游模型`, timeoutMs: 60_000 })
+        const rows = preview.rows || []
+        const fresh = rows.filter(row => row.state === 'new')
+        const gone = rows.filter(row => row.state === 'gone')
+        const patterns = listValue(ctx.values.add)
+        const wantAll = Boolean(ctx.values['add-all'])
+        const removeGone = Boolean(ctx.values['remove-gone'])
+        if (!patterns.length && !wantAll && !removeGone) {
+          return void ctx.output({ channel: name, endpoint: preview.endpoint, probedAt: preview.probedAt, rows }, () => {
+            ctx.ui.section(`上游模型 · ${name}`, `新增 ${fresh.length} · 已有 ${rows.length - fresh.length - gone.length} · 上游没列 ${gone.length}`)
+            const group = (title, list) => ({ kind: 'section', cells: [{ text: title, bold: true }, { text: String(list.length), tone: 'muted' }], children: list.map(row => ({ kind: 'model', cells: [row.model] })) })
+            ctx.ui.tree([group('新增', fresh), group('上游没列', gone)].filter(node => node.children.length))
+            ctx.ui.note(`接入新模型：cradmin channels pull ${name} --add <模型,…> 或 --add-all；摘掉上游没列的：--remove-gone`)
+          })
+        }
+        const picked = wantAll ? fresh : fresh.filter(row => patterns.some(pattern => globToRegExp(pattern).test(row.model) || globToRegExp(pattern).test(row.id)))
+        if (patterns.length && !picked.length && !removeGone) throw new UsageError('--add 没有匹配到任何新增模型', `新增的模型：${fresh.map(row => row.model).join('、') || '（没有）'}`)
+        const body = { add: picked.map(row => ({ id: row.id, enabled: true })), ...(removeGone ? { remove: gone.map(row => row.id) } : {}) }
+        if (!body.add.length && !(body.remove || []).length) throw new CliError('没有可应用的变更', 1)
+        const result = await runPlan(ctx, {
+          level: removeGone ? 'C' : 'A', title: `应用渠道 ${name} 的上游模型`,
+          items: [{ area: '渠道', label: name, from: '-', to: `接入 ${body.add.length}${removeGone ? ` · 摘掉 ${(body.remove || []).length}` : ''}`, method: 'POST', path: `/api/channels/${encodeURIComponent(name)}/models/apply`, body }],
+        })
+        return void ctx.output(result)
       }
       case 'enable':
       case 'disable': {

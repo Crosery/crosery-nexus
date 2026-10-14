@@ -24,12 +24,17 @@ export function routeRoundRobin(model: string): boolean {
   return row?.round_robin === 1
 }
 
-/** 已存顺序套到来源上：存过的在前（按 weight、再按拖拽位置），没存过的接在后面（按渠道名）。 */
+/** 这个模型有没有存过顺序：没存过 = 控制台不介入，网关自己在同名来源之间选（升级前的行为）。 */
+export const hasSavedRoute = (model: string) => Boolean(db.prepare('SELECT 1 FROM model_route_order WHERE model = ? LIMIT 1').get(model))
+
+/** 已存顺序套到来源上：存过的在前（按 weight、再按拖拽位置），没存过的（后来新增的来源）排在最后一档。 */
 export function orderSources(model: string, sources: ModelSource[]): ModelSource[] {
-  const saved = new Map(savedOrder(model).map((row) => [`${row.kind}:${row.source}`, row]))
+  const rows = savedOrder(model)
+  const saved = new Map(rows.map((row) => [`${row.kind}:${row.source}`, row]))
   const key = (source: ModelSource) => `${source.kind}:${source.channel}`
+  const lastTier = rows.length ? Math.max(...rows.map((row) => row.weight)) + 1 : 0
   return [...sources]
-    .map((source) => ({ ...source, weight: saved.get(key(source))?.weight ?? 0 }))
+    .map((source) => ({ ...source, weight: saved.get(key(source))?.weight ?? lastTier }))
     .sort((a, b) => {
       const left = saved.get(key(a))
       const right = saved.get(key(b))
@@ -43,7 +48,8 @@ export function orderSources(model: string, sources: ModelSource[]): ModelSource
 /** 给模型目录补上路由字段：来源顺序、每个来源的权重、同档轮询开关。 */
 export function applyRoutes(models: ModelEntry[]): ModelEntry[] {
   const rr = new Set((db.prepare('SELECT model FROM model_route_settings WHERE round_robin = 1').all() as Array<{ model: string }>).map((row) => row.model))
-  return models.map((entry) => ({ ...entry, sources: orderSources(entry.id, entry.sources), roundRobin: rr.has(entry.id) }))
+  const routed = new Set((db.prepare('SELECT DISTINCT model FROM model_route_order').all() as Array<{ model: string }>).map((row) => row.model))
+  return models.map((entry) => ({ ...entry, sources: orderSources(entry.id, entry.sources), roundRobin: rr.has(entry.id), routed: routed.has(entry.id) }))
 }
 
 export function saveRoute(model: string, items: RouteItem[], roundRobin?: boolean) {

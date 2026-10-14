@@ -15,6 +15,7 @@ const HELP = `cradmin accounts <动作> [参数]
   show <账号>                账号状态（含原因）、出口、重置次数与全部额度窗口（同控制台账号详情）
   pause|resume <账号…>       暂停 / 恢复（可一次给多个）
   proxy <账号> <url|direct|none|inherit>   设置出口代理（none = direct；inherit = 继承全局；支持 http(s)/socks5/socks5h）
+  weight <账号> [权重]       查看或调整账号权重（整数，默认 0；同一账号池内越小越优先）
   reset <账号>               重置额度窗口（codex / claude；会消耗一次上游重置额度，并访问外部服务）
   add <provider>             OAuth 添加账号：打印授权地址，在浏览器完成授权
       --callback-url <url> --state <state>   提交浏览器回调地址（两步脚本用法）
@@ -187,6 +188,18 @@ export default {
         const credential = resolveAccount(payload.credentials || [], args[0])
         const items = (credential.proxyUrl || '') === proxyUrl ? [] : [credentialProxyItem(ctx, credential, proxyUrl)]
         const result = await runPlan(ctx, { level: 'C', title: '设置账号代理', items, empty: '代理没有变化' })
+        return void ctx.output(result)
+      }
+      case 'weight': {
+        if (args.length < 1 || args.length > 2) throw new UsageError('用法：cradmin accounts weight <账号> [权重]')
+        const payload = await getChannels(ctx)
+        const credential = resolveAccount(payload.credentials || [], args[0])
+        const current = credential.weight ?? 0
+        if (args[1] === undefined) return void ctx.output({ account: credential.name, weight: current }, () => ctx.ui.kv('权重', String(current)))
+        const weight = Number(args[1])
+        if (!Number.isInteger(weight) || Math.abs(weight) > 100000) throw new UsageError('权重必须是 -100000 到 100000 的整数')
+        const items = weight === current ? [] : [{ area: '账号', label: credential.label || credential.name, from: String(current), to: String(weight), method: 'PATCH', path: `/api/credentials/${encodeURIComponent(credential.name)}/weight`, body: { weight } }]
+        const result = await runPlan(ctx, { level: 'C', title: '调整账号权重（池内越小越优先）', items, empty: '权重没有变化' })
         return void ctx.output(result)
       }
       case 'reset': {
