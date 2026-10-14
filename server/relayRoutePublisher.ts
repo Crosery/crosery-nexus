@@ -1,7 +1,7 @@
 import { CompatChannelsConflictError, compatChannelsFingerprint, getCompatChannels, putCompatChannels, setAuthFilePrefix } from './cpa.js'
 import { db } from './db.js'
 import { listModelIndex } from './channels.js'
-import { publishRoutes, routePrefix, type PublishedRoute } from './modelRoutes.js'
+import { accountPrefix, publishRoutes, routePrefix, type PublishedRoute } from './modelRoutes.js'
 
 /**
  * 把控制台里的模型路由发布给中转层：只发布「有 2 个以上启用来源、且每个来源都能用 prefix 定向」的模型，
@@ -29,19 +29,19 @@ export function publishRelayRoutes(): Promise<void> {
 }
 
 async function publishOnce() {
-  const { models, channels, credentials } = await listModelIndex()
+  const { models, channels } = await listModelIndex()
   const compat = new Set(channels.filter((channel) => !channel.stale && channel.enabled && (!channel.cpaChannel || channel.cpaChannel === channel.name) && channel.protocol !== 'claude').map((channel) => channel.name))
   const routes: PublishedRoute[] = []
   const needCompat = new Set<string>()
-  const needPools = new Set<string>()
+  const needAccounts = new Set<string>()
   for (const model of models) {
-    const active = model.sources.filter((source) => source.enabled && source.channelEnabled)
+    const active = (model.units ?? []).filter((unit) => unit.enabled)
     if (active.length < 2 || !model.routed) continue
-    if (!active.every((source) => source.kind === 'oauth' || compat.has(source.channel))) continue
-    for (const source of active) {
-      routes.push({ model: model.id, weight: source.weight, prefix: routePrefix(source.channel), roundRobin: Boolean(model.roundRobin) })
-      if (source.kind === 'oauth') needPools.add(source.channel)
-      else needCompat.add(source.channel)
+    if (!active.every((unit) => unit.kind === 'account' || compat.has(unit.id))) continue
+    for (const unit of active) {
+      routes.push({ model: model.id, weight: unit.weight, prefix: unit.kind === 'account' ? accountPrefix(unit.id) : routePrefix(unit.id), channel: unit.channel, roundRobin: Boolean(model.roundRobin) })
+      if (unit.kind === 'account') needAccounts.add(unit.id)
+      else needCompat.add(unit.id)
     }
   }
 
@@ -63,15 +63,14 @@ async function publishOnce() {
     }
   }
 
-  if (needPools.size) {
+  if (needAccounts.size) {
     const applied = appliedPrefixes()
     let dirty = false
-    for (const credential of credentials) {
-      if (!needPools.has(credential.type)) continue
-      const prefix = routePrefix(credential.type)
-      if (applied[credential.name] === prefix) continue
-      await setAuthFilePrefix(credential.name, prefix)
-      applied[credential.name] = prefix
+    for (const file of needAccounts) {
+      const prefix = accountPrefix(file)
+      if (applied[file] === prefix) continue
+      await setAuthFilePrefix(file, prefix)
+      applied[file] = prefix
       dirty = true
     }
     if (dirty) saveApplied(applied)

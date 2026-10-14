@@ -142,6 +142,7 @@ export type ModelEntry = {
   roundRobin?: boolean
   /** 存过顺序（中转层按它走）；false = 网关自己在同名来源之间选 */
   routed?: boolean
+  units?: Array<{ kind: 'compat' | 'account'; id: string; channel: string; label: string; enabled: boolean; weight: number }>
   /** 双源价格：openrouter / models.dev 各自保存，缺失即缺席（**不写 0 冒充免费**）。 */
   pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceSourceEntry>>
   /** 两个来源都没有价格 ⇒ true。UI 写「未收录」而不是 0。 */

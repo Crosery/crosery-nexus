@@ -470,7 +470,7 @@ test('模型路由：按顺序改写模型名；第一个来源 429 就换下一
   }
 })
 
-test('模型路由：全部来源都失败时回放第一个真实错误；403/404 只在前缀没生效时退回原模型名', async () => {
+test('模型路由：全部来源都失败时先退回原模型名（不比没路由更糟），仍失败才回放第一个真实错误；纯限流不退回', async () => {
   const upstream = await recordingUpstream((_req, res, entry) => {
     const model = JSON.parse(entry.body.toString('utf8')).model as string
     if (model === 'm') return void res.writeHead(200, { 'content-type': 'application/json' }).end(completeChat)
@@ -482,7 +482,7 @@ test('模型路由：全部来源都失败时回放第一个真实错误；403/4
     const failed = await sendJson(base, { model: 'x', messages: [] })
     assert.equal(failed.status, 429)
     assert.match(failed.text, /rt-a\/x/)
-    assert.deepEqual(modelsSeen(upstream.seen), ['rt-a/x', 'rt-b/x'], '429/503 不退回原模型名')
+    assert.deepEqual(modelsSeen(upstream.seen), ['rt-a/x', 'rt-b/x', 'x'], '来源都失败：最后用原模型名再试一次，仍失败回放第一个真实错误')
   } finally {
     await close(server)
     await close(upstream.server)
@@ -497,7 +497,7 @@ test('模型路由：全部来源都失败时回放第一个真实错误；403/4
   const secondBase = await listen(second.server)
   try {
     assert.equal((await sendJson(secondBase, { model: 'y', messages: [] })).status, 200)
-    assert.deepEqual(modelsSeen(gated.seen), ['rt-a/y', 'y'], '前缀被 403 拒绝 = 配置还没生效 → 退回原模型名')
+    assert.deepEqual(modelsSeen(gated.seen), ['rt-a/y', 'y'], '前缀被拒绝 → 退回原模型名')
   } finally {
     await close(second.server)
     await close(gated.server)

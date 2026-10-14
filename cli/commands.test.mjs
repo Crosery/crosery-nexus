@@ -224,7 +224,7 @@ test('models weight：查询与修改调度权重，参数校验与 --yes 要求
   const patchRes = await run(['models', 'weight', 'gpt-5.6-luna', 'codex', '2', '--yes'], routes)
   assert.equal(patchRes.code, 0, patchRes.stderr)
   const put = patchRes.calls.find(call => call.method === 'PUT' && call.path.includes('gpt-5.6-luna'))
-  assert.deepEqual(put?.body?.order, [{ channel: 'codex', kind: 'oauth', weight: 2 }, { channel: 'openrouter', kind: 'compat', weight: 5 }], '改完权重整份顺序写回')
+  assert.deepEqual(put?.body?.order, [{ channel: 'codex', kind: 'account', weight: 2 }, { channel: 'openrouter', kind: 'compat', weight: 5 }], '改完权重整份顺序写回')
 
   const rr = await run(['models', 'round-robin', 'gpt-5.6-luna', 'on', '--yes'], routes)
   assert.equal(rr.code, 0, rr.stderr)
@@ -379,7 +379,7 @@ test('models order / shared、channels auto-sync / pull、accounts weight：读�
   }
   const order = await run(['models', 'order', 'm1', 'b', '--yes'], routes)
   assert.equal(order.code, 0, order.stderr)
-  assert.deepEqual(order.calls.find(call => call.method === 'PUT')?.body?.order, [{ channel: 'b', kind: 'oauth', weight: 0 }, { channel: 'a', kind: 'compat', weight: 1 }])
+  assert.deepEqual(order.calls.find(call => call.method === 'PUT')?.body?.order, [{ channel: 'b', kind: 'account', weight: 0 }, { channel: 'a', kind: 'compat', weight: 1 }])
   assert.equal((await run(['models', 'order', 'm1'], routes)).code, 0)
 
   assert.equal((await run(['models', 'shared'], routes)).code, 0)

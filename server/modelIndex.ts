@@ -40,6 +40,8 @@ export type ModelEntry = {
   /** 按输出分的模型类型（server/modelKind.ts：输出模态元数据优先，名字兜底）；buildModelIndex / 并集总会带上。 */
   kind?: ModelKind
   /** 同档轮询（server/modelRoutes.ts）：权重相同的来源轮流用；关闭时按列表先后。 */
+  /** 路由单位（兼容渠道 / 账号池里的每个账号）按先后与权重排好；中转层按它走。 */
+  units?: Array<{ kind: 'compat' | 'account'; id: string; channel: string; label: string; enabled: boolean; weight: number }>
   roundRobin?: boolean
   /** 存过顺序（中转层按它走）。false = 控制台不介入，网关自己在同名来源之间选。 */
   routed?: boolean

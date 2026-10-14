@@ -23,10 +23,10 @@ const HELP = `cradmin models <动作> [参数]
   show <模型>                来源、价格、双源价格
   upstream <模型>            查看该请求模型在上游实际响应成了哪些模型（按次数与账号分布）
       --days <N>             统计天数（默认 7）
-  weight <模型> <渠道> [权重]  查看或调整这个模型里该来源的权重（整数，默认 0，越小越优先；同权重按列表先后，开了同档轮询才轮流）
+  weight <模型> <来源> [权重]  查看或调整这个模型里该来源的权重（来源 = 渠道名，或账号池里的某个账号：邮箱 / 文件名）（整数，默认 0，越小越优先；同权重按列表先后，开了同档轮询才轮流）
                              只影响这个模型；顺序和权重存在控制台，由中转层执行
   priority                   weight 的旧名，同一个命令
-  order <模型> [渠道…]         查看这个模型的来源顺序（越靠前越优先）；给了渠道名就把它们排到最前，其余保持原先后，权重按位置重排（同控制台拖拽）
+  order <模型> [来源…]         查看这个模型的来源顺序（越靠前越优先；同渠道的不同账号各算一个来源）；给了来源就把它们排到最前，其余保持原先后，权重按位置重排（同控制台拖拽）
   round-robin <模型> [on|off]  查看或切换这个模型的「同档轮询」（默认关闭）
   shared [ls]                列出共享模型（对所有 Key 开放，与渠道分组无关）
   shared add <模型…>         加入共享模型
@@ -43,6 +43,11 @@ const HELP = `cradmin models <动作> [参数]
 `
 
 const DISCOVERY_JOB = 'model-discovery'
+
+/** 路由单位：兼容渠道，或账号池里的每个账号（同渠道多账号各算一个来源）。旧服务端没有 units 就退回渠道来源。 */
+export const unitsOf = model => model.units || (model.sources || []).map(source => ({ kind: source.kind === 'oauth' ? 'account' : 'compat', id: source.channel, channel: source.channel, label: source.channel, enabled: Boolean(source.enabled) && source.channelEnabled !== false, weight: source.weight ?? 0 }))
+const findUnit = (units, name) => units.find(unit => unit.id === name || unit.label === name) || units.find(unit => unit.channel === name)
+const orderBody = units => units.map(unit => ({ channel: unit.id, kind: unit.kind, weight: unit.weight ?? 0 }))
 
 const price = value => (value === null || value === undefined ? '-' : usd(value))
 
@@ -92,26 +97,26 @@ export default {
       const index = await getModelIndex(ctx)
       const model = (index.models || []).find(item => item.id === modelId)
       if (!model) throw new UsageError(`找不到模型：${modelId}`)
-      const source = (model.sources || []).find(item => item.channel === channelName)
-      if (!source) throw new UsageError(`模型 ${modelId} 没有渠道来源：${channelName}`)
+      const units = unitsOf(model)
+      const source = findUnit(units, channelName)
+      if (!source) throw new UsageError(`模型 ${modelId} 没有来源：${channelName}`, `可选：${units.map(unit => unit.label).join('、')}`)
       if (rawPrio === undefined) {
-        return void ctx.output({ model: modelId, channel: channelName, weight: source.weight ?? 0 }, () => {
+        return void ctx.output({ model: modelId, source: source.id, weight: source.weight ?? 0 }, () => {
           ctx.ui.kv('模型', modelId)
-          ctx.ui.kv('渠道', channelName)
-          ctx.ui.kv('权重', `${source.weight ?? 0}${source.weightMixed ? '（账号各自分档，这是其中最小的）' : ''}`)
+          ctx.ui.kv('来源', source.kind === 'account' ? `${source.label}（${source.channel} 账号）` : source.label)
+          ctx.ui.kv('权重', String(source.weight ?? 0))
         })
       }
       const weight = numberValue(rawPrio, '权重')
       if (!Number.isInteger(weight) || Math.abs(weight) > 100000) throw new UsageError('权重必须是 -100000 到 100000 的整数')
       // 权重改完按（权重、原先后）重排，整份顺序一次写回
-      const order = (model.sources || []).map((item, position) => ({ channel: item.channel, kind: item.kind, weight: item.channel === channelName && item.kind === source.kind ? weight : item.weight ?? 0, position }))
-        .sort((left, right) => left.weight - right.weight || left.position - right.position)
-        .map(({ channel, kind, weight: value }) => ({ channel, kind, weight: value }))
+      const order = orderBody(units.map((unit, position) => ({ ...unit, weight: unit.id === source.id && unit.kind === source.kind ? weight : unit.weight ?? 0, position }))
+        .sort((left, right) => left.weight - right.weight || left.position - right.position))
       const result = await runPlan(ctx, {
         level: 'C',
-        title: `调整 ${modelId} 里 ${channelName} 的权重（越小越优先）`,
+        title: `调整 ${modelId} 里 ${source.label} 的权重（越小越优先）`,
         items: [{
-          area: '模型路由', label: `${modelId}@${channelName}`,
+          area: '模型路由', label: `${modelId}@${source.label}`,
           from: String(source.weight ?? 0), to: String(weight),
           method: 'PUT', path: `/api/model-routes/${encodeURIComponent(modelId)}`,
           body: { order },
@@ -124,25 +129,25 @@ export default {
       const index = await getModelIndex(ctx)
       const model = (index.models || []).find(item => item.id === id)
       if (!model) throw new UsageError(`找不到模型：${id}`)
-      const sources = model.sources || []
+      const units = unitsOf(model)
       const names = [arg2, arg3, ...extra].filter(Boolean)
       if (!names.length) {
-        const rows = sources.map((source, position) => ({ position: position + 1, channel: source.channel, kind: source.kind, weight: source.weight ?? 0, enabled: Boolean(source.enabled) && source.channelEnabled !== false }))
-        return void ctx.output({ model: id, roundRobin: Boolean(model.roundRobin), sources: rows }, () => {
-          ctx.ui.section(`来源顺序 · ${id}`, `同档轮询 ${model.roundRobin ? '开' : '关'}`)
-          ctx.ui.tree(rows.map(row => ({ kind: 'source', cells: [`${row.position}. ${row.channel}`, row.kind === 'oauth' ? '账号池' : '兼容渠道', `权重 ${row.weight}`, row.enabled ? { text: '启用', tone: 'ok' } : { text: '停用', tone: 'muted' }] })))
+        const rows = units.map((unit, position) => ({ position: position + 1, source: unit.id, label: unit.label, kind: unit.kind, channel: unit.channel, weight: unit.weight ?? 0, enabled: unit.enabled }))
+        return void ctx.output({ model: id, roundRobin: Boolean(model.roundRobin), routed: Boolean(model.routed), sources: rows }, () => {
+          ctx.ui.section(`来源顺序 · ${id}`, `同档轮询 ${model.roundRobin ? '开' : '关'}${model.routed ? '' : ' · 还没设置顺序（网关自己选）'}`)
+          ctx.ui.tree(rows.map(row => ({ kind: 'source', cells: [`${row.position}. ${row.label}`, row.kind === 'account' ? `${row.channel} 账号` : '兼容渠道', `权重 ${row.weight}`, row.enabled ? { text: '启用', tone: 'ok' } : { text: '停用', tone: 'muted' }] })))
         })
       }
       const picked = names.map(name => {
-        const source = sources.find(item => item.channel === name)
-        if (!source) throw new UsageError(`模型 ${id} 没有渠道来源：${name}`, `可选：${sources.map(item => item.channel).join('、')}`)
-        return source
+        const unit = findUnit(units, name)
+        if (!unit) throw new UsageError(`模型 ${id} 没有来源：${name}`, `可选：${units.map(item => item.label).join('、')}`)
+        return unit
       })
-      if (new Set(picked).size !== picked.length) throw new UsageError('渠道重复')
-      const order = [...picked, ...sources.filter(source => !picked.includes(source))].map((source, position) => ({ channel: source.channel, kind: source.kind, weight: position }))
+      if (new Set(picked).size !== picked.length) throw new UsageError('来源重复')
+      const order = orderBody([...picked, ...units.filter(unit => !picked.includes(unit))].map((unit, position) => ({ ...unit, weight: position })))
       const result = await runPlan(ctx, {
         level: 'C', title: `调整 ${id} 的来源顺序`,
-        items: [{ area: '模型路由', label: id, from: sources.map(source => source.channel).join(' > '), to: order.map(item => item.channel).join(' > '), method: 'PUT', path: `/api/model-routes/${encodeURIComponent(id)}`, body: { order } }],
+        items: [{ area: '模型路由', label: id, from: units.map(unit => unit.label).join(' > '), to: [...picked, ...units.filter(unit => !picked.includes(unit))].map(unit => unit.label).join(' > '), method: 'PUT', path: `/api/model-routes/${encodeURIComponent(id)}`, body: { order } }],
       })
       return void ctx.output(result)
     }
@@ -178,7 +183,7 @@ export default {
       if (!model) throw new UsageError(`找不到模型：${id}`)
       if (arg2 === undefined) return void ctx.output({ model: id, roundRobin: Boolean(model.roundRobin) }, () => ctx.ui.kv('同档轮询', model.roundRobin ? '开' : '关'))
       if (arg2 !== 'on' && arg2 !== 'off') throw new UsageError('只能是 on 或 off')
-      const order = (model.sources || []).map(item => ({ channel: item.channel, kind: item.kind, weight: item.weight ?? 0 }))
+      const order = orderBody(unitsOf(model))
       const result = await runPlan(ctx, {
         level: 'C',
         title: `${arg2 === 'on' ? '打开' : '关闭'} ${id} 的同档轮询`,

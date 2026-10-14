@@ -167,19 +167,23 @@ test('调度：账号权重写成 CPA priority；模型路由保存顺序、同�
     assert.equal(cpa.credentials.get('codex-contract.json')?.priority, -3)
     assert.equal((await send('PATCH', '/api/credentials/nope.json/weight', { weight: 1 })).status, 404)
 
-    type Entry = { id: string; roundRobin?: boolean; sources: Array<{ channel: string; kind: string; weight: number }> }
+    type Entry = { id: string; roundRobin?: boolean; routed?: boolean; units: Array<{ kind: string; id: string; weight: number }> }
     const entryOf = async () => ((await send('GET', '/api/model-index?fresh=1')).body.models as Entry[]).find(model => model.id === 'gpt-5.1')!
-    assert.deepEqual((await entryOf()).sources.map(item => item.weight), [0, 0], '没存过顺序：权重全 0')
+    const before = await entryOf()
+    assert.deepEqual(before.units.map(item => `${item.kind}:${item.id}`).sort(), ['account:codex-contract.json', 'compat:contract-relay'], '渠道和账号池里的每个账号各算一个来源')
+    assert.equal(before.routed, false, '没存过顺序：控制台不介入')
 
-    const saved = await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'contract-relay', kind: 'compat', weight: 0 }, { channel: 'codex', kind: 'oauth', weight: 1 }], roundRobin: true })
+    const saved = await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'contract-relay', kind: 'compat', weight: 0 }, { channel: 'codex-contract.json', kind: 'account', weight: 1 }], roundRobin: true })
     assert.equal(saved.status, 200, saved.text)
     const entry = await entryOf()
-    assert.deepEqual(entry.sources.map(item => `${item.channel}:${item.weight}`), ['contract-relay:0', 'codex:1'])
+    assert.deepEqual(entry.units.map(item => `${item.id}:${item.weight}`), ['contract-relay:0', 'codex-contract.json:1'])
     assert.equal(entry.roundRobin, true)
+    assert.equal(entry.routed, true)
     assert.equal(cpa.compat[0].prefix, 'rt-contract-relay', '兼容渠道写上 prefix')
+    assert.match(String(cpa.credentials.get('codex-contract.json')?.prefix), /^rt-a-codex-contract-[0-9a-f]{4}$/, '每个账号文件各有自己的 prefix')
 
     assert.equal((await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'nope', kind: 'compat', weight: 0 }] })).status, 400)
-    assert.equal((await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'codex', kind: 'oauth', weight: 1.5 }] })).status, 400)
+    assert.equal((await send('PUT', '/api/model-routes/gpt-5.1', { order: [{ channel: 'codex-contract.json', kind: 'account', weight: 1.5 }] })).status, 400)
     assert.equal((await send('PUT', '/api/model-routes/nope-model', { order: [] })).status, 404)
   } finally {
     await app.stop()

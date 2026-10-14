@@ -1,11 +1,14 @@
+import { createHash } from 'node:crypto'
+import type { CredentialSummary } from './credentials.js'
 import { db, transaction } from './db.js'
-import type { ModelEntry, ModelSource } from './modelIndex.js'
+import type { ModelEntry } from './modelIndex.js'
 
 /**
  * 模型级路由：每个模型自己的来源顺序与权重，存在控制台；中转层按它把请求定向到具体来源（CPA 的 `prefix`），
  * CPA 只负责转发。没存过顺序的模型：来源按渠道名排，权重全 0，不轮询。
  */
-export type RouteSourceKind = 'compat' | 'oauth'
+export type RouteSourceKind = 'compat' | 'account'
+/** channel = 兼容渠道名，或账号文件名（kind = account）。 */
 export type RouteItem = { channel: string; kind: RouteSourceKind; weight: number }
 
 export const MAX_ROUTE_WEIGHT = 100000
@@ -27,35 +30,64 @@ export function routeRoundRobin(model: string): boolean {
 /** 这个模型有没有存过顺序：没存过 = 控制台不介入，网关自己在同名来源之间选（升级前的行为）。 */
 export const hasSavedRoute = (model: string) => Boolean(db.prepare('SELECT 1 FROM model_route_order WHERE model = ? LIMIT 1').get(model))
 
-/** 已存顺序套到来源上：存过的在前（按 weight、再按拖拽位置），没存过的（后来新增的来源）排在最后一档。 */
-export function orderSources(model: string, sources: ModelSource[]): ModelSource[] {
+/** 订阅账号的 CPA prefix：每个账号文件一个，固定、可逆；带短哈希避免文件名只差符号时撞名。 */
+export const accountPrefix = (file: string) =>
+  `rt-a-${file.toLowerCase().replace(/\.json$/, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'x'}-${createHash('sha1').update(file).digest('hex').slice(0, 4)}`
+
+/**
+ * 路由的最小单位：一个兼容渠道，或账号池里的一个账号（同一渠道里的不同账号各算一个来源）。
+ * 同渠道里的多把上游 Key 不拆：CPA 的 prefix 只能定到渠道，Key 仍在渠道内部轮询。
+ */
+export type RouteUnit = { kind: 'compat' | 'account'; id: string; channel: string; label: string; enabled: boolean; weight: number }
+
+const unitKey = (unit: { kind: string; id: string }) => `${unit.kind}:${unit.id}`
+
+function baseUnits(entry: ModelEntry, credentials: CredentialSummary[]): RouteUnit[] {
+  const units: RouteUnit[] = []
+  for (const source of entry.sources) {
+    if (source.kind === 'compat') {
+      units.push({ kind: 'compat', id: source.channel, channel: source.channel, label: source.channel, enabled: source.enabled && source.channelEnabled, weight: 0 })
+      continue
+    }
+    for (const credential of credentials.filter((item) => item.type === source.channel)) {
+      units.push({ kind: 'account', id: credential.name, channel: source.channel, label: credential.label || credential.name, enabled: source.enabled && source.channelEnabled && !credential.disabled, weight: 0 })
+    }
+  }
+  return units
+}
+
+/** 已存顺序套到单位上：存过的在前（按 weight、再按拖拽位置），没存过的（后来新增的来源）排在最后一档。旧版按整个账号池存的行，展开成池里每个账号。 */
+export function orderUnits(model: string, units: RouteUnit[]): RouteUnit[] {
   const rows = savedOrder(model)
   const saved = new Map(rows.map((row) => [`${row.kind}:${row.source}`, row]))
-  const key = (source: ModelSource) => `${source.kind}:${source.channel}`
+  const lookup = (unit: RouteUnit) => saved.get(unitKey(unit)) ?? (unit.kind === 'account' ? saved.get(`oauth:${unit.channel}`) : undefined)
   const lastTier = rows.length ? Math.max(...rows.map((row) => row.weight)) + 1 : 0
-  return [...sources]
-    .map((source) => ({ ...source, weight: saved.get(key(source))?.weight ?? lastTier }))
+  return units
+    .map((unit) => ({ ...unit, weight: lookup(unit)?.weight ?? lastTier }))
     .sort((a, b) => {
-      const left = saved.get(key(a))
-      const right = saved.get(key(b))
+      const left = lookup(a)
+      const right = lookup(b)
       if (left && right) return (a.weight - b.weight) || (left.position - right.position)
       if (left) return -1
       if (right) return 1
-      return a.channel.localeCompare(b.channel)
+      return a.channel.localeCompare(b.channel) || a.label.localeCompare(b.label)
     })
 }
 
-/** 给模型目录补上路由字段：来源顺序、每个来源的权重、同档轮询开关。 */
-export function applyRoutes(models: ModelEntry[]): ModelEntry[] {
+/** 给模型目录补上路由字段：来源单位的顺序与权重、同档轮询开关、有没有存过顺序；「多渠道」按启用的单位数算。 */
+export function applyRoutes(models: ModelEntry[], credentials: CredentialSummary[] = []): ModelEntry[] {
   const rr = new Set((db.prepare('SELECT model FROM model_route_settings WHERE round_robin = 1').all() as Array<{ model: string }>).map((row) => row.model))
   const routed = new Set((db.prepare('SELECT DISTINCT model FROM model_route_order').all() as Array<{ model: string }>).map((row) => row.model))
-  return models.map((entry) => ({ ...entry, sources: orderSources(entry.id, entry.sources), roundRobin: rr.has(entry.id), routed: routed.has(entry.id) }))
+  return models.map((entry) => {
+    const units = orderUnits(entry.id, baseUnits(entry, credentials))
+    return { ...entry, units, contested: units.filter((unit) => unit.enabled).length > 1, roundRobin: rr.has(entry.id), routed: routed.has(entry.id) }
+  })
 }
 
 export function saveRoute(model: string, items: RouteItem[], roundRobin?: boolean) {
   const seen = new Set<string>()
   for (const item of items) {
-    if (!item.channel || (item.kind !== 'compat' && item.kind !== 'oauth')) throw new Error('来源格式不对')
+    if (!item.channel || (item.kind !== 'compat' && item.kind !== 'account')) throw new Error('来源格式不对')
     const key = `${item.kind}:${item.channel}`
     if (seen.has(key)) throw new Error(`来源重复：${item.channel}`)
     seen.add(key)
@@ -75,18 +107,19 @@ export function saveRoundRobin(model: string, roundRobin: boolean) {
   db.prepare('INSERT INTO model_route_settings (model, round_robin) VALUES (?, ?) ON CONFLICT(model) DO UPDATE SET round_robin = excluded.round_robin').run(model, roundRobin ? 1 : 0)
 }
 
-export type PublishedRoute = { model: string; weight: number; prefix: string; roundRobin: boolean }
+/** channel = 兼容渠道名，或账号所属的账号池（provider）：中转层按它判断这把 Key 能不能用这个来源。 */
+export type PublishedRoute = { model: string; weight: number; prefix: string; channel: string; roundRobin: boolean }
 
 /** 整表替换发给中转层的路由。 */
 export function publishRoutes(routes: PublishedRoute[]) {
   transaction(() => {
     db.prepare('DELETE FROM relay_routes').run()
-    const insert = db.prepare('INSERT INTO relay_routes (model, rank, weight, prefix, round_robin) VALUES (?, ?, ?, ?, ?)')
+    const insert = db.prepare('INSERT INTO relay_routes (model, rank, weight, prefix, channel, round_robin) VALUES (?, ?, ?, ?, ?, ?)')
     const rank = new Map<string, number>()
     for (const route of routes) {
       const next = rank.get(route.model) ?? 0
       rank.set(route.model, next + 1)
-      insert.run(route.model, next, route.weight, route.prefix, route.roundRobin ? 1 : 0)
+      insert.run(route.model, next, route.weight, route.prefix, route.channel, route.roundRobin ? 1 : 0)
     }
   })
 }

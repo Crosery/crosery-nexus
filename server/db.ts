@@ -308,6 +308,8 @@ if (!quotaColumns.has('cache_write_tokens')) {
 if (!quotaColumns.has('cost_usd')) {
   db.exec('ALTER TABLE quota_usage_events ADD COLUMN cost_usd REAL')
 }
+const routeColumns = new Set((db.prepare('PRAGMA table_info(relay_routes)').all() as Array<{ name: string }>).map((column) => column.name))
+if (!routeColumns.has('channel')) db.exec("ALTER TABLE relay_routes ADD COLUMN channel TEXT NOT NULL DEFAULT ''")
 migrateQuotaLedger(db)
 migrateUsageRollup(db)
 migrateRtkRelay(db)

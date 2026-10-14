@@ -33,7 +33,7 @@ export type RelayDependencies = {
    * Ordered `prefix/model` names to try for a request's model, or null when the model has no route.
    * Throwing counts as a lookup failure and forwards the request unchanged.
    */
-  route?: (model: string) => string[] | null
+  route?: (model: string, token: string) => string[] | null
   maxBodyBytes?: number
   maxCompressBytes?: number
 }
@@ -269,10 +269,10 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
     try { return Boolean(deps.routing?.()) } catch { fail('lookup'); return false }
   }
 
-  function routeFor(body: Record<string, unknown>): string[] | null {
+  function routeFor(body: Record<string, unknown>, token: string): string[] | null {
     if (typeof body.model !== 'string' || !body.model) return null
     try {
-      const names = deps.route?.(body.model)
+      const names = deps.route?.(body.model, token)
       return names?.length ? names : null
     } catch {
       fail('lookup')
@@ -325,7 +325,7 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
           payload = Buffer.concat(buffered.chunks)
           parsed = parseBody(payload)
           if (parsed) {
-            attempts = routeFor(parsed)
+            attempts = routeFor(parsed, token)
             const savedBytes = compressing ? compressBody(parsed) : 0
             if (savedBytes > 0) savedTokens = Math.floor(savedBytes / 4)
             if (savedBytes > 0 && !attempts) {
@@ -343,10 +343,12 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
             const original = String(parsed.model)
             let seen: Failed | undefined
             let real: Failed | undefined
+            let throttledOnly = true
             for (let index = 0; index <= attempts.length; index++) {
               const fallback = index === attempts.length
-              // The plain name is the last resort only when the prefixed routes looked unknown or forbidden (gateway config not applied yet).
-              if (fallback && !(seen && (seen.status === 403 || seen.status === 404))) break
+              // The plain name is the last resort: whatever the routed attempts hit (config not applied yet, a source the gateway
+              // cannot select), a request is never worse off than without routing. Only pure throttling skips it.
+              if (fallback && (!seen || throttledOnly)) break
               parsed.model = fallback ? original : attempts[index]
               const body = Buffer.from(JSON.stringify(parsed))
               const sendHeaders = forward(headers, new Set(['content-length', 'transfer-encoding', 'accept-encoding']),
@@ -355,6 +357,7 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
               if (!retryable(response.statusCode || 502)) return response
               const failed = await failure(response)
               seen ??= failed
+              if (failed.status !== 429) throttledOnly = false
               if (failed.status !== 403 && failed.status !== 404) real ??= failed
             }
             replay = real ?? seen

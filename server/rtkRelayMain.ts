@@ -6,6 +6,7 @@ import { createRelayCompressionProxy } from './relayCompressionProxy.js'
 import { parseRelayEnv, RELAY_HEARTBEAT_MS, writeRelayStatus, type RelayProcessState } from './rtkRelayConfig.js'
 import { RELAY_ENABLED_SETTING, RelayLedgerBuffer } from './rtkRelayLedger.js'
 import { compressRequestToolOutputs } from './toolCompress.js'
+import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
 import { planAttempts, type RelayRouteRow } from './relayRoutePlan.js'
 
 /**
@@ -62,6 +63,7 @@ const skipped = { lookup: 0, compress: 0 }
 let readSetting: StatementSync | undefined
 let readKey: StatementSync | undefined
 let readRoutes: StatementSync | undefined
+let readGroups: StatementSync | undefined
 
 // Routes change on console edits only; a short cache keeps SQLite off the request path.
 const ROUTE_TTL_MS = 3_000
@@ -69,7 +71,7 @@ let routeCache: { at: number; models: Map<string, RelayRouteRow[]> } | undefined
 const turns = new Map<string, number>()
 function routeTable() {
   if (routeCache && Date.now() - routeCache.at < ROUTE_TTL_MS) return routeCache.models
-  readRoutes ??= reader.prepare('SELECT model, prefix, weight, round_robin FROM relay_routes ORDER BY model, rank')
+  readRoutes ??= reader.prepare('SELECT model, prefix, weight, round_robin, channel FROM relay_routes ORDER BY model, rank')
   const models = new Map<string, RelayRouteRow[]>()
   for (const row of readRoutes.all() as Array<RelayRouteRow & { model: string }>) {
     const list = models.get(row.model) || []
@@ -93,12 +95,17 @@ server = createRelayCompressionProxy({
   routing: () => {
     try { return routeTable().size > 0 } catch { return false }
   },
-  route: (model) => {
+  route: (model, token) => {
     const rows = routeTable().get(model)
     if (!rows) return null
+    readGroups ??= reader.prepare('SELECT groups_json FROM api_keys WHERE key_hash = ?')
+    const row = readGroups.get(createHash('sha256').update(token).digest('hex')) as { groups_json: string } | undefined
+    let allowed: Set<string> | null = null
+    try { allowed = new Set([...(JSON.parse(row?.groups_json ?? '[]') as string[]), ...DEFAULT_OPEN_CHANNELS]) } catch { /* 读不到分组：不过滤，网关自己拒绝 */ }
     const turn = turns.get(model) ?? 0
     turns.set(model, turn + 1)
-    return planAttempts(model, rows, turn)
+    const names = planAttempts(model, rows, turn, allowed)
+    return names.length ? names : null
   },
   compress: (body) => compressRequestToolOutputs(body).saved,
   saved: (savedTokens) => ledger.saved(savedTokens),

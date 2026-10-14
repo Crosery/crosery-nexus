@@ -435,7 +435,8 @@ export async function createChannel(input: {
   } else {
     const channels = await getCompatChannels()
     const pUrl = typeof input.proxyUrl === 'string' ? input.proxyUrl.trim() : ''
-    const effectiveProxy = pUrl || (isDirectPreferred(baseUrl) ? 'direct' : undefined)
+    // API 渠道默认直连（国内访问快，不走全局的国外出口）；要走国外出口的渠道在创建时或之后在出口里单独选。
+    const effectiveProxy = pUrl || 'direct'
     await putCompatChannels([...channels, {
       name,
       'base-url': baseUrl,
@@ -500,8 +501,9 @@ export async function addChannelApiKey(name: string, apiKey: string): Promise<Ch
   }
   const protocol: ChannelProtocol = String(channel['relay-mode'] || '') === 'responses' ? 'responses' : 'openai'
   await discoverChannelModels(protocol, String(channel['base-url'] || ''), key)
-  const direct = isDirectPreferred(String(channel['base-url'] || ''))
-  live[index] = { ...channel, 'api-key-entries': [...entries, { 'api-key': key, ...(direct ? { 'proxy-url': 'direct' } : {}) }] }
+  // 新加的 Key 跟渠道现有的出口走；渠道没设过 = 默认直连
+  const inherited = String(channel['proxy-url'] || entries.find((entry) => entry['proxy-url'])?.['proxy-url'] || '') || 'direct'
+  live[index] = { ...channel, 'api-key-entries': [...entries, { 'api-key': key, 'proxy-url': inherited }] }
   await putCompatChannels(live)
   return channelKeyViews(live[index]['api-key-entries'])
 }
@@ -533,7 +535,21 @@ export async function setChannelProxy(channelName: string, proxyUrl: string) {
   invalidateGatewaySnapshot()
   const live = await getCompatChannels()
   const index = live.findIndex((channel) => String(channel.name || '') === channelName)
-  if (index < 0) throw new Error('渠道不存在')
+  if (index < 0) {
+    // 原生协议渠道（claude-api-key 这类）：出口写在条目自己的 proxy-url 上
+    for (const endpoint of PROVIDER_KEY_ENDPOINTS) {
+      const entries = await getProviderKeyEntries(endpoint)
+      const at = entries.findIndex((entry, i) => providerChannelName(entry, endpoint, i) === channelName)
+      if (at < 0) continue
+      const next = { ...entries[at] }
+      if (proxyUrl.trim()) next['proxy-url'] = proxyUrl.trim()
+      else delete next['proxy-url']
+      entries[at] = next
+      await putProviderKeyEntries(endpoint, entries)
+      return
+    }
+    throw new Error('渠道不存在')
+  }
   const p = proxyUrl.trim()
   const channel = live[index]
   const entries = (channel['api-key-entries'] || []).map((e) => {
@@ -758,7 +774,7 @@ export async function listModelIndex() {
   const { channels, credentials, excluded } = await gatewaySnapshot()
   // 价格取网关下发的 cost；控制面暂时取不到时不阻断页面，回落静态表。
   const gatewayPricing = await gatewayPricingMap().catch(() => undefined)
-  return { models: applyRoutes(buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing)), channels, credentials }
+  return { models: applyRoutes(buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing), credentials), channels, credentials }
 }
 
 /** 渠道目录本身（不经可用性过滤）：可用性探测要靠它把下线模型继续测下去，报表按它归组。 */

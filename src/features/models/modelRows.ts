@@ -14,6 +14,9 @@ import type { ModelKind } from '../../lib/modelKind.js'
 export type IndexSource = { channel: string; kind: 'compat' | 'oauth'; enabled: boolean; upstreams: number; channelEnabled: boolean }
 export type PriceQuote = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; unit?: string; sourceId?: string; fetchedAt?: number }
 export type IndexPricing = { input: number; output: number; cacheRead: number; cacheWrite?: number }
+/** 路由单位：一个兼容渠道，或账号池里的一个账号（同渠道多账号各算一个来源）。 */
+export type RouteUnit = { kind: 'compat' | 'account'; id: string; channel: string; label: string; enabled: boolean; weight: number }
+
 export type IndexModel = {
   id: string
   pricing: IndexPricing | null
@@ -22,6 +25,7 @@ export type IndexModel = {
   contested: boolean
   roundRobin?: boolean
   routed?: boolean
+  units?: RouteUnit[]
   pricingSources?: Partial<Record<'models.dev' | 'openrouter', PriceQuote>>
   unpriced?: boolean
   availableOnGateway?: boolean
@@ -119,6 +123,8 @@ export type ModelRow = {
   roundRobin: boolean
   /** 主 id 存过来源顺序 */
   routed: boolean
+  /** 主 id 的路由单位（渠道 / 账号），已按先后与权重排好 */
+  units: RouteUnit[]
   catalogOnly: boolean
   billing: IndexPricing | null
   sources: Partial<Record<PriceSourceKey, PriceQuote>>
@@ -335,6 +341,8 @@ export function buildModelRows(input: ModelRowInput): ModelRow[] {
     const used = usage.get(key)
     const ev = liveEvidence(evidence.get(key) ?? null)
     const inUse = enabledChannels > 0
+    // 「多渠道」：启用的来源单位 ≥2，同渠道里的不同账号也算；旧服务端没有 units 就按渠道数
+    const enabledSources = ranked.some((member) => member.units) ? ranked.reduce((total, member) => total + (member.units?.filter((unit) => unit.enabled).length ?? 0), 0) : enabledChannels
     const vendor = modelVendor(ranked, channelNames)
     const base = {
       key,
@@ -347,10 +355,11 @@ export function buildModelRows(input: ModelRowInput): ModelRow[] {
       channels,
       enabledChannels,
       inUse,
-      multi: enabledChannels >= 2,
-      contested: ranked.some((member) => member.enabledSources > 1),
+      multi: enabledSources >= 2,
+      contested: enabledSources >= 2,
       roundRobin: Boolean(primary.roundRobin),
       routed: Boolean(primary.routed),
+      units: primary.units ?? [],
       catalogOnly: mappings.length === 0,
       billing,
       sources,

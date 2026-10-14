@@ -23,6 +23,7 @@ import ModelPricingSources from './ModelPricingSources.vue'
 import ModelUpstreamModels from './ModelUpstreamModels.vue'
 import { errorWord, fmtWindow, hourLabel, type InsightProbe, type ModelMapping, type ModelRow } from './modelRows'
 import type { ModelIndexData } from '../../types'
+import type { RouteUnit } from './modelRows'
 
 const props = defineProps<{
   row: ModelRow | null
@@ -97,19 +98,22 @@ async function toggle(mapping: ModelMapping, next: boolean) {
 
 /* 模型级路由：这个模型自己的来源顺序（越靠前越优先）。权重小的先用；同权重按列表先后，开了「同档轮询」才轮流。
    顺序、权重都存在控制台，中转层按它把请求定向到来源，网关只转发。别名 id（另一个模型名）的映射不参与排序。 */
-const sortable = computed(() => props.row?.mappings.filter((m) => m.model === props.row?.id) ?? [])
-/** 另一个模型名（别名 id）上的映射不属于这个模型的排序；只有启用着的才有必要列出来，停用的不显示 */
-const fixed = computed(() => props.row?.mappings.filter((m) => m.model !== props.row?.id && m.enabled) ?? [])
+const sortable = computed(() => props.row?.units ?? [])
+/** 不参与排序的：账号池的模型开关（整个池一个开关）、另一个模型名（别名 id）上启用着的映射 */
+const fixed = computed(() => props.row?.mappings.filter((m) => m.model !== props.row?.id ? m.enabled : m.kind === 'oauth') ?? [])
 const canOrder = computed(() => sortable.value.length > 1)
+const unitKey = (u: RouteUnit) => `${u.kind}:${u.id}`
+/** 兼容渠道单位的模型开关就是它那条映射；账号单位没有自己的开关（账号整体启停在「订阅账号池」里） */
+const mappingOf = (u: RouteUnit) => props.row?.mappings.find((m) => m.kind === 'compat' && m.channel === u.id && m.model === props.row?.id)
 const dragFrom = ref(-1)
 const dragOver = ref(-1)
 
-async function saveRoute(list: ModelMapping[], weights: number[], roundRobin?: boolean) {
+async function saveRoute(list: RouteUnit[], weights: number[], roundRobin?: boolean) {
   const row = props.row
   if (!row || busy.value) return
   busy.value = 'route'
   try {
-    await api.setModelRoute(row.id, list.map((m, i) => ({ channel: m.channel, kind: m.kind, weight: weights[i] })), roundRobin)
+    await api.setModelRoute(row.id, list.map((u, i) => ({ channel: u.id, kind: u.kind, weight: weights[i] })), roundRobin)
     notify('✓ 已保存调度顺序', { tone: 'ok', description: row.id })
     if (props.reload) await props.reload().catch(() => undefined)
     else emit('changed')
@@ -136,7 +140,7 @@ function onDrop(to: number) {
 }
 function setWeight(index: number, weight: number) {
   const list = [...sortable.value]
-  const weights = list.map((m) => m.weight ?? 0)
+  const weights = list.map((u) => u.weight ?? 0)
   weights[index] = weight
   // 列表按权重（再按原先后）重新排好，页面和中转层看到的是同一个顺序
   const order = list.map((m, i) => ({ m, w: weights[i], i })).sort((a, b) => a.w - b.w || a.i - b.i)
@@ -144,7 +148,7 @@ function setWeight(index: number, weight: number) {
 }
 function setRoundRobin(next: boolean) {
   const list = [...sortable.value]
-  void saveRoute(list, list.map((m) => m.weight ?? 0), next)
+  void saveRoute(list, list.map((u) => u.weight ?? 0), next)
 }
 
 const spec = computed(() => props.row?.spec ?? null)
@@ -230,47 +234,64 @@ const usageFacts = computed(() => {
             <Switch :model-value="row.roundRobin" :disabled="busy !== ''" aria-label="同档轮询" @update:model-value="setRoundRobin" />
           </label>
         </h3>
-        <p v-if="canOrder && row.routed" class="msh__hint">拖动调整先后，越靠前越优先；权重小的先用，权重相同按列表先后。</p>
+        <p v-if="canOrder && row.routed" class="msh__hint">拖动调整先后，越靠前越优先；同一个渠道里的不同账号各算一个来源。权重小的先用，权重相同按列表先后。</p>
         <p v-else-if="canOrder" class="msh__hint">还没设置顺序 · 现在由网关自己在这几个来源之间轮流；拖动或改权重保存后，就按这里的顺序走。</p>
         <p v-if="!row.mappings.length" class="msh__empty">— 没有渠道提供 · 只在价格源里出现</p>
         <ul v-else class="msh__maps">
           <li
-            v-for="(m, i) in [...sortable, ...fixed]"
-            :key="mappingKey(m)"
+            v-for="(u, i) in sortable"
+            :key="unitKey(u)"
             class="msh__map"
-            :class="{ 'is-off': !m.enabled, 'is-over': canOrder && dragOver === i && dragFrom !== i, 'is-drag': dragFrom === i }"
-            :draggable="canOrder && i < sortable.length && busy === ''"
+            :class="{ 'is-off': !u.enabled, 'is-over': canOrder && dragOver === i && dragFrom !== i, 'is-drag': dragFrom === i }"
+            :draggable="canOrder && busy === ''"
             @dragstart="dragFrom = i"
             @dragover.prevent="dragOver = i"
             @drop.prevent="onDrop(i)"
             @dragend="dragFrom = -1; dragOver = -1"
           >
-            <span v-if="canOrder && i < sortable.length" class="msh__grip" aria-hidden="true">⋮⋮</span>
+            <span v-if="canOrder" class="msh__grip" aria-hidden="true">⋮⋮</span>
             <div class="msh__map-l">
               <div class="msh__map-1">
-                <span class="msh__ch num">{{ m.channel }}</span>
-                <TxTag size="sm" variant="plain" :label="KIND[m.kind]" />
-                <span v-if="m.upstreams > 1" class="msh__dim num">×{{ m.upstreams }}</span>
-                <span v-if="m.model !== row.id" class="msh__dim num msh__exact" :title="m.model">{{ m.model }}</span>
+                <span class="msh__ch num">{{ u.kind === 'account' ? u.label : u.channel }}</span>
+                <TxTag size="sm" variant="plain" :label="u.kind === 'account' ? `${u.channel} 账号` : '兼容'" />
               </div>
               <div class="msh__map-2 num">
-                <span v-if="!m.channelEnabled">渠道停用</span>
-                <span v-else-if="probeText(m.channel)" :class="{ 'is-bad': probeText(m.channel)?.bad }">{{ probeText(m.channel)?.text }}</span>
-                <span v-if="useText(m.channel)">{{ useText(m.channel) }}</span>
+                <span v-if="!u.enabled">{{ u.kind === 'account' ? '账号暂停或模型已停用' : '渠道停用' }}</span>
+                <span v-else-if="u.kind === 'compat' && probeText(u.channel)" :class="{ 'is-bad': probeText(u.channel)?.bad }">{{ probeText(u.channel)?.text }}</span>
+                <span v-if="useText(u.channel)">{{ useText(u.channel) }}</span>
               </div>
             </div>
             <div class="msh__ctl">
-              <template v-if="canOrder && i < sortable.length">
-                <button type="button" class="msh__mv" :disabled="busy !== '' || i === 0" :aria-label="`${m.channel} 上移`" @click="move(i, i - 1)"><Icon name="chev" class="msh__up" /></button>
-                <button type="button" class="msh__mv" :disabled="busy !== '' || i === sortable.length - 1" :aria-label="`${m.channel} 下移`" @click="move(i, i + 1)"><Icon name="chev" /></button>
+              <template v-if="canOrder">
+                <button type="button" class="msh__mv" :disabled="busy !== '' || i === 0" :aria-label="`${u.label} 上移`" @click="move(i, i - 1)"><Icon name="chev" class="msh__up" /></button>
+                <button type="button" class="msh__mv" :disabled="busy !== '' || i === sortable.length - 1" :aria-label="`${u.label} 下移`" @click="move(i, i + 1)"><Icon name="chev" /></button>
                 <WeightField
-                  :model-value="m.weight ?? 0"
-                  :label="`${m.channel} 的权重`"
+                  :model-value="u.weight ?? 0"
+                  :label="`${u.label} 的权重`"
                   :disabled="busy !== ''"
                   hint="权重小的先用；改成和相邻一样 = 同档（开了同档轮询才轮流）"
                   @commit="(v: number) => setWeight(i, v)"
                 />
               </template>
+              <Switch
+                v-if="mappingOf(u)"
+                :model-value="mappingOf(u)!.enabled"
+                :disabled="(!mappingOf(u)!.channelEnabled && !mappingOf(u)!.enabled) || (busy !== '' && busy !== mappingKey(mappingOf(u)!))"
+                :loading="busy === mappingKey(mappingOf(u)!)"
+                :aria-label="`${mappingOf(u)!.enabled ? '停用' : '启用'} ${row.id} 在 ${u.channel}`"
+                @update:model-value="(v: boolean) => toggle(mappingOf(u)!, v)"
+              />
+            </div>
+          </li>
+          <li v-for="m in fixed" :key="mappingKey(m)" class="msh__map" :class="{ 'is-off': !m.enabled }">
+            <div class="msh__map-l">
+              <div class="msh__map-1">
+                <span class="msh__ch num">{{ m.kind === 'oauth' ? `${m.channel} 账号池` : m.channel }}</span>
+                <TxTag size="sm" variant="plain" :label="m.kind === 'oauth' ? '模型开关' : '另一个模型名'" />
+                <span v-if="m.model !== row.id" class="msh__dim num msh__exact" :title="m.model">{{ m.model }}</span>
+              </div>
+            </div>
+            <div class="msh__ctl">
               <Switch
                 :model-value="m.enabled"
                 :disabled="(!m.channelEnabled && !m.enabled) || (busy !== '' && busy !== mappingKey(m))"
