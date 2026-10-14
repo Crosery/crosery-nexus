@@ -1,5 +1,6 @@
 import type { CompatChannel } from './cpa.js'
 import { hashKey, maskKey, modelId } from './cpa.js'
+import { priorityToWeight } from './credentials.js'
 
 export type ChannelProtocolView = 'openai' | 'claude' | 'responses'
 
@@ -41,6 +42,8 @@ export type ChannelView = {
   models: Array<{ id: string; enabled: boolean; upstreams: number }>
   /** CPA `api-key-channel-access` 的真实渠道名（`claude-api-key` 挂載的条目在 CPA 里是 `claude`，`codex-api-key` 是 `codex`）。 */
   cpaChannel?: string
+  /** 调度权重 = -CPA priority：越小越优先，默认 0；同名模型多个渠道时先用权重最小的那档。 */
+  weight?: number
   /** 渠道绑定的出口代理（'direct' 强制直连，或代理地址；未设置则为空或 undefined 继承全局）。 */
   proxyUrl?: string
 }
@@ -98,6 +101,7 @@ export function mergeChannelView(
         name,
         baseUrl: String(channel['base-url'] || ''),
         keyCount: (channel['api-key-entries'] || []).length,
+        weight: priorityToWeight(channel.priority),
         keys: channelKeyViews(channel['api-key-entries']),
         enabled,
         protocol,

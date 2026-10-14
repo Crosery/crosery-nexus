@@ -23,7 +23,9 @@ const HELP = `cradmin models <动作> [参数]
   show <模型>                来源、价格、双源价格
   upstream <模型>            查看该请求模型在上游实际响应成了哪些模型（按次数与账号分布）
       --days <N>             统计天数（默认 7）
-  priority <模型> <渠道> [数值]  查看或调整该渠道提供此模型的调度优先级（0~1000，默认 100；最高优先级独占主力流量）
+  weight <模型> <渠道> [权重]  查看或调整该渠道的调度权重（整数，默认 0，越小越优先；同名模型多个渠道时先用权重最小的那档）
+                             兼容渠道的权重是整个渠道一个值；账号池 = 池里全部账号设成同一个值
+  priority                   weight 的旧名，同一个命令
   sync                       探测开着「自动同步」的渠道上游 /models，接入新模型、摘掉上游下架的（后台任务 model-discovery，等它跑完，最多 10 分钟；
                              有冷却，冷却中退出 4）
 说明：每个渠道启用哪些模型用 cradmin channels models <渠道> 调整。价格不能在这里改（来自价格表与外部目录）。
@@ -76,33 +78,34 @@ export default {
   },
   async run(ctx) {
     const [action = 'ls', id, arg2, arg3, ...extra] = ctx.positionals
-    if (action === 'priority') {
+    if (action === 'weight' || action === 'priority') {
       const modelId = id
       const channelName = arg2
       const rawPrio = arg3
       if (extra.length) throw new UsageError(`多余的参数：${extra.join(' ')}`)
-      if (!modelId || !channelName) throw new UsageError('用法：cradmin models priority <模型> <渠道> [数值]')
+      if (!modelId || !channelName) throw new UsageError('用法：cradmin models weight <模型> <渠道> [权重]')
       const index = await getModelIndex(ctx)
       const model = (index.models || []).find(item => item.id === modelId)
       if (!model) throw new UsageError(`找不到模型：${modelId}`)
       const source = (model.sources || []).find(item => item.channel === channelName)
       if (!source) throw new UsageError(`模型 ${modelId} 没有渠道来源：${channelName}`)
       if (rawPrio === undefined) {
-        return void ctx.output({ model: modelId, channel: channelName, priority: source.priority ?? 100 }, () => {
+        return void ctx.output({ model: modelId, channel: channelName, weight: source.weight ?? 0 }, () => {
           ctx.ui.kv('模型', modelId)
           ctx.ui.kv('渠道', channelName)
-          ctx.ui.kv('优先级', String(source.priority ?? 100))
+          ctx.ui.kv('权重', `${source.weight ?? 0}${source.weightMixed ? '（账号各自分档，这是其中最小的）' : ''}`)
         })
       }
-      const priority = Math.max(0, Math.min(1000, numberValue(rawPrio, '优先级')))
+      const weight = numberValue(rawPrio, '权重')
+      if (!Number.isInteger(weight) || Math.abs(weight) > 100000) throw new UsageError('权重必须是 -100000 到 100000 的整数')
       const result = await runPlan(ctx, {
         level: 'C',
-        title: `调整模型 ${modelId} 在 ${channelName} 的调度优先级`,
+        title: `调整渠道 ${channelName} 的调度权重（越小越优先）`,
         items: [{
           area: '模型映射', label: `${modelId}@${channelName}`,
-          from: String(source.priority ?? 100), to: String(priority),
+          from: String(source.weight ?? 0), to: String(weight),
           method: 'PATCH', path: `/api/model-index/${encodeURIComponent(modelId)}/sources/${encodeURIComponent(channelName)}`,
-          body: { kind: source.kind, priority },
+          body: { kind: source.kind, weight },
         }],
       })
       return void ctx.output(result)

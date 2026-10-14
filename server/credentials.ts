@@ -1,6 +1,12 @@
 import path from 'node:path'
 import { maskProxyUserinfo } from './accountProjection.js'
 
+/** CPA priority（大的先用）↔ 控制台权重（小的先用）；没设置 = 0，避免 -0。 */
+export const priorityToWeight = (priority: unknown): number => {
+  const value = Number(priority)
+  return Number.isFinite(value) && value !== 0 ? -Math.trunc(value) : 0
+}
+
 export type CredentialSummary = {
   name: string
   type: string
@@ -10,6 +16,8 @@ export type CredentialSummary = {
   modelCount: number
   models: string[]
   proxyUrl: string
+  /** 调度权重 = -priority：越小越优先，默认 0（CPA 的 priority 数值大的先用，控制台换成「权重小的先用」）。 */
+  weight: number
 }
 
 /** A credential file name is one path segment: non-empty, no separator or NUL, not `.`/`..`, not absolute; else null. */
@@ -33,6 +41,7 @@ export function summarizeCredentialFiles(files: Array<Record<string, unknown>>):
       models: [],
       // 列表只给显示用（userinfo 打码）；代理编辑读 GET /api/credentials/:name/proxy
       proxyUrl: maskProxyUserinfo(file.proxy_url),
+      weight: priorityToWeight(file.priority),
     }
   }).sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name))
 }

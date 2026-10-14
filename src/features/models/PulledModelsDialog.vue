@@ -40,11 +40,14 @@ const props = defineProps<{
   confirmText: string
   canApply: boolean
   busy?: boolean
+  /** 分页和计数用词：拉取模型是「新增 / 已有」，共享模型是「可共享 / 已共享」 */
+  words?: { fresh: string; have: string }
 }>()
 const open = defineModel<boolean>({ default: false })
 const selected = defineModel<Set<string>>('selected', { required: true })
 const emit = defineEmits<{ apply: [] }>()
 const { isMobile } = useBreakpoint()
+const words = computed(() => props.words ?? { fresh: '新增', have: '已有' })
 const body = useTemplateRef<HTMLElement>('body')
 const search = useTemplateRef<InstanceType<typeof SearchField>>('search')
 
@@ -56,8 +59,8 @@ const counts = computed(() => {
 const filter = ref<Filter>('all')
 const q = ref('')
 const filterItems = computed<SegmentItem[]>(() => [
-  { value: 'new', label: '新增', count: counts.value.new },
-  { value: 'have', label: '已有', count: counts.value.have },
+  { value: 'new', label: words.value.fresh, count: counts.value.new },
+  { value: 'have', label: words.value.have, count: counts.value.have },
   { value: 'all', label: '全部', count: counts.value.all },
 ])
 
@@ -90,7 +93,7 @@ function selectVisible(on: boolean) {
 
 const emptyWords = computed(() => {
   if (q.value.trim()) return `没有匹配「${q.value.trim()}」的模型`
-  if (filter.value === 'new') return '上游没有新模型 · 列表里的都已经有了'
+  if (filter.value === 'new') return `没有${words.value.fresh}的模型 · 列表里的都已经${words.value.have === '已有' ? '有了' : words.value.have}`
   return '没有模型'
 })
 
@@ -146,7 +149,7 @@ const shell = computed(() => (isMobile.value ? { side: 'bottom', height: 'auto' 
         <Segmented v-model="filter" :items="filterItems" label="按是否已有筛选" />
       </div>
       <div v-if="filter !== 'have' && counts.new" class="pmd__bulk">
-        <span class="pmd__count num">已选 {{ fmtInt(picked) }} / {{ fmtInt(counts.new) }} 个新模型</span>
+        <span class="pmd__count num">已选 {{ fmtInt(picked) }} / {{ fmtInt(counts.new) }}</span>
         <TxButton variant="ghost" size="sm" :disabled="!visibleFresh.length || busy" @click="selectVisible(true)">全选</TxButton>
         <TxButton variant="ghost" size="sm" :disabled="!visibleFresh.length || busy" @click="selectVisible(false)">全不选</TxButton>
       </div>

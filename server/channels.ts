@@ -1,9 +1,9 @@
 import { channelKeyRef, channelKeyViews, mergeChannelView, type ChannelKeyView } from './channelView.js'
 import type { ChannelSnapshotRow, ModelStateRow } from './channelView.js'
-import { apiCall, deleteAuthFile, deleteCompatChannel, getAuthFileModels, getCompatChannels, getExcludedModels, getProviderKeyEntries, listAuthFiles, modelId, providerChannelName, putCompatChannels, putExcludedModels, putProviderKeyEntries, setAuthFileDisabled, setAuthFileProxy, PROVIDER_KEY_ENDPOINTS, type ProviderKeyEndpoint, type ProviderKeyEntry } from './cpa.js'
+import { apiCall, deleteAuthFile, deleteCompatChannel, getAuthFileModels, getCompatChannels, getExcludedModels, getProviderKeyEntries, listAuthFiles, modelId, providerChannelName, putCompatChannels, putExcludedModels, putProviderKeyEntries, setAuthFileDisabled, setAuthFilePriority, setAuthFileProxy, PROVIDER_KEY_ENDPOINTS, type ProviderKeyEndpoint, type ProviderKeyEntry } from './cpa.js'
 import type { CompatChannel, CompatModel } from './cpa.js'
 import { buildGroups } from './groups.js'
-import { buildModelIndex, priorityKey } from './modelIndex.js'
+import { buildModelIndex } from './modelIndex.js'
 import { gatewayPricingMap } from './modelCatalog.js'
 import type { OAuthProviderModels } from './modelIndex.js'
 import { db } from './db.js'
@@ -666,19 +666,20 @@ type CredentialEntry = Awaited<ReturnType<typeof listCredentials>>[number]
 
 /** 把账号按 provider 聚合成 OAuth 渠道，供模型索引使用。 */
 export function groupOAuthProviders(credentials: CredentialEntry[], excluded: Record<string, string[]>): OAuthProviderModels[] {
-  const byProvider = new Map<string, { models: Set<string>; activeAccounts: number; accounts: number }>()
+  const byProvider = new Map<string, { models: Set<string>; activeAccounts: number; accounts: number; weights: Set<number> }>()
   for (const credential of credentials) {
     if (!credential.type) continue
-    const entry = byProvider.get(credential.type) || { models: new Set<string>(), activeAccounts: 0, accounts: 0 }
+    const entry = byProvider.get(credential.type) || { models: new Set<string>(), activeAccounts: 0, accounts: 0, weights: new Set<number>() }
     entry.accounts += 1
     if (!credential.disabled) {
       entry.activeAccounts += 1
+      entry.weights.add(credential.weight ?? 0)
       for (const model of credential.models) entry.models.add(model)
     }
     byProvider.set(credential.type, entry)
   }
   for (const provider of Object.keys(excluded)) {
-    if (!byProvider.has(provider)) byProvider.set(provider, { models: new Set<string>(), activeAccounts: 0, accounts: 0 })
+    if (!byProvider.has(provider)) byProvider.set(provider, { models: new Set<string>(), activeAccounts: 0, accounts: 0, weights: new Set<number>() })
   }
   return [...byProvider].map(([provider, entry]) => ({
     provider,
@@ -686,6 +687,8 @@ export function groupOAuthProviders(credentials: CredentialEntry[], excluded: Re
     excluded: excluded[provider] || [],
     activeAccounts: entry.activeAccounts,
     accounts: entry.accounts,
+    weight: entry.weights.size ? Math.min(...entry.weights) : 0,
+    ...(entry.weights.size > 1 ? { weightMixed: true } : {}),
   }))
 }
 
@@ -750,19 +753,11 @@ export async function listCredentials() {
   return (await gatewaySnapshot()).credentials
 }
 
-export function readChannelModelPriorities(): Map<string, number> {
-  const rows = db.prepare('SELECT channel, model, kind, priority FROM channel_model_priorities').all() as Array<{ channel: string; model: string; kind: string; priority: number }>
-  const map = new Map<string, number>()
-  for (const row of rows) map.set(priorityKey(row.channel, row.model, row.kind), row.priority)
-  return map
-}
-
 export async function listModelIndex() {
   const { channels, credentials, excluded } = await gatewaySnapshot()
   // 价格取网关下发的 cost；控制面暂时取不到时不阻断页面，回落静态表。
   const gatewayPricing = await gatewayPricingMap().catch(() => undefined)
-  const priorities = readChannelModelPriorities()
-  return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing, priorities), channels, credentials }
+  return { models: buildModelIndex(channels, groupOAuthProviders(credentials, excluded), gatewayPricing), channels, credentials }
 }
 
 /** 渠道目录本身（不经可用性过滤）：可用性探测要靠它把下线模型继续测下去，报表按它归组。 */
@@ -826,13 +821,57 @@ export async function disableOAuthModels(provider: string, input: unknown) {
   return { disabled: models.filter((model) => !before.has(model)).length }
 }
 
-/** 设置某个渠道对特定模型的调度优先级（0~1000，默认 100）。 */
-export function setModelSourcePriority(model: string, channel: string, kind: 'compat' | 'oauth', priority: number) {
-  const p = Math.max(0, Math.min(1000, Math.round(Number(priority) || 100)))
-  const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO channel_model_priorities (channel, model, kind, priority, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(channel, model, kind) DO UPDATE SET priority=excluded.priority, updated_at=excluded.updated_at
-  `).run(channel, model, kind, p, now)
+/** 权重：整数，越小越优先，默认 0；范围宽到能容纳账号上手工设过的 CPA 优先级（取负）。 */
+export const MAX_WEIGHT = 100_000
+export function parseWeight(value: unknown): number {
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
+  if (typeof n !== 'number' || !Number.isInteger(n) || Math.abs(n) > MAX_WEIGHT) {
+    throw new ChannelKeyError(400, 'invalid_weight', `权重必须是 -${MAX_WEIGHT} 到 ${MAX_WEIGHT} 的整数`)
+  }
+  return n === 0 ? 0 : n
+}
+const weightToPriority = (weight: number): number => (weight === 0 ? 0 : -weight)
+
+/**
+ * 渠道权重写成 CPA 渠道条目的 priority（= -权重，0 = 不写）。CPA 对同名模型的多个渠道只用最高优先级的一档，
+ * 同档内才轮询：权重就是「谁先用、谁兜底」。整个渠道一个值，改它会影响这个渠道的所有模型。
+ */
+export async function setChannelWeight(channelName: string, input: unknown) {
+  const weight = parseWeight(input)
+  invalidateGatewaySnapshot()
+  const live = await getCompatChannels()
+  const index = live.findIndex((channel) => String(channel.name || '') === channelName)
+  if (index < 0) {
+    if ((await listChannels()).some((channel) => channel.name === channelName)) throw new ChannelKeyError(409, 'channel_disabled', '渠道停用中 · 先启用再调权重')
+    throw new ChannelKeyError(404, 'channel_not_found', '渠道不存在')
+  }
+  const updated: CompatChannel = { ...live[index] }
+  if (weight === 0) delete updated.priority
+  else updated.priority = weightToPriority(weight)
+  live[index] = updated
+  await putCompatChannels(live)
+  return { weight }
+}
+
+/** 单个订阅账号的权重 → auth 文件的 priority。 */
+export async function setCredentialWeight(name: string, input: unknown) {
+  const weight = parseWeight(input)
+  invalidateGatewaySnapshot()
+  await setAuthFilePriority(name, weightToPriority(weight))
+  return { weight }
+}
+
+/** 一个账号池（provider）所有账号设成同一个权重；返回写了几个。 */
+export async function setProviderWeight(provider: string, input: unknown) {
+  const weight = parseWeight(input)
+  const files = (await listCredentials()).filter((credential) => credential.type === provider)
+  if (!files.length) throw new ChannelKeyError(404, 'channel_not_found', '账号池不存在')
+  invalidateGatewaySnapshot()
+  for (const file of files) await setAuthFilePriority(file.name, weightToPriority(weight))
+  return { weight, accounts: files.length }
+}
+
+/** 模型详情里改某个来源的权重：兼容渠道 = 渠道权重；账号池 = 池里全部账号。 */
+export async function setModelSourceWeight(channel: string, kind: 'compat' | 'oauth', input: unknown) {
+  return kind === 'oauth' ? setProviderWeight(channel, input) : setChannelWeight(channel, input)
 }

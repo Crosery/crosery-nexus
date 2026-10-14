@@ -60,6 +60,8 @@ export type ChannelItem = {
   autoSync?: boolean
   /** 当前出口对应的代理池条目 id / 网关预设下标（按地址比对）；都对不上就是自定义地址。 */
   proxyEntryId?: string
+  /** 调度权重（越小越优先，默认 0）；同名模型多个渠道时先用权重最小的那档 */
+  weight?: number
   proxyPreset?: number
 }
 
@@ -93,6 +95,8 @@ export type CredentialItem = {
   models: string[]
   /** '' 继承网关全局代理，'direct' 强制直连，其余为该账号专用代理地址。 */
   proxyUrl: string
+  /** 调度权重（越小越优先，默认 0）；同一账号池里的多个号按它分档 */
+  weight?: number
 }
 
 export type ProxyPreset = { label: string; url: string }
@@ -112,7 +116,10 @@ export type ModelSource = {
   enabled: boolean
   upstreams: number
   channelEnabled: boolean
-  priority?: number
+  /** 调度权重：越小越优先，默认 0；兼容渠道 = 渠道自己的值，账号池 = 在线账号里最小的 */
+  weight?: number
+  /** 账号池里各账号权重不一致（单独分过档）：weight 只是其中最小的，要改去账号上改 */
+  weightMixed?: boolean
 }
 
 /** 单个价格来源的单价（task-79；金额单位由 `unit` 说明，缺失字段一律 undefined，不补 0）。 */

@@ -11,8 +11,13 @@ export type ModelSource = {
   upstreams: number
   /** 渠道整体是否可用；渠道停用时其下模型不可单独启用。 */
   channelEnabled: boolean
-  /** 渠道对该模型的调度优先级（默认 100；数值越大越优先作为主力渠道）。 */
-  priority: number
+  /**
+   * 调度权重（默认 0；越小越优先）：同名模型多个来源时网关先用权重最小的一档，不再在它们之间轮询。
+   * 兼容渠道 = 渠道自己的权重（整个渠道一个值）；账号池 = 池里在线账号权重的最小值。
+   */
+  weight: number
+  /** 账号池里在线账号的权重不一致（各账号单独分了档）：这里的 weight 只是其中最小的，要改去账号上改。 */
+  weightMixed?: boolean
 }
 
 export type ModelEntry = {
@@ -42,6 +47,9 @@ export type OAuthProviderModels = {
   /** 未被 oauth-excluded-models 排除的才算启用。 */
   excluded: string[]
   activeAccounts: number
+  /** 在线账号权重的最小值与是否一致；没有账号时 0。 */
+  weight?: number
+  weightMixed?: boolean
   /** 含已停用的凭据文件总数；只用来判断 provider 是否仍然存在（见 buildGroups）。 */
   accounts?: number
 }
@@ -100,13 +108,10 @@ export function mergePriceSourceEntries(models: ModelEntry[]): ModelEntry[] {
   return extra.length ? [...models, ...extra].sort((left, right) => left.id.localeCompare(right.id)) : models
 }
 
-export const priorityKey = (channel: string, model: string, kind: string): string => `${channel}:${model}:${kind}`
-
 export function buildModelIndex(
   channels: ChannelView[],
   oauth: OAuthProviderModels[],
   gatewayPricing?: Map<string, ModelPricing>,
-  priorities?: Map<string, number>,
 ): ModelEntry[] {
   const index = new Map<string, ModelSource[]>()
 
@@ -127,7 +132,7 @@ export function buildModelIndex(
         enabled: channel.enabled && model.enabled,
         upstreams: model.upstreams,
         channelEnabled: channel.enabled,
-        priority: priorities?.get(priorityKey(channel.name, model.id, 'compat')) ?? 100,
+        weight: channel.weight ?? 0,
       })
     }
   }
@@ -141,14 +146,15 @@ export function buildModelIndex(
         enabled: !excluded.has(id) && provider.activeAccounts > 0,
         upstreams: provider.activeAccounts,
         channelEnabled: provider.activeAccounts > 0,
-        priority: priorities?.get(priorityKey(provider.provider, id, 'oauth')) ?? 100,
+        weight: provider.weight ?? 0,
+        ...(provider.weightMixed ? { weightMixed: true } : {}),
       })
     }
   }
 
   return [...index]
     .map(([id, sources]) => {
-      const ordered = [...sources].sort((a, b) => (b.priority - a.priority) || a.channel.localeCompare(b.channel))
+      const ordered = [...sources].sort((a, b) => (a.weight - b.weight) || a.channel.localeCompare(b.channel))
       const enabledSources = ordered.filter((source) => source.enabled).length
       return {
         id,

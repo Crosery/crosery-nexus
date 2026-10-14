@@ -143,3 +143,14 @@ test('modelKind 与 modelSync 读同一个共享目录路径（两处解析必�
     else process.env.CROSERY_SHARED_CATALOG = previous
   }
 })
+
+test('同名模型多个来源：按权重升序排，权重小的先用；账号池取在线账号里最小的并标出分档', () => {
+  const index = buildModelIndex(
+    [{ ...channel('relay-b', true, [['shared-model', true, 1]]), weight: 5 }, { ...channel('relay-a', true, [['shared-model', true, 1]]), weight: 0 }],
+    [{ provider: 'codex', models: ['shared-model'], excluded: [], activeAccounts: 2, weight: -3, weightMixed: true }],
+  )
+  const sources = index[0].sources
+  assert.deepEqual(sources.map((source) => `${source.channel}:${source.weight}`), ['codex:-3', 'relay-a:0', 'relay-b:5'])
+  assert.equal(sources[0].weightMixed, true)
+  assert.equal(sources[1].weightMixed, undefined)
+})

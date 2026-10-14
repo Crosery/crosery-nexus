@@ -27,6 +27,7 @@ import { proxyApi } from '../../api/proxy'
 import type { ChannelProxyWrite } from '../channels/channelProxy'
 import type { RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 import ChannelSheet from '../channels/ChannelSheet.vue'
+import PulledModelsDialog, { type PulledModelRow } from '../models/PulledModelsDialog.vue'
 import CreateChannelSheet from '../channels/CreateChannelSheet.vue'
 import { classifyChannel, hostOf, modelCounts } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
@@ -166,6 +167,7 @@ const stats = computed(() => [
 ])
 
 /* ── 全局共享模型清单 ── */
+const modelType = (id: string) => (id.includes('image') ? '生图' : '对话')
 type SharedModelRow = {
   id: string
   provider: string
@@ -175,39 +177,37 @@ type SharedModelRow = {
   isDefault: boolean
 }
 
+/** 模型 id → 谁在提供它（启用的 API 渠道 + 有在线账号的订阅账号池），共享表的「来源」和添加弹窗共用 */
+const modelProviders = computed(() => {
+  const map = new Map<string, Array<{ name: string; kind: string }>>()
+  const add = (id: string, name: string, kind: string) => {
+    const list = map.get(id) ?? []
+    if (!list.some((item) => item.name === name)) list.push({ name, kind })
+    map.set(id, list)
+  }
+  for (const channel of channelsData.value) {
+    if (!channel.enabled) continue
+    const kind = channel.baseUrl.includes('openrouter') ? '中转网关' : 'API 渠道'
+    for (const model of channel.models ?? []) if (model.enabled !== false) add(model.id, channel.name, kind)
+  }
+  for (const credential of channelsLive.data.value?.credentials ?? []) {
+    if (credential.disabled) continue
+    for (const id of credential.models ?? []) add(id, credential.type || '订阅账号', '订阅账号池')
+  }
+  return map
+})
+
 const sharedModelsList = computed<SharedModelRow[]>(() => {
   const active = sharedLive.data.value?.activeModels ?? []
   const defaults = new Set(sharedLive.data.value?.defaultModels ?? [])
-  const credentials = channelsLive.data.value?.credentials ?? []
-
   return active.map((modelId) => {
-    let providerName = '全局接入网关'
-    let providerKind = '系统内置'
-    let modelType = '对话 (Chat)'
-    if (modelId.includes('image')) modelType = '生图 (Image)'
-
-    for (const c of channelsData.value) {
-      if (c.models && c.models.some((m) => m.id === modelId)) {
-        providerName = c.name
-        providerKind = c.baseUrl.includes('openrouter') ? '中转网关' : 'API 渠道'
-        break
-      }
-    }
-    if (providerName === '全局接入网关') {
-      for (const cred of credentials) {
-        if (!cred.disabled && cred.models && cred.models.includes(modelId)) {
-          providerName = cred.type || '订阅账号'
-          providerKind = '订阅账号池'
-          break
-        }
-      }
-    }
+    const sources = modelProviders.value.get(modelId) ?? []
     return {
       id: modelId,
-      provider: providerName,
-      providerName,
-      kind: providerKind,
-      type: modelType,
+      provider: sources[0]?.name ?? '',
+      providerName: sources.length ? sources.map((item) => item.name).join('、') : '全局接入网关',
+      kind: sources.length ? [...new Set(sources.map((item) => item.kind))].join(' · ') : '系统内置',
+      type: modelType(modelId),
       isDefault: defaults.has(modelId),
     }
   })
@@ -311,11 +311,10 @@ const providerColumns = computed<RowColumn<ChannelRow>[]>(() => [
 ])
 
 const sharedColumns = computed<RowColumn<SharedModelRow>[]>(() => [
-  { key: 'status', title: '状态', width: 92 },
-  { key: 'id', title: '共享模型 ID' },
-  { key: 'provider', title: '供应上游', width: 180 },
-  { key: 'type', title: '类别', width: 120 },
-  { key: 'ops', title: '', width: 100, align: 'right' },
+  { key: 'id', title: '模型' },
+  { key: 'provider', title: '来源', width: 260 },
+  { key: 'status', title: '状态', width: 110 },
+  { key: 'ops', title: '', width: 96, align: 'right' },
 ])
 
 /* ── 弹窗抽屉与真实操作 ── */
@@ -326,7 +325,6 @@ const focusedChannelName = ref<string | null>(null)
 const focusedChannel = computed<ChannelItem | null>(() =>
   channelsData.value.find((channel) => channel.name === focusedChannelName.value) ?? null)
 const addSharedOpen = ref(false)
-const searchModelQuery = ref('')
 
 const pending = ref(new Set<string>())
 function setPending(key: string, on: boolean) {
@@ -502,6 +500,18 @@ async function applyChannelModels(channel: ChannelItem, changes: ChannelModelCha
   }
 }
 
+async function setChannelWeight(channel: ChannelItem, weight: number): Promise<boolean> {
+  try {
+    await api.setChannelWeight(channel.name, weight)
+    notify(`✓ ${channel.name} · 权重 ${weight}`, { id: 'cx-ch-weight' })
+    await channelsLive.refresh()
+    return true
+  } catch (error) {
+    notify(`◆ 权重设置失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad', id: 'cx-ch-weight' })
+    return false
+  }
+}
+
 async function setChannelProxy(channel: ChannelItem, write: ChannelProxyWrite): Promise<boolean> {
   try {
     await api.setChannelProxy(channel.name, write)
@@ -537,56 +547,37 @@ async function removeSharedModel(modelId: string) {
   }
 }
 
-async function addSharedModel(modelId: string) {
+/* 「添加共享模型」弹窗：和「拉取模型」同一个勾选弹窗，已共享的列出来但不可勾 */
+const sharedPick = ref(new Set<string>())
+const sharedApplying = ref(false)
+const sharedRows = computed<PulledModelRow[]>(() => {
+  const shared = new Set(sharedLive.data.value?.activeModels ?? [])
+  const ids = new Set([...modelProviders.value.keys(), ...shared])
+  return [...ids].map((id) => ({
+    id,
+    model: id,
+    sub: (modelProviders.value.get(id) ?? []).map((item) => item.name).join('、') || undefined,
+    fresh: !shared.has(id),
+    ...(shared.has(id) ? { tag: '已共享', tagTitle: '已经在全局共享池里' } : {}),
+  }))
+})
+const sharedHint = computed(() => (sharedPick.value.size ? `勾选的 ${fmtInt(sharedPick.value.size)} 个模型对所有有效 Key 开放` : '勾上要开放给全体 Key 的模型'))
+watch(addSharedOpen, (isOpen) => { if (isOpen) sharedPick.value = new Set() })
+async function addSharedModels() {
+  const ids = [...sharedPick.value]
+  if (!ids.length || sharedApplying.value) return
+  sharedApplying.value = true
   try {
-    await api.addSharedModel(modelId)
-    notify(`✓ 已将模型 ${modelId} 设为全局共享`)
+    await api.addSharedModels(ids)
+    notify(`✓ 已将 ${fmtInt(ids.length)} 个模型设为全局共享`)
+    addSharedOpen.value = false
     void sharedLive.refresh()
-  } catch {
-    notify(`添加共享失败`, { tone: 'bad' })
+  } catch (error) {
+    notify(`◆ 添加共享失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
+  } finally {
+    sharedApplying.value = false
   }
 }
-
-const availableModelCandidates = computed(() => {
-  const q = searchModelQuery.value.trim().toLowerCase()
-  const activeSet = new Set(sharedLive.data.value?.activeModels ?? [])
-  const list: Array<{ id: string; channel: string; isShared: boolean }> = []
-
-  const seen = new Set<string>()
-  // 1. API 渠道模型
-  for (const c of channelsData.value) {
-    if (!c.enabled || !c.models) continue
-    for (const m of c.models) {
-      if (m.enabled === false) continue
-      if (q && !m.id.toLowerCase().includes(q) && !c.name.toLowerCase().includes(q)) continue
-      const key = `${c.name}:${m.id}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      list.push({
-        id: m.id,
-        channel: c.name,
-        isShared: activeSet.has(m.id),
-      })
-    }
-  }
-  // 2. 订阅账号池模型 (Codex, Claude, Antigravity 等)
-  const credentials = channelsLive.data.value?.credentials ?? []
-  for (const cred of credentials) {
-    if (cred.disabled || !cred.models) continue
-    const providerName = cred.type || 'oauth'
-    for (const mId of cred.models) {
-      if (q && !mId.toLowerCase().includes(q) && !providerName.toLowerCase().includes(q)) continue
-      const key = `${providerName}:${mId}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      list.push({
-        id: mId,
-        channel: `${providerName} (订阅账号)`,
-        isShared: activeSet.has(mId),
-      })
-    }
-  }
-})
 
 /* ── 顶部滑块指示器：完全对齐用量页面 UsageWorkspace ── */
 const host = useTemplateRef<HTMLElement>('host')
@@ -666,10 +657,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
           empty-text="暂无全局共享模型"
           caption="全局共享模型池"
         >
-          <template #cell-status="{ row }">
-            <StatusMark state="run" label="全员开放" />
-          </template>
-
           <template #cell-id="{ row }">
             <span class="cx-2l">
               <span class="cx-strong mono">{{ row.id }}</span>
@@ -679,20 +666,18 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 
           <template #cell-provider="{ row }">
             <span class="cx-2l">
-              <span>{{ row.providerName }}</span>
-              <span class="cx-l2"><TxTag size="small">{{ row.kind }}</TxTag></span>
+              <span class="ellip" :title="row.providerName">{{ row.providerName }}</span>
+              <span class="cx-l2">{{ row.kind }}</span>
             </span>
           </template>
 
-          <template #cell-type="{ row }">
-            <span>{{ row.type }}</span>
+          <template #cell-status>
+            <StatusMark state="run" label="全员开放" />
           </template>
 
           <template #cell-ops="{ row }">
-            <TxTag v-if="row.isDefault" size="small" color="neutral">系统默认</TxTag>
-            <TxButton v-else variant="subtle" size="small" @click="removeSharedModel(row.id)">
-              移出共享
-            </TxButton>
+            <span v-if="row.isDefault" class="pv-shared-default">系统默认</span>
+            <TxButton v-else variant="ghost" size="small" @click="removeSharedModel(row.id)">移出</TxButton>
           </template>
 
           <template #card="{ row }">
@@ -700,13 +685,8 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
               <div class="cx-card__l1">
                 <StatusMark state="run" label="全员开放" bare />
                 <span class="cx-card__name mono ellip">{{ row.id }}</span>
-                <span class="cx-card__st">全员开放</span>
-                <div style="margin-left: auto">
-                  <TxTag v-if="row.isDefault" size="small" color="neutral">系统默认</TxTag>
-                  <TxButton v-else variant="subtle" size="small" @click.stop="removeSharedModel(row.id)">
-                    移出共享
-                  </TxButton>
-                </div>
+                <span class="pv-shared-default" v-if="row.isDefault">系统默认</span>
+                <TxButton v-else variant="ghost" size="small" @click.stop="removeSharedModel(row.id)">移出</TxButton>
               </div>
               <div class="cx-card__ln num">
                 <span class="ellip">{{ row.providerName }} · {{ row.kind }} · {{ row.type }}</span>
@@ -906,6 +886,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       :egress="egressData"
       :presets="channelsLive.data.value?.proxyPresets ?? []"
       :set-proxy="setChannelProxy"
+      :set-weight="setChannelWeight"
       :add-key="addKey"
       :remove-key="removeKey"
       @toggle-channel="toggleChannel"
@@ -919,40 +900,20 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       @created="refreshAll"
     />
 
-    <!-- 弹窗 4: 添加全局共享模型选择器 -->
-    <Sheet v-model="addSharedOpen" title="添加全局共享模型" height="80vh">
-      <div class="pv-add-shared">
-        <p class="pv-sheet-desc">选择要开放给全体 API Key 的模型。设为共享后，任何有效 Key 均免配置直接放行。</p>
-        <SearchField v-model="searchModelQuery" placeholder="搜索模型 ID 或渠道..." class="pv-model-search" />
-
-        <div class="pv-model-list">
-          <div
-            v-for="item in availableModelCandidates"
-            :key="`${item.channel}:${item.id}`"
-            class="pv-model-item"
-          >
-            <div class="pv-model-info">
-              <span class="pv-model-id mono">{{ item.id }}</span>
-              <span class="pv-model-chan">{{ item.channel }}</span>
-            </div>
-            <div class="pv-model-act">
-              <TxTag v-if="item.isShared" size="small" color="neutral">已在共享池</TxTag>
-              <TxButton
-                v-else
-                variant="primary"
-                size="small"
-                @click="addSharedModel(item.id)"
-              >
-                设为共享
-              </TxButton>
-            </div>
-          </div>
-          <div v-if="availableModelCandidates.length === 0" class="pv-model-empty">
-            没有找到可共享的模型
-          </div>
-        </div>
-      </div>
-    </Sheet>
+    <!-- 弹窗 4: 添加全局共享模型（勾选弹窗，和「拉取模型」同一个组件） -->
+    <PulledModelsDialog
+      v-model="addSharedOpen"
+      v-model:selected="sharedPick"
+      title="添加全局共享模型"
+      :summary="`可选 ${fmtInt(sharedRows.filter((row) => row.fresh).length)} 个 · 已共享 ${fmtInt(sharedRows.filter((row) => !row.fresh).length)} 个 · 共享后任何有效 Key 免配置直接放行`"
+      :rows="sharedRows"
+      :hint="sharedHint"
+      :words="{ fresh: '可共享', have: '已共享' }"
+      :confirm-text="sharedPick.size ? `共享 ${fmtInt(sharedPick.size)} 个` : '共享'"
+      :can-apply="sharedPick.size > 0"
+      :busy="sharedApplying"
+      @apply="addSharedModels"
+    />
 
   </div>
 </template>
@@ -1030,58 +991,6 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 .pv-searchrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
 .pv-search { width: 280px; }
 .pv-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-
-/* 共享模型添加抽屉 */
-.pv-add-shared {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 8px 0;
-}
-.pv-sheet-desc {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--ink-2);
-}
-.pv-model-search {
-  width: 100%;
-}
-.pv-model-list {
-  display: flex;
-  flex-direction: column;
-  max-height: 55vh;
-  overflow-y: auto;
-  border-top: 1px solid var(--rule);
-}
-.pv-model-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 4px;
-  border-bottom: 1px solid var(--rule);
-  gap: 12px;
-}
-.pv-model-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.pv-model-id {
-  font-size: var(--fs-sm);
-  color: var(--ink);
-  font-weight: 500;
-}
-.pv-model-chan {
-  font-size: var(--fs-xs);
-  color: var(--ink-3);
-}
-.pv-model-empty {
-  padding: 32px 0;
-  text-align: center;
-  font-size: var(--fs-sm);
-  color: var(--ink-3);
-}
 
 /* 两行单元格样式类（复用系统 cx-2l 规范） */
 .pv-page .cx-2l {
@@ -1163,4 +1072,5 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
   .pv-page .pv-actions { order: -1; width: 100%; justify-content: flex-end; padding-bottom: 0; }
   .pv-page .usage-ws__tabs { flex-wrap: nowrap; width: 100%; }
 }
+.pv-shared-default { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; }
 </style>

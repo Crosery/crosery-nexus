@@ -242,6 +242,8 @@ export async function uploadAuthFile(name: string, raw: Buffer) {
 export type CompatModel = { name?: string; alias?: string }
 export type CompatChannel = {
   name?: string
+  /** CPA 调度优先级：数值大的先用（同名模型多个渠道时按它分档，不再轮询）；没有 = 0。控制台的「权重」= -priority。 */
+  priority?: number
   'base-url'?: string
   'api-key-entries'?: Array<{ 'api-key'?: string; 'proxy-url'?: string }>
   models?: CompatModel[]
@@ -345,6 +347,11 @@ export async function deleteAuthFile(name: string) {
 
 export async function setAuthFileDisabled(name: string, disabled: boolean) {
   return cpaRequest('/auth-files/status', { method: 'PATCH', body: JSON.stringify({ name, disabled }) })
+}
+
+/** 账号优先级（auth 文件顶层 priority，数值大的先用；没有 = 0）。热改，不重启、不动凭据内容。 */
+export async function setAuthFilePriority(name: string, priority: number) {
+  return cpaRequest('/auth-files/fields', { method: 'PATCH', body: JSON.stringify({ name, priority }) })
 }
 
 export async function setAuthFileProxy(name: string, proxyUrl: string) {

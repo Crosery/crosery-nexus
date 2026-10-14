@@ -10,7 +10,7 @@ import Sheet from '../../ui/feedback/Sheet.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
 import ProviderMark from '../../ui/data/ProviderMark.vue'
 import Switch from '../../ui/form/Switch.vue'
-import Segmented from '../../ui/form/Segmented.vue'
+import WeightField from '../../ui/form/WeightField.vue'
 import Icon from '../../ui/Icon.vue'
 import { TxIconButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -23,7 +23,6 @@ import ModelPricingSources from './ModelPricingSources.vue'
 import ModelUpstreamModels from './ModelUpstreamModels.vue'
 import { errorWord, fmtWindow, hourLabel, type InsightProbe, type ModelMapping, type ModelRow } from './modelRows'
 import type { ModelIndexData } from '../../types'
-import type { SegmentItem } from '../../ui/types'
 
 const props = defineProps<{
   row: ModelRow | null
@@ -96,28 +95,18 @@ async function toggle(mapping: ModelMapping, next: boolean) {
   }
 }
 
-/* 同一 id 多条映射时才有意义：三档代替 0~1000 的裸数字；老数据按阈值落到对应档位 */
-const TIERS: SegmentItem[] = [
-  { value: 100, label: '主力' },
-  { value: 50, label: '次级' },
-  { value: 10, label: '备用' },
-]
-const tierOf = (priority: number | undefined) => {
-  const p = priority ?? 100
-  return p >= 100 ? 100 : p >= 50 ? 50 : 10
-}
-
-async function setTier(m: ModelMapping, value: string | number | null) {
-  const next = Number(value)
-  if (!Number.isFinite(next) || busy.value || next === tierOf(m.priority)) return
+/* 同一 id 多条映射时才有意义：权重越小越优先，网关先用权重最小的那档、同档轮询。
+   兼容渠道的权重是整个渠道一个值（影响它的所有模型）；账号池 = 池里全部账号设成同一个值。 */
+async function setWeight(m: ModelMapping, weight: number) {
+  if (busy.value) return
   busy.value = mappingKey(m)
   try {
-    await api.setModelSourcePriority(m.model, m.channel, m.kind, next)
-    notify(`✓ ${m.channel} 设为${TIERS.find((tier) => tier.value === next)?.label ?? next}`, { tone: 'ok', description: m.model })
+    await api.setModelSourceWeight(m.model, m.channel, m.kind, weight)
+    notify(`✓ ${m.channel} 权重 ${weight}`, { tone: 'ok', description: m.kind === 'oauth' ? `${m.channel} 账号池全部账号` : `${m.channel} 渠道的所有模型` })
     if (props.reload) await props.reload().catch(() => undefined)
     else emit('changed')
   } catch (error) {
-    notify(`◆ ${m.channel} 优先级更新失败`, { tone: 'bad', description: `${errorReason(error)} · ${m.model}` })
+    notify(`◆ ${m.channel} 权重更新失败`, { tone: 'bad', description: `${errorReason(error)} · ${m.model}` })
   } finally {
     busy.value = ''
   }
@@ -200,7 +189,7 @@ const usageFacts = computed(() => {
       </section>
 
       <section class="msh__sec">
-        <h3 class="msh__h">渠道映射 <span class="num msh__h-n">{{ row.enabledChannels }}/{{ row.channels }}</span><span v-if="row.contested" class="msh__h-note">◇ 同一 id 按优先级分档调度</span></h3>
+        <h3 class="msh__h">渠道映射 <span class="num msh__h-n">{{ row.enabledChannels }}/{{ row.channels }}</span><span v-if="row.contested" class="msh__h-note">◇ 同一 id 按权重调度 · 权重小的先用，同档轮询</span></h3>
         <p v-if="!row.mappings.length" class="msh__empty">— 没有渠道提供 · 只在价格源里出现</p>
         <ul v-else class="msh__maps">
           <li v-for="m in row.mappings" :key="mappingKey(m)" class="msh__map" :class="{ 'is-off': !m.enabled }">
@@ -217,14 +206,15 @@ const usageFacts = computed(() => {
                 <span v-if="useText(m.channel)">{{ useText(m.channel) }}</span>
               </div>
             </div>
-            <Segmented
+            <WeightField
               v-if="row.mappings.length > 1"
               class="msh__tier"
-              :model-value="tierOf(m.priority)"
-              :items="TIERS"
-              :label="`${m.channel} 的调度档位`"
+              :model-value="m.weight ?? 0"
+              :label="`${m.channel} 的调度权重`"
+              :mixed="m.weightMixed"
               :disabled="busy !== ''"
-              @update:model-value="(v) => setTier(m, v ?? null)"
+              :hint="m.kind === 'oauth' ? `${m.channel} 账号池的权重 · 改它会把池里所有账号设成同一个值` : `${m.channel} 渠道的权重 · 整个渠道一个值，影响它的所有模型`"
+              @commit="(v: number) => setWeight(m, v)"
             />
             <Switch
               :model-value="m.enabled"

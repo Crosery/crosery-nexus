@@ -7,7 +7,7 @@
 
 import { createServer, type Server } from 'node:http'
 
-export type FakeCredential = { name: string; type: string; email?: string; proxy_url?: string; disabled?: boolean }
+export type FakeCredential = { name: string; type: string; email?: string; proxy_url?: string; disabled?: boolean; priority?: number }
 
 export class FakeCpa {
   readonly requests: Array<{ method: string; path: string; body?: string }> = []
@@ -43,7 +43,7 @@ export class FakeCpa {
         if (req.headers.authorization !== `Bearer ${this.key}`) return send(401, { error: 'unauthorized' })
         const route = url.pathname.replace(/^\/v0\/management/, '')
         if (route === '/auth-files' && method === 'GET') {
-          return send(200, { files: [...this.credentials.values()].map(item => ({ name: item.name, type: item.type, provider: item.type, email: item.email ?? '', disabled: Boolean(item.disabled), status: 'active', auth_index: item.name })) })
+          return send(200, { files: [...this.credentials.values()].map(item => ({ name: item.name, type: item.type, provider: item.type, email: item.email ?? '', disabled: Boolean(item.disabled), status: 'active', auth_index: item.name, ...(typeof item.priority === 'number' ? { priority: item.priority } : {}) })) })
         }
         if (route === '/auth-files/download' && method === 'GET') {
           const name = url.searchParams.get('name') ?? ''
@@ -53,10 +53,11 @@ export class FakeCpa {
           return send(200, { type: item.type, email: item.email, access_token: FakeCpa.token(name), refresh_token: `fake-refresh-${name}`, ...(item.proxy_url !== undefined ? { proxy_url: item.proxy_url } : {}) })
         }
         if (route === '/auth-files/fields' && method === 'PATCH') {
-          const body = JSON.parse(raw || '{}') as { name?: string; proxy_url?: string }
+          const body = JSON.parse(raw || '{}') as { name?: string; proxy_url?: string; priority?: number }
           const item = this.credentials.get(String(body.name))
           if (!item) return send(404, { error: 'not found' })
           if (typeof body.proxy_url === 'string') item.proxy_url = body.proxy_url
+          if (typeof body.priority === 'number') item.priority = body.priority
           return send(200, { status: 'ok' })
         }
         if (route === '/proxy-url') {

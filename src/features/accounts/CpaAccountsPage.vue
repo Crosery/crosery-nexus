@@ -461,6 +461,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
               @reset="actions.reset(row)"
               @reauth="openAdd(row.provider?.id ?? null, row)"
               @proxy="actions.setProxy(row, $event)"
+              @weight="actions.setWeight(row, $event)"
               @remove="onRemove(row)"
               @cooled="refresh"
             />
@@ -524,6 +525,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
           compact
           @reset="actions.reset(detailRow)"
           @proxy="actions.setProxy(detailRow, $event)"
+          @weight="actions.setWeight(detailRow, $event)"
           @remove="onRemove(detailRow)"
         />
       </template>

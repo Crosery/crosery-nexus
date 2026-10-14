@@ -196,37 +196,37 @@ test('models upstream：表格与 --json 输出上游实际模型、次数与账
   assert.match(badDays.stderr, /--days/)
 })
 
-test('models priority：查询与修改调度优先级，参数校验与 --yes 要求', async () => {
+test('models weight：查询与修改调度权重，参数校验与 --yes 要求', async () => {
   const modelIndex = {
     models: [{
       id: 'gpt-5.6-luna',
       sources: [
-        { channel: 'codex', kind: 'oauth', priority: 100 },
-        { channel: 'openrouter', kind: 'compat', priority: 50 },
+        { channel: 'codex', kind: 'oauth', weight: 0 },
+        { channel: 'openrouter', kind: 'compat', weight: 5 },
       ],
     }],
   }
   const routes = {
     'GET /api/model-index': () => [200, modelIndex],
-    'PATCH /api/model-index/gpt-5.6-luna/sources/codex': (req) => [200, { ok: true, priority: req.body?.priority }],
+    'PATCH /api/model-index/gpt-5.6-luna/sources/codex': (req) => [200, { ok: true, weight: req.body?.weight }],
   }
 
   // 1. 查询
-  const getRes = await run(['models', 'priority', 'gpt-5.6-luna', 'codex'], routes)
+  const getRes = await run(['models', 'weight', 'gpt-5.6-luna', 'codex'], routes)
   assert.equal(getRes.code, 0, getRes.stderr)
-  assert.match(getRes.stdout, /优先级\s+100/)
+  assert.match(getRes.stdout, /权重\s+0/)
 
   // 2. 修改：缺少 --yes 退出 2
-  const noYes = await run(['models', 'priority', 'gpt-5.6-luna', 'codex', '200'], routes)
+  const noYes = await run(['models', 'weight', 'gpt-5.6-luna', 'codex', '2'], routes)
   assert.equal(noYes.code, 2)
 
   // 3. 修改：带 --yes 成功
-  const patchRes = await run(['models', 'priority', 'gpt-5.6-luna', 'codex', '200', '--yes'], routes)
+  const patchRes = await run(['models', 'weight', 'gpt-5.6-luna', 'codex', '2', '--yes'], routes)
   assert.equal(patchRes.code, 0, patchRes.stderr)
-  assert.ok(patchRes.calls.some(call => call.method === 'PATCH' && call.path.includes('gpt-5.6-luna')))
+  assert.ok(patchRes.calls.some(call => call.method === 'PATCH' && call.path.includes('gpt-5.6-luna') && call.body?.weight === 2))
 
   // 4. 缺少参数
-  const missing = await run(['models', 'priority', 'gpt-5.6-luna'], routes)
+  const missing = await run(['models', 'weight', 'gpt-5.6-luna'], routes)
   assert.equal(missing.code, 2)
 })
 

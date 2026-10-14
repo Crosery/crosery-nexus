@@ -144,6 +144,19 @@ export function useAccountActions(refresh: () => Promise<void> | void, egress?: 
     })
   }
 
+  /** 账号调度权重（越小越优先，默认 0）：同一账号池里的多个号按它分档，先用权重最小的一档。 */
+  async function setWeight(row: AccountView, weight: number) {
+    await run(row, 'weight', async () => {
+      try {
+        await api.setCredentialWeight(row.name, weight)
+        notify(`✓ 账号权重已设为 ${weight}`, { id: 'cx-acc-weight' })
+        await refresh()
+      } catch (error) {
+        fail('权重没改成', error)
+      }
+    })
+  }
+
   async function remove(row: AccountView, group: ProviderGroup | null): Promise<boolean> {
     const last = row.routable && group && group.routable <= 1
     const ok = await confirmSheet({
@@ -172,5 +185,5 @@ export function useAccountActions(refresh: () => Promise<void> | void, egress?: 
     return done
   }
 
-  return { busy, setRouting, reset, setProxy, remove }
+  return { busy, setRouting, reset, setProxy, setWeight, remove }
 }

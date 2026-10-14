@@ -7,7 +7,7 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncPolicy, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
+import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncPolicy, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourceWeight, setChannelWeight, setCredentialWeight } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -1310,15 +1310,30 @@ app.patch('/api/model-index/:model/sources/:channel', async (req, res) => {
       await setModelSourceEnabled(req.params.model, req.params.channel, kind, Boolean(req.body.enabled))
       addAudit(req.body.enabled ? 'enable_model_source' : 'disable_model_source', `${req.params.model}@${req.params.channel}`)
     }
-    if (req.body?.priority !== undefined && (typeof req.body?.priority === 'number' || typeof req.body?.priority === 'string')) {
-      const p = Math.max(0, Math.min(1000, Math.round(Number(req.body.priority) || 100)))
-      setModelSourcePriority(req.params.model, req.params.channel, kind, p)
-      addAudit('set_model_source_priority', `${req.params.model}@${req.params.channel}`, `priority=${p}`)
+    if (req.body?.weight !== undefined) {
+      const done = await setModelSourceWeight(req.params.channel, kind, req.body.weight)
+      addAudit('set_model_source_weight', `${req.params.model}@${req.params.channel}`, `weight=${done.weight}${kind === 'oauth' ? ` accounts=${'accounts' in done ? done.accounts : 0}` : ''}`)
     }
     invalidateControlPlaneCaches()
     await reconcileKeyModelAccess()
     res.json({ ok: true })
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' }) }
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(400).json({ error: error instanceof Error ? error.message : '操作失败' })
+  }
+})
+
+/** 渠道调度权重（越小越优先，默认 0）：写成 CPA 渠道条目的 priority，整个渠道一个值。 */
+app.patch('/api/channels/:name/weight', async (req, res) => {
+  try {
+    const done = await setChannelWeight(req.params.name, req.body?.weight)
+    invalidateControlPlaneCaches()
+    addAudit('set_channel_weight', req.params.name, `weight=${done.weight}`)
+    res.json({ ok: true, ...done })
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(502).json({ error: error instanceof Error ? error.message : '设置渠道权重失败' })
+  }
 })
 
 /** 路由层入参校验（task-61，纵深防御）：`:name` 必须是**单段文件名**，否则 400。 */
@@ -1385,6 +1400,22 @@ app.post('/api/credentials/models/:provider/disable', async (req, res) => {
   }
 })
 
+/** 单个订阅账号的调度权重（越小越优先，默认 0）：写成 auth 文件的 priority；同一账号池里的多个号按它分档。 */
+app.patch('/api/credentials/:name/weight', async (req, res) => {
+  try {
+    const name = requireCredentialName(req, res)
+    if (!name) return
+    if (!(await listCredentials()).some((credential) => credential.name === name)) return res.status(404).json({ error: '账号不存在', reason: 'credential_not_found' })
+    const done = await setCredentialWeight(name, req.body?.weight)
+    invalidateControlPlaneCaches()
+    addAudit('set_credential_weight', name, `weight=${done.weight}`)
+    res.json({ ok: true, ...done })
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(502).json({ error: error instanceof Error ? error.message : '设置账号权重失败' })
+  }
+})
+
 app.delete('/api/credentials/:name', async (req, res) => {
   try {
     const name = requireCredentialName(req, res)
@@ -1444,14 +1475,18 @@ app.get('/api/shared-models', async (_req, res) => {
 
 app.post('/api/shared-models', async (req, res) => {
   try {
-    const modelId = String(req.body?.modelId || '').trim()
-    if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' })
+    // 单个 `modelId` 或一批 `modelIds`（添加弹窗一次勾多个：只存一次、只对账一次）
+    const asked = Array.isArray(req.body?.modelIds) ? req.body.modelIds : [req.body?.modelId]
+    const ids = [...new Set(asked.map((value: unknown) => String(value ?? '').trim()).filter(Boolean))] as string[]
+    if (!ids.length) return res.status(400).json({ error: '模型 ID 不能为空' })
+    if (ids.length > 500 || ids.some((id) => id.length > 300 || /[\u0000-\u001f]/.test(id))) return res.status(400).json({ error: '模型 ID 不合法' })
     const current = getCustomSharedModels()
-    if (!current.includes(modelId)) {
-      saveCustomSharedModels([...current, modelId])
+    const fresh = ids.filter((id) => !current.includes(id))
+    if (fresh.length) {
+      saveCustomSharedModels([...current, ...fresh])
       invalidateControlPlaneCaches()
       reconcileKeyModelAccess().catch(() => undefined)
-      addAudit('add_shared_model', modelId)
+      addAudit('add_shared_model', fresh.length === 1 ? fresh[0] : `${fresh.length} 个模型`, fresh.length === 1 ? undefined : fresh.slice(0, 20).join(', '))
     }
     const groups = await listGroups()
     const active = defaultOpenModels(groups, getCustomSharedModels())

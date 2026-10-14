@@ -4,6 +4,7 @@ import { TxButton } from '@talex-touch/tuffex/button'
 import { TxInput } from '@talex-touch/tuffex/input'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import FilterField from '../../ui/form/FilterField.vue'
+import WeightField from '../../ui/form/WeightField.vue'
 import TickStrip from '../../ui/viz/TickStrip.vue'
 import ShareBar from '../../ui/viz/ShareBar.vue'
 import { fmtCompact, fmtInt } from '../../ui/fmt'
@@ -35,9 +36,11 @@ const props = withDefaults(
   }>(),
   { share: null, busy: undefined, presets: () => [], egress: null, compact: false },
 )
-const emit = defineEmits<{ reset: []; proxy: [url: string]; remove: [] }>()
+const emit = defineEmits<{ reset: []; proxy: [url: string]; weight: [weight: number]; remove: [] }>()
 const { on: masked } = useMask()
 
+/** 调度权重 = -CPA priority：越小越优先，默认 0 */
+const weight = computed(() => (props.row.priority ? -props.row.priority : 0))
 const meterW = computed(() => (props.compact ? 96 : 120))
 const resettable = computed(() => Boolean(props.row.provider?.resettable))
 
@@ -175,6 +178,7 @@ function saveCustom() {
       />
       <EgressTag v-if="badge && choice !== CUSTOM && !pickedEntry" class="acc-x__eg" :badge="badge" bare />
       <TxButton v-if="read.state === 'error'" variant="secondary" size="sm" :disabled="Boolean(busy)" @click="readProxy(row.name, row.type)">重读</TxButton>
+      <WeightField class="acc-x__weight" :model-value="weight" label="账号调度权重" :disabled="Boolean(busy)" hint="同一账号池里的多个号：先用权重最小的一档，同档轮询 · 默认 0" @commit="emit('weight', $event)" />
       <span v-if="choice === CUSTOM" class="acc-x__custom">
         <TxInput v-model="draft" type="url" inputmode="url" autocomplete="off" spellcheck="false" :placeholder="current && choice === CUSTOM ? '新地址 · socks5://host:port' : 'socks5://host:port'" aria-label="自定义代理地址" @keydown.enter.prevent="saveCustom" />
         <TxButton variant="secondary" size="sm" :disabled="!draftOk || Boolean(busy)" @click="saveCustom">保存</TxButton>

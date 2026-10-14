@@ -114,10 +114,17 @@ export const adminApi = {
     `/api/cache-live?limit=${limit}${model ? `&model=${encodeURIComponent(model)}` : ''}${client ? `&client=${encodeURIComponent(client)}` : ''}${keyId ? `&keyId=${encodeURIComponent(keyId)}` : ''}${provider ? `&provider=${encodeURIComponent(provider)}` : ''}`,
   setModelSourceEnabled: (model: string, channel: string, kind: 'compat' | 'oauth', enabled: boolean) =>
     request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, enabled }) }),
-  setModelSourcePriority: (model: string, channel: string, kind: 'compat' | 'oauth', priority: number) =>
-    request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, priority }) }),
+  /** 来源权重：兼容渠道 = 渠道权重（整个渠道一个值）；账号池 = 池里全部账号设成同一个值 */
+  setModelSourceWeight: (model: string, channel: string, kind: 'compat' | 'oauth', weight: number) =>
+    request(`/api/model-index/${encodeURIComponent(model)}/sources/${encodeURIComponent(channel)}`, { method: 'PATCH', body: JSON.stringify({ kind, weight }) }),
+  setChannelWeight: (name: string, weight: number) =>
+    request<{ ok: boolean; weight: number }>(`/api/channels/${encodeURIComponent(name)}/weight`, { method: 'PATCH', body: JSON.stringify({ weight }) }),
+  setCredentialWeight: (name: string, weight: number) =>
+    request<{ ok: boolean; weight: number }>(`/api/credentials/${encodeURIComponent(name)}/weight`, { method: 'PATCH', body: JSON.stringify({ weight }) }),
   sharedModels: () => request<{ defaultModels: string[]; customModels: string[]; activeModels: string[] }>('/api/shared-models'),
   addSharedModel: (modelId: string) => request<{ ok: boolean; activeModels: string[] }>('/api/shared-models', { method: 'POST', body: JSON.stringify({ modelId }) }),
+  /** 一次共享一批模型（添加弹窗勾多个）：只存一次、只对账一次 */
+  addSharedModels: (modelIds: string[]) => request<{ ok: boolean; activeModels: string[] }>('/api/shared-models', { method: 'POST', body: JSON.stringify({ modelIds }) }),
   removeSharedModel: (modelId: string) => request<{ ok: boolean; activeModels: string[] }>(`/api/shared-models/${encodeURIComponent(modelId)}`, { method: 'DELETE' }),
   /** fresh=true is honoured at most once per 60s per endpoint server-side. */
   version: (fresh = false) => request<VersionsData>(`/api/version${fresh ? '?fresh=1' : ''}`),

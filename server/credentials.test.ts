@@ -7,8 +7,8 @@ test('summarizes auth-files without downloading every credential', () => {
     { name: 'codex.json', type: 'codex', disabled: false, status: 'ok', email: 'a@example.com', proxy_url: 'direct' },
     { filename: 'xai.json', provider: 'xai', disabled: true, account: 'xAI 1' },
   ]), [
-    { name: 'codex.json', type: 'codex', disabled: false, status: 'ok', label: 'a@example.com', modelCount: 0, models: [], proxyUrl: 'direct' },
-    { name: 'xai.json', type: 'xai', disabled: true, status: '', label: 'xAI 1', modelCount: 0, models: [], proxyUrl: '' },
+    { name: 'codex.json', type: 'codex', disabled: false, status: 'ok', label: 'a@example.com', modelCount: 0, models: [], proxyUrl: 'direct', weight: 0 },
+    { name: 'xai.json', type: 'xai', disabled: true, status: '', label: 'xAI 1', modelCount: 0, models: [], proxyUrl: '', weight: 0 },
   ])
 })
 

@@ -11,6 +11,7 @@ import SearchField from '../../ui/form/SearchField.vue'
 import Switch from '../../ui/form/Switch.vue'
 import SecretField from '../../ui/form/SecretField.vue'
 import FilterField from '../../ui/form/FilterField.vue'
+import WeightField from '../../ui/form/WeightField.vue'
 import TickStrip from '../../ui/viz/TickStrip.vue'
 import Icon from '../../ui/Icon.vue'
 import PulledModelsDialog, { type PulledModelRow } from '../models/PulledModelsDialog.vue'
@@ -50,6 +51,8 @@ const props = defineProps<{
   presets?: ProxyPreset[]
   /** 写渠道出口；成功返回 true（页面负责提示和刷新） */
   setProxy?: (channel: ChannelItem, write: ChannelProxyWrite) => Promise<boolean>
+  /** 写渠道调度权重（越小越优先）；成功返回 true */
+  setWeight?: (channel: ChannelItem, weight: number) => Promise<boolean>
   addKey: (channel: ChannelItem, apiKey: string) => Promise<boolean>
   removeKey: (channel: ChannelItem, ref: string) => Promise<boolean>
 }>()
@@ -285,6 +288,16 @@ async function onRemoveKey(ref: string) {
 }
 
 /* ── 出口代理：和账号一样的下拉（继承 / 直连 / 代理池出口 / 预设 / 自定义），自定义地址填完点保存 ── */
+const weightBusy = ref(false)
+async function onWeight(weight: number) {
+  if (!shown.value || !props.setWeight || weightBusy.value) return
+  weightBusy.value = true
+  try {
+    await props.setWeight(shown.value, weight)
+  } finally {
+    weightBusy.value = false
+  }
+}
 const proxyBusy = ref(false)
 const proxyDraft = ref('')
 const customOpen = ref(false)
@@ -370,6 +383,14 @@ function saveCustom() {
           </p>
           <pre v-if="lastError.detail" class="cx-sheet__detail">{{ lastError.detail }}</pre>
         </div>
+      </section>
+
+      <section v-if="setWeight" class="cx-sheet__sec" aria-labelledby="cx-sec-weight">
+        <div class="cx-sheet__sech">
+          <h3 id="cx-sec-weight" class="cx-sheet__h">调度权重</h3>
+          <WeightField :model-value="shown.weight ?? 0" label="渠道调度权重" :disabled="weightBusy || !shown.enabled" hint="整个渠道一个权重，影响它的所有模型" @commit="onWeight" />
+        </div>
+        <p class="cx-sheet__note">同一个模型名在多个渠道（或订阅账号池）里都有时，网关先用权重最小的一档，同档内轮询；权重大的只在小的都不可用时兜底 · 默认 0</p>
       </section>
 
       <section v-if="setProxy" class="cx-sheet__sec" aria-labelledby="cx-sec-proxy">
