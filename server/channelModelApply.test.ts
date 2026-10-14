@@ -65,3 +65,46 @@ test('拉取模型的勾选结果一次写入；自动同步开关随渠道列�
     await cpa.stop()
   }
 })
+
+/** 账号池「拉取模型」弹窗没勾的新模型：一次读写 oauth-excluded-models，别的账号池的停用不受影响。 */
+test('账号池批量停用新模型一次写 oauth-excluded-models', { timeout: 120_000 }, async () => {
+  const cpa = await startContractCpa()
+  const base = cpa.extra
+  let excluded: Record<string, string[]> = { claude: ['claude-old'] }
+  let puts = 0
+  cpa.extra = (method, route, url, raw) => {
+    if (route === '/oauth-excluded-models' && method === 'GET') return { status: 200, body: { 'oauth-excluded-models': excluded } }
+    if (route === '/oauth-excluded-models' && method === 'PUT') {
+      puts += 1
+      excluded = JSON.parse(raw || '{}') as Record<string, string[]>
+      return { status: 200, body: { status: 'ok' } }
+    }
+    return base?.(method, route, url, raw)
+  }
+  const app = await launchConsole({ CPA_BASE_URL: cpa.base, CPA_MANAGEMENT_KEY: cpa.key })
+  try {
+    const disable = (provider: string, body: unknown) => app.send('POST', `/api/credentials/models/${provider}/disable`, { cookie: app.adminCookie, body })
+
+    const first = await disable('codex', { disable: ['gpt-5.1-codex', 'gpt-5.1-codex'] })
+    assert.equal(first.status, 200, first.text)
+    assert.equal(first.body.disabled, 1)
+    assert.equal(puts, 1)
+    assert.deepEqual(excluded, { claude: ['claude-old'], codex: ['gpt-5.1-codex'] })
+
+    const index = await app.send('GET', '/api/model-index?fresh=1', { cookie: app.adminCookie })
+    assert.equal(index.status, 200, index.text)
+    const source = (index.body.models as Array<{ id: string; sources: Array<{ channel: string; kind: string; enabled: boolean }> }>)
+      .find(model => model.id === 'gpt-5.1-codex')?.sources.find(item => item.channel === 'codex' && item.kind === 'oauth')
+    assert.equal(source?.enabled, false)
+
+    const again = await disable('codex', { disable: ['gpt-5.1-codex'] })
+    assert.equal(again.body.disabled, 0, '已停用的不重复计')
+    assert.equal((await disable('nope', { disable: ['x'] })).status, 404)
+    assert.equal((await disable('codex', { disable: [] })).status, 400)
+    assert.equal((await disable('codex', { disable: 'gpt-5.1' })).status, 400)
+    assert.equal(puts, 2, '校验失败不写')
+  } finally {
+    await app.stop()
+    await cpa.stop()
+  }
+})

@@ -93,6 +93,9 @@ export const adminApi = {
    */
   refreshCredentialModels: () =>
     request<{ ok: boolean; providers: string[]; totalModels: number; degraded: string[]; reconciled: boolean }>('/api/credentials/models/refresh', { method: 'POST' }),
+  /** 账号池「拉取模型」弹窗里没勾的新模型：一次写进 oauth-excluded-models */
+  disableProviderModels: (provider: string, models: string[]) =>
+    request<{ ok: boolean; disabled: number; reconciled: boolean }>(`/api/credentials/models/${encodeURIComponent(provider)}/disable`, { method: 'POST', body: JSON.stringify({ disable: models }) }),
   deleteCredential: (name: string) => request(`/api/credentials/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   credentialProxy: (name: string) => request<{ proxyUrl: string }>(`/api/credentials/${encodeURIComponent(name)}/proxy`),
   setCredentialProxy: (name: string, proxyUrl: string) =>

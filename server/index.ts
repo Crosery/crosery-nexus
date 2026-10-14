@@ -7,7 +7,7 @@ import { parseUsageSnapshot, type UsageSnapshot } from '../packages/contracts/in
 import { config } from './config.js'
 import { addAudit, db } from './db.js'
 import { addProviderApiKey, apiCall, cancelOAuthSession, CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, claimClaudeResetCredit, claudeHeaders, clearAuthFileCooldown, consumeCodexResetCredit, createPluginRoutes, getAuthFileProxy, getCodexResetCredits, getConsoleVersion, getCPAKeys, getCpaVersion, getGlobalProxy, getOAuthStatus, hashKey, isUnsupportedManagementEndpoint, listAuthFiles, maskKey, pinProbeKeyChannels, registerProbeKeys, replaceCPAKeys, startOAuthLogin, submitOAuthCallback, uploadAuthFile } from './cpa.js'
-import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, readAutoSyncChannels, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
+import { addChannelApiKey, applyChannelModelChanges, ChannelKeyError, disableOAuthModels, readAutoSyncChannels, setChannelAutoSync, createChannel, discoverChannelModels, invalidateGatewaySnapshot, listChannels, listCredentials, listGroupCatalog, listGroups, listGroupsForReporting, listModelIndex, pruneStaleChannels, refreshCredentialModels, removeChannel, removeChannelApiKey, removeCredential, setChannelEnabled, setChannelModelEnabled, setChannelProxy, setCredentialEnabled, setCredentialProxy, setModelSourceEnabled, setModelSourcePriority } from './channels.js'
 import { createSessionGuard, setKeySessionLookup } from './auth.js'
 import { errorResponseBody, keyLoginRateLimitKey, publicUsageKnownGood, publicUsageRateLimiter } from './security.js'
 import { findKeyByPresentedValue, keySessionState } from './keySession.js'
@@ -1347,6 +1347,24 @@ app.post('/api/credentials/models/refresh', async (_req, res) => {
     res.json({ ok: true, providers, totalModels, degraded, reconciled })
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : '读取账号模型目录失败' })
+  }
+})
+
+/** 账号池「拉取模型」弹窗的提交：没勾的新模型一次写进 oauth-excluded-models（勾上的本来就由网关下发，不用写）。 */
+app.post('/api/credentials/models/:provider/disable', async (req, res) => {
+  const provider = String(req.params.provider)
+  try {
+    const done = await disableOAuthModels(provider, req.body)
+    invalidateControlPlaneCaches()
+    const reconciled = await reconcileKeyModelAccess().then(() => true, (error: unknown) => {
+      console.warn(`[credentials] ${provider} 批量停用模型后的 Key 授权对账失败，下一轮同步会补上: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    })
+    addAudit('disable_oauth_models', provider, `requested=${Array.isArray(req.body?.disable) ? req.body.disable.length : 0}, disabled=${done.disabled}, reconciled=${reconciled}`)
+    res.json({ ok: true, ...done, reconciled })
+  } catch (error) {
+    if (error instanceof ChannelKeyError) return res.status(error.status).json({ error: error.message, reason: error.reason })
+    res.status(502).json({ error: error instanceof Error ? error.message : '停用模型失败' })
   }
 })
 

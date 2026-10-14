@@ -11,7 +11,7 @@ import Switch from '../../ui/form/Switch.vue'
 import SecretField from '../../ui/form/SecretField.vue'
 import TickStrip from '../../ui/viz/TickStrip.vue'
 import Icon from '../../ui/Icon.vue'
-import ChannelModelPicker from './ChannelModelPicker.vue'
+import PulledModelsDialog, { type PulledModelRow } from '../models/PulledModelsDialog.vue'
 import { useNow } from '../../ui/composables/useNow'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { paginate } from '../../lib/listState'
@@ -28,7 +28,7 @@ import {
 /**
  * Channel detail sheet (right 560px ≥960, bottom sheet below): health facts for the selected window, the newest
  * failure in plain words, the discovery probe, and the model mapping list with a per-model switch.
- * Models a person turns off stay off. 拉取模型 = probe (no write) → pick from the upstream list → one apply.
+ * Models a person turns off stay off. 拉取模型 = probe (no write) → tick new models in a dialog → one apply.
  * Mutations belong to the page (it owns the lists); `toggleModel` resolves true on success.
  */
 const props = defineProps<{
@@ -54,12 +54,10 @@ const now = useNow()
 const { isMobile } = useBreakpoint()
 const PAGE = 50
 const pulling = ref(false)
-/** the pull result being picked; while it is open the model section shows the picker instead of the switches */
+/** the pull result being picked in the dialog; only new models can be ticked, nothing is ticked up front */
 const picker = ref<{ channel: string; preview: ChannelModelPreview; selected: Set<string> } | null>(null)
+const pickOpen = ref(false)
 const applying = ref(false)
-
-/** what is checked by default: keep everything as it is now, take the new ones, keep what the upstream no longer lists */
-const defaultPicked = (rows: ChannelModelPreviewRow[]) => new Set(rows.filter((row) => row.state !== 'off').map((row) => row.id))
 
 async function onPull() {
   if (!shown.value || pulling.value || !props.previewModels) return
@@ -67,49 +65,67 @@ async function onPull() {
   const channel = shown.value
   try {
     const preview = await props.previewModels(channel)
-    if (preview && shown.value?.name === channel.name) picker.value = { channel: channel.name, preview, selected: defaultPicked(preview.rows) }
+    if (preview && shown.value?.name === channel.name) {
+      picker.value = { channel: channel.name, preview, selected: new Set() }
+      pickOpen.value = true
+    }
   } finally {
     pulling.value = false
   }
 }
 
+const HAVE_TAG: Record<Exclude<ChannelModelPreviewRow['state'], 'new'>, { tag: string; title: string }> = {
+  on: { tag: '已接入', title: '渠道里已经有、开着' },
+  off: { tag: '已停用', title: '之前人工停用 · 要用就在模型列表里开回' },
+  gone: { tag: '上游没列', title: '渠道里有、这次上游列表里没有 · 可能已下架，也可能是上游不列的隐藏模型' },
+}
+const pickRows = computed<PulledModelRow[]>(() => (picker.value?.preview.rows ?? []).map((row) => ({
+  id: row.id,
+  model: row.model,
+  sub: row.id !== row.model ? `上游 ${row.id}` : undefined,
+  fresh: row.state === 'new',
+  ...(row.state === 'new' ? {} : HAVE_TAG[row.state]),
+})))
+/* unticked new models only need a tombstone when auto-sync would otherwise add them back next round */
 const changes = computed<ChannelModelChanges | null>(() => {
   const p = picker.value
   if (!p) return null
   const out: ChannelModelChanges = { add: [], enable: [], disable: [], remove: [] }
   for (const row of p.preview.rows) {
+    if (row.state !== 'new') continue
     const on = p.selected.has(row.id)
-    if (row.state === 'new') out.add.push({ id: row.id, alias: row.model, enabled: on })
-    else if (row.state === 'on' && !on) out.disable.push(row.model)
-    else if (row.state === 'off' && on) out.enable.push(row.model)
-    else if (row.state === 'gone' && !on) out.remove.push(row.id)
+    if (on || shown.value?.autoSync) out.add.push({ id: row.id, alias: row.model, enabled: on })
   }
   return out
 })
-const changeWords = computed(() => {
-  const c = changes.value
-  if (!c) return ''
-  const taken = c.add.filter((item) => item.enabled).length
-  const parts = [
-    taken ? `接入 ${fmtInt(taken)}` : '',
-    c.add.length - taken ? `不接入 ${fmtInt(c.add.length - taken)}` : '',
-    c.enable.length ? `恢复 ${fmtInt(c.enable.length)}` : '',
-    c.disable.length ? `停用 ${fmtInt(c.disable.length)}` : '',
-    c.remove.length ? `摘掉 ${fmtInt(c.remove.length)}` : '',
-  ].filter(Boolean)
-  return parts.length ? parts.join(' · ') : '和渠道现状一致 · 没有要写入的'
+const taken = computed(() => changes.value?.add.filter((item) => item.enabled).length ?? 0)
+const declined = computed(() => (changes.value?.add.length ?? 0) - taken.value)
+const pickSummary = computed(() => {
+  const p = picker.value
+  if (!p) return ''
+  const listed = p.preview.rows.filter((row) => row.state !== 'gone').length
+  const fresh = p.preview.rows.filter((row) => row.state === 'new').length
+  return `上游返回 ${fmtInt(listed)} 个 · 新增 ${fmtInt(fresh)} 个 · ${fmtClock(p.preview.probedAt, now.value)} 探测`
 })
-const hasChanges = computed(() => {
-  const c = changes.value
-  return Boolean(c && (c.add.length || c.enable.length || c.disable.length || c.remove.length))
+const pickHint = computed(() => {
+  const fresh = picker.value?.preview.rows.filter((row) => row.state === 'new').length ?? 0
+  if (!fresh) return '渠道已经有上游列出的全部模型'
+  const rest = fresh - taken.value
+  if (!rest) return `${fmtInt(taken.value)} 个新模型全部接入`
+  if (!taken.value && !shown.value?.autoSync) return '勾上要接入的新模型'
+  return shown.value?.autoSync
+    ? `没勾的 ${fmtInt(rest)} 个记为停用 · 自动同步不会再加回`
+    : `没勾的 ${fmtInt(rest)} 个不接入 · 下次拉取还会列出`
 })
 
 async function onApply() {
-  const p = picker.value
-  if (!shown.value || !p || !changes.value || !hasChanges.value || applying.value || !props.applyModels) return
+  if (!shown.value || !changes.value?.add.length || applying.value || !props.applyModels) return
   applying.value = true
   try {
-    if (await props.applyModels(shown.value, changes.value)) picker.value = null
+    if (await props.applyModels(shown.value, changes.value)) {
+      pickOpen.value = false
+      picker.value = null
+    }
   } finally {
     applying.value = false
   }
@@ -142,6 +158,7 @@ watch(open, (isOpen) => {
   if (!isOpen) {
     newKey.value = ''
     keySecret.value?.mask()
+    pickOpen.value = false
     picker.value = null
   }
 })
@@ -155,6 +172,7 @@ watch(() => shown.value?.name, () => {
   page.value = 1
   newKey.value = ''
   keySecret.value?.mask()
+  pickOpen.value = false
   picker.value = null
 })
 watch([q, filter], () => { page.value = 1 })
@@ -431,15 +449,7 @@ async function onToggleProxy() {
         <p class="cx-sheet__note">人工停用的模型不会被自动同步恢复 · 聚合渠道（上游列表里大多是付费模型）别开自动同步，用「拉取模型」挑</p>
       </section>
 
-      <section v-if="picker" class="cx-sheet__sec" aria-labelledby="cx-sec-pick">
-        <h3 id="cx-sec-pick" class="cx-sheet__h">
-          拉取结果 <span class="dim num">上游返回 {{ fmtInt(picker.preview.rows.filter((row) => row.state !== 'gone').length) }} 个 · {{ fmtClock(picker.preview.probedAt, now) }}</span>
-        </h3>
-        <p class="cx-sheet__note">勾上的接入并开着 · 新模型不勾记为人工停用 · 「上游没有」的不勾就从渠道摘掉 · 点「应用」才写入</p>
-        <ChannelModelPicker v-model="picker.selected" :rows="picker.preview.rows" />
-      </section>
-
-      <section v-else class="cx-sheet__sec" aria-labelledby="cx-sec-models">
+      <section class="cx-sheet__sec" aria-labelledby="cx-sec-models">
         <h3 id="cx-sec-models" class="cx-sheet__h">模型 <span class="dim num">{{ fmtInt(counts.on) }} / {{ fmtInt(counts.total) }} 开着</span></h3>
         <p v-if="!shown.enabled" class="cx-sheet__note">渠道停用中 · 启用后才能单独开关模型</p>
         <div class="cx-sheet__tools">
@@ -466,15 +476,22 @@ async function onToggleProxy() {
       </section>
     </div>
 
+    <PulledModelsDialog
+      v-if="picker"
+      v-model="pickOpen"
+      v-model:selected="picker.selected"
+      :title="`拉取模型 · ${picker.channel}`"
+      :summary="pickSummary"
+      :rows="pickRows"
+      :hint="pickHint"
+      :confirm-text="taken ? `接入 ${fmtInt(taken)} 个` : declined ? '都不接入' : '接入'"
+      :can-apply="Boolean(changes?.add.length)"
+      :busy="applying"
+      @apply="onApply"
+    />
+
     <template #footer="{ close }">
-      <div v-if="shown && picker" class="cx-sheet__foot">
-        <span class="cx-sheet__foot-hint num">{{ changeWords }}</span>
-        <span class="cx-sheet__foot-r">
-          <TxButton variant="secondary" :disabled="applying" @click="picker = null">取消</TxButton>
-          <TxButton variant="primary" :loading="applying" :disabled="!hasChanges" @click="onApply">应用</TxButton>
-        </span>
-      </div>
-      <div v-else-if="shown" class="cx-sheet__foot">
+      <div v-if="shown" class="cx-sheet__foot">
         <!-- the destructive confirm (signal) lives in the confirm sheet; this only opens it -->
         <TxButton variant="ghost" class="cx-sheet__del" :disabled="pending.has(shown.name)" @click="emit('delete', shown)">删除渠道</TxButton>
         <span class="cx-sheet__foot-r">
@@ -483,7 +500,7 @@ async function onToggleProxy() {
             class="cx-sheet__pull"
             :loading="pulling"
             :disabled="!shown.enabled || shown.stale || !previewModels"
-            :title="shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 先列出来勾选，应用后才写入' : '停用渠道不探测上游'"
+            :title="shown.enabled ? '向这个渠道的上游发一次 /models 探测 · 弹窗里勾选新模型，确定后才写入' : '停用渠道不探测上游'"
             @click="onPull"
           ><Icon name="refresh" :size="14" />拉取模型</TxButton>
           <TxButton variant="secondary" @click="close">关闭</TxButton>
@@ -545,7 +562,6 @@ html:root .cx-key .tx-button.cx-key__del:hover:not(.disabled) { color: var(--sig
 .cx-keys__add .ui-secret { flex: 1 1 auto; min-width: 0; }
 .cx-sheet__foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
 .cx-sheet__foot-r { display: inline-flex; gap: 8px; flex: none; }
-.cx-sheet__foot-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--ink-2); }
 .cx-sheet__auto { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; margin-bottom: 4px; }
 .cx-sheet__auto-l { display: grid; gap: 2px; min-width: 0; }
 .cx-sheet__auto-t { font-size: var(--fs-sm); color: var(--ink); }

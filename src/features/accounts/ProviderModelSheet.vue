@@ -8,6 +8,7 @@ import Segmented from '../../ui/form/Segmented.vue'
 import Switch from '../../ui/form/Switch.vue'
 import Icon from '../../ui/Icon.vue'
 import Pager from '../../ui/data/Pager.vue'
+import PulledModelsDialog, { type PulledModelRow } from '../models/PulledModelsDialog.vue'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { paginate } from '../../lib/listState'
 import { fmtInt } from '../../ui/fmt'
@@ -24,11 +25,14 @@ const props = defineProps<{
   group: ProviderGroup | null
   models: ProviderModelItem[]
   loading?: boolean
+  /** 重读网关目录；返回拉取前已有的模型 id 和拉取后的列表，null = 失败（页面已经提示过） */
+  pullModels?: () => Promise<{ before: Set<string>; after: ProviderModelItem[] } | null>
+  /** 弹窗里没勾的新模型一次停用；成功返回 true */
+  disableModels?: (models: string[]) => Promise<boolean>
 }>()
 
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{
-  pull: [provider: string]
   toggle: [model: string, enabled: boolean]
 }>()
 
@@ -80,15 +84,55 @@ const currentPage = computed({
   set: (next: number) => { page.value = next },
 })
 
+/* 账号池的新模型网关一拉到就在下发，所以弹窗里新模型默认勾着（= 保持现状）；取消勾选的才写进停用 */
+const pick = ref<{ rows: PulledModelRow[]; selected: Set<string> } | null>(null)
+const pickOpen = ref(false)
+const applying = ref(false)
+
 async function onPull() {
-  if (!props.provider || pulling.value) return
+  if (!props.provider || pulling.value || !props.pullModels) return
   pulling.value = true
+  const provider = props.provider.id
   try {
-    emit('pull', props.provider.id)
+    const pulled = await props.pullModels()
+    if (!pulled || props.provider?.id !== provider || !open.value) return
+    const rows = pulled.after.map((m): PulledModelRow => {
+      const fresh = m.enabled && !pulled.before.has(m.id)
+      return fresh
+        ? { id: m.id, model: m.id, fresh }
+        : { id: m.id, model: m.id, fresh, tag: m.enabled ? '已开着' : '已停用', tagTitle: m.enabled ? '拉取前就在列表里、开着' : '人工停用 · 要用就在模型列表里开回' }
+    })
+    pick.value = { rows, selected: new Set(rows.filter((row) => row.fresh).map((row) => row.id)) }
+    pickOpen.value = true
   } finally {
     pulling.value = false
   }
 }
+
+const freshCount = computed(() => pick.value?.rows.filter((row) => row.fresh).length ?? 0)
+const dropped = computed(() => (pick.value ? pick.value.rows.filter((row) => row.fresh && !pick.value!.selected.has(row.id)).map((row) => row.id) : []))
+const pickSummary = computed(() => `网关目录 ${fmtInt(pick.value?.rows.length ?? 0)} 个 · 新增 ${fmtInt(freshCount.value)} 个`)
+const pickHint = computed(() => {
+  if (!freshCount.value) return '没有新模型 · 列表里的都已经有了'
+  if (!dropped.value.length) return `${fmtInt(freshCount.value)} 个新模型网关已在下发 · 全部保留`
+  return `没勾的 ${fmtInt(dropped.value.length)} 个会停用 · 之后可在模型列表开回`
+})
+
+async function onApplyPick() {
+  if (applying.value) return
+  if (!dropped.value.length) {
+    pickOpen.value = false
+    return
+  }
+  if (!props.disableModels) return
+  applying.value = true
+  try {
+    if (await props.disableModels(dropped.value)) pickOpen.value = false
+  } finally {
+    applying.value = false
+  }
+}
+watch(open, (isOpen) => { if (!isOpen) pickOpen.value = false })
 
 async function onToggle(modelId: string, next: boolean) {
   if (pendingModels.value.has(modelId)) return
@@ -131,7 +175,8 @@ async function onToggle(modelId: string, next: boolean) {
             size="small"
             class="pms-pull-btn"
             :loading="pulling || props.loading"
-            title="从网关重读该账号池的最新模型目录（按凭据动态下发）"
+            :disabled="!pullModels"
+            title="从网关重读该账号池的最新模型目录（按凭据动态下发）· 弹窗里挑新模型"
             @click="onPull"
           >
             <Icon name="refresh" :size="14" />拉取最新模型
@@ -161,6 +206,20 @@ async function onToggle(modelId: string, next: boolean) {
         <Pager v-model:page="currentPage" :total="filteredModels.length" :page-size="PAGE" />
       </section>
     </div>
+
+    <PulledModelsDialog
+      v-if="pick"
+      v-model="pickOpen"
+      v-model:selected="pick.selected"
+      :title="`拉取模型 · ${provider?.name ?? ''}`"
+      :summary="pickSummary"
+      :rows="pick.rows"
+      :hint="pickHint"
+      :confirm-text="dropped.length ? `保留 ${fmtInt(freshCount - dropped.length)} · 停用 ${fmtInt(dropped.length)}` : '全部保留'"
+      :can-apply="true"
+      :busy="applying"
+      @apply="onApplyPick"
+    />
 
     <template #footer="{ close }">
       <div class="pms-foot">

@@ -291,17 +291,42 @@ const currentProviderModels = computed<ProviderModelItem[]>(() => {
   return list.sort((a, b) => a.id.localeCompare(b.id))
 })
 
-async function handlePullProviderModels() {
+/* 账号池抽屉的「拉取最新模型」：拉取前先记下已有的模型，弹窗只让勾新出现的 */
+async function pullProviderModels(): Promise<{ before: Set<string>; after: ProviderModelItem[] } | null> {
+  const pId = selectedProviderInfo.value?.id
+  if (!pId || pullingModels.value) return null
   pullingModels.value = true
   try {
+    if (!providerModelIndex.value) providerModelIndex.value = await api.modelIndex()
+    const before = new Set(currentProviderModels.value.map((m) => m.id))
     const result = await api.refreshCredentialModels()
-    notify(`✓ 已从网关拉取最新模型 · ${result.totalModels} 个模型`, { id: 'cx-acc-pull' })
-    await refresh()
+    if (result.degraded.includes(pId)) {
+      notify(`◇ ${pId} 这次没返回模型目录 · 显示上次读到的`, { tone: 'warn', id: 'cx-acc-pull-degraded' })
+    }
+    if (!result.reconciled) notify('◇ Key 模型白名单这次没同步上 · 下一轮定时同步会补', { tone: 'warn', id: 'cx-acc-pull-reconcile' })
     providerModelIndex.value = await api.modelIndex(true)
+    void refresh()
+    return selectedProviderInfo.value?.id === pId ? { before, after: currentProviderModels.value } : null
   } catch (error) {
     notify(`◆ 拉取模型失败 · ${describeError(error).title}`, { tone: 'bad', id: 'cx-acc-pull' })
+    return null
   } finally {
     pullingModels.value = false
+  }
+}
+
+async function disableProviderModels(models: string[]): Promise<boolean> {
+  const pId = selectedProviderInfo.value?.id
+  if (!pId) return false
+  try {
+    const done = await api.disableProviderModels(pId, models)
+    notify(`✓ ${pId} · 停用 ${fmtInt(done.disabled)} 个新模型`, { id: 'cx-acc-pull' })
+    if (!done.reconciled) notify('◇ Key 模型白名单这次没同步上 · 下一轮定时同步会补', { tone: 'warn', id: 'cx-acc-pull-reconcile' })
+    providerModelIndex.value = await api.modelIndex(true)
+    return true
+  } catch (error) {
+    notify(`◆ 停用失败 · ${describeError(error).title}`, { tone: 'bad', id: 'cx-acc-pull' })
+    return false
   }
 }
 
@@ -517,7 +542,8 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       :group="selectedProviderGroup"
       :models="currentProviderModels"
       :loading="pullingModels"
-      @pull="handlePullProviderModels"
+      :pull-models="pullProviderModels"
+      :disable-models="disableProviderModels"
       @toggle="handleToggleProviderModel"
     />
   </div>

@@ -783,13 +783,36 @@ export async function listGroupsForReporting() {
 export async function setModelSourceEnabled(model: string, channel: string, kind: 'compat' | 'oauth', enabled: boolean) {
   invalidateGatewaySnapshot()
   if (kind === 'compat') return setChannelModelEnabled(channel, model, enabled)
+  await setOAuthModelsEnabled(channel, [model], enabled)
+}
+
+/** 一次读写 oauth-excluded-models 改一批模型（账号池「拉取模型」弹窗里没勾的新模型），不逐个模型各写一次整表。 */
+async function setOAuthModelsEnabled(provider: string, models: string[], enabled: boolean) {
   const excluded = await getExcludedModels()
-  const current = new Set(excluded[channel] || [])
-  if (enabled) current.delete(model)
-  else current.add(model)
-  const next = { ...excluded, [channel]: [...current] }
-  if (!next[channel].length) delete next[channel]
+  const current = new Set(excluded[provider] || [])
+  for (const model of models) {
+    if (enabled) current.delete(model)
+    else current.add(model)
+  }
+  const next = { ...excluded, [provider]: [...current] }
+  if (!next[provider].length) delete next[provider]
   await putExcludedModels(next)
+}
+
+/** 账号池批量停用模型：provider 必须是现有凭据的 type；返回实际新停用的个数（已停用的不重复计）。 */
+export async function disableOAuthModels(provider: string, input: unknown) {
+  const body = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  if (!Array.isArray(body.disable) || !body.disable.length || body.disable.length > MAX_MODEL_CHANGES) {
+    throw new ChannelKeyError(400, 'invalid_changes', `disable 必须是 1~${MAX_MODEL_CHANGES} 项的数组`)
+  }
+  const models = [...new Set(body.disable.map((value) => modelText(value, 'disable')))]
+  if (!(await listCredentials()).some((credential) => credential.type === provider)) {
+    throw new ChannelKeyError(404, 'channel_not_found', '账号池不存在')
+  }
+  invalidateGatewaySnapshot()
+  const before = new Set((await getExcludedModels())[provider] || [])
+  await setOAuthModelsEnabled(provider, models, false)
+  return { disabled: models.filter((model) => !before.has(model)).length }
 }
 
 /** 设置某个渠道对特定模型的调度优先级（0~1000，默认 100）。 */
