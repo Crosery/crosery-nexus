@@ -1,0 +1,13 @@
+[Unit]
+Description=Restart CPA / Console on request from the Console
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/crosery-api-console-current
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/opt/crosery-node-current/bin/node /opt/crosery-api-console-current/scripts/service-restart.mjs
+UMask=0077
+PrivateTmp=true
+ProtectHome=true

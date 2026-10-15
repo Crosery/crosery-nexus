@@ -36,3 +36,11 @@ export const pluginsApi = {
     request<Record<string, unknown>>(`/api/plugins/store/${encodeURIComponent(id)}/install`, { method: 'POST', body: JSON.stringify({ source: source ?? '' }) }),
   remove: (id: string) => request<Record<string, unknown>>(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
+
+export type RestartTarget = 'cpa' | 'console'
+export type RestartState = { target: RestartTarget; requestedAt: string; finishedAt?: string; result?: 'ok' | 'failed'; message?: string; pending: boolean }
+/** 重启请求由生产机上的 root 单元执行；这里只提交请求并读回结果。 */
+export const restartApi = {
+  status: (signal?: AbortSignal) => request<Partial<Record<RestartTarget, RestartState>>>('/api/services/restart', { signal }),
+  restart: (target: RestartTarget) => request<RestartState>(`/api/services/${target}/restart`, { method: 'POST' }),
+}

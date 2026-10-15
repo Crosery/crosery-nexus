@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import Plate from '../../ui/data/Plate.vue'
@@ -14,7 +14,7 @@ import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { notify } from '../../ui/feedback/toast'
 import { errorMessage } from '../../lib/errors'
 import { api } from '../../api'
-import type { InstalledPlugin, StorePlugin } from '../../api/plugins'
+import type { InstalledPlugin, RestartTarget, StorePlugin } from '../../api/plugins'
 import type { RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 
 /**
@@ -158,6 +158,49 @@ async function uninstall(row: Row) {
   if (ok) await mutate(row, () => api.plugins.remove(row.id), '卸载')
 }
 
+/* ── 重启：CPA 重启后插件才会加载；控制台重启后页面会短暂断开 ── */
+const restarting = ref<RestartTarget | null>(null)
+let restartTimer: ReturnType<typeof setTimeout> | undefined
+onScopeDispose(() => clearTimeout(restartTimer))
+
+async function restart(target: RestartTarget) {
+  const label = target === 'cpa' ? 'CPA 网关' : '控制台'
+  const ok = await confirmSheet({
+    title: `重启${label}？`,
+    body: target === 'cpa'
+      ? '正在进行的请求会被中断，几秒后恢复；已安装的插件会在重启后加载。'
+      : '页面会断开几秒，之后刷新即可；不影响 API 请求。',
+    confirmText: '重启',
+    danger: true,
+  })
+  if (!ok) return
+  restarting.value = target
+  try {
+    await api.restart.restart(target)
+    notify(`已提交重启请求 · ${label}`)
+    pollRestart(target, Date.now())
+  } catch (error) {
+    restarting.value = null
+    notify(`◆ 重启失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
+  }
+}
+
+function pollRestart(target: RestartTarget, since: number) {
+  restartTimer = setTimeout(async () => {
+    try {
+      const state = (await api.restart.status())[target]
+      if (state && !state.pending && state.finishedAt && Date.parse(state.finishedAt) >= since - 5000) {
+        restarting.value = null
+        if (state.result === 'ok') { changed.value = false; notify(`✓ ${target === 'cpa' ? 'CPA 网关' : '控制台'}已重启`); refresh() }
+        else notify(`◆ 重启失败 · ${state.message || '未知原因'}`, { tone: 'bad' })
+        return
+      }
+    } catch { /* 控制台自己重启时短暂连不上，继续等 */ }
+    if (Date.now() - since < 90_000) pollRestart(target, since)
+    else { restarting.value = null; notify('◆ 90 秒内没有收到重启结果，请到服务器上确认', { tone: 'warn' }) }
+  }, 2500)
+}
+
 function refresh() {
   void Promise.all([installedLive.refresh(), storeLive.refresh()])
 }
@@ -168,10 +211,12 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
 <template>
   <Plate title="插件市场" flush>
     <template #actions>
+      <TxButton variant="ghost" size="small" :disabled="restarting !== null" @click="restart('console')">{{ restarting === 'console' ? '重启中…' : '重启控制台' }}</TxButton>
+      <TxButton :variant="needRestart ? 'primary' : 'ghost'" size="small" :disabled="restarting !== null" @click="restart('cpa')">{{ restarting === 'cpa' ? '重启中…' : '重启 CPA' }}</TxButton>
       <TxButton variant="subtle" size="small" @click="refresh">刷新</TxButton>
     </template>
 
-    <p v-if="needRestart" class="pg-note">有插件改动尚未生效：需重启 CPA 进程后才会注册或完全卸载，本页不会替你重启。</p>
+    <p v-if="needRestart" class="pg-note">有插件改动尚未生效：点右上角“重启 CPA”后才会注册或完全卸载。</p>
 
     <div class="ui-toolbar pg-toolbar">
       <SearchField v-model="query" placeholder="搜索插件、作者或标签" label="搜索插件" />

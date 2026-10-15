@@ -56,6 +56,7 @@ const errorStatusOr = (error: unknown, fallback: number): number => {
 }
 import { getKeyModelAccessState } from './managementCapability.js'
 import { reconcileKeyModelAccess, reconcileNginxUnlimitedAccess, startSync, withKeyAccessLock } from './sync.js'
+import { isRestartTarget, readRestartStatus, requestRestart } from './serviceRestart.js'
 import { modelAvailabilityEnabled, probeChatModel, runModelAvailabilityRound } from './modelAvailability.js'
 import { DEFAULT_OPEN_MODELS, defaultOpenModels, getCustomSharedModels, saveCustomSharedModels } from './keyModelAccess.js'
 import { TOTAL_CONCURRENCY_RULE, validatePolicy } from './policy.js'
@@ -1859,6 +1860,18 @@ app.get('/api/plugins', pluginRoutes.list)
 app.get('/api/plugins/store', pluginRoutes.store)
 app.post('/api/plugins/store/:id/install', pluginRoutes.install)
 app.delete('/api/plugins/:id', pluginRoutes.remove)
+app.get('/api/services/restart', (_req, res) => res.json(readRestartStatus(config.dataDir)))
+app.post('/api/services/:target/restart', (req, res) => {
+  const target = req.params.target
+  if (!isRestartTarget(target)) return res.status(404).json({ error: '不支持重启这个服务' })
+  try {
+    const status = requestRestart(config.dataDir, target)
+    addAudit('service-restart', target, '')
+    res.status(202).json(status)
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : '提交重启请求失败' })
+  }
+})
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }))
 
 const root = path.dirname(fileURLToPath(import.meta.url))
