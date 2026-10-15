@@ -164,6 +164,13 @@ test('install: same version is up to date; old backups are pruned to CPA_KEEP_BA
   assert.ok(left.includes(path.basename(out.backup)))
 })
 
+test('install: same version but different bytes (e.g. rebuilt with CGO_ENABLED=1) is installed, not skipped', async t => {
+  const h = await host(t)
+  const out = await h.install(binary(OLD, 'cgo rebuild'), OLD, { hook: false })
+  assert.equal(out.result, 'applied', out.stdout)
+  assert.match(out.live, /cgo rebuild/)
+})
+
 test('install: a stop timeout over 10 s (the systemd default is 90 s) is refused before anything is touched', async t => {
   const h = await host(t)
   for (const value of ['1min 30s', '11s', 'infinity', '']) {

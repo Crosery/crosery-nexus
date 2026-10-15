@@ -61,7 +61,8 @@ if ! printf "%s\n" "$newver" | head -1 | grep -qF -- "$EXPECT"; then log "新二
 curver=$("$BIN" --version 2>&1 || true)
 cur=$(printf "%s\n" "$curver" | head -1 | grep -oE "Version: [^,]+" | cut -d" " -f2)
 [ -z "$cur" ] && cur="unknown"
-if [ "$cur" = "$EXPECT" ]; then log "线上已是 $EXPECT，跳过"; exit 0; fi
+# 同版本串但文件不同（例如同一 HEAD 改用 CGO_ENABLED=1 重建）照常安装；只有同一个文件才算已是最新
+if [ "$cur" = "$EXPECT" ] && cmp -s "$NEWBIN" "$BIN"; then log "线上已是 $EXPECT，跳过"; exit 0; fi
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/cpa-install.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
 umask 077
