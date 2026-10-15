@@ -233,7 +233,7 @@ test('SB-21 网关价格部分来源失败：刷新报 partial 并列出失败�
   }
 })
 
-test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次运行、结果与告警都进同步中心', async () => {
+test('模型可用性：给了依赖才登记，周期 2 小时；上次/下次运行、结果与告警都进同步中心', async () => {
   const scratch = new SyncRegistry({ file: null, log: () => undefined })
   let enabled = true
   let runs = 0
@@ -255,7 +255,7 @@ test('模型可用性：给了依赖才登记，周期 30 分钟；上次/下次
   const view = async () => (await scratch.status()).jobs.find(job => job.id === 'model-availability')!
   // Linux: the RTK systemd job is the only external row
   assert.deepEqual((await scratch.status()).jobs.map(job => job.id), ['model-discovery', 'pricing', 'model-availability', 'price-watch', 'cpa-catalog', 'account-quota', 'data-plane', 'rtk-autoupdate'])
-  assert.equal((await view()).intervalMs, 30 * 60_000)
+  assert.equal((await view()).intervalMs, 120 * 60_000)
 
   scratch.start()
   try {

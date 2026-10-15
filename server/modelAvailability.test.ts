@@ -17,7 +17,7 @@ const OK: ProbeVerdict = { outcome: 'ok', reason: 'HTTP 200' }
 const FAIL: ProbeVerdict = { outcome: 'countable', reason: 'HTTP 404: model_not_found' }
 const NEUTRAL: ProbeVerdict = { outcome: 'neutral', reason: 'HTTP 429' }
 const T0 = Date.parse('2026-10-09T00:00:00.000Z')
-const round = (n: number) => T0 + n * 30 * 60_000
+const round = (n: number) => T0 + n * 120 * 60_000
 
 test('判定：只有 400/404/422/500/501 与「200 没有可用回复」计数', () => {
   assert.equal(classifyProbe(http(200, reply)).outcome, 'ok')
@@ -252,7 +252,9 @@ test('整轮：下线与恢复写审计（服务、模型、前后状态、原�
   assert.equal(h.state().reconciles, 1)
 
   broken = false
-  const outcome = await runModelAvailabilityRound(h.deps, h.context)
+  // 下线的模型按 OFFLINE_RETRY_ROUNDS 退避重探：最多等满一个周期就会轮到
+  let outcome = await runModelAvailabilityRound(h.deps, h.context)
+  for (let index = 1; index < 6 && !/本轮 \+1/.test(outcome.summary ?? ''); index += 1) outcome = await runModelAvailabilityRound(h.deps, h.context)
   assert.match(outcome.summary ?? '', /本轮 \+1/)
   assert.deepEqual(JSON.parse(h.audits[1][2]).to, 'online')
   assert.equal(h.state().reconciles, 2)
@@ -315,4 +317,26 @@ test('真实请求：经网关 /v1/chat/completions 发 max_tokens=1 的最小�
   }
   const { probeChatModel } = await import('./modelAvailability.js')
   assert.equal((await probeChatModel(base, 'fixture-probe-key', 'any', 2_000)).kind, 'network')
+})
+
+test('整轮：已下线的模型退避，6 轮里只探测 1 次，其余轮次状态保持', async () => {
+  const h = harness({
+    listCatalog: async () => [group('codex', ['gpt-5.6-sol', 'gpt-retired'])],
+    responses: (_key, model) => (model === 'gpt-retired' ? http(404, { error: { message: 'model_not_found' } }) : http(200, reply)),
+  })
+  for (let index = 0; index < 5; index += 1) await runModelAvailabilityRound(h.deps, h.context)
+  const before = h.probes.filter(([, model]) => model === 'gpt-retired').length
+  for (let index = 0; index < 6; index += 1) await runModelAvailabilityRound(h.deps, h.context)
+  assert.equal(h.probes.filter(([, model]) => model === 'gpt-retired').length - before, 1)
+  assert.equal(h.state().stored!.services.codex['gpt-retired'].state, 'offline')
+})
+
+test('整轮：同一服务本轮多次限流 / 鉴权失败后熔断，不再探测其余模型，状态原样保留', async () => {
+  const models = Array.from({ length: 10 }, (_, index) => `chat-${index}`)
+  const h = harness({ listCatalog: async () => [group('mox', models)], responses: () => http(429, { error: { message: 'rate limit exceeded' } }) })
+  await runModelAvailabilityRound(h.deps, h.context)
+  assert.ok(h.probes.length >= 3 && h.probes.length <= 4, `探测了 ${h.probes.length} 次`)
+  const stored = h.state().stored!.services.mox
+  assert.equal(Object.keys(stored).length, 10)
+  assert.ok(Object.values(stored).every((entry) => entry.state === 'online'))
 })

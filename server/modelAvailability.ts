@@ -27,7 +27,11 @@ export type AvailabilityFile = {
 }
 
 export const OFFLINE_AFTER_FAILURES = 5
-export const PROBE_INTERVAL_MS = 30 * 60_000
+export const PROBE_INTERVAL_MS = 120 * 60_000
+/** 已下线的模型每隔这么多轮才重探一次（按模型名错开），别对坏掉的上游反复敲门。 */
+export const OFFLINE_RETRY_ROUNDS = 6
+/** 同一服务一轮里出现这么多次「无结论」（限流 / 鉴权 / 超时 / 网络），本轮不再探测该服务的其余模型。 */
+export const SERVICE_BREAKER_THRESHOLD = 3
 export const PROBE_TIMEOUT_MS = 30_000
 export const PROBE_CONCURRENCY = 2
 const PROBE_JITTER_MS = 1_500
@@ -283,7 +287,8 @@ export async function probeChatModel(baseUrl: string, key: string, model: string
   try {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      // x-opencode-*：OpenCode Go 上游要求带会话头，缺了直接 400，会被误判成模型下线
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'x-opencode-session': `probe-${Date.now().toString(36)}`, 'x-opencode-client': 'probe' },
       body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1, stream: false }),
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
@@ -336,29 +341,49 @@ export async function runModelAvailabilityRound(
   const cpaChannels = Object.fromEntries(live.filter((group) => group.cpaChannel).map((group) => [group.id, group.cpaChannel!]))
   const keys = live.length ? await deps.ensureProbeKeys(live.map((group) => group.id), cpaChannels) : {}
 
-  const tasks = live.flatMap((group) => group.models.filter((model) => kindOf(model) === 'chat').map((model) => ({ service: group.id, model })))
-  const responses = await mapWithConcurrency(tasks, PROBE_CONCURRENCY, async ({ service, model }) => {
+  const previous = read()
+  const now = context.now()
+  const round = Math.floor(now / PROBE_INTERVAL_MS)
+  const allTasks = live.flatMap((group) => group.models.filter((model) => kindOf(model) === 'chat').map((model) => ({ service: group.id, model })))
+  // 已下线的模型退避：每 OFFLINE_RETRY_ROUNDS 轮才轮到一次，其余轮次保持原状态、不发请求
+  const retryDue = (service: string, model: string) => {
+    if (previous?.services[service]?.[model]?.state !== 'offline') return true
+    let hash = 0
+    for (const char of model) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+    return (round + hash) % OFFLINE_RETRY_ROUNDS === 0
+  }
+  const tasks = allTasks.filter((task) => retryDue(task.service, task.model))
+  const taskKey = (task: { service: string; model: string }) => `${task.service}\n${task.model}`
+  const inconclusive = new Map<string, number>()
+  const responses = await mapWithConcurrency(tasks, PROBE_CONCURRENCY, async (task) => {
+    // 熔断：该服务本轮已多次无结论，多半是限流 / 凭据 / 出口问题，继续敲只会加重
+    if ((inconclusive.get(task.service) ?? 0) >= SERVICE_BREAKER_THRESHOLD) return null
     await sleep(Math.floor(random() * PROBE_JITTER_MS))
-    const response = await limiter.run(() => deps.probe(keys[service], model))
+    const response = await limiter.run(() => deps.probe(keys[task.service], task.model))
     context.countRequests(1)
+    if (classifyProbe(response).outcome === 'neutral') inconclusive.set(task.service, (inconclusive.get(task.service) ?? 0) + 1)
     return response
   })
-  if (tasks.length && responses.every((response) => response.kind === 'network')) {
-    const sample = responses[0].kind === 'network' ? responses[0].message : ''
+  const sent = responses.filter((response): response is ProbeResponse => response !== null)
+  if (sent.length && sent.every((response) => response.kind === 'network')) {
+    const sample = sent[0].kind === 'network' ? sent[0].message : ''
     return { result: 'error', error: sanitizeSyncError(maskSystemKeys(`网关不可达，本轮作废、保留上次结果：${sample}`)) }
   }
 
-  const verdicts = new Map(tasks.map((task, index) => [`${task.service}\n${task.model}`, classifyProbe(responses[index])]))
+  const verdicts = new Map<string, ProbeVerdict>()
+  tasks.forEach((task, index) => {
+    const response = responses[index]
+    if (response) verdicts.set(taskKey(task), classifyProbe(response))
+  })
+  // 本轮没发请求的对话模型（退避 / 熔断）：算对话模型，状态原样保留
+  const isChat = new Set(allTasks.map(taskKey))
   const probed: ServiceRound[] = live.map((group) => ({
     service: group.id,
-    models: group.models.map((model) => {
-      const verdict = verdicts.get(`${group.id}\n${model}`)
-      return { model, chat: Boolean(verdict), verdict }
-    }),
+    models: group.models.map((model) => ({ model, chat: isChat.has(`${group.id}\n${model}`), verdict: verdicts.get(`${group.id}\n${model}`) })),
   }))
   const liveIds = new Set(live.map((group) => group.id))
   const kept = catalog.filter((group) => !liveIds.has(group.id)).map((group) => group.id)
-  const applied = applyProbeRound(read(), { probed, kept }, context.now())
+  const applied = applyProbeRound(previous, { probed, kept }, now)
   write(applied.file)
 
   for (const item of applied.transitions) {
@@ -387,7 +412,7 @@ export async function runModelAvailabilityRound(
     kept.length ? `${kept.length} 服务暂不探测` : '',
     applied.alarms.length ? `告警 ${applied.alarms.length}` : '',
   ].filter(Boolean).join(' · ')
-  const value: RoundReport = { services: live.length, probes: tasks.length, transitions: applied.transitions, alarms: applied.alarms }
+  const value: RoundReport = { services: live.length, probes: sent.length, transitions: applied.transitions, alarms: applied.alarms }
   if (applied.alarms.length) {
     return {
       result: 'partial',
