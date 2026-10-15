@@ -31,6 +31,8 @@ export type ChannelHealthItem = {
   successRate: number | null
   p95Ms: number | null
   recent: { requests: number; errors: number; clientCancelled: number }
+  /** curl / python 等脚本流量：不在上面任何一项里；absent on a server that predates it */
+  scripted?: { requests: number; errors: number }
   slots: Array<{ n: number; bad: number }>
   lastRequestAt: string | null
   lastError: { at: string; status: number | null; category: string | null; detail: string | null } | null
@@ -92,6 +94,8 @@ export type ChannelHealthClass = {
   label: string
   /** one short plain-word reason, or null when there is nothing to say */
   reason: string | null
+  /** plain aside that never changes the state (script failures left out of the rate) */
+  note?: string | null
 }
 
 const upstreamErrors = (h: Pick<ChannelHealthItem, 'errors' | 'clientCancelled'>) => Math.max(0, h.errors - h.clientCancelled)
@@ -138,6 +142,12 @@ export function discoveryErrorWords(code: string | null | undefined): string | n
 const isAuthDiscovery = (code: string | null | undefined) => code === 'http_401' || code === 'http_403'
 
 export function classifyChannel(channel: ChannelLike, health: ChannelHealthItem | null | undefined, now = Date.now()): ChannelHealthClass {
+  const cls = classifyHealth(channel, health, now)
+  const scripted = health?.scripted?.errors ?? 0
+  return scripted > 0 && cls.bucket !== 'off' && !channel.stale ? { ...cls, note: `脚本测试失败 ${fmtInt(scripted)} 次 · 不计入` } : cls
+}
+
+function classifyHealth(channel: ChannelLike, health: ChannelHealthItem | null | undefined, now: number): ChannelHealthClass {
   if (channel.stale) return { bucket: 'warn', state: 'warn', label: '残留', reason: '网关里已不存在 · 可清理' }
   if (!channel.enabled) return { bucket: 'off', state: 'off', label: '停用', reason: '不参与路由' }
   const enabledModels = channel.models.filter((m) => m.enabled).length

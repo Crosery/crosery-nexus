@@ -230,6 +230,7 @@ type ChannelRow = {
   statusState: StatusKind
   statusLabel: string
   statusReason?: string
+  statusNote?: string
   /** 筛选桶：停用的渠道一律算「停用」，与行上显示的一致 */
   bucket: ChannelBucket
   successRateText: string
@@ -265,6 +266,7 @@ const channelRows = computed<ChannelRow[]>(() => {
       statusState: c.enabled ? cls.state : 'off',
       statusLabel: c.enabled ? cls.label : '停用',
       statusReason: c.enabled ? cls.reason : undefined,
+      statusNote: c.enabled ? (cls.note ?? undefined) : undefined,
       bucket: c.enabled ? cls.bucket : 'off',
       successRateText: healthAvailable.value && h && h.requests > 0 ? fmtPct(h.successRate, 1) : NONE,
       p95Text: healthAvailable.value && h && h.p95Ms !== null ? fmtDuration(h.p95Ms) : NONE,
@@ -751,6 +753,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
               <span class="cx-2l">
                 <StatusMark :state="row.statusState" :label="row.statusLabel" />
                 <span v-if="row.statusReason" class="cx-l2 sig">{{ row.statusReason }}</span>
+                <span v-else-if="row.statusNote" class="cx-l2">{{ row.statusNote }}</span>
               </span>
             </template>
 
@@ -849,6 +852,9 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
                 </div>
                 <div v-if="row.statusReason" class="cx-card__ln cx-card__why sig">
                   <span class="ellip">{{ row.statusReason }}</span>
+                </div>
+                <div v-else-if="row.statusNote" class="cx-card__ln cx-card__why">
+                  <span class="ellip">{{ row.statusNote }}</span>
                 </div>
               </div>
             </template>

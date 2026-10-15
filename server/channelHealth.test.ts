@@ -24,15 +24,16 @@ function fixture() {
   const db = new DatabaseSync(':memory:')
   db.exec(`
     CREATE TABLE usage_events (id INTEGER PRIMARY KEY, timestamp_ms INTEGER NOT NULL, provider TEXT NOT NULL, success INTEGER NOT NULL,
-      status_code INTEGER NOT NULL DEFAULT 200, latency_ms INTEGER NOT NULL DEFAULT 0, error_category TEXT NOT NULL DEFAULT '', error_detail TEXT NOT NULL DEFAULT '');
+      status_code INTEGER NOT NULL DEFAULT 200, latency_ms INTEGER NOT NULL DEFAULT 0, error_category TEXT NOT NULL DEFAULT '', error_detail TEXT NOT NULL DEFAULT '',
+      client_type TEXT NOT NULL DEFAULT '');
     CREATE INDEX idx_usage_timestamp_ms ON usage_events(timestamp_ms);
     CREATE INDEX idx_usage_success_timestamp_ms ON usage_events(success, timestamp_ms);
     CREATE TABLE usage_hourly_rollup (hour_ms INTEGER NOT NULL, provider TEXT NOT NULL, request_count INTEGER NOT NULL);
   `)
-  const insert = db.prepare('INSERT INTO usage_events (timestamp_ms, provider, success, status_code, latency_ms, error_category, error_detail) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  const insert = db.prepare('INSERT INTO usage_events (timestamp_ms, provider, success, status_code, latency_ms, error_category, error_detail, client_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
   const rollup = db.prepare('INSERT INTO usage_hourly_rollup (hour_ms, provider, request_count) VALUES (?, ?, 1)')
-  const add = (at: number, provider: string, ok: boolean, extra: { status?: number; latency?: number; category?: string; detail?: string } = {}) => {
-    insert.run(at, provider, ok ? 1 : 0, extra.status ?? (ok ? 200 : 500), extra.latency ?? 100, extra.category ?? '', extra.detail ?? '')
+  const add = (at: number, provider: string, ok: boolean, extra: { status?: number; latency?: number; category?: string; detail?: string; client?: string } = {}) => {
+    insert.run(at, provider, ok ? 1 : 0, extra.status ?? (ok ? 200 : 500), extra.latency ?? 100, extra.category ?? '', extra.detail ?? '', extra.client ?? 'codex-cli')
     rollup.run(Math.floor(at / HOUR) * HOUR, provider)
   }
   const ops: ReadOperation[][] = []
@@ -291,4 +292,30 @@ test('health: latency 0 is "not reported" — p95 ranks only measured successes;
   assert.equal(or.successRate, 1)
   assert.equal(or.p95Ms, 1_000)
   assert.equal(payload.channels.find((c) => c.name === 'blind')!.p95Ms, null)
+})
+
+test('health: script traffic (model sweeps, curl tests) stays out of rate, strip, p95 and last error, and is reported on its own', async () => {
+  const { add, reader } = fixture()
+  // a quiet channel: 12 real successes, then one sweep of 30 script requests (20 fail) + a script cancel + a newest script hit
+  for (let i = 1; i <= 12; i += 1) add(NOW - i * 60_000, 'openai-compatible-cc', true, { latency: 200 })
+  for (let i = 0; i < 30; i += 1) {
+    const ok = i >= 20
+    add(NOW - 20 * 60_000 - i * 1000, 'cc', ok, { status: ok ? 200 : 401, latency: 50_000, category: ok ? '' : 'auth_failed', client: 'script' })
+  }
+  add(NOW - 21 * 60_000, 'cc', false, { status: 499, category: 'client_cancelled', client: 'script' })
+  add(NOW - 10_000, 'cc', true, { client: 'script' })
+
+  const payload = await loadChannelHealth(reader, [channel('cc')], null, 24, NOW)
+  const cc = payload.channels[0]
+  assert.deepEqual([cc.requests, cc.errors, cc.clientCancelled, cc.successRate, cc.p95Ms], [12, 0, 0, 1, 200])
+  assert.deepEqual(cc.recent, { requests: 12, errors: 0, clientCancelled: 0 })
+  assert.deepEqual(cc.scripted, { requests: 32, errors: 20 }, 'the script cancel is not an upstream failure')
+  assert.deepEqual([cc.slots.reduce((s, x) => s + x.n, 0), cc.slots.reduce((s, x) => s + x.bad, 0)], [12, 0])
+  assert.equal(cc.lastError, null)
+  assert.equal(cc.lastRequestAt, new Date(NOW - 10_000).toISOString(), 'last activity still sees script rows')
+  assert.deepEqual(payload.gateway, { requests: 44, errors: 21 }, 'the whole-gateway figure is every row')
+
+  const cls = classifyChannel(like(), cc, NOW)
+  assert.deepEqual([cls.label, cls.reason, cls.note], ['启用', null, '脚本测试失败 20 次 · 不计入'])
+  assert.equal(classifyChannel(like({ enabled: false }), cc, NOW).note, undefined)
 })

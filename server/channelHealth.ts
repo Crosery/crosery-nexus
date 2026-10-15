@@ -12,7 +12,11 @@
  * the channel list is the caller's (`listChannels()`, the same loader `/api/channels` uses).
  *
  * Definitions (stated once, so the page and any later consumer agree):
- * - requests / errors / successRate: every usage row in [now − hours, now); successRate = ok / all, null when 0.
+ * - Health is judged on real client traffic only: rows whose `client_type` is `script` (curl, python-requests, node-fetch…,
+ *   server/clientAgent.ts) are model sweeps and ad-hoc tests far more often than workloads, and a sweep over every model
+ *   of a quiet channel used to dominate its rate. They are left out of every figure below except `lastRequestAt`, and
+ *   reported on their own as `scripted` (requests; errors = their failures other than client cancellations).
+ * - requests / errors / successRate: every non-script usage row in [now − hours, now); successRate = ok / all, null when 0.
  *   `clientCancelled` is the subset of errors the caller caused (`error_category = client_cancelled`, HTTP 499):
  *   still counted in errors (same 失败 as every other page), but never a reason to call the upstream unhealthy.
  * - p95Ms: nearest-rank 95th percentile of `latency_ms` over successful rows in the window (same rule as
@@ -20,7 +24,8 @@
  * - recent: the same counts over the last hour.
  * - slots: HEALTH_SLOTS equal buckets across the window, oldest first; `n` = rows, `bad` = failures excluding
  *   client cancellations (the strip marks only what the upstream did).
- * - lastRequestAt / lastError: newest row / newest failure in the whole retained history (not windowed).
+ * - lastRequestAt / lastError: newest row (script rows included) / newest non-script failure in the whole retained history
+ *   (not windowed).
  * - gateway: requests / errors over every usage row in the window whatever its provider (subscription accounts, removed
  *   channels and all), same success rule; two index-only counts in the same read batch, for the page's whole-gateway rate.
  */
@@ -68,6 +73,8 @@ export type ChannelHealthItem = {
   successRate: number | null
   p95Ms: number | null
   recent: { requests: number; errors: number; clientCancelled: number }
+  /** script rows in the window, kept out of every other count; errors exclude client cancellations */
+  scripted: { requests: number; errors: number }
   slots: Array<{ n: number; bad: number }>
   lastRequestAt: string | null
   lastError: { at: string; status: number | null; category: string | null; detail: string | null } | null
@@ -102,8 +109,11 @@ export function providerAliases(name: string): string[] {
 
 const iso = (value: unknown): string | null => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? new Date(value).toISOString() : null)
 const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : Number(value) || 0)
-const COUNTS = `COUNT(*) n, SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) err,
-  SUM(CASE WHEN success = 0 AND error_category = 'client_cancelled' THEN 1 ELSE 0 END) cxl`
+const REAL = `client_type <> 'script'`
+const COUNTS = `SUM(CASE WHEN ${REAL} THEN 1 ELSE 0 END) n, SUM(CASE WHEN ${REAL} AND success = 0 THEN 1 ELSE 0 END) err,
+  SUM(CASE WHEN ${REAL} AND success = 0 AND error_category = 'client_cancelled' THEN 1 ELSE 0 END) cxl,
+  SUM(CASE WHEN ${REAL} THEN 0 ELSE 1 END) sn,
+  SUM(CASE WHEN NOT ${REAL} AND success = 0 AND error_category <> 'client_cancelled' THEN 1 ELSE 0 END) serr`
 const marks = (count: number) => Array.from({ length: count }, () => '?').join(', ')
 
 function discoveryView(state: DiscoveryState | null, channel: HealthChannelInput, now: number): ChannelDiscoveryView | null {
@@ -184,6 +194,7 @@ export async function loadChannelHealth(
       successRate: null,
       p95Ms: null,
       recent: { requests: 0, errors: 0, clientCancelled: 0 },
+      scripted: { requests: 0, errors: 0 },
       slots: Array.from({ length: HEALTH_SLOTS }, () => ({ n: 0, bad: 0 })),
       lastRequestAt: null,
       lastError: null,
@@ -229,7 +240,7 @@ export async function loadChannelHealth(
         sql: `SELECT c, v FROM (
             SELECT c, v, ROW_NUMBER() OVER (PARTITION BY c ORDER BY v) rn, COUNT(*) OVER (PARTITION BY c) n
             FROM (SELECT ${channelExpr} c, latency_ms v FROM usage_events
-              WHERE success = 1 AND latency_ms > 0 AND timestamp_ms >= ? AND timestamp_ms < ? AND ${inAll})
+              WHERE success = 1 AND latency_ms > 0 AND ${REAL} AND timestamp_ms >= ? AND timestamp_ms < ? AND ${inAll})
           ) WHERE rn = MAX(1, (n * 95 + 99) / 100)`,
         params: [...caseParams, from, to, ...all],
       },
@@ -246,7 +257,7 @@ export async function loadChannelHealth(
       ...named.map(([, list]): ReadOperation => ({
         method: 'get',
         sql: `SELECT timestamp_ms at, status_code status, error_category category, substr(error_detail, 1, 600) detail
-          FROM usage_events WHERE success = 0 AND timestamp_ms < ? AND lower(trim(provider)) IN (${marks(list.length)})
+          FROM usage_events WHERE success = 0 AND ${REAL} AND timestamp_ms < ? AND lower(trim(provider)) IN (${marks(list.length)})
           ORDER BY timestamp_ms DESC LIMIT 1`,
         params: [to, ...list],
       })),
@@ -262,6 +273,7 @@ export async function loadChannelHealth(
       item.requests = num(row.n)
       item.errors = num(row.err)
       item.clientCancelled = num(row.cxl)
+      item.scripted = { requests: num(row.sn), errors: num(row.serr) }
       item.successRate = item.requests > 0 ? (item.requests - item.errors) / item.requests : null
     }
     for (const row of recentRows ?? []) {

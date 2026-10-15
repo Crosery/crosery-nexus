@@ -503,7 +503,7 @@ const headStatus = computed(() => {
 const countTip = computed(() =>
   `可路由 = 启用渠道里开着的模型，按 id 去重（${fmtInt(counts.value.routable)}）· 映射 = 所有渠道的模型条目，含停用（${fmtInt(counts.value.mappings)}）· /models 的「在用」另含账号模型`,
 )
-const ruleTip = `降级 = 近窗口上游失败 ≥${HEALTH_RULES.warnRate * 100}%（≥${HEALTH_RULES.minRequests} 次）或近 1h 失败 ≥${HEALTH_RULES.warnRecent} 或发现退避 · 异常 = 失败 ≥${HEALTH_RULES.badRate * 100}% 或发现 401/403 · 客户端取消不计`
+const ruleTip = `降级 = 近窗口上游失败 ≥${HEALTH_RULES.warnRate * 100}%（≥${HEALTH_RULES.minRequests} 次）或近 1h 失败 ≥${HEALTH_RULES.warnRecent} 或发现退避 · 异常 = 失败 ≥${HEALTH_RULES.badRate * 100}% 或发现 401/403 · 客户端取消、脚本测试（curl / python 等）不计`
 
 /* ── shell hooks ── */
 watch(() => counts.value.warn, (n) => setNavCount('channels', n), { immediate: true })
@@ -625,6 +625,7 @@ function copyAddress(channel: ChannelItem) {
             <span class="cx-2l">
               <StatusMark :state="row.cls.state" :label="row.cls.label" />
               <span v-if="row.cls.reason && row.cls.bucket !== 'off'" class="cx-l2 ellip" :class="{ sig: row.cls.state === 'bad' }" :title="row.cls.reason">{{ row.cls.reason }}</span>
+              <span v-else-if="row.cls.note" class="cx-l2 ellip" :title="row.cls.note">{{ row.cls.note }}</span>
             </span>
           </template>
 
@@ -736,6 +737,9 @@ function copyAddress(channel: ChannelItem) {
               </div>
               <div v-if="row.cls.reason && row.cls.bucket === 'warn'" class="cx-card__ln cx-card__why" :class="{ sig: row.cls.state === 'bad' }">
                 <span class="ellip">{{ row.cls.reason }}</span>
+              </div>
+              <div v-else-if="row.cls.note" class="cx-card__ln cx-card__why">
+                <span class="ellip">{{ row.cls.note }}</span>
               </div>
               <div v-if="row.channel.enabled" class="cx-card__ln num">
                 <TickStrip v-if="row.health?.requests" :ticks="strip(row, 18).ticks" :bad="strip(row, 18).bad" :h="10" :label="stripLabel(row)" />
