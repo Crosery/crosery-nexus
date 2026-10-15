@@ -41,7 +41,7 @@ export async function getProviderChannels(): Promise<CompatChannel[]> {
     return entries.map((entry, index) => ({
       name: providerChannelName(entry, endpoint, index),
       'base-url': String(entry['base-url'] || ''),
-      'api-key-entries': entry['api-key'] ? [{ 'api-key': String(entry['api-key']) }] : [],
+      'api-key-entries': entry['api-key'] ? [{ 'api-key': String(entry['api-key']), ...(entry['proxy-url'] ? { 'proxy-url': String(entry['proxy-url']) } : {}) }] : [],
       models: entry.models || [],
       disabled: entry.disabled === true,
       __providerEndpoint: endpoint,
