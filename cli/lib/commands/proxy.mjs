@@ -19,6 +19,7 @@ const HELP = `cradmin proxy <动作> [参数]
   assign <账号…> <出口|inherit|direct>   把账号改走这个出口（最后一个参数是目标；会记下原出口）
   unassign <账号…> [--restore]       改回继承全局；--restore 还原分配前记下的出口
   default <出口|inherit|direct>      CPA 全局代理（继承全局的账号都会跟着改）
+  rename <出口> <名称> [--tags a,b]   改名（和标签；不动地址、不影响账号）
   rm <出口> [--reassign <出口|inherit|direct|keep>]   删除；还有账号在用时必须先指定把它们换到哪里
   migrate [--dry-run]                扫描账号里已配置的代理出口，导入代理池（只读账号，不改账号设置）
   export [--out <文件>]              脱敏导出（密码换成 ***），不给 --out 打印到 stdout
@@ -379,6 +380,19 @@ export default {
         const done = result.results[0]?.result
         if (done) ui.note(`${done.inheriting ?? 0} 个继承全局的账号改走这个出口`)
       })
+    }
+
+    if (action === 'rename') {
+      if (args.length !== 2) throw new UsageError('用法：cradmin proxy rename <出口> <名称> [--tags a,b]')
+      const { data } = await listView(ctx)
+      const entry = resolveEntry(data.entries || [], args[0])
+      const tags = listValue(values.tags)
+      const body = { name: args[1], ...(tags.length ? { tags } : {}) }
+      const result = await runPlan(ctx, {
+        level: 'A', title: '改出口名称',
+        items: [{ area: '代理', label: entry.id, from: entry.name, to: args[1], method: 'PATCH', path: `/api/proxies/${encodeURIComponent(entry.id)}`, body }],
+      })
+      return void ctx.output(result)
     }
 
     if (action === 'rm' || action === 'remove') {
