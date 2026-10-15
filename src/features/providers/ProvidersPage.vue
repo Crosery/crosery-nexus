@@ -42,6 +42,7 @@ import {
  */
 /* 账号池：栏目2 直接复用账号页的数据环与行操作（自带 /api/channels + /api/monitor 读） */
 const CpaAccountsPage = defineAsyncComponent(() => import('../accounts/CpaAccountsPage.vue'))
+const PluginsPanel = defineAsyncComponent(() => import('../plugins/PluginsPanel.vue'))
 /** the page's live mark speaks for its slowest loop (accounts, exits: 60 s; channels and health poll every 30 s) */
 const PAGE_INTERVAL = 60_000
 
@@ -51,7 +52,8 @@ const { width } = useBreakpoint()
 const now = useNow()
 
 /* ── 顶层视图切换：仅保留「全部供应商」与「全局共享模型」，去除与全部冲突的顶层渠道标签 ── */
-const currentTab = ref<string>((route.query.tab as string) === 'shared' ? 'shared' : 'providers')
+const tabFromQuery = (tab: unknown) => (tab === 'shared' || tab === 'plugins' ? tab : 'providers')
+const currentTab = ref<string>(tabFromQuery(route.query.tab))
 /* 供应商内部两栏切换：全部 / API 渠道 / 订阅账号 */
 const sectionFilter = ref<'all' | 'channels' | 'accounts'>('all')
 
@@ -59,8 +61,8 @@ if (route.query.tab === 'channels') sectionFilter.value = 'channels'
 else if (route.query.tab === 'accounts') sectionFilter.value = 'accounts'
 
 watch(() => route.query.tab, (tab) => {
-  if (tab === 'shared') {
-    currentTab.value = 'shared'
+  if (tab === 'shared' || tab === 'plugins') {
+    currentTab.value = tab
   } else {
     currentTab.value = 'providers'
     if (tab === 'channels') sectionFilter.value = 'channels'
@@ -75,7 +77,7 @@ const appliedStatus = computed(() => statusForSection(statusFilter.value, sectio
 
 /* 视图状态整体写回 URL：几次 replace 挤在一起时，最后落地的那次也是完整的当前状态 */
 function syncQuery() {
-  const tab = currentTab.value === 'shared' ? 'shared' : sectionFilter.value === 'all' ? undefined : sectionFilter.value
+  const tab = currentTab.value === 'shared' || currentTab.value === 'plugins' ? currentTab.value : sectionFilter.value === 'all' ? undefined : sectionFilter.value
   const status = appliedStatus.value === 'all' ? undefined : appliedStatus.value
   void router.replace({ query: { ...route.query, tab, status, show: undefined } })
 }
@@ -601,6 +603,16 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
           <span class="usage-ws__m">{{ sharedModelsList.length }}</span>
         </button>
 
+        <button
+          type="button"
+          class="usage-ws__tab"
+          :class="{ 'is-active': currentTab === 'plugins' }"
+          :aria-current="currentTab === 'plugins' ? 'page' : undefined"
+          @click="setTab('plugins')"
+        >
+          插件市场
+        </button>
+
         <span ref="ind" class="ui-ind" aria-hidden="true" />
       </nav>
 
@@ -610,7 +622,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
     </header>
 
     <!-- 2. 指标：每张写明口径与窗口，数据来自本页已读的接口 -->
-    <section class="pv-metrics" aria-label="供应商概览指标">
+    <section v-show="currentTab !== 'plugins'" class="pv-metrics" aria-label="供应商概览指标">
       <div class="pv-metrics__grid">
         <Readout
           v-for="card in stats"
@@ -626,6 +638,8 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
         </Readout>
       </div>
     </section>
+
+    <PluginsPanel v-if="currentTab === 'plugins'" />
 
     <!-- 3. ★ 全局共享模型池视图 -->
     <template v-if="currentTab === 'shared'">
@@ -686,7 +700,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
     </template>
 
     <!-- 4. 全部供应商视图：分「API 渠道」和「订阅账号」两栏展现；切到共享模型时只隐藏，账号池照常上报计数与刷新时间 -->
-    <div v-show="currentTab !== 'shared'" class="pv-body">
+    <div v-show="currentTab === 'providers'" class="pv-body">
       <!-- 整页一个搜索、一个状态筛选，同时管两栏；右侧切换看哪一栏 -->
       <div class="ui-toolbar pv-toolbar">
         <div class="pv-searchrow">

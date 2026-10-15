@@ -4,6 +4,7 @@ import { adminApi } from './admin'
 import { meApi } from './me'
 import { rtkGlobalApi, rtkRelayApi, syncApi } from './sync'
 import { proxyApi } from './proxy'
+import { pluginsApi } from './plugins'
 
 export { ApiError, setAuthHooks } from './http'
 export { RtkApiError, modelUpstreamModelsUrl } from './admin'
@@ -25,4 +26,5 @@ export const api = {
   rtkGlobal: rtkGlobalApi,
   rtkRelay: rtkRelayApi,
   proxies: proxyApi,
+  plugins: pluginsApi,
 }
