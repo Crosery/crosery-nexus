@@ -92,7 +92,8 @@ cd "$SRC" || { log "src 不存在"; exit 1; }
 # 只有本地一个正式 tag 都没有才报 fetch-failed。网络本身要另外修，所以日志里留一行。
 if ! git fetch -q --tags upstream 2>>"$LOG"; then
   log "拉取上游失败：沿用本地已有的 tag"
-  git tag -l 'v*' | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || { report fetch-failed "构建机拉不到上游 tag"; exit 1; }
+  # 不能用 grep -q：上千个 tag 时它提前退出，git 收到 SIGPIPE，pipefail 下会误判成没有 tag
+  git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null || { report fetch-failed "构建机拉不到上游 tag"; exit 1; }
 fi
 stable(){ git tag -l "$1" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1; }
 latest=$(stable 'v*')

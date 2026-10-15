@@ -170,6 +170,22 @@ test('builder: fetch failure with no local release tag builds nothing', async t 
   assert.doesNotMatch(`${calls}${preview}`, /docker|cpa-upload|cpa-stage/)
 })
 
+test('builder: fetch failure with thousands of local release tags still builds from them', async t => {
+  const b = await builder(t)
+  b.git(b.src, 'fetch', '-q', '--tags', 'upstream')
+  b.git(b.src, 'remote', 'set-url', 'upstream', path.join(b.root, 'missing'))
+  // 构建机上有上千个 tag：`git tag -l` 的输出超过管道缓冲（64 KiB）后，提前退出的读端会让它收到 SIGPIPE
+  const base = b.git(b.src, 'rev-list', '--max-parents=0', 'HEAD')
+  const refs = Array.from({ length: 12000 }, (_, i) => `create refs/tags/v0.${Math.floor(i / 1000)}.${i % 1000} ${base}\n`).join('')
+  execFileSync('git', ['update-ref', '--stdin'], { cwd: b.src, env: b.env, input: refs })
+  b.git(b.src, 'pack-refs', '--all')
+  const { code, report, calls } = await b.run()
+  assert.equal(code, 0)
+  assert.equal(report.status, 'built')
+  assert.equal(report.upstreamLatest, 'v8.0.12')
+  assert.match(calls, /docker\n/)
+})
+
 test('builder: failed checkout preserves unfinished edits and never builds another branch', async t => {
   const b = await builder(t)
   b.git(b.src, 'checkout', '-qb', 'scratch', 'v7.3.15')
