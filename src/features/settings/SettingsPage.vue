@@ -17,6 +17,7 @@ import { errorMessage } from '../../lib/errors'
 import type { SyncStatus, VersionsData } from '../../types'
 import SyncCenter from './SyncCenter.vue'
 import RtkRelaySection from './RtkRelaySection.vue'
+import ServiceRestartSection from './ServiceRestartSection.vue'
 import VersionSection from './VersionSection.vue'
 import PrefsSection from './PrefsSection.vue'
 import ProxySection from './ProxySection.vue'
@@ -241,6 +242,7 @@ async function signOut() {
         />
         <ProxySection class="c-12" @index="proxyIndex = $event" />
         <RtkRelaySection class="c-12" @index="relayIndex = $event" />
+        <ServiceRestartSection class="c-12" />
         <PrefsSection class="c-8" />
         <Plate id="session" title="会话" class="set-sec c-4">
           <dl class="set-session">

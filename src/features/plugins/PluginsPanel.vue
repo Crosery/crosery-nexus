@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onScopeDispose, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import Plate from '../../ui/data/Plate.vue'
@@ -14,7 +14,8 @@ import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { notify } from '../../ui/feedback/toast'
 import { errorMessage } from '../../lib/errors'
 import { api } from '../../api'
-import type { InstalledPlugin, RestartTarget, StorePlugin } from '../../api/plugins'
+import { useServiceRestart } from './useServiceRestart'
+import type { InstalledPlugin, StorePlugin } from '../../api/plugins'
 import type { RowColumn, SegmentItem, StatusKind } from '../../ui/types'
 
 /**
@@ -86,7 +87,6 @@ const rows = computed<Row[]>(() => {
 })
 
 const installedRows = computed(() => rows.value.filter((row) => row.installed))
-const needRestart = computed(() => changed.value || installedRows.value.some((row) => !row.registered))
 
 const baseRows = computed(() => (view.value === 'installed' ? installedRows.value : rows.value))
 
@@ -118,7 +118,7 @@ const columns: RowColumn<Row>[] = [
   { key: 'name', title: '插件' },
   { key: 'version', title: '版本', width: 96 },
   { key: 'status', title: '状态', width: 150 },
-  { key: 'ops', title: '', width: 150, align: 'right' },
+  { key: 'ops', title: '', width: 210, align: 'right' },
 ]
 
 function statusOf(row: Row): { state: StatusKind; label: string } | null {
@@ -134,7 +134,7 @@ async function mutate(row: Row, work: () => Promise<unknown>, done: string) {
   try {
     await work()
     changed.value = true
-    notify(`✓ ${done} · ${row.name}，重启 CPA 后生效`)
+    notify(`✓ ${done} · ${row.name}，需重启 CPA 后生效`)
   } catch (error) {
     notify(`◆ ${done}失败 · ${row.name} · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
   } finally {
@@ -158,48 +158,11 @@ async function uninstall(row: Row) {
   if (ok) await mutate(row, () => api.plugins.remove(row.id), '卸载')
 }
 
-/* ── 重启：CPA 重启后插件才会加载；控制台重启后页面会短暂断开 ── */
-const restarting = ref<RestartTarget | null>(null)
-let restartTimer: ReturnType<typeof setTimeout> | undefined
-onScopeDispose(() => clearTimeout(restartTimer))
+/* ── 重启 CPA：插件是 .so，进程重启后才会加载 ── */
+const { restarting, restart: restartCpa } = useServiceRestart('cpa', () => { changed.value = false; refresh() })
 
-async function restart(target: RestartTarget) {
-  const label = target === 'cpa' ? 'CPA 网关' : '控制台'
-  const ok = await confirmSheet({
-    title: `重启${label}？`,
-    body: target === 'cpa'
-      ? '正在进行的请求会被中断，几秒后恢复；已安装的插件会在重启后加载。'
-      : '页面会断开几秒，之后刷新即可；不影响 API 请求。',
-    confirmText: '重启',
-    danger: true,
-  })
-  if (!ok) return
-  restarting.value = target
-  try {
-    await api.restart.restart(target)
-    notify(`已提交重启请求 · ${label}`)
-    pollRestart(target, Date.now())
-  } catch (error) {
-    restarting.value = null
-    notify(`◆ 重启失败 · ${errorMessage(error) || '请求失败'}`, { tone: 'bad' })
-  }
-}
-
-function pollRestart(target: RestartTarget, since: number) {
-  restartTimer = setTimeout(async () => {
-    try {
-      const state = (await api.restart.status())[target]
-      if (state && !state.pending && state.finishedAt && Date.parse(state.finishedAt) >= since - 5000) {
-        restarting.value = null
-        if (state.result === 'ok') { changed.value = false; notify(`✓ ${target === 'cpa' ? 'CPA 网关' : '控制台'}已重启`); refresh() }
-        else notify(`◆ 重启失败 · ${state.message || '未知原因'}`, { tone: 'bad' })
-        return
-      }
-    } catch { /* 控制台自己重启时短暂连不上，继续等 */ }
-    if (Date.now() - since < 90_000) pollRestart(target, since)
-    else { restarting.value = null; notify('◆ 90 秒内没有收到重启结果，请到服务器上确认', { tone: 'warn' }) }
-  }, 2500)
-}
+/** 文件已装、但 CPA 还没加载它 */
+const needsRestart = (row: Row) => row.installed && !row.registered && !restarting.value
 
 function refresh() {
   void Promise.all([installedLive.refresh(), storeLive.refresh()])
@@ -211,12 +174,9 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
 <template>
   <Plate title="插件市场" flush>
     <template #actions>
-      <TxButton variant="ghost" size="small" :disabled="restarting !== null" @click="restart('console')">{{ restarting === 'console' ? '重启中…' : '重启控制台' }}</TxButton>
-      <TxButton :variant="needRestart ? 'primary' : 'ghost'" size="small" :disabled="restarting !== null" @click="restart('cpa')">{{ restarting === 'cpa' ? '重启中…' : '重启 CPA' }}</TxButton>
       <TxButton variant="subtle" size="small" @click="refresh">刷新</TxButton>
     </template>
 
-    <p v-if="needRestart" class="pg-note">有插件改动尚未生效：点右上角“重启 CPA”后才会注册或完全卸载。</p>
 
     <div class="ui-toolbar pg-toolbar">
       <SearchField v-model="query" placeholder="搜索插件、作者或标签" label="搜索插件" />
@@ -253,6 +213,7 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
       <template #cell-ops="{ row }">
         <span class="pg-ops">
           <TxButton v-if="row.updatable" variant="subtle" size="small" :disabled="busy.has(row.id)" @click="install(row)">{{ busy.has(row.id) ? '更新中…' : '更新' }}</TxButton>
+          <TxButton v-if="needsRestart(row)" variant="primary" size="small" :disabled="restarting" @click="restartCpa">{{ restarting ? '重启中…' : '重启 CPA' }}</TxButton>
           <TxButton v-if="!row.installed" variant="subtle" size="small" :disabled="busy.has(row.id)" @click="install(row)">{{ busy.has(row.id) ? '安装中…' : '安装' }}</TxButton>
           <TxButton v-else variant="ghost" size="small" :disabled="busy.has(row.id)" @click="uninstall(row)">{{ busy.has(row.id) ? '处理中…' : '卸载' }}</TxButton>
         </span>
@@ -262,6 +223,7 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
           <div class="cx-card__l1">
             <StatusMark v-if="statusOf(row)" :state="statusOf(row)!.state" :label="statusOf(row)!.label" bare />
             <span class="cx-card__name ellip">{{ row.name }}</span>
+            <TxButton v-if="needsRestart(row)" variant="primary" size="small" :disabled="restarting" @click.stop="restartCpa">{{ restarting ? '重启中…' : '重启 CPA' }}</TxButton>
             <TxButton v-if="!row.installed" variant="subtle" size="small" :disabled="busy.has(row.id)" @click.stop="install(row)">安装</TxButton>
             <TxButton v-else variant="ghost" size="small" :disabled="busy.has(row.id)" @click.stop="uninstall(row)">卸载</TxButton>
           </div>
@@ -274,7 +236,6 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
 </template>
 
 <style scoped>
-.pg-note { margin: 0; padding: 10px 16px; font-size: var(--fs-sm); color: var(--ink-2); border-bottom: 1px solid var(--hair, var(--paper-3)); }
 .pg-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 12px 16px; }
 .pg-status { display: inline-flex; align-items: center; gap: 8px; }
 .pg-ops { display: inline-flex; gap: 6px; justify-content: flex-end; }
