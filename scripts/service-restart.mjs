@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 export const TARGETS = { cpa: 'cli-proxy-api.service', console: 'crosery-api-console.service' }
 
@@ -40,7 +41,8 @@ function defaultSystemctl(args) {
   return { ok: r.status === 0, message: `${r.stderr ?? ''}${r.stdout ?? ''}`.trim() }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// current 是符号链接：argv[1] 要先解析成真实路径再和 import.meta.url 比
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   const data = process.env.DATA_DIR || '/opt/crosery-api-console/data'
   const done = processRequests({ dir: path.join(data, 'service-requests'), statusFile: path.join(data, 'service-restart-status.json') })
   console.log(done.length ? `restarted: ${done.join(', ')}` : 'nothing to do')

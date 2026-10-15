@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { isRestartTarget, readRestartStatus, requestRestart } from './serviceRestart.js'
 // @ts-expect-error mjs 无类型
@@ -42,4 +43,12 @@ test('执行器：只重启白名单 unit，控制台排最后，结果写回，
   assert.equal(status.cpa?.message, 'boom')
   assert.equal(status.console?.result, 'ok')
   assert.equal(status.console?.pending, false)
+})
+
+test('执行器经符号链接路径启动也会真正运行', () => {
+  const dir = tmp()
+  const link = path.join(dir, 'scripts-link')
+  fs.symlinkSync(path.resolve('scripts'), link)
+  const out = spawnSync(process.execPath, [path.join(link, 'service-restart.mjs')], { env: { ...process.env, DATA_DIR: dir }, encoding: 'utf8' })
+  assert.equal(out.stdout.trim(), 'nothing to do')
 })
