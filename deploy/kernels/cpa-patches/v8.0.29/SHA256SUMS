@@ -1,0 +1,13 @@
+96225c8dc06e917180bb269211cb2262ed5f58393c88a64d342ca2fd1bc1a441  0001-feat-config-add-fork-access-and-provider-settings-to.patch
+bb5bfee28b9fbafd72a504e5127ff7fae32320528702f405b8f7ab4c4e458776  0002-feat-management-manage-per-key-access-maps-and-expos.patch
+70fca8dfdcca8b932605420204196881006af9608f2752ac81a8e9a62ffd89d4  0003-feat-access-enforce-per-key-model-and-channel-allowl.patch
+c7080a67ee12daf5683b40c0c53e1359a837af993d7c82aea82afc7f68892ac8  0004-feat-registry-enrich-model-metadata-from-models.dev-.patch
+3871b57a1eb98159d44059ce72b8cad08564711a06dc8c8df592c42b8601b10e  0005-feat-registry-built-in-Claude-Fable-5.1-and-Opus-5.5.patch
+cad74fb9674a340224bbea03bc01de74a102fea66f12dafa133b8b95c1f11abe  0006-feat-executor-repair-leaked-thinking-in-OpenAI-compa.patch
+8de719526fc1f3ab650b5bfea27a848690755c6550fab8a1bc4b76b5b83a0a16  0007-feat-codex-route-standalone-Alpha-Search-through-a-c.patch
+5ce2adfd14cb2b1fd22c9a955bef7feb9df6df12d13fe3d2fed77a123fa469b2  0008-feat-executor-relay-OpenAI-Responses-natively-for-co.patch
+025d7caa9c643c7f56355939254ffbe8f8806cbb4780b75435a0c206c4dd5030  0009-feat-registry-refresh-a-local-file-model-catalog-whe.patch
+15eab8e6c48aed26f9d9b118194d4c76054bffdee3678efc79608f0b02e7edad  0010-feat-access-enforce-the-per-key-model-allowlist-on-p.patch
+e0bfd0d879402e6dc78c61445ec032436ba365e4d8a3301cac11a37dd9813cc9  0011-fix-config-keep-back-to-back-management-writes-from-.patch
+cf9f9346d05eacd5e5a0734e68feecae455674d9b4c714e34d46318afdbdb1a8  0012-feat-access-enforce-per-key-allowlists-on-Codex-live.patch
+06bb401c640fe352ffc2e7c630112abe77c007c272ed3a02a13d1336425b0959  0013-test-adapt-to-runtime-config-clone-and-wait-for-asyn.patch

@@ -88,7 +88,12 @@ apply_series(){
 }
 
 cd "$SRC" || { log "src 不存在"; exit 1; }
-if ! git fetch -q --tags upstream 2>>"$LOG"; then log "拉取上游失败"; report fetch-failed "构建机拉不到上游 tag"; exit 1; fi
+# 拉不到上游时（构建机到 GitHub 的线路经常断）：本地已有的 tag 照常用，不因为网络停掉整轮；
+# 只有本地一个正式 tag 都没有才报 fetch-failed。网络本身要另外修，所以日志里留一行。
+if ! git fetch -q --tags upstream 2>>"$LOG"; then
+  log "拉取上游失败：沿用本地已有的 tag"
+  git tag -l 'v*' | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || { report fetch-failed "构建机拉不到上游 tag"; exit 1; }
+fi
 stable(){ git tag -l "$1" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1; }
 latest=$(stable 'v*')
 [ -n "$latest" ] || { log "找不到上游 tag"; report fetch-failed "上游没有正式 release tag"; exit 1; }
