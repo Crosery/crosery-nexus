@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import Plate from '../../ui/data/Plate.vue'
@@ -7,6 +7,8 @@ import RowTable from '../../ui/data/RowTable.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
 import SearchField from '../../ui/form/SearchField.vue'
 import Segmented from '../../ui/form/Segmented.vue'
+import Pager from '../../ui/data/Pager.vue'
+import { paginate } from '../../lib/listState'
 import { useLive } from '../../ui/composables/useLive'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { notify } from '../../ui/feedback/toast'
@@ -42,6 +44,9 @@ const installedLive = useLive(() => api.plugins.installed(), { intervalMs: 0, is
 
 const view = ref<string>('store')
 const query = ref('')
+const tag = ref('')
+const page = ref(1)
+const PAGE_SIZE = 10
 const busy = ref<Set<string>>(new Set())
 /** 本次会话里装 / 卸过：即使列表还没反映，也提示要重启 */
 const changed = ref(false)
@@ -83,15 +88,26 @@ const rows = computed<Row[]>(() => {
 const installedRows = computed(() => rows.value.filter((row) => row.installed))
 const needRestart = computed(() => changed.value || installedRows.value.some((row) => !row.registered))
 
-const shown = computed(() => {
-  const needle = query.value.trim().toLowerCase()
-  const base = view.value === 'installed' ? installedRows.value : rows.value
-  const list = needle
-    ? base.filter((row) => [row.id, row.name, row.description, row.author, ...row.tags].some((text) => text.toLowerCase().includes(needle)))
-    : base
-  // 已装的排在前面，其余保持商店顺序
-  return view.value === 'store' ? [...list].sort((a, b) => Number(b.installed) - Number(a.installed)) : list
+const baseRows = computed(() => (view.value === 'installed' ? installedRows.value : rows.value))
+
+/** 商店里出现最多的标签，做成一排快捷筛选；其余靠搜索 */
+const tagItems = computed<SegmentItem[]>(() => {
+  const counts = new Map<string, number>()
+  for (const row of baseRows.value) for (const t of row.tags) counts.set(t, (counts.get(t) ?? 0) + 1)
+  const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([value, count]) => ({ value, label: value, count }))
+  return [{ value: '', label: '全部' }, ...top]
 })
+
+const filtered = computed(() => {
+  const needle = query.value.trim().toLowerCase()
+  let list = baseRows.value
+  if (tag.value) list = list.filter((row) => row.tags.includes(tag.value))
+  if (needle) list = list.filter((row) => [row.id, row.name, row.description, row.author, ...row.tags].some((text) => text.toLowerCase().includes(needle)))
+  // 商店视图：可更新 > 已安装 > 其余，同级保持商店顺序
+  return view.value === 'store' ? [...list].sort((a, b) => Number(b.updatable) - Number(a.updatable) || Number(b.installed) - Number(a.installed)) : list
+})
+const paged = computed(() => paginate(filtered.value, page.value, PAGE_SIZE))
+watch([query, tag, view], () => { page.value = 1 })
 
 const viewItems = computed<SegmentItem[]>(() => [
   { value: 'store', label: '商店', count: rows.value.length },
@@ -155,16 +171,19 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
       <TxButton variant="subtle" size="small" @click="refresh">刷新</TxButton>
     </template>
 
-    <p v-if="needRestart" class="pg-note">安装、更新或卸载后，需重启 CPA 进程才会注册或完全卸载；页面不会替你重启。</p>
+    <p v-if="needRestart" class="pg-note">有插件改动尚未生效：需重启 CPA 进程后才会注册或完全卸载，本页不会替你重启。</p>
 
     <div class="ui-toolbar pg-toolbar">
       <SearchField v-model="query" placeholder="搜索插件、作者或标签" label="搜索插件" />
       <Segmented v-model="view" :items="viewItems" label="插件视图" />
     </div>
+    <div v-if="tagItems.length > 1" class="pg-tags">
+      <Segmented v-model="tag" :items="tagItems" label="按标签筛选" />
+    </div>
 
     <RowTable
       :columns="columns"
-      :data="shown"
+      :data="paged.rows"
       row-key="id"
       density="two-line"
       :state="loadState"
@@ -174,8 +193,8 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
     >
       <template #cell-name="{ row }">
         <span class="cx-2l">
-          <span class="cx-strong ellip">{{ row.name }}<span class="mono dim"> · {{ row.id }}</span></span>
-          <span class="cx-l2 ellip" :title="row.description">{{ row.description || (row.local ? '本地手动放入的插件' : '—') }}</span>
+          <span class="cx-strong ellip">{{ row.name }}<span class="dim pg-meta">{{ [row.author, row.tags.slice(0, 2).join(' / ')].filter(Boolean).join(' · ') }}</span><a v-if="row.homepage" class="pg-link" :href="row.homepage" target="_blank" rel="noopener noreferrer" @click.stop>详情 ↗</a></span>
+          <span class="cx-l2 ellip" :title="row.description">{{ row.description || (row.local ? '本地手动放入的插件，不在商店里' : '暂无介绍') }}</span>
         </span>
       </template>
       <template #cell-version="{ row }"><span class="mono">{{ row.version || '—' }}</span></template>
@@ -188,9 +207,9 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
       </template>
       <template #cell-ops="{ row }">
         <span class="pg-ops">
-          <TxButton v-if="row.updatable" variant="subtle" size="small" :disabled="busy.has(row.id)" @click="install(row)">更新</TxButton>
-          <TxButton v-if="!row.installed" variant="subtle" size="small" :disabled="busy.has(row.id)" @click="install(row)">安装</TxButton>
-          <TxButton v-else variant="ghost" size="small" :disabled="busy.has(row.id)" @click="uninstall(row)">卸载</TxButton>
+          <TxButton v-if="row.updatable" variant="subtle" size="small" :disabled="busy.has(row.id)" @click="install(row)">{{ busy.has(row.id) ? '更新中…' : '更新' }}</TxButton>
+          <TxButton v-if="!row.installed" variant="subtle" size="small" :disabled="busy.has(row.id)" @click="install(row)">{{ busy.has(row.id) ? '安装中…' : '安装' }}</TxButton>
+          <TxButton v-else variant="ghost" size="small" :disabled="busy.has(row.id)" @click="uninstall(row)">{{ busy.has(row.id) ? '处理中…' : '卸载' }}</TxButton>
         </span>
       </template>
       <template #card="{ row }">
@@ -201,10 +220,11 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
             <TxButton v-if="!row.installed" variant="subtle" size="small" :disabled="busy.has(row.id)" @click.stop="install(row)">安装</TxButton>
             <TxButton v-else variant="ghost" size="small" :disabled="busy.has(row.id)" @click.stop="uninstall(row)">卸载</TxButton>
           </div>
-          <div class="cx-card__ln ellip">{{ row.id }}{{ row.version ? ` · ${row.version}` : '' }}{{ row.updatable ? ' · 可更新' : '' }}</div>
+          <div class="cx-card__ln ellip">{{ row.author }}{{ row.author ? ' · ' : '' }}{{ row.id }}{{ row.version ? ` · ${row.version}` : '' }}{{ row.updatable ? ' · 可更新' : '' }}</div>
         </div>
       </template>
     </RowTable>
+    <div class="pg-foot"><Pager v-model:page="page" :total="paged.total" :page-size="PAGE_SIZE" /></div>
   </Plate>
 </template>
 
@@ -214,4 +234,9 @@ const loadState = computed(() => (storeLive.state.value === 'loading' || install
 .pg-status { display: inline-flex; align-items: center; gap: 8px; }
 .pg-ops { display: inline-flex; gap: 6px; justify-content: flex-end; }
 .dim { color: var(--ink-4); }
+.pg-tags { padding: 0 16px 12px; overflow-x: auto; }
+.pg-foot { padding: 0 16px 12px; }
+.pg-meta { margin-left: 8px; font-weight: 400; font-size: var(--fs-xs); }
+.pg-link { margin-left: 8px; font-size: var(--fs-xs); color: var(--ink-3); text-decoration: none; }
+.pg-link:hover { color: var(--ink-1); text-decoration: underline; }
 </style>
