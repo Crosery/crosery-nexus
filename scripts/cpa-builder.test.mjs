@@ -159,9 +159,11 @@ for (const [failure, value, status] of [['FAKE_BUILD_FAIL', '1', 'build-failed']
   })
 }
 
-test('builder: fetch failure does not build cached upstream tags', async t => {
+test('builder: fetch failure with no local release tag builds nothing', async t => {
   const b = await builder(t)
   b.git(b.src, 'remote', 'set-url', 'upstream', path.join(b.root, 'missing'))
+  // 拉不到上游时本地已有的正式 tag 照常使用；一个都没有才停
+  for (const tag of b.git(b.src, 'tag', '-l').split('\n').filter(Boolean)) b.git(b.src, 'tag', '-d', tag)
   const { code, report, calls, preview } = await b.run()
   assert.equal(code, 1)
   assert.equal(report.status, 'fetch-failed')
