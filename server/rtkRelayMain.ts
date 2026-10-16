@@ -64,6 +64,7 @@ let readSetting: StatementSync | undefined
 let readKey: StatementSync | undefined
 let readRoutes: StatementSync | undefined
 let readGroups: StatementSync | undefined
+let readChannels: StatementSync | undefined
 
 // Routes change on console edits only; a short cache keeps SQLite off the request path.
 const ROUTE_TTL_MS = 3_000
@@ -80,6 +81,25 @@ function routeTable() {
   }
   routeCache = { at: Date.now(), models }
   return models
+}
+let channelCache: { at: number; models: Map<string, string[]> } | undefined
+function channelTable() {
+  if (channelCache && Date.now() - channelCache.at < ROUTE_TTL_MS) return channelCache.models
+  readChannels ??= reader.prepare('SELECT model, channel FROM relay_model_channels ORDER BY model, rank')
+  const models = new Map<string, string[]>()
+  for (const row of readChannels.all() as Array<{ model: string; channel: string }>) {
+    const list = models.get(row.model) || []
+    list.push(row.channel)
+    models.set(row.model, list)
+  }
+  channelCache = { at: Date.now(), models }
+  return models
+}
+/** Channels this key may use: its groups plus the default-open ones; null when unreadable (the gateway decides). */
+function keyChannels(token: string): Set<string> | null {
+  readGroups ??= reader.prepare('SELECT groups_json FROM api_keys WHERE key_hash = ?')
+  const row = readGroups.get(createHash('sha256').update(token).digest('hex')) as { groups_json: string } | undefined
+  try { return new Set([...(JSON.parse(row?.groups_json ?? '[]') as string[]), ...DEFAULT_OPEN_CHANNELS]) } catch { return null }
 }
 
 server = createRelayCompressionProxy({
@@ -98,14 +118,20 @@ server = createRelayCompressionProxy({
   route: (model, token) => {
     const rows = routeTable().get(model)
     if (!rows) return null
-    readGroups ??= reader.prepare('SELECT groups_json FROM api_keys WHERE key_hash = ?')
-    const row = readGroups.get(createHash('sha256').update(token).digest('hex')) as { groups_json: string } | undefined
-    let allowed: Set<string> | null = null
-    try { allowed = new Set([...(JSON.parse(row?.groups_json ?? '[]') as string[]), ...DEFAULT_OPEN_CHANNELS]) } catch { /* 读不到分组：不过滤，网关自己拒绝 */ }
+    // 读不到分组：不过滤，网关自己拒绝
+    const allowed = keyChannels(token)
     const turn = turns.get(model) ?? 0
     turns.set(model, turn + 1)
     const names = planAttempts(model, rows, turn, allowed)
     return names.length ? names : null
+  },
+  listOwner: (token) => {
+    const channels = channelTable()
+    const allowed = keyChannels(token)
+    return (model) => {
+      const list = channels.get(model)
+      return (list && (allowed ? list.find((channel) => allowed.has(channel)) : list[0])) ?? null
+    }
   },
   compress: (body) => compressRequestToolOutputs(body).saved,
   saved: (savedTokens) => ledger.saved(savedTokens),

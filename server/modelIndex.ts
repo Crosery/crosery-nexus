@@ -1,6 +1,7 @@
 import type { ChannelView } from './channelView.js'
 import { getModelPricing, type ModelPricing, getPricingSources, pricingSourceModelIds, type SourcePrice } from './pricing.js'
 import { modelKind, type ModelKind } from './modelKind.js'
+import { ROUTE_ALIAS } from './routeAlias.js'
 
 export type ModelSource = {
   channel: string
@@ -113,8 +114,6 @@ export function mergePriceSourceEntries(models: ModelEntry[]): ModelEntry[] {
   }
   return extra.length ? [...models, ...extra].sort((left, right) => left.id.localeCompare(right.id)) : models
 }
-
-const ROUTE_ALIAS = /^rt-[a-z0-9-]+\//
 
 export function buildModelIndex(
   channels: ChannelView[],

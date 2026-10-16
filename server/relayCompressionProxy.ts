@@ -1,6 +1,7 @@
 import { Agent, createServer, request, ServerResponse, type ClientRequest, type IncomingHttpHeaders, type IncomingMessage, type Server } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { ROUTE_ALIAS } from './routeAlias.js'
 import { isSystemKey } from './systemKeys.js'
 
 /**
@@ -9,6 +10,9 @@ import { isSystemKey } from './systemKeys.js'
  * streamed in both directions. Pure module (no config/db); the process around it is server/rtkRelayMain.ts.
  */
 const PATHS = new Set(['/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/v1/responses'])
+/** GET model lists (`/v1/models`, Gemini `/v1beta/models`, …): buffered and rewritten, see rewriteModelList. */
+const MODEL_LIST = /(?:^|\/)models$/
+const MAX_LIST_BYTES = 8 * 1024 * 1024
 export const MAX_BODY_BYTES = 100 * 1024 * 1024
 /** Larger bodies (inline images and files) stream through uncompressed instead of being held in memory. */
 export const MAX_COMPRESS_BYTES = 16 * 1024 * 1024
@@ -34,6 +38,11 @@ export type RelayDependencies = {
    * Throwing counts as a lookup failure and forwards the request unchanged.
    */
   route?: (model: string, token: string) => string[] | null
+  /**
+   * For model lists: this key's resolver from a model to the console channel its request goes to first (shown as
+   * `owned_by`), null keeping the gateway's. Throwing counts as a lookup failure and keeps every `owned_by`.
+   */
+  listOwner?: (token: string) => (model: string) => string | null
   maxBodyBytes?: number
   maxCompressBytes?: number
 }
@@ -77,6 +86,49 @@ function reply(res: ServerResponse, status: number, code: string) {
 }
 
 class TooLarge extends Error {}
+
+const CLOAKED = 'claude-fable-5-dd-'
+
+/** The model an entry stands for: OpenAI/Claude `id`, Codex `slug`, Gemini `models/<name>`; Claude-format lists may cloak ids as `claude-fable-5-dd-<id reversed>`. */
+function listedModel(entry: Record<string, unknown>): string {
+  const raw = [entry.id, entry.slug, entry.name].find((value): value is string => typeof value === 'string' && value.length > 0) ?? ''
+  const id = raw.replace(/^models\//, '')
+  return id.startsWith(CLOAKED) ? [...id.slice(CLOAKED.length)].reverse().join('') : id
+}
+
+/**
+ * Model list rewrite (`data` = OpenAI / Claude format, `models` = Gemini / Codex): route aliases are internal entry points
+ * and are dropped; entries with `owned_by` get the channel `owner` names. Null when the body is not a list or nothing
+ * changed, so the gateway's bytes go out as they were.
+ */
+export function rewriteModelList(value: unknown, owner: ((model: string) => string | null) | null): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const list = value as Record<string, unknown>
+  const field = Array.isArray(list.data) ? 'data' : Array.isArray(list.models) ? 'models' : null
+  if (!field) return null
+  let changed = false
+  const entries: unknown[] = []
+  for (const entry of list[field] as unknown[]) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { entries.push(entry); continue }
+    const record = entry as Record<string, unknown>
+    const model = listedModel(record)
+    if (ROUTE_ALIAS.test(model)) { changed = true; continue }
+    let channel: string | null = null
+    if (owner && typeof record.owned_by === 'string') {
+      try { channel = owner(model) } catch { channel = null }
+    }
+    if (channel && channel !== record.owned_by) {
+      entries.push({ ...record, owned_by: channel })
+      changed = true
+    } else entries.push(record)
+  }
+  if (!changed) return null
+  const next: Record<string, unknown> = { ...list, [field]: entries }
+  const ids = entries.map(entry => (entry && typeof entry === 'object' ? (entry as Record<string, unknown>).id : undefined))
+  if ('first_id' in list) next.first_id = ids[0] ?? null
+  if ('last_id' in list) next.last_id = ids.at(-1) ?? null
+  return next
+}
 
 /** Buffers up to `limit` bytes. `ended: false` means the limit was crossed; the request is paused and unread. */
 function bufferUpTo(req: IncomingMessage, limit: number) {
@@ -223,15 +275,19 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
     })
   }
 
-  function candidate(req: IncomingMessage, pathname: string) {
-    if (req.method !== 'POST' || !PATHS.has(pathname)) return ''
-    if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers['content-type'] || ''))) return ''
-    if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') return ''
+  function tokenOf(req: IncomingMessage) {
     const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || ''))?.[1]?.trim()
     const apiKey = req.headers['x-api-key']
     const token = bearer || (typeof apiKey === 'string' ? apiKey.trim() : '')
     // The console's own probe / lockout keys: never compressed, never looked up, never counted.
     return isSystemKey(token) ? '' : token
+  }
+
+  function candidate(req: IncomingMessage, pathname: string) {
+    if (req.method !== 'POST' || !PATHS.has(pathname)) return ''
+    if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers['content-type'] || ''))) return ''
+    if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') return ''
+    return tokenOf(req)
   }
 
   function fail(stage: RelayFailureStage) {
@@ -280,6 +336,45 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
     }
   }
 
+  function rewrittenList(original: Buffer, token: string): Buffer | null {
+    let value: unknown
+    try { value = JSON.parse(original.toString('utf8')) } catch { return null }
+    let owner: ((model: string) => string | null) | null = null
+    if (token && deps.listOwner) {
+      try { owner = deps.listOwner(token) } catch { fail('lookup') }
+    }
+    const next = rewriteModelList(value, owner)
+    return next ? Buffer.from(JSON.stringify(next)) : null
+  }
+
+  /** GET model list: a 200 JSON body is buffered (identity-encoded) and rewritten; everything else streams through. */
+  async function listModels(req: IncomingMessage, res: ServerResponse, headers: string[], signal: AbortSignal, hold: (child: ClientRequest) => void) {
+    req.resume()
+    const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+      const child = request(target, { method: 'GET', path: req.url, headers: forward(headers, new Set(['accept-encoding']), ['Accept-Encoding', 'identity']), agent, signal }, resolve)
+      hold(child)
+      child.once('error', reject)
+      child.end()
+    })
+    const identity = !upstream.headers['content-encoding'] || upstream.headers['content-encoding'] === 'identity'
+    if (upstream.statusCode === 200 && identity && /^application\/json(?:\s*;|$)/i.test(String(upstream.headers['content-type'] || ''))) {
+      const buffered = await bufferUpTo(upstream, MAX_LIST_BYTES)
+      if (buffered.ended) {
+        const original = Buffer.concat(buffered.chunks)
+        const body = rewrittenList(original, tokenOf(req)) ?? original
+        res.writeHead(200, upstream.statusMessage, forward(upstream.rawHeaders, dropSet(upstream.headers, ['transfer-encoding', 'content-length']), ['Content-Length', String(body.length)]))
+        res.end(body)
+        return
+      }
+      res.writeHead(200, upstream.statusMessage, forward(upstream.rawHeaders, dropSet(upstream.headers, ['transfer-encoding'])))
+      for (const chunk of buffered.chunks) res.write(chunk)
+      await pipeline(upstream, res)
+      return
+    }
+    res.writeHead(upstream.statusCode || 502, upstream.statusMessage, forward(upstream.rawHeaders, dropSet(upstream.headers, ['transfer-encoding'])))
+    await pipeline(upstream, res)
+  }
+
   /** One buffered attempt against the gateway. */
   function attempt(headers: string[], payload: Buffer, path: string, signal: AbortSignal, hold: (child: ClientRequest) => void) {
     return new Promise<IncomingMessage>((resolve, reject) => {
@@ -313,6 +408,10 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
       const pathname = new URL(req.url || '/', 'http://relay.local').pathname
       const token = candidate(req, pathname)
       let headers = forward(req.rawHeaders, dropSet(req.headers), req.headers.host ? [] : ['Host', target.host])
+      if (req.method === 'GET' && MODEL_LIST.test(pathname)) {
+        await listModels(req, res, headers, abort.signal, (c) => { child = c })
+        return
+      }
       let payload: Buffer | undefined
       let prefix: Buffer[] = []
       let savedTokens = 0

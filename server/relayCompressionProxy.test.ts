@@ -516,3 +516,69 @@ test('模型路由：路由表为空时不缓冲请求体，也不改写', async
     await close(upstream.server)
   }
 })
+
+test('模型列表：去掉 rt- 路由别名（含 Claude 格式里倒序伪装的），owned_by 改成这把 Key 实际走的渠道；其余原样', async () => {
+  const cloak = (id: string) => `claude-fable-5-dd-${[...id].reverse().join('')}`
+  const bodies: Record<string, string> = {
+    '/v1/models': JSON.stringify({ object: 'list', data: [
+      { id: 'gpt-6-sol', object: 'model', owned_by: 'openai' },
+      { id: 'rt-a-codex-luoxi-dff9/gpt-6-sol', object: 'model', owned_by: 'openai' },
+      { id: 'deepseek-v4.1-flash', object: 'model', owned_by: 'opencode-go' },
+      { id: 'rt-commandcode/deepseek-v4.1-flash', object: 'model', owned_by: 'commandcode' },
+      { id: 'z-ai/glm-5.3-flash', object: 'model', owned_by: 'commandcode' },
+    ] }),
+    '/claude/v1/models': JSON.stringify({ data: [
+      { id: 'claude-opus-5', type: 'model' }, { id: cloak('gpt-6-sol'), type: 'model' }, { id: cloak('rt-mox-aigw/gpt-6-sol'), type: 'model' },
+    ], first_id: 'claude-opus-5', last_id: cloak('rt-mox-aigw/gpt-6-sol'), has_more: false }),
+    '/v1beta/models': JSON.stringify({ models: [{ name: 'models/gemini-3.8-flash' }, { name: 'models/rt-opencode-go/glm-5.3-flash' }] }),
+    '/plain/models': JSON.stringify({ object: 'list', data: [{ id: 'm', object: 'model', owned_by: 'x' }] }),
+  }
+  const upstream = await recordingUpstream((req, res) => {
+    const path = new URL(req.url!, 'http://u').pathname
+    if (path === '/broken/models') return void res.writeHead(503, { 'content-type': 'application/json' }).end('{"error":"down"}')
+    res.writeHead(200, { 'content-type': 'application/json', 'x-upstream': 'kept' }).end(bodies[path] ?? 'not json')
+  })
+  const owners: string[] = []
+  const { server, calls } = relay(upstream.base, {
+    listOwner: (token) => {
+      owners.push(token)
+      return (model) => ({ 'gpt-6-sol': 'codex', 'deepseek-v4.1-flash': 'commandcode', m: 'x' } as Record<string, string>)[model] ?? null
+    },
+  })
+  const base = await listen(server)
+  const get = async (path: string, auth: Record<string, string> = { authorization: 'Bearer user-key', 'accept-encoding': 'gzip' }) => {
+    const response = await fetch(`${base}${path}`, { headers: auth })
+    return { status: response.status, text: await response.text(), headers: response.headers }
+  }
+  try {
+    const openai = await get('/v1/models')
+    assert.equal(upstream.seen.at(-1)!.headers['accept-encoding'], 'identity', '要读响应体，上游必须不压缩')
+    assert.equal(openai.headers.get('x-upstream'), 'kept')
+    assert.equal(openai.headers.get('content-length'), String(Buffer.byteLength(openai.text)))
+    assert.deepEqual(JSON.parse(openai.text).data.map((entry: { id: string; owned_by: string }) => [entry.id, entry.owned_by]), [
+      ['gpt-6-sol', 'codex'], ['deepseek-v4.1-flash', 'commandcode'], ['z-ai/glm-5.3-flash', 'commandcode'],
+    ], '别名去掉；有渠道的改 owned_by；名字里本来就带 / 的模型不动')
+    assert.deepEqual(owners, ['user-key'])
+
+    const claude = JSON.parse((await get('/claude/v1/models')).text)
+    assert.deepEqual(claude.data.map((entry: { id: string }) => entry.id), ['claude-opus-5', cloak('gpt-6-sol')])
+    assert.equal(claude.last_id, cloak('gpt-6-sol'))
+    assert.equal(claude.first_id, 'claude-opus-5')
+
+    const gemini = JSON.parse((await get('/v1beta/models', { 'x-goog-api-key': 'user-key' })).text)
+    assert.deepEqual(gemini.models, [{ name: 'models/gemini-3.8-flash' }])
+
+    assert.equal((await get('/plain/models')).text, bodies['/plain/models'], '没有要改的：上游字节原样')
+    const broken = await get('/broken/models')
+    assert.deepEqual([broken.status, broken.text], [503, '{"error":"down"}'])
+    assert.equal((await get('/odd/models')).text, 'not json')
+
+    owners.length = 0
+    await get('/v1/models', { authorization: `Bearer sk-probe-${'b'.repeat(64)}` })
+    assert.deepEqual(owners, [], '探活 Key 不查渠道')
+    assert.deepEqual(calls.failed, [])
+  } finally {
+    await close(server)
+    await close(upstream.server)
+  }
+})

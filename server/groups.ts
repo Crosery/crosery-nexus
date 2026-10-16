@@ -1,5 +1,6 @@
 import type { ChannelView } from './channelView.js'
 import type { OAuthProviderModels } from './modelIndex.js'
+import { ROUTE_ALIAS } from './routeAlias.js'
 
 /**
  * 渠道分组 = 上游提供商，不是模型名关键词。
@@ -86,7 +87,8 @@ export function buildGroups(channels: ChannelView[], oauth: OAuthProviderModels[
       id: provider.provider,
       name: presets[provider.provider]?.name || provider.provider,
       kind: 'oauth',
-      models: models.filter((model) => !excluded.has(model)),
+      // 账号带了路由 prefix 后网关把它的模型也列成 `rt-a-…/模型`：那是定向入口（还带着账号名），不是这个分组的模型。
+      models: models.filter((model) => !excluded.has(model) && !ROUTE_ALIAS.test(model) && !model.startsWith(`${provider.provider}/`)),
       available,
     })
   }

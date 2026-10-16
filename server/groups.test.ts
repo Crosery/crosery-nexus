@@ -93,6 +93,16 @@ test('disabled models and excluded oauth models stay out of their group', () => 
   assert.deepEqual(groups.find((group) => group.id === 'claude')?.models, ['claude-opus-5'])
 })
 
+test('route aliases an account prefix makes the gateway list are not group models (2026-10-16: they leaked into key lists)', () => {
+  const alias = 'rt-a-codex-02d71c99-luoxi2024-qq-com-plus-dff9'
+  const groups = buildGroups([], [
+    { provider: 'codex', models: ['gpt-6-sol', `${alias}/gpt-6-sol`, 'codex/gpt-6-luna'], excluded: [], activeAccounts: 1 },
+    { provider: 'xai', models: [], excluded: [], activeAccounts: 0, accounts: 1 },
+  ], { lastKnown: { xai: ['grok-4.5', 'rt-a-xai-x-1234/grok-4.5'] } })
+  assert.deepEqual(groups.find((group) => group.id === 'codex')?.models, ['gpt-6-sol'])
+  assert.deepEqual(groups.find((group) => group.id === 'xai')?.models, ['grok-4.5'], 'the last known catalog is filtered too')
+})
+
 test('selecting groups yields the union of their models', () => {
   const groups = buildGroups(channels, oauth)
   assert.deepEqual(modelsForGroups(groups, ['kimi']), ['kimi-k2.7-code', 'kimi-k3'])
