@@ -176,9 +176,11 @@ test('builder: fetch failure with thousands of local release tags still builds f
   b.git(b.src, 'remote', 'set-url', 'upstream', path.join(b.root, 'missing'))
   // 构建机上有上千个 tag：`git tag -l` 的输出超过管道缓冲（64 KiB）后，提前退出的读端会让它收到 SIGPIPE
   const base = b.git(b.src, 'rev-list', '--max-parents=0', 'HEAD')
-  const refs = Array.from({ length: 12000 }, (_, i) => `create refs/tags/v0.${Math.floor(i / 1000)}.${i % 1000} ${base}\n`).join('')
-  execFileSync('git', ['update-ref', '--stdin'], { cwd: b.src, env: b.env, input: refs })
-  b.git(b.src, 'pack-refs', '--all')
+  // 直接写 packed-refs（去掉表头 = 未排序，git 读时自己排）：逐个建 loose ref 再打包，满载时要几十秒
+  const packed = path.join(b.src, '.git', 'packed-refs')
+  const existing = (await fs.readFile(packed, 'utf8').catch(() => '')).replace(/^#.*\n/, '')
+  await fs.writeFile(packed, existing + Array.from({ length: 12000 }, (_, i) => `${base} refs/tags/v0.${Math.floor(i / 1000)}.${i % 1000}\n`).join(''))
+  assert.equal(b.git(b.src, 'tag', '-l', 'v0.*').split('\n').length, 12000)
   const { code, report, calls } = await b.run()
   assert.equal(code, 0)
   assert.equal(report.status, 'built')
