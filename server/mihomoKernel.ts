@@ -73,6 +73,8 @@ export type MihomoKernelOptions = {
   backoff?: { baseMs: number; maxMs: number; windowMs: number; maxCrashes: number }
   /** Test hook: argv of a pid as one string (default: /proc/<pid>/cmdline on linux, `ps -o args=` elsewhere). */
   processArgs?: (pid: number) => Promise<string | null>
+  /** Test hook: this process's uid and `/proc/self/status` (default: the real ones). */
+  identity?: () => { uid: number | null; procStatus: string | null }
   log?: (line: string) => void
   now?: () => number
 }
@@ -109,6 +111,27 @@ function defaultProcessArgs(pid: number): Promise<string | null> {
       resolve(error ? null : String(stdout).trim() || null)
     })
   })
+}
+
+/**
+ * uid 0 is refused unless the capability bounding set is empty (systemd `CapabilityBoundingSet=`): an exec'd mihomo then
+ * holds no capability at all, i.e. nothing beyond what the console itself can do.
+ */
+export function rootRefusal(uid: number | null, procStatus: string | null): string | null {
+  if (uid !== 0) return null
+  const bounding = procStatus?.match(/^CapBnd:\s*([0-9a-fA-F]+)\s*$/m)?.[1]
+  if (bounding && /^0+$/.test(bounding)) return null
+  return '控制台以 root 运行且未清空能力集：拒绝以 root 启动 mihomo'
+}
+
+function ownIdentity(): { uid: number | null; procStatus: string | null } {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  if (uid !== 0 || process.platform !== 'linux') return { uid, procStatus: null }
+  try {
+    return { uid, procStatus: fs.readFileSync('/proc/self/status', 'utf8') }
+  } catch {
+    return { uid, procStatus: null }
+  }
 }
 
 async function mapLimit<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
@@ -314,9 +337,11 @@ export class MihomoKernel {
 
   private async doBoot(): Promise<void> {
     // Read-only at boot: the directory is created only when the kernel is first needed.
-    if (typeof process.getuid === 'function' && process.getuid() === 0) {
-      this.located = { ok: false, reason: '控制台以 root 运行：拒绝以 root 启动 mihomo' }
-      this.setState('unavailable', this.located.reason)
+    const identity = (this.options.identity ?? ownIdentity)()
+    const refusal = rootRefusal(identity.uid, identity.procStatus)
+    if (refusal) {
+      this.located = { ok: false, reason: refusal }
+      this.setState('unavailable', refusal)
       return
     }
     try {

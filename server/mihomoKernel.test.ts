@@ -5,7 +5,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { MihomoKernel, socksGreeting, type MihomoKernelOptions } from './mihomoKernel.js'
+import { MihomoKernel, rootRefusal, socksGreeting, type MihomoKernelOptions } from './mihomoKernel.js'
 import type { MihomoNodeEntry } from './mihomoConfig.js'
 import { writeFakeMihomo } from './testing/fakeMihomo.js'
 
@@ -81,6 +81,26 @@ test('no binary → unavailable; apply and validate are no-ops', async () => {
   const result = await kernel.apply({ entries: [node('px_a', 27890)], listenerAuth: auth })
   assert.equal(result.state, 'unavailable')
   assert.deepEqual(await kernel.validate([node('px_a', 27890)]), { available: false, invalid: [] })
+})
+
+test('root: refused while it holds capabilities, allowed when the bounding set is empty (systemd CapabilityBoundingSet=)', async () => {
+  const status = (bounding: string) => `Name:\tnode\nUid:\t0\t0\t0\t0\nCapEff:\t0000000000000000\nCapBnd:\t${bounding}\nNoNewPrivs:\t1\n`
+  assert.equal(rootRefusal(1000, null), null)
+  assert.equal(rootRefusal(null, null), null)
+  assert.equal(rootRefusal(0, status('0000000000000000')), null)
+  assert.match(String(rootRefusal(0, status('000001ffffffffff'))), /拒绝以 root 启动 mihomo/)
+  assert.match(String(rootRefusal(0, null)), /拒绝以 root 启动 mihomo/, 'no /proc (macOS root) stays refused')
+
+  const privileged = await makeKernel({ identity: () => ({ uid: 0, procStatus: status('000001ffffffffff') }) })
+  assert.equal((await privileged.kernel.boot()).state, 'unavailable')
+  assert.equal((await privileged.kernel.apply({ entries: [node('px_a', privileged.base)], listenerAuth: auth })).state, 'unavailable')
+
+  const sandboxed = await makeKernel({ identity: () => ({ uid: 0, procStatus: status('0000000000000000') }) })
+  assert.equal((await sandboxed.kernel.boot()).state, 'idle')
+  const result = await sandboxed.kernel.apply({ entries: [node('px_a', sandboxed.base)], listenerAuth: auth })
+  assert.equal(result.state, 'running')
+  assert.deepEqual(result.running, ['px_a'])
+  await sandboxed.kernel.stop()
 })
 
 test('start, reload (add/remove/change), verify listeners, stop when empty; files private', async () => {
