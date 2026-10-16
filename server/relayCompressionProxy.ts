@@ -98,8 +98,9 @@ function listedModel(entry: Record<string, unknown>): string {
 
 /**
  * Model list rewrite (`data` = OpenAI / Claude format, `models` = Gemini / Codex): route aliases are internal entry points
- * and are dropped; entries with `owned_by` get the channel `owner` names. Null when the body is not a list or nothing
- * changed, so the gateway's bytes go out as they were.
+ * and are dropped, and so are repeats of a model already listed (Gemini lists show a prefixed account's models under the
+ * bare name, once per account); entries with `owned_by` get the channel `owner` names. Null when the body is not a list
+ * or nothing changed, so the gateway's bytes go out as they were.
  */
 export function rewriteModelList(value: unknown, owner: ((model: string) => string | null) | null): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -108,11 +109,13 @@ export function rewriteModelList(value: unknown, owner: ((model: string) => stri
   if (!field) return null
   let changed = false
   const entries: unknown[] = []
+  const seen = new Set<string>()
   for (const entry of list[field] as unknown[]) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { entries.push(entry); continue }
     const record = entry as Record<string, unknown>
     const model = listedModel(record)
-    if (ROUTE_ALIAS.test(model)) { changed = true; continue }
+    if (ROUTE_ALIAS.test(model) || (model && seen.has(model))) { changed = true; continue }
+    if (model) seen.add(model)
     let channel: string | null = null
     if (owner && typeof record.owned_by === 'string') {
       try { channel = owner(model) } catch { channel = null }

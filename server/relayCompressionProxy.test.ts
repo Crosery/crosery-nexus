@@ -530,7 +530,9 @@ test('模型列表：去掉 rt- 路由别名（含 Claude 格式里倒序伪装�
     '/claude/v1/models': JSON.stringify({ data: [
       { id: 'claude-opus-5', type: 'model' }, { id: cloak('gpt-6-sol'), type: 'model' }, { id: cloak('rt-mox-aigw/gpt-6-sol'), type: 'model' },
     ], first_id: 'claude-opus-5', last_id: cloak('rt-mox-aigw/gpt-6-sol'), has_more: false }),
-    '/v1beta/models': JSON.stringify({ models: [{ name: 'models/gemini-3.8-flash' }, { name: 'models/rt-opencode-go/glm-5.3-flash' }] }),
+    '/v1beta/models': JSON.stringify({ models: [
+      { name: 'models/gemini-3.8-flash', displayName: 'a' }, { name: 'models/rt-opencode-go/glm-5.3-flash' }, { name: 'models/gemini-3.8-flash', displayName: 'b' },
+    ] }),
     '/plain/models': JSON.stringify({ object: 'list', data: [{ id: 'm', object: 'model', owned_by: 'x' }] }),
   }
   const upstream = await recordingUpstream((req, res) => {
@@ -566,7 +568,7 @@ test('模型列表：去掉 rt- 路由别名（含 Claude 格式里倒序伪装�
     assert.equal(claude.first_id, 'claude-opus-5')
 
     const gemini = JSON.parse((await get('/v1beta/models', { 'x-goog-api-key': 'user-key' })).text)
-    assert.deepEqual(gemini.models, [{ name: 'models/gemini-3.8-flash' }])
+    assert.deepEqual(gemini.models, [{ name: 'models/gemini-3.8-flash', displayName: 'a' }], '带前缀的账号在 Gemini 列表里以裸名重复出现：只留第一条')
 
     assert.equal((await get('/plain/models')).text, bodies['/plain/models'], '没有要改的：上游字节原样')
     const broken = await get('/broken/models')
