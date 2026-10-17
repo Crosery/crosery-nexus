@@ -99,6 +99,39 @@ function parseSubscription(result: ApiCallResult): AntigravitySubscription | nul
   return { plan, tierId, tierName }
 }
 
+/**
+ * Google 的额度汇总接口现在只返回「Claude and GPT models」一组，Gemini 分组没了。
+ * Gemini 的额度还在 fetchAvailableModels 的逐模型 quotaInfo 里：同一家族的模型共用一个桶，
+ * 且 quotaInfo 就是该家族的 5 小时桶（Claude / GPT 模型的 quotaInfo 与汇总里的 3p-5h 完全一致），所以这里只合成 5 小时窗口。
+ * 取各 Gemini 模型里剩余最少的一个；读不到就返回 null，由调用方照常展示其余额度。
+ */
+async function readGeminiBucket(authIndex: string, projectId: string, summaryUrl: string, call: Dependencies['apiCall']): Promise<Record<string, any> | null> {
+  const result = await call(authIndex, summaryUrl.replace(/:retrieveUserQuotaSummary$/, ':fetchAvailableModels'), {
+    method: 'POST',
+    header: { ...ANTIGRAVITY_HEADERS },
+    data: JSON.stringify({ project: projectId }),
+  })
+  const status = statusCodeOf(result)
+  if (status < 200 || status >= 300) return null
+  const models = parseBody(result)?.models
+  if (!isRecord(models)) return null
+  let worst: { fraction: number; resetTime: string } | null = null
+  for (const [id, info] of Object.entries(models)) {
+    if (!/gemini/i.test(id) || !isRecord(info) || !isRecord(info.quotaInfo)) continue
+    const fraction = Number(info.quotaInfo.remainingFraction)
+    if (!Number.isFinite(fraction)) continue
+    if (!worst || fraction < worst.fraction) worst = { fraction, resetTime: stringValue(info.quotaInfo.resetTime) }
+  }
+  if (!worst) return null
+  return {
+    bucketId: 'gemini-5h',
+    displayName: 'Five Hour Limit Remaining',
+    window: '5h',
+    remainingFraction: worst.fraction,
+    ...(worst.resetTime ? { resetTime: worst.resetTime } : {}),
+  }
+}
+
 async function readSubscription(authIndex: string, call: Dependencies['apiCall']): Promise<AntigravitySubscription | null> {
   const result = await call(authIndex, ANTIGRAVITY_SUBSCRIPTION_URL, {
     method: 'POST',
@@ -155,7 +188,9 @@ export async function fetchAntigravityAccountQuota(
     if (!groups.length) continue
     // 订阅档位只在额度读成功后才查：失败路径不再多打一次 loadCodeAssist。
     const subscription = await readSubscription(authIndex, dependencies.apiCall).catch(() => null)
-    return { groups, subscription }
+    const listed = groups.some((group) => /gemini/i.test(stringValue(group.displayName ?? group.display_name)))
+    const gemini = listed ? null : await readGeminiBucket(authIndex, projectId, url, dependencies.apiCall).catch(() => null)
+    return { groups: gemini ? [{ displayName: 'Gemini models', buckets: [gemini] }, ...groups] : groups, subscription }
   }
   throw new AccountQuotaUpstreamError(lastStatus, lastStatus ? `AntiGravity 额度接口返回 HTTP ${lastStatus}` : 'AntiGravity 额度接口未返回有效数据', retryAfterMs)
 }
