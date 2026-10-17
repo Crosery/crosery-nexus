@@ -1,0 +1,18 @@
+# Binaries & build outputs
+/dist/
+/crapi
+/crapi.exe
+*.exe
+
+# Local configs & backups
+*.local
+.env
+.crapi-tmp*
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

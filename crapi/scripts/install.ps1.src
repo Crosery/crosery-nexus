@@ -1,0 +1,139 @@
+# crapi installer for Windows (Windows PowerShell 5.1+ / PowerShell 7+)
+#
+#   irm https://raw.githubusercontent.com/crosery/crapi/main/install.ps1 | iex
+#   $env:CRAPI_KEY='sk-xxx'; irm https://raw.githubusercontent.com/crosery/crapi/main/install.ps1 | iex
+#
+# From cmd.exe:
+#   powershell -NoProfile -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/crosery/crapi/main/install.ps1 | iex"
+#
+# Optional env: CRAPI_KEY, CRAPI_DOWNLOAD_BASE, CRAPI_INSTALL_DIR, CRAPI_NO_SETUP=1
+#
+# NOTE: this file is generated from scripts/install.ps1.src and is pure ASCII on purpose.
+# Windows PowerShell 5.1 decodes downloaded scripts without a charset header as Latin-1,
+# which garbles UTF-8 text. Chinese messages are stored as \uXXXX escapes and decoded
+# at runtime with [regex]::Unescape, so the script prints correctly in every console.
+# It never calls `exit`, because `irm | iex` runs inside the user's own PowerShell session.
+
+& {
+  $ErrorActionPreference = 'Stop'
+  $ProgressPreference = 'SilentlyContinue'
+  function M([string]$s) { [regex]::Unescape($s) }
+  function Say([string]$s) { Write-Host '  * ' -ForegroundColor Yellow -NoNewline; Write-Host $s }
+  function Ok([string]$s) { Write-Host '  + ' -ForegroundColor Green -NoNewline; Write-Host $s }
+  function Bad([string]$s) { Write-Host ('  x ' + $s) -ForegroundColor Red }
+
+  try {
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
+
+    $primaryBase = 'https://cdn.crosery.com/crapi'
+    $officialBase = 'https://github.com/crosery/crapi/releases/latest/download'
+    $candidates = @()
+    if ($env:CRAPI_DOWNLOAD_BASE) {
+      $candidates += $env:CRAPI_DOWNLOAD_BASE.TrimEnd('/')
+    } else {
+      $m1 = "https://ghfast.top/$officialBase"
+      $m2 = "https://ghproxy.net/$officialBase"
+      $candidates = @($primaryBase, $m1, $officialBase, $m2)
+    }
+
+    $arch = $env:PROCESSOR_ARCHITEW6432
+    if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
+    switch ($arch) {
+      'AMD64' { $a = 'amd64' }
+      'ARM64' { $a = 'arm64' }
+      'x86'   { $a = '386' }
+      default { throw ((M 'MSG{暂不支持的 CPU 架构：}') + $arch) }
+    }
+    $asset = "crapi-windows-$a.exe"
+
+    $dir = Join-Path $env:LOCALAPPDATA 'Programs\crapi'
+    if ($env:CRAPI_INSTALL_DIR) { $dir = $env:CRAPI_INSTALL_DIR }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $exe = Join-Path $dir 'crapi.exe'
+    $tmp = Join-Path $dir 'crapi.exe.download'
+
+    Write-Host ''
+    Write-Host ('  crapi  ' + (M 'MSG{Crosery CPA 一键接入}')) -ForegroundColor Yellow
+    Write-Host ''
+
+    $chosenBase = $null
+    foreach ($cand in $candidates) {
+      try {
+        if ($cand -eq $primaryBase) {
+          Say ((M 'MSG{正在从七牛云 CDN 高速下载 }') + $asset + '...')
+        } elseif ($cand -eq $officialBase) {
+          Say ((M 'MSG{正在从官方源下载 }') + $asset + '...')
+        } else {
+          Say ((M 'MSG{正在通过加速节点下载 }') + $asset + '...')
+        }
+        Invoke-WebRequest -UseBasicParsing -Uri "$cand/$asset" -OutFile $tmp -TimeoutSec 30
+        $chosenBase = $cand
+        break
+      } catch {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+      }
+    }
+    if (-not $chosenBase) {
+      throw (M 'MSG{下载失败，已尝试所有官方及镜像源。请检查网络连接。}')
+    }
+
+    $want = $null
+    try {
+      $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$chosenBase/SHA256SUMS" -TimeoutSec 15).Content
+      if ($sums -is [byte[]]) { $sums = [Text.Encoding]::ASCII.GetString($sums) }
+      foreach ($line in ($sums -split "`n")) {
+        $p = $line.Trim() -split '\s+'
+        if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq $asset) { $want = $p[0] }
+      }
+    } catch {}
+    if ($want) {
+      $got = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash
+      if ($got -ne $want.ToUpper()) {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        throw (M 'MSG{校验和不一致，已中止安装}')
+      }
+      Ok (M 'MSG{校验通过}')
+    }
+
+    # A running crapi.exe cannot be overwritten, but it can be renamed.
+    if (Test-Path $exe) {
+      Remove-Item "$exe.old" -Force -ErrorAction SilentlyContinue
+      try { Move-Item $exe "$exe.old" -Force } catch {}
+    }
+    Move-Item $tmp $exe -Force
+    Ok ((M 'MSG{已安装到 }') + $exe)
+
+    # Add to the user PATH. Read the raw value so %VAR% entries are not expanded away,
+    # and write it back with the original registry value kind.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $parts = @($raw -split ';' | Where-Object { $_ -ne '' })
+    if (-not ($parts | Where-Object { $_.TrimEnd('\') -ieq $dir.TrimEnd('\') })) {
+      $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+      try { if ($raw) { $kind = $key.GetValueKind('Path') } } catch {}
+      $key.SetValue('Path', (($parts + $dir) -join ';'), $kind)
+      # Tell Explorer and new terminals that the environment changed.
+      if (-not ('CrapiNative.Env' -as [type])) {
+        Add-Type -Namespace CrapiNative -Name Env -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+      }
+      $r = [UIntPtr]::Zero
+      [void][CrapiNative.Env]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$r)
+      Ok (M 'MSG{已加入用户 PATH（新开的终端里可直接使用 crapi）}')
+    }
+    $key.Close()
+    if (-not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $dir.TrimEnd('\') })) { $env:Path = "$env:Path;$dir" }
+
+    if ($env:CRAPI_NO_SETUP -eq '1') {
+      Write-Host ''
+      Write-Host (M 'MSG{安装完成。运行 crapi setup 开始配置。}')
+      return
+    }
+    Write-Host ''
+    & $exe setup
+  } catch {
+    Bad $_.Exception.Message
+  }
+}
