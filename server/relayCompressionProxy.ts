@@ -38,11 +38,6 @@ export type RelayDependencies = {
    * Throwing counts as a lookup failure and forwards the request unchanged.
    */
   route?: (model: string, token: string) => string[] | null
-  /**
-   * For model lists: this key's resolver from a model to the console channel its request goes to first (shown as
-   * `owned_by`), null keeping the gateway's. Throwing counts as a lookup failure and keeps every `owned_by`.
-   */
-  listOwner?: (token: string) => (model: string) => string | null
   maxBodyBytes?: number
   maxCompressBytes?: number
 }
@@ -89,6 +84,12 @@ class TooLarge extends Error {}
 
 const CLOAKED = 'claude-fable-5-dd-'
 
+/**
+ * Every model list entry that carries `owned_by` is shown as owned by this one value: channels are not exposed to clients
+ * (clients group a picker by `owned_by`). Which channel serves a model is decided per request by the model's source order and weights.
+ */
+export const LIST_OWNER = 'crosery'
+
 /** The model an entry stands for: OpenAI/Claude `id`, Codex `slug`, Gemini `models/<name>`; Claude-format lists may cloak ids as `claude-fable-5-dd-<id reversed>`. */
 function listedModel(entry: Record<string, unknown>): string {
   const raw = [entry.id, entry.slug, entry.name].find((value): value is string => typeof value === 'string' && value.length > 0) ?? ''
@@ -99,10 +100,10 @@ function listedModel(entry: Record<string, unknown>): string {
 /**
  * Model list rewrite (`data` = OpenAI / Claude format, `models` = Gemini / Codex): route aliases are internal entry points
  * and are dropped, and so are repeats of a model already listed (Gemini lists show a prefixed account's models under the
- * bare name, once per account); entries with `owned_by` get the channel `owner` names. Null when the body is not a list
+ * bare name, once per account); entries with `owned_by` all get LIST_OWNER. Null when the body is not a list
  * or nothing changed, so the gateway's bytes go out as they were.
  */
-export function rewriteModelList(value: unknown, owner: ((model: string) => string | null) | null): Record<string, unknown> | null {
+export function rewriteModelList(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const list = value as Record<string, unknown>
   const field = Array.isArray(list.data) ? 'data' : Array.isArray(list.models) ? 'models' : null
@@ -116,12 +117,8 @@ export function rewriteModelList(value: unknown, owner: ((model: string) => stri
     const model = listedModel(record)
     if (ROUTE_ALIAS.test(model) || (model && seen.has(model))) { changed = true; continue }
     if (model) seen.add(model)
-    let channel: string | null = null
-    if (owner && typeof record.owned_by === 'string') {
-      try { channel = owner(model) } catch { channel = null }
-    }
-    if (channel && channel !== record.owned_by) {
-      entries.push({ ...record, owned_by: channel })
+    if (typeof record.owned_by === 'string' && record.owned_by !== LIST_OWNER) {
+      entries.push({ ...record, owned_by: LIST_OWNER })
       changed = true
     } else entries.push(record)
   }
@@ -339,14 +336,10 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
     }
   }
 
-  function rewrittenList(original: Buffer, token: string): Buffer | null {
+  function rewrittenList(original: Buffer): Buffer | null {
     let value: unknown
     try { value = JSON.parse(original.toString('utf8')) } catch { return null }
-    let owner: ((model: string) => string | null) | null = null
-    if (token && deps.listOwner) {
-      try { owner = deps.listOwner(token) } catch { fail('lookup') }
-    }
-    const next = rewriteModelList(value, owner)
+    const next = rewriteModelList(value)
     return next ? Buffer.from(JSON.stringify(next)) : null
   }
 
@@ -364,7 +357,7 @@ export function createRelayCompressionProxy(deps: RelayDependencies): RelayServe
       const buffered = await bufferUpTo(upstream, MAX_LIST_BYTES)
       if (buffered.ended) {
         const original = Buffer.concat(buffered.chunks)
-        const body = rewrittenList(original, tokenOf(req)) ?? original
+        const body = rewrittenList(original) ?? original
         res.writeHead(200, upstream.statusMessage, forward(upstream.rawHeaders, dropSet(upstream.headers, ['transfer-encoding', 'content-length']), ['Content-Length', String(body.length)]))
         res.end(body)
         return

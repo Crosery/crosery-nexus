@@ -1,13 +1,12 @@
 import { CompatChannelsConflictError, compatChannelsFingerprint, getCompatChannels, putCompatChannels, setAuthFilePrefix } from './cpa.js'
 import { db } from './db.js'
 import { listModelIndex } from './channels.js'
-import { accountPrefix, publishModelChannels, publishRoutes, routePrefix, type PublishedRoute } from './modelRoutes.js'
+import { accountPrefix, publishRoutes, routePrefix, type PublishedRoute } from './modelRoutes.js'
 
 /**
  * 把控制台里的模型路由发布给中转层：只发布「有 2 个以上启用来源、且每个来源都能用 prefix 定向」的模型，
  * 并确保这些来源在 CPA 里带着约定的 prefix（兼容渠道 = 条目 prefix，账号池 = 每个账号文件的 prefix）。
  * 其余模型不碰，仍走网关自己的选择。
- * 另外每个模型的来源渠道（按来源顺序）整表发布到 relay_model_channels：中转层据此把模型列表的 owned_by 改成这把 Key 实际会走的渠道。
  */
 const APPLIED_KEY = 'route_prefix_applied'
 
@@ -31,7 +30,6 @@ export function publishRelayRoutes(): Promise<void> {
 
 async function publishOnce() {
   const { models, channels } = await listModelIndex()
-  publishModelChannels(models.map((model) => ({ model: model.id, channels: [...new Set((model.units ?? []).filter((unit) => unit.enabled).map((unit) => unit.channel))] })).filter((row) => row.channels.length))
   const compat = new Set(channels.filter((channel) => !channel.stale && channel.enabled && (!channel.cpaChannel || channel.cpaChannel === channel.name) && channel.protocol !== 'claude').map((channel) => channel.name))
   const routes: PublishedRoute[] = []
   const needCompat = new Set<string>()

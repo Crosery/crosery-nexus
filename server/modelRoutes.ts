@@ -124,20 +124,6 @@ export function publishRoutes(routes: PublishedRoute[]) {
   })
 }
 
-/** 整表替换每个模型的来源渠道（按来源顺序、去重）；内容没变不写——每个对账周期都会调用。 */
-export function publishModelChannels(rows: Array<{ model: string; channels: string[] }>) {
-  const next = rows.flatMap((row) => row.channels.map((channel, rank) => ({ model: row.model, rank, channel })))
-    .sort((a, b) => a.model.localeCompare(b.model) || a.rank - b.rank)
-  const current = db.prepare('SELECT model, rank, channel FROM relay_model_channels ORDER BY model, rank').all() as Array<{ model: string; rank: number; channel: string }>
-  const same = current.length === next.length && current.every((row, index) => row.model === next[index].model && row.rank === next[index].rank && row.channel === next[index].channel)
-  if (same) return
-  transaction(() => {
-    db.prepare('DELETE FROM relay_model_channels').run()
-    const insert = db.prepare('INSERT INTO relay_model_channels (model, rank, channel) VALUES (?, ?, ?)')
-    for (const row of next) insert.run(row.model, row.rank, row.channel)
-  })
-}
-
 /** 当前已发布的「模型 → 带前缀的名字」，用来把它们放进 Key 的模型白名单。 */
 export function publishedRouteNames(): Map<string, string[]> {
   const out = new Map<string, string[]>()

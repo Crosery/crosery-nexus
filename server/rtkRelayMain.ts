@@ -64,7 +64,6 @@ let readSetting: StatementSync | undefined
 let readKey: StatementSync | undefined
 let readRoutes: StatementSync | undefined
 let readGroups: StatementSync | undefined
-let readChannels: StatementSync | undefined
 
 // Routes change on console edits only; a short cache keeps SQLite off the request path.
 const ROUTE_TTL_MS = 3_000
@@ -80,19 +79,6 @@ function routeTable() {
     models.set(row.model, list)
   }
   routeCache = { at: Date.now(), models }
-  return models
-}
-let channelCache: { at: number; models: Map<string, string[]> } | undefined
-function channelTable() {
-  if (channelCache && Date.now() - channelCache.at < ROUTE_TTL_MS) return channelCache.models
-  readChannels ??= reader.prepare('SELECT model, channel FROM relay_model_channels ORDER BY model, rank')
-  const models = new Map<string, string[]>()
-  for (const row of readChannels.all() as Array<{ model: string; channel: string }>) {
-    const list = models.get(row.model) || []
-    list.push(row.channel)
-    models.set(row.model, list)
-  }
-  channelCache = { at: Date.now(), models }
   return models
 }
 /** Channels this key may use: its groups plus the default-open ones; null when unreadable (the gateway decides). */
@@ -124,14 +110,6 @@ server = createRelayCompressionProxy({
     turns.set(model, turn + 1)
     const names = planAttempts(model, rows, turn, allowed)
     return names.length ? names : null
-  },
-  listOwner: (token) => {
-    const channels = channelTable()
-    const allowed = keyChannels(token)
-    return (model) => {
-      const list = channels.get(model)
-      return (list && (allowed ? list.find((channel) => allowed.has(channel)) : list[0])) ?? null
-    }
   },
   compress: (body) => compressRequestToolOutputs(body).saved,
   saved: (savedTokens) => ledger.saved(savedTokens),

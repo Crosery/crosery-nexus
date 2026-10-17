@@ -190,3 +190,38 @@ test('调度：账号权重写成 CPA priority；模型路由保存顺序、同�
     await cpa.stop()
   }
 })
+
+/** 改对外名 = 摘旧映射 + 以新别名重加，一次 PUT；没写别名时按「去厂商前缀」生成，撞名退到「厂商-模型」。 */
+test('渠道模型改对外名：去掉厂商前缀，一次写入；撞名时退到厂商-模型', { timeout: 120_000 }, async () => {
+  const cpa = await startContractCpa()
+  const base = cpa.extra
+  let puts = 0
+  cpa.extra = (method, route, url, raw) => {
+    if (route === '/openai-compatibility' && method === 'PUT') {
+      cpa.compat = JSON.parse(raw || '[]') as typeof cpa.compat
+      puts += 1
+      return { status: 200, body: { status: 'ok' } }
+    }
+    return base?.(method, route, url, raw)
+  }
+  const channel = cpa.compat.find(item => item.name === 'contract-relay')!
+  channel.models = [{ name: 'acme/foo', alias: 'acme/foo' }]
+  const app = await launchConsole({ CPA_BASE_URL: cpa.base, CPA_MANAGEMENT_KEY: cpa.key })
+  try {
+    const apply = (body: unknown) => app.send('POST', '/api/channels/contract-relay/models/apply', { cookie: app.adminCookie, body })
+    const live = () => ((cpa.compat.find(item => item.name === 'contract-relay')?.models ?? []) as Array<{ name: string; alias: string }>).map(model => `${model.name}=${model.alias}`)
+
+    const renamed = await apply({ remove: ['acme/foo'], add: [{ id: 'acme/foo', alias: 'foo' }] })
+    assert.equal(renamed.status, 200, renamed.text)
+    assert.deepEqual({ added: renamed.body.added, removed: renamed.body.removed }, { added: 1, removed: 1 })
+    assert.deepEqual(live(), ['acme/foo=foo'])
+    assert.equal(puts, 1, '改名只整表写一次')
+
+    const next = await apply({ add: [{ id: 'other/foo' }, { id: 'zeta/Bar' }] })
+    assert.equal(next.status, 200, next.text)
+    assert.deepEqual(live(), ['acme/foo=foo', 'other/foo=other-foo', 'zeta/Bar=bar'])
+  } finally {
+    await app.stop()
+    await cpa.stop()
+  }
+})

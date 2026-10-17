@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileBackedSecret, positiveInteger } from './config.js'
 import { CompatChannelsConflictError, compatChannelsFingerprint, getCompatChannels, getGlobalProxy, putCompatChannels, type CompatChannel } from './cpa.js'
 import { invalidateGatewaySnapshot, readAutoSyncPolicy } from './channels.js'
-import { modelDiscoveryUrls, normalizeDiscoveredModels, defaultModelAlias, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
+import { modelDiscoveryUrls, normalizeDiscoveredModels, defaultModelAlias, freeAlias, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { db } from './db.js'
 import { applySharedPricing, type PriceSourceId, type SourcePrice } from './pricing.js'
 import { SYNC_POLICY, upstreamLimiter } from './syncRegistry.js'
@@ -536,8 +536,10 @@ export function applyAdditions<T extends { name?: string; disabled?: boolean; mo
         keys.add(lower(item.id))
         continue
       }
-      channel.models.push({ name: item.id, alias: item.alias })
+      const alias = keys.has(lower(item.alias)) ? freeAlias(item.id, keys) : item.alias
+      channel.models.push({ name: item.id, alias })
       keys.add(lower(item.id))
+      keys.add(lower(alias))
       if (!added.includes(item.id)) added.push(item.id)
     }
   }

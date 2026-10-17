@@ -224,6 +224,13 @@ test('单渠道模型数受 500 上限保护：超出部分不写入并如实报
   assert.equal(channels[0].models.length, 500)
 })
 
+test('新模型的对外名已被渠道里的别的模型占用：改用「厂商-模型」，不重名也不丢', () => {
+  const channels = [{ name: 'cc', models: [{ name: 'acme/kimi-k2.6', alias: 'kimi-k2.6' }] }]
+  const result = applyAdditions(channels, new Map([['cc', [{ id: 'moonshotai/kimi-k2.6', alias: 'kimi-k2.6' }]]]))
+  assert.deepEqual(result.added, ['moonshotai/kimi-k2.6'])
+  assert.deepEqual(channels[0].models.map((model) => model.alias), ['kimi-k2.6', 'moonshotai-kimi-k2.6'])
+})
+
 /* ────────────────────────── 共享目录自反馈 ────────────────────────── */
 
 const catalogOf = (baseUrl: string, ids: string[]): SharedCatalog => ({ version: 1, generatedAt: 1, provider: 'crosery', baseUrl, models: ids.map(id => ({ id })) })

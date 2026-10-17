@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CPARequestError } from './cpa.js'
-import { defaultModelAlias, discoveryFailure, modelDiscoveryUrls, normalizeDiscoveredModels, parseChannelProtocol, validateChannelName, validateSelectedModels } from './channelDiscovery.js'
+import { defaultModelAlias, discoveryFailure, freeAlias, modelDiscoveryUrls, normalizeDiscoveredModels, parseChannelProtocol, validateChannelName, validateSelectedModels } from './channelDiscovery.js'
 
 test('uses /models when base url already ends in /v1', () => {
   assert.deepEqual(modelDiscoveryUrls('openai', 'https://api.minimaxi.com/v1/'), ['https://api.minimaxi.com/v1/models'])
@@ -51,6 +51,22 @@ test('normalizes OpenAI and Gemini model payloads', () => {
 test('mixed-case upstream names default to lowercase public aliases', () => {
   assert.equal(defaultModelAlias('MiniMax-M3'), 'minimax-m3')
   assert.equal(defaultModelAlias('kimi-k3'), 'kimi-k3')
+})
+
+test('public aliases never contain a vendor prefix', () => {
+  assert.equal(defaultModelAlias('z-ai/glm-5.3-flashx'), 'glm-5.3-flashx')
+  assert.equal(defaultModelAlias('Qwen/Qwen3.8-Omni-Flash'), 'qwen3.8-omni-flash')
+  assert.equal(defaultModelAlias('stealth/glyph-cluster:free'), 'glyph-cluster:free')
+  assert.equal(defaultModelAlias('accounts/fireworks/models/llama-v3'), 'llama-v3')
+  assert.equal(defaultModelAlias('models/gemini-3-flash'), 'gemini-3-flash')
+})
+
+test('same model name under two vendors: the first id keeps the bare name, the other becomes vendor-model', () => {
+  const found = normalizeDiscoveredModels({ data: [{ id: 'moonshotai/kimi-k2.6' }, { id: 'acme/kimi-k2.6' }, { id: 'zeta/other' }] })
+  assert.deepEqual(found.map((model) => [model.id, model.alias]), [['acme/kimi-k2.6', 'kimi-k2.6'], ['moonshotai/kimi-k2.6', 'moonshotai-kimi-k2.6'], ['zeta/other', 'other']])
+  // 上游换个顺序，结果不变
+  assert.deepEqual(normalizeDiscoveredModels({ data: [{ id: 'zeta/other' }, { id: 'acme/kimi-k2.6' }, { id: 'moonshotai/kimi-k2.6' }] }), found)
+  assert.equal(freeAlias('a/x', new Set(['x', 'a-x'])), 'a/x', '两种写法都被占：保留原 id，不丢模型')
 })
 
 test('channel names and selected aliases are validated', () => {

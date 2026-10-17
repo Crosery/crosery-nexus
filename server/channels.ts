@@ -9,7 +9,7 @@ import { gatewayPricingMap } from './modelCatalog.js'
 import type { OAuthProviderModels } from './modelIndex.js'
 import { db } from './db.js'
 import { attachCredentialModels, summarizeCredentialFiles } from './credentials.js'
-import { defaultModelAlias, discoveryFailure, isDirectPreferred, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
+import { defaultModelAlias, discoveryFailure, freeAlias, isDirectPreferred, modelDiscoveryUrls, normalizeBaseUrl, normalizeDiscoveredModels, validateChannelName, validateSelectedModels, type ChannelProtocol, type DiscoveredModel } from './channelDiscovery.js'
 import { RequestCoordinator } from './requestCoordinator.js'
 import { ReportingGroupStore } from './reportingGroups.js'
 import { DEFAULT_OPEN_CHANNELS } from './keyChannelAccess.js'
@@ -299,8 +299,8 @@ export async function applyChannelModelChanges(channelName: string, input: unkno
     done.enabled += 1
   }
   for (const item of changes.add) {
-    if (has(item.id) || has(item.alias)) continue
-    const entry: CompatModel = { name: item.id, alias: item.alias }
+    if (has(item.id)) continue
+    const entry: CompatModel = { name: item.id, alias: has(item.alias) ? freeAlias(item.id, new Set(models.map((model) => modelId(model).toLowerCase()))) : item.alias }
     if (item.enabled) {
       models.push(entry)
       done.added += 1

@@ -62,9 +62,24 @@ export function modelDiscoveryUrls(protocol: ChannelProtocol, rawBaseUrl: string
   return [`${base}/models`, `${base}/v1/models`]
 }
 
+/** 对外名：去掉 `models/` 资源前缀和厂商前缀（`z-ai/glm-5.3-flashx` → `glm-5.3-flashx`），含大写时转小写。模型名里不留 `/`。 */
 export function defaultModelAlias(id: string) {
   const clean = stripResourcePrefix(id.trim())
-  return /[A-Z]/.test(clean) ? clean.toLowerCase() : clean
+  const bare = clean.slice(clean.lastIndexOf('/') + 1) || clean
+  return /[A-Z]/.test(bare) ? bare.toLowerCase() : bare
+}
+
+/**
+ * 默认对外名在渠道内被占了（不同厂商的同名模型）：退到「厂商-模型」，再不行用原 id。
+ * 对外名必须唯一，也不能为了避让就把模型丢掉；`taken` 里是已占用的小写对外名。
+ */
+export function freeAlias(id: string, taken: ReadonlySet<string>) {
+  const clean = stripResourcePrefix(id.trim())
+  const fold = (value: string) => (/[A-Z]/.test(value) ? value.toLowerCase() : value)
+  for (const candidate of [defaultModelAlias(id), fold(clean.replace(/\//g, '-'))]) {
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
+  return fold(clean)
 }
 
 function modelId(value: unknown): string {
@@ -87,14 +102,20 @@ export function normalizeDiscoveredModels(payload: unknown): DiscoveredModel[] {
   if (!Array.isArray(value)) return []
 
   const seen = new Set<string>()
-  const models: DiscoveredModel[] = []
+  const ids: string[] = []
   for (const item of value) {
     const id = modelId(item)
-    if (!id) continue
-    const key = id.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    models.push({ id, alias: defaultModelAlias(id) })
+    if (!id || seen.has(id.toLowerCase())) continue
+    seen.add(id.toLowerCase())
+    ids.push(id)
+  }
+  // 按 id 排序后再分配对外名：同一批模型无论上游怎么排，谁拿到裸名都一样
+  const taken = new Set<string>()
+  const models: DiscoveredModel[] = []
+  for (const id of ids.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))) {
+    const alias = freeAlias(id, taken)
+    taken.add(alias.toLowerCase())
+    models.push({ id, alias })
   }
   return models.sort((a, b) => a.alias.localeCompare(b.alias))
 }

@@ -145,14 +145,6 @@ db.exec(`
     PRIMARY KEY (model, rank)
   );
 
-  -- 发布给中转层（relay 只读）：每个模型按来源顺序列出它的渠道（兼容渠道名 / 账号池 provider）；模型列表里的 owned_by 取这把 Key 能用的第一个。
-  CREATE TABLE IF NOT EXISTS relay_model_channels (
-    model TEXT NOT NULL,
-    rank INTEGER NOT NULL,
-    channel TEXT NOT NULL,
-    PRIMARY KEY (model, rank)
-  );
-
   -- 渠道是否参与定时模型同步（模型目录任务）。没有行 = 默认参与（聚合渠道 OpenRouter 除外，见 autoSyncDefault）；显式关掉才有 auto_sync=0 的行。
   CREATE TABLE IF NOT EXISTS channel_sync_policies (
     channel TEXT PRIMARY KEY,
