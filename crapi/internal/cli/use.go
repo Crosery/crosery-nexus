@@ -196,24 +196,10 @@ func cmdUse(a *App, args []string) error {
 		recSet[id] = true
 	}
 
-	buildModelItem := func(m api.Model) ui.PickerItem {
-		ctxStr := ""
-		if m.ContextLength > 0 {
-			ctxStr = fmt.Sprintf(" (%s ctx)", ui.Ctx(m.ContextLength))
-		}
-		sub := api.ChannelLabel(m.OwnedBy) + ctxStr
-		return ui.PickerItem{
-			ID:          m.ID,
-			Title:       m.ID,
-			Subtitle:    sub,
-			SearchWords: m.ID + " " + m.Name() + " " + m.OwnedBy,
-		}
-	}
-
 	var modelItems []ui.PickerItem
 	for _, id := range recommended {
 		if m, ok := api.Find(chat, id); ok {
-			modelItems = append(modelItems, buildModelItem(m))
+			modelItems = append(modelItems, modelPickerItem(m))
 		}
 	}
 
@@ -227,7 +213,7 @@ func cmdUse(a *App, args []string) error {
 		return others[i].ID < others[j].ID
 	})
 	for _, m := range others {
-		modelItems = append(modelItems, buildModelItem(m))
+		modelItems = append(modelItems, modelPickerItem(m))
 	}
 
 	applyFunc := func(harnessID, chosenModel string) error {
@@ -291,4 +277,19 @@ func cmdUse(a *App, args []string) error {
 		ui.Success("默认模型切换操作已完成，共更新 %d 个工具配置。", updatedCount)
 	}
 	return nil
+}
+
+// modelPickerItem 是选择器里的一个模型：副标题写厂商（认不出的不写）和上下文长度。
+// 网关的 owned_by 不再区分渠道，所以厂商从模型 id 判断，和 crapi models 一致。
+func modelPickerItem(m api.Model) ui.PickerItem {
+	vendor, label := vendorOf(m.ID)
+	sub, words := "", m.ID+" "+m.Name()
+	if vendor != "other" {
+		sub = label
+		words += " " + vendor + " " + label
+	}
+	if m.ContextLength > 0 {
+		sub = strings.TrimSpace(sub + fmt.Sprintf(" (%s ctx)", ui.Ctx(m.ContextLength)))
+	}
+	return ui.PickerItem{ID: m.ID, Title: m.ID, Subtitle: sub, SearchWords: words}
 }

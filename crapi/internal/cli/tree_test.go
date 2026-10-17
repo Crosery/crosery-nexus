@@ -17,16 +17,17 @@ import (
 )
 
 // 夹具只用占位名（example-relay、demo-key），不含真实主机、Key 或账号。
+// 模型的 owned_by 与现网网关一致：一律 crosery，不区分渠道；号池夹具里的渠道是账号来源，不是模型归属。
 const modelsFixture = `{"data":[
- {"id":"claude-opus-5-5","display_name":"Claude Opus 5.5","owned_by":"anthropic","context_length":1000000,"max_completion_tokens":128000,"supportedInputModalities":["text","image"],"supports_reasoning":true,"cost":{"input":5,"output":25}},
- {"id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5","owned_by":"anthropic","context_length":200000,"max_completion_tokens":64000,"supportedInputModalities":["text","image"],"cost":{"input":1,"output":5}},
- {"id":"gpt-6-astra","display_name":"GPT-6 Astra","owned_by":"openai","context_length":400000,"max_completion_tokens":128000,"supportedInputModalities":["text","image"],"supports_reasoning":true,"cost":{"input":2.5,"output":15}},
- {"id":"gpt-image-2.5","owned_by":"openai","supportedOutputModalities":["image"],"cost":{"input":5,"output":40}},
- {"id":"gemini-3.1-pro-preview","display_name":"Gemini 3.1 Pro","owned_by":"antigravity","context_length":1048576,"max_completion_tokens":65536,"supports_reasoning":true,"cost":{"input":2,"output":12}},
- {"id":"claude-sonnet-4-6","display_name":"Claude Sonnet 4.6","owned_by":"antigravity","context_length":200000,"max_completion_tokens":64000,"cost":{"input":3,"output":15}},
- {"id":"deepseek-v4.1-flash:free","owned_by":"example-relay","context_length":128000,"supports_tool_call":false},
- {"id":"qcn-glm-5.3","owned_by":"example-relay","context_length":200000,"max_completion_tokens":32000,"cost":{"input":0.6,"output":2.2}},
- {"id":"house-model-1","owned_by":"example-relay"}
+ {"id":"claude-opus-5-5","display_name":"Claude Opus 5.5","owned_by":"crosery","context_length":1000000,"max_completion_tokens":128000,"supportedInputModalities":["text","image"],"supports_reasoning":true,"cost":{"input":5,"output":25}},
+ {"id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5","owned_by":"crosery","context_length":200000,"max_completion_tokens":64000,"supportedInputModalities":["text","image"],"cost":{"input":1,"output":5}},
+ {"id":"gpt-6-astra","display_name":"GPT-6 Astra","owned_by":"crosery","context_length":400000,"max_completion_tokens":128000,"supportedInputModalities":["text","image"],"supports_reasoning":true,"cost":{"input":2.5,"output":15}},
+ {"id":"gpt-image-2.5","owned_by":"crosery","supportedOutputModalities":["image"],"cost":{"input":5,"output":40}},
+ {"id":"gemini-3.1-pro-preview","display_name":"Gemini 3.1 Pro","owned_by":"crosery","context_length":1048576,"max_completion_tokens":65536,"supports_reasoning":true,"cost":{"input":2,"output":12}},
+ {"id":"claude-sonnet-4-6","display_name":"Claude Sonnet 4.6","owned_by":"crosery","context_length":200000,"max_completion_tokens":64000,"cost":{"input":3,"output":15}},
+ {"id":"deepseek-v4.1-flash:free","owned_by":"crosery","context_length":128000,"supports_tool_call":false},
+ {"id":"qcn-glm-5.3","owned_by":"crosery","context_length":200000,"max_completion_tokens":32000,"cost":{"input":0.6,"output":2.2}},
+ {"id":"house-model-1","owned_by":"crosery"}
 ]}`
 
 const poolFixture = `{"generatedAt":"","providers":[
@@ -146,20 +147,6 @@ func TestTrees(t *testing.T) {
    └─ house-model-1                                     -     -  工                  -`,
 		},
 		{
-			name:  "channels：渠道 → 类型 → 代表模型，订阅账号池按控制台顺序在前",
-			nodes: channelTree(groupByChannel(models)),
-			want: `
-├─ Codex          openai     2 个模型
-│  ├─ 对话  1  gpt-6-astra
-│  └─ 图片  1  gpt-image-2.5
-├─ Claude         anthropic  2 个模型
-│  └─ 对话  2  claude-haiku-4-5-20251001, claude-opus-5-5
-├─ Antigravity               2 个模型
-│  └─ 对话  2  claude-sonnet-4-6, gemini-3.1-pro-preview
-└─ example-relay             3 个模型
-   └─ 对话  3  deepseek-v4.1-flash:free, house-model-1, qcn-glm-5.3`,
-		},
-		{
 			name:  "pool：全部 → 渠道 → 账号 / 额度窗口 / 模型",
 			nodes: poolTree(decode[api.Pool](t, poolFixture)),
 			want: `
@@ -204,9 +191,10 @@ func TestTrees(t *testing.T) {
 	}
 }
 
-// 命令级：经 HTTP 拉夹具 → 分组 → 树形输出，确认默认输出是树、号池接口缺失时退化为渠道树。
-func TestCommandsPrintTrees(t *testing.T) {
-	srv := fixtureServer(t, map[string]string{"/v1/models": modelsFixture, "/v1/usage": usageFixture, "/v1/usage/requests": requestsFixture})
+// fixtureApp 起一个只服务夹具路由的网关，返回指向它的 App 与收集界面输出的缓冲。
+func fixtureApp(t *testing.T, routes map[string]string) (*App, *bytes.Buffer) {
+	t.Helper()
+	srv := fixtureServer(t, routes)
 	t.Setenv("CRAPI_KEY", "")
 	t.Setenv("CRAPI_BASE_URL", srv.URL)
 	t.Setenv("CRAPI_CONSOLE_URL", srv.URL)
@@ -215,6 +203,12 @@ func TestCommandsPrintTrees(t *testing.T) {
 	saved := ui.Out
 	ui.Out = &buf
 	t.Cleanup(func() { ui.Out = saved })
+	return a, &buf
+}
+
+// 命令级：经 HTTP 拉夹具 → 分组 → 树形输出，确认默认输出是树、号池接口缺失时只给提示。
+func TestCommandsPrintTrees(t *testing.T) {
+	a, buf := fixtureApp(t, map[string]string{"/v1/models": modelsFixture, "/v1/usage": usageFixture, "/v1/usage/requests": requestsFixture})
 
 	cases := []struct {
 		name string
@@ -222,9 +216,8 @@ func TestCommandsPrintTrees(t *testing.T) {
 		want []string
 	}{
 		{"models", func() error { return cmdModels(a, nil) }, []string{"◆ 可用模型  9 个模型 · 6 个厂商", "├─ Anthropic  3 个", "└─ 其他       1 个", "   └─ house-model-1"}},
-		{"models --channel", func() error { return cmdModels(a, []string{"--channel", "openai"}) }, []string{"2 个模型 · 1 个厂商", "└─ OpenAI  2 个"}},
-		{"channels", func() error { return cmdChannels(a, nil) }, []string{"◆ 可用渠道  4 个渠道 · 9 个模型", "├─ Codex", "└─ example-relay"}},
-		{"pool 无号池接口", func() error { return cmdPool(a, nil) }, []string{"控制台暂未开放号池接口", "├─ Codex", "   └─ 对话  3"}},
+		{"models 关键字", func() error { return cmdModels(a, []string{"gpt"}) }, []string{"2 个模型 · 1 个厂商", "└─ OpenAI  2 个"}},
+		{"pool 无号池接口", func() error { return cmdPool(a, nil) }, []string{"控制台暂未开放号池接口；可用模型见 crapi models。"}},
 		{"usage", func() error { return cmdUsage(a, nil) }, []string{"◆ 账号用量 · demo-key  最近 7 天", "├─ 额度", "└─ 按模型 · 花费  共 3 个模型", "未定价（不计入花费与额度）：house-model-1"}},
 		{"usage --requests", func() error { return cmdUsage(a, []string{"--requests"}) }, []string{"最近请求  1 条", "│ 时间        │ 模型        │ 状态  │ Token │ 缓存读 │ 首字 │  耗时 │", "│ gpt-6-astra │ ✓ 200 │"}},
 	}

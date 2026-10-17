@@ -31,7 +31,6 @@ func cmdPool(a *App, args []string) error {
 		return err
 	}
 	var pool *api.Pool
-	var models []api.Model
 	load := func(ctx context.Context) error {
 		var err error
 		pool, err = c.GetPool(a.ctx)
@@ -39,10 +38,6 @@ func cmdPool(a *App, args []string) error {
 			pool = nil
 			err = nil
 		}
-		if err != nil {
-			return err
-		}
-		models, err = c.ListModels(a.ctx)
 		return err
 	}
 	if *asJSON {
@@ -58,8 +53,8 @@ func cmdPool(a *App, args []string) error {
 	}
 	if pool == nil {
 		ui.Section("号池状态")
-		ui.Warn("控制台暂未开放号池接口，先展示各渠道的在线模型。")
-		return cmdChannelsFrom(models)
+		ui.Warn("控制台暂未开放号池接口；可用模型见 crapi models。")
+		return nil
 	}
 	renderPool(pool)
 	return nil
@@ -169,10 +164,4 @@ func accountsLegend(a api.PoolAccounts) string {
 		parts = append(parts, ui.Dim.Render(fmt.Sprintf("暂停 %d", a.Disabled)))
 	}
 	return strings.Join(parts, ui.Dim.Render(" · ")) + ui.Dim.Render(fmt.Sprintf(" / 共 %d", a.Total))
-}
-
-// cmdChannelsFrom 在没有号池接口时退化为按渠道展示模型。
-func cmdChannelsFrom(models []api.Model) error {
-	ui.Println(ui.Tree(channelTree(groupByChannel(models))))
-	return nil
 }

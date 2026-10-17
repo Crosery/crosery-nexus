@@ -103,7 +103,7 @@ func nextSteps() {
 	for _, l := range [][2]string{
 		{"crapi usage", "查看用量与额度"},
 		{"crapi pool", "查看号池状态"},
-		{"crapi models", "查看可用模型与渠道"},
+		{"crapi models", "查看可用模型"},
 		{"crapi update", "网关上新模型后一键同步到所有 harness"},
 		{`crapi image "描述"`, "生图"},
 	} {
@@ -165,13 +165,9 @@ func (a *App) ensureKey(flagKey string, allowPrompt bool) (*api.Client, []api.Mo
 func printKeySummary(a *App, models []api.Model) {
 	chat := api.ChatModels(models)
 	imgs := api.SupportedImageModels(models)
-	channels := map[string]int{}
-	for _, m := range models {
-		channels[m.OwnedBy]++
-	}
 	ui.KV("网关", a.Cfg.Base())
-	ui.KV("模型", fmt.Sprintf("%s 个对话模型 · %s 生图 %s 个 · %s 个渠道",
-		ui.Bold.Render(fmt.Sprint(len(chat))), api.ImageFamily, ui.Bold.Render(fmt.Sprint(len(imgs))), ui.Bold.Render(fmt.Sprint(len(channels)))))
+	ui.KV("模型", fmt.Sprintf("%s 个对话模型 · %s 生图 %s 个",
+		ui.Bold.Render(fmt.Sprint(len(chat))), api.ImageFamily, ui.Bold.Render(fmt.Sprint(len(imgs)))))
 }
 
 // chooseHarnesses 决定要配置哪些 harness。

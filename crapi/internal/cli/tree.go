@@ -11,8 +11,8 @@ import (
 )
 
 // 树形输出的层级与命名对齐控制台（crosery-api-console）：
-//   models   厂商 → 模型          同 /me/models 的厂商分组（src/features/me/meModel.ts vendorOf）
-//   channels 渠道 → 类型 → 模型   渠道名同 src/channelLabels.ts，顺序同订阅账号池（src/features/accounts/model.ts PROVIDERS）
+//   models 厂商 → 模型          同 /me/models 的厂商分组（src/features/me/meModel.ts vendorOf）
+//   pool   渠道 → 账号 / 额度   渠道名同 src/channelLabels.ts，顺序同订阅账号池（src/features/accounts/model.ts PROVIDERS）
 // 控制台改了这些规则时，这里要跟着改。
 
 var consoleVendors = []struct {
@@ -97,9 +97,6 @@ func channelHead(label, id string) []string {
 	return []string{ui.Bold.Render(label), ui.Dim.Render(id)}
 }
 
-// kindLabels 用控制台的模型类型名（src/lib/modelKind.ts MODEL_KIND_LABEL）。
-var kindLabels = map[api.Kind]string{api.KindChat: "对话", api.KindImage: "图片", api.KindAudio: "语音"}
-
 func modelTree(groups []vendorGroup) []ui.TreeNode {
 	var nodes []ui.TreeNode
 	for _, grp := range groups {
@@ -112,34 +109,6 @@ func modelTree(groups []vendorGroup) []ui.TreeNode {
 			node.Children = append(node.Children, ui.TreeNode{
 				Cells:  []string{m.ID, name, ui.Ctx(m.ContextLength), ui.Ctx(m.MaxCompletionTokens), caps(m), price(m)},
 				Aligns: []ui.Align{ui.Left, ui.Left, ui.Right, ui.Right, ui.Left, ui.Right},
-			})
-		}
-		nodes = append(nodes, node)
-	}
-	return nodes
-}
-
-func channelTree(groups []channelGroup) []ui.TreeNode {
-	var nodes []ui.TreeNode
-	for _, grp := range groups {
-		node := ui.TreeNode{Cells: append(channelHead(api.ChannelLabel(grp.channel), grp.channel), ui.Dim.Render(fmt.Sprintf("%d 个模型", len(grp.models))))}
-		for _, k := range []api.Kind{api.KindChat, api.KindImage, api.KindAudio} {
-			var of []api.Model
-			for _, m := range grp.models {
-				if m.Kind() == k {
-					of = append(of, m)
-				}
-			}
-			if len(of) == 0 {
-				continue
-			}
-			sample := ids(of)
-			if len(sample) > 4 {
-				sample = append(sample[:4], "…")
-			}
-			node.Children = append(node.Children, ui.TreeNode{
-				Cells:  []string{kindLabels[k], fmt.Sprint(len(of)), ui.Truncate(strings.Join(sample, ", "), 64)},
-				Aligns: []ui.Align{ui.Left, ui.Right},
 			})
 		}
 		nodes = append(nodes, node)

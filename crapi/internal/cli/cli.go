@@ -41,8 +41,7 @@ func commands() []command {
 		{"use", []string{"switch", "set-model"}, "快速切换已接入 harness 的默认主流模型", cmdUse},
 		{"reload", []string{"reinit", "refresh"}, "智能重新初始化：自动为新安装的 agent CLI 完成接入并刷新", cmdReload},
 		{"update", []string{"sync", "up"}, "从网关同步最新模型与渠道，刷新所有已接入的 harness", cmdUpdate},
-		{"models", []string{"model", "ls"}, "查看当前 Key 可用的模型（按渠道分组）", cmdModels},
-		{"channels", []string{"channel"}, "查看当前 Key 可用的渠道", cmdChannels},
+		{"models", []string{"model", "ls"}, "查看当前 Key 可用的模型（按厂商分组）", cmdModels},
 		{"usage", []string{"quota", "u"}, "查看账号用量、额度与花费", cmdUsage},
 		{"pool", []string{"pools", "p"}, "查看号池状态（账号数、冷却、额度窗口）", cmdPool},
 		{"image", []string{"img", "draw"}, "生图：支持网关上全部生图模型，可带参考图", cmdImage},
@@ -99,6 +98,10 @@ func Main(version string, args []string) int {
 			}
 		}
 		if found == nil {
+			if msg, ok := removedCommand(name); ok {
+				ui.Fail("%s", msg)
+				return 2
+			}
 			ui.Fail("未知命令：%s", args[0])
 			cmdHelp(a, nil)
 			return 2
@@ -117,6 +120,19 @@ func Main(version string, args []string) int {
 		ui.Fail("%v", err)
 		return 1
 	}
+}
+
+// 网关的模型列表不再带渠道：同一个模型由哪个渠道承接，由网关按权重自动选择。
+const channelRemovedHint = "网关不再按渠道区分模型，由哪个渠道承接由网关按权重自动选择。看模型用 crapi models [关键字]，看号池账号用 crapi pool"
+
+var errChannelRemoved = errors.New("--channel 已移除：" + channelRemovedHint)
+
+// removedCommand 给已移除的命令指一条去路，而不是笼统的「未知命令」。
+func removedCommand(name string) (string, bool) {
+	if name == "channels" || name == "channel" {
+		return "crapi channels 已移除：" + channelRemovedHint, true
+	}
+	return "", false
 }
 
 func contains(list []string, s string) bool {
@@ -230,7 +246,7 @@ func cmdHelp(a *App, _ []string) error {
 		{"crapi setup claude codex", "只配置指定的 harness"},
 		{"crapi update", "同步网关最新模型到所有已接入的 harness"},
 		{"crapi usage --days 7", "最近 7 天用量与额度"},
-		{"crapi models --channel anthropic", "只看某个渠道的模型"},
+		{"crapi models claude", "按关键字找模型"},
 		{`crapi image "一只戴墨镜的柯基" -n 2`, "生图，结果保存到当前目录"},
 	}
 	for _, e := range examples {

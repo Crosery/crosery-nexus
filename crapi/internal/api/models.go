@@ -223,7 +223,8 @@ func VendorIs(v string) func(Model) bool {
 	return func(m Model) bool { return m.Vendor() == v && m.Kind() == KindChat }
 }
 
-// ChannelID 把 /v1/models 的 owned_by 换成控制台的渠道 id（控制台 PROVIDERS 的 types 别名）。
+// ChannelID 把渠道标识换成控制台的渠道 id（控制台 PROVIDERS 的 types 别名）。
+// 渠道标识来自号池接口的 provider；/v1/models 的 owned_by 现在一律是 crosery，不再用它认渠道。
 func ChannelID(ownedBy string) string {
 	id := strings.ToLower(strings.TrimSpace(ownedBy))
 	switch id {
@@ -250,7 +251,7 @@ var channelLabels = map[string]string{
 // 订阅账号池在控制台里的顺序。
 var channelOrder = []string{"codex", "claude", "antigravity", "kimi", "kimi-ai", "xai", "devin", "meta"}
 
-// ChannelLabel 是 owned_by 在控制台里的渠道名；没有专门名字的渠道原样显示 id。
+// ChannelLabel 是渠道标识在控制台里的渠道名；没有专门名字的渠道原样显示 id。
 func ChannelLabel(ownedBy string) string {
 	id := ChannelID(ownedBy)
 	if id == "" {
