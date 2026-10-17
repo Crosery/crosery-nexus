@@ -1,4 +1,5 @@
-// 无参数 + 交互环境：编号菜单。每个动作最终拼出 argv，交给与命令行相同的 invoke() 执行（确认语义不变，菜单里永远走确认）。
+// 无参数 + 交互环境的菜单。终端里是方向键界面（↑↓ 移动、打字过滤、空格勾选、Enter 确认、Esc 返回，同 crapi）；
+// 管道 / 测试等非终端输入仍是编号列表。每个动作最终拼出 argv，交给与命令行相同的 invoke() 执行（确认语义不变，菜单里永远走确认）。
 import { CancelError, CliError } from './args.mjs'
 import { request } from './client.mjs'
 import { clock, createUi, pad } from './ui.mjs'
@@ -56,6 +57,7 @@ export async function runMenu(rt, { invoke: run }) {
   const ui = createUi({ stdout: rt.io.stdout, stderr: rt.io.stderr, env: rt.env, noColor: rt.globals['no-color'] })
   const ask = prompt => rt.prompter.ask(prompt)
   const get = pathname => request(rt, 'GET', pathname)
+  const tui = Boolean(rt.prompter.terminal && typeof rt.prompter.select === 'function')
 
   const pause = async () => {
     try { await ask(`\n${ui.paintErr('muted', '按回车键返回主菜单...')}`) } catch (error) { if (!(error instanceof CancelError)) throw error }
@@ -75,9 +77,18 @@ export async function runMenu(rt, { invoke: run }) {
     if (pauseAfter) await pause()
   }
 
-  /** 编号列表单选/多选；空输入 = 返回上一级（返回 null），q = 退出菜单。 */
+  /** 单选/多选；Esc / 空输入 = 返回上一级（返回 null）。终端里是方向键界面，其余环境是编号列表（q 退出菜单）。 */
   const choose = async (title, items, describe, { multiple = false } = {}) => {
     if (!items.length) { ui.warn(`${title}：没有可选项`); await pause(); return null }
+    if (tui) {
+      const entries = items.map((item, index) => ({ label: describe(item), value: index }))
+      if (multiple) {
+        const picked = await rt.prompter.multiSelect({ title, items: entries, min: 1 })
+        return picked ? picked.map(index => items[index]) : null
+      }
+      const picked = await rt.prompter.select({ title, items: entries })
+      return picked === null ? null : items[picked]
+    }
     ui.section(title)
     items.forEach((item, index) => ui.line(`  ${pad(String(index + 1), 3, 'right')}  ${describe(item)}`))
     for (;;) {
@@ -115,6 +126,24 @@ export async function runMenu(rt, { invoke: run }) {
         })
       }
       models.sort((a, b) => a.id.localeCompare(b.id))
+      if (tui) {
+        // 勾选 = 启用：Enter 把和现状不同的那些一次性改过去
+        const picked = await rt.prompter.multiSelect({
+          title: `${target.name} 的模型  启用 ${models.filter(model => model.enabled).length} / 共 ${models.length}`,
+          hint: '↑/↓ 移动 · 空格 开关 · Ctrl+A 全选/取消 · 输入文字过滤 · Enter 应用改动 · Esc 返回',
+          items: models.map(model => ({ label: model.id, value: model.id, checked: model.enabled })),
+        })
+        if (picked === null) return
+        const wanted = new Set(picked)
+        const enable = models.filter(model => !model.enabled && wanted.has(model.id)).map(model => model.id)
+        const disable = models.filter(model => model.enabled && !wanted.has(model.id)).map(model => model.id)
+        if (!enable.length && !disable.length) return
+        const argv = ['channels', 'models', target.name]
+        if (enable.length) argv.push('--enable', enable.join(','))
+        if (disable.length) argv.push('--disable', disable.join(','))
+        await runArgv(argv, { pauseAfter: false })
+        continue
+      }
       ui.section(`${target.name} 的模型`, `启用 ${models.filter(model => model.enabled).length} / 共 ${models.length}`)
       models.forEach((model, index) => ui.line(`  ${pad(String(index + 1), 3, 'right')}  ${model.enabled ? ui.paint('ok', 'on ') : ui.paint('muted', 'off')}  ${model.id}`))
       const input = await ask('输入 +3 +5 -7 开关，only 1-4,9 只启用这些，回车返回，q 退出：')
@@ -224,6 +253,26 @@ export async function runMenu(rt, { invoke: run }) {
   }
 
   const clear = () => { if (rt.io.stdout.isTTY) rt.io.stdout.write('\x1b[2J\x1b[H') }
+  /** 选一个主菜单动作：返回命令名；null = 退出；undefined = 输入无效，重画。 */
+  const pickCommand = async () => {
+    if (tui) {
+      const picked = await rt.prompter.select({
+        title: '请选择功能',
+        hint: '↑/↓ 移动 · Enter 进入 · Esc 退出',
+        items: [...MAIN.map(([label, command]) => ({ label, desc: command, value: command })), { label: '退出', value: 'quit' }],
+        initial: lastCommand,
+        filterable: false,
+      })
+      return picked === null || picked === 'quit' ? null : picked
+    }
+    MAIN.forEach(([label, command], index) => ui.line(`  ${pad(String(index + 1), 3, 'right')}  ${pad(label, 16)}${ui.paint('muted', command)}`))
+    ui.line(`  ${pad('0', 3, 'right')}  退出`)
+    const answer = String(await ask('请输入编号：')).trim().toLowerCase()
+    if (answer === '0' || answer === 'q') return null
+    const picked = parseSelection(answer, MAIN.length)
+    return picked?.length === 1 ? MAIN[picked[0] - 1][1] : undefined
+  }
+  let lastCommand = MAIN[0][1]
   for (;;) {
     clear()
     ui.banner(`${ui.g.mark} cradmin  Crosery 中转站管理  ${rt.version}`, `${rt.target.base}（${rt.target.remote ? '远程' : '本地'}）`)
@@ -231,18 +280,16 @@ export async function runMenu(rt, { invoke: run }) {
     ui.kv('账号', `${info.username}（${info.active ? `凭据：${info.tierLabel}${info.expiresAt ? ` · 会话到 ${clock(info.expiresAt)}` : ''}` : '尚未登录'}）`)
     if (rt.globals['dry-run']) ui.kv('模式', ui.paint('warn', '--dry-run：只预览，不发任何写请求'))
     ui.line()
-    MAIN.forEach(([label, command], index) => ui.line(`  ${pad(String(index + 1), 3, 'right')}  ${pad(label, 16)}${ui.paint('muted', command)}`))
-    ui.line(`  ${pad('0', 3, 'right')}  退出`)
-    let answer
+    let command
     try {
-      answer = String(await ask('请输入编号：')).trim().toLowerCase()
+      command = await pickCommand()
     } catch (error) {
       if (error instanceof CancelError) return 0
       throw error
     }
-    if (answer === '0' || answer === 'q') return 0
-    const picked = parseSelection(answer, MAIN.length)
-    if (!picked || picked.length !== 1) continue
+    if (command === null) return 0
+    if (command === undefined) continue
+    lastCommand = command
     // 动作进行中按 Ctrl+C：入口的 SIGINT 处理调 rt.interrupt() 中止这个动作的请求，回到主菜单
     const controller = new AbortController()
     rt.signal = controller.signal
@@ -252,7 +299,7 @@ export async function runMenu(rt, { invoke: run }) {
       return true
     }
     try {
-      await actions[MAIN[picked[0] - 1][1]]()
+      await actions[command]()
     } catch (error) {
       if (error instanceof MenuQuit) return 0
       if (error instanceof CancelError) continue

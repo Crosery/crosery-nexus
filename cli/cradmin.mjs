@@ -60,7 +60,7 @@ export function createRuntime(io, globals) {
   const target = resolveTarget(globals, env, profiles)
   const versionInfo = readVersion()
   const interactive = io.interactive ?? Boolean(io.stdin?.isTTY && io.stderr?.isTTY && !env.CI && !env.CRADMIN_NONINTERACTIVE)
-  const prompter = io.prompter ?? createPrompter({ stdin: io.stdin, stderr: io.stderr })
+  const prompter = io.prompter ?? createPrompter({ stdin: io.stdin, stderr: io.stderr, env, noColor: Boolean(globals['no-color']) })
   let credentials = null
   const rt = {
     env, io, target, profiles, interactive, prompter,

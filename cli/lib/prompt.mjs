@@ -1,11 +1,17 @@
 // 交互输入：所有提示写 stderr（stdout 被重定向时仍能交互）。
-// TTY：每个问题一个 readline（答完即关，终端模式随之复位）；非 TTY：一个常驻 readline + 行队列（测试与管道）。
+// TTY：每个问题一个 readline（答完即关，终端模式随之复位）；选择与确认走方向键界面（tui.mjs）。
+// 非 TTY：一个常驻 readline + 行队列（测试与管道），确认仍是键入 y/N。
 import readline from 'node:readline'
 import { Writable } from 'node:stream'
 import { CancelError } from './args.mjs'
+import { runConfirm, runList } from './tui.mjs'
+import { createUi } from './ui.mjs'
 
-export function createPrompter({ stdin, stderr }) {
+export function createPrompter({ stdin, stderr, env = {}, noColor = false }) {
   const terminal = Boolean(stdin?.isTTY && stderr?.isTTY)
+  // 方向键界面画在 stderr（和所有提示一样），配色与字形跟随 stderr
+  const screen = createUi({ stdout: stderr, stderr, env, noColor })
+  const tui = { stdin, stderr, paint: screen.paintErr, g: screen.g, ascii: screen.glyphMode === 'ascii' }
   let muted = false
   const output = new Writable({
     write(chunk, _encoding, callback) {
@@ -70,8 +76,13 @@ export function createPrompter({ stdin, stderr }) {
     terminal,
     ask,
     secret: prompt => ask(prompt, { secret: true }),
-    /** 默认「否」。 */
+    /** 方向键单选（仅 terminal）：返回选中项的 value，Esc 返回 null；见 tui.runList。 */
+    select: options => runList({ ...options, multiple: false }, tui),
+    /** 方向键多选（仅 terminal）：返回勾选项 value 的数组，Esc 返回 null。 */
+    multiSelect: options => runList({ ...options, multiple: true }, tui),
+    /** 默认「否」。终端里按 y / n 或 ←/→ + Enter，其余环境键入 y/N。 */
     async confirm(question) {
+      if (terminal) return runConfirm({ question }, tui)
       const answer = String(await ask(`${question} [y/N] `)).trim().toLowerCase()
       return answer === 'y' || answer === 'yes' || answer === '是'
     },

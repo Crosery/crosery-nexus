@@ -5,12 +5,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable, Writable } from 'node:stream'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { main } from './cradmin.mjs'
 import { adminCall, startThrowawayServer } from './helpers/throwawayServer.mjs'
 import { cookieFromHeaders } from './lib/session.mjs'
+import { stripAnsi } from './lib/ui.mjs'
 
 const PASSWORD = 'cradmin-e2e-pass-7f3a'
 const CLI = fileURLToPath(new URL('./cradmin.mjs', import.meta.url))
@@ -26,18 +27,20 @@ const sink = () => {
   return { isTTY: false, columns: 0, write: chunk => { chunks.push(String(chunk)); return true }, text: () => chunks.join('') }
 }
 
+const recorder = onResponse => async (url, init) => {
+  const response = await fetch(url, init)
+  if (onResponse) await onResponse(String(url), response.clone())
+  if (String(url).endsWith('/api/login')) {
+    const token = cookieFromHeaders(response.headers)
+    if (token) issuedTokens.add(token)
+  }
+  return response
+}
+
 async function cli(argv, { env = {}, platform = 'linux', execute, stdin = '', interactive = false, label, onResponse } = {}) {
   const stdout = sink()
   const stderr = sink()
-  const recordingFetch = async (url, init) => {
-    const response = await fetch(url, init)
-    if (onResponse) await onResponse(String(url), response.clone())
-    if (String(url).endsWith('/api/login')) {
-      const token = cookieFromHeaders(response.headers)
-      if (token) issuedTokens.add(token)
-    }
-    return response
-  }
+  const recordingFetch = recorder(onResponse)
   const code = await main(argv, {
     env: {
       PATH: process.env.PATH, CONSOLE_PASSWORD: PASSWORD, CRADMIN_SESSION_CACHE: 'off', CRADMIN_KEYCHAIN: 'off',
@@ -52,6 +55,8 @@ async function cli(argv, { env = {}, platform = 'linux', execute, stdin = '', in
 }
 
 const fullKeys = text => text.match(/sk-[a-z0-9-]+-[0-9a-f]{32}/g) || []
+// 审计接口只给最近 100 条（含登录）；条数会随登录变化，判断「没写」要看最新一条写操作的 id
+const lastWriteId = async () => (await adminCall(server, 'GET', '/api/audit')).body.items.find(item => item.action !== 'login')?.id ?? 0
 const nonLoginAudit = async () => (await adminCall(server, 'GET', '/api/audit')).body.items.filter(item => item.action !== 'login').length
 const bootstrap = async () => (await adminCall(server, 'GET', '/api/bootstrap')).body
 const keyNamed = async name => (await bootstrap()).keys.find(key => key.name === name)
@@ -403,6 +408,132 @@ test('cradmin --dry-run 进菜单：开 Key 只预览，不发写请求', async 
   assert.equal(fullKeys(result.stdout).length, 0)
   assert.equal(await nonLoginAudit(), writes)
   assert.equal(await keyNamed('menu-dry'), undefined)
+})
+
+const KEYS = { up: '\x1b[A', down: '\x1b[B', enter: '\r', esc: '\x1b', space: ' ' }
+
+/**
+ * 假 TTY 上跑真实菜单：script 的每一步是 [等屏幕上出现的文字, 要按的键]，文字只在上一步按键之后的输出里找。
+ * 一步里的按键只给同一个提示（多个提示的按键要分步）。
+ */
+async function cliTty(argv, script, { env = {}, label } = {}) {
+  const stdin = new PassThrough()
+  stdin.isTTY = true
+  stdin.isRaw = false
+  stdin.setRawMode = mode => { stdin.isRaw = Boolean(mode); return stdin }
+  const chunks = []
+  const stderr = new Writable({ write(chunk, _encoding, done) { chunks.push(String(chunk)); done() } })
+  Object.assign(stderr, { isTTY: true, columns: 100, rows: 40 })
+  const stdout = sink()
+  let finished = null
+  const run = main(argv, {
+    env: { PATH: process.env.PATH, CONSOLE_PASSWORD: PASSWORD, CRADMIN_SESSION_CACHE: 'off', CRADMIN_KEYCHAIN: 'off', CRADMIN_BASE: server.base, CRADMIN_HOME: home, NO_COLOR: '1', ...env },
+    stdin, stdout, stderr, interactive: true, cwd, home, fetch: recorder(), installSignals: false, pollMs: 50, platform: 'linux',
+  }).then(code => { finished = { code }; return code })
+  const screen = () => stripAnsi(chunks.join(''))
+  const tail = () => screen().slice(-700)
+  let mark = 0
+  for (const [expected, keys] of script) {
+    const deadline = Date.now() + 15_000
+    while (!stripAnsi(chunks.join('').slice(mark)).includes(expected)) {
+      if (finished) throw new Error(`菜单在出现「${expected}」之前就退出了（code ${finished.code}）\n${tail()}`)
+      if (Date.now() > deadline) throw new Error(`等待「${expected}」超时\n${tail()}`)
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    mark = chunks.join('').length
+    stdin.write(keys)
+  }
+  const code = await run
+  const result = { argv: label ?? argv, code, stdout: stdout.text(), stderr: chunks.join('') }
+  outputs.push(result)
+  return result
+}
+
+test('终端菜单：方向键进 API Key → 列出 Key → 回车返回主菜单 → Esc 退出', async () => {
+  const result = await cliTty([], [
+    ['请选择功能', KEYS.down + KEYS.down + KEYS.enter], // 总览 → 渠道与模型 → API Key
+    ['列出 Key', KEYS.enter],
+    ['按回车键返回主菜单', KEYS.enter],
+    ['请选择功能', KEYS.esc],
+  ], { label: ['tty-menu', 'keys', 'ls'] })
+  assert.equal(result.code, 0, result.stderr)
+  assert.match(result.stdout, /menu-key/)
+  assert.doesNotMatch(result.stderr, /请输入编号/, '终端里不再让人敲编号')
+})
+
+test('终端菜单：渠道模型勾选 → 只提交改动 → 确认按 y；回答 n 不写', async () => {
+  const model = async () => (await adminCall(server, 'GET', '/api/channels')).body.channels.find(item => item.name === 'tch').models.map(item => ({ id: item.id, enabled: item.enabled })).sort((a, b) => a.id.localeCompare(b.id))[0]
+  const first = await model()
+  const writes = await lastWriteId()
+  const toTchModels = [
+    ['请选择功能', KEYS.down + KEYS.enter], // 渠道与模型
+    ['查看 / 开关某个渠道的模型', KEYS.down + KEYS.enter],
+    ['选择渠道', KEYS.enter], // tch 排第一
+  ]
+
+  const declined = await cliTty([], [
+    ...toTchModels,
+    ['tch 的模型', KEYS.space + KEYS.enter], // 勾掉 / 勾上第一个
+    ['确认执行？', 'n'],
+    ['tch 的模型', KEYS.esc], // 取消后仍在模型页，Esc 回主菜单
+    ['请选择功能', KEYS.esc],
+  ], { label: ['tty-menu', 'models', 'decline'] })
+  assert.equal(declined.code, 0, declined.stderr)
+  assert.match(declined.stderr, /已取消/)
+  assert.deepEqual(await model(), first, '回答否之后什么都没改')
+  assert.equal(await lastWriteId(), writes)
+
+  const accepted = await cliTty([], [
+    ...toTchModels,
+    ['tch 的模型', KEYS.space + KEYS.enter],
+    ['确认执行？', 'y'],
+    ['tch 的模型', KEYS.esc],
+    ['请选择功能', KEYS.esc],
+  ], { label: ['tty-menu', 'models', 'accept'] })
+  assert.equal(accepted.code, 0, accepted.stderr)
+  assert.match(accepted.stdout, /调整 tch 的模型/)
+  assert.deepEqual(await model(), { ...first, enabled: !first.enabled }, '只改了被勾选变动的那一个')
+  assert.equal((await cli(['channels', 'models', 'tch', first.enabled ? '--enable' : '--disable', first.id, '--yes'])).code, 0, '还原')
+  assert.deepEqual(await model(), first)
+})
+
+test('终端菜单：开 Key——打字输入名称、方向键多选分组、确认按 y、完整 Key 只出现在 stdout', async () => {
+  const result = await cliTty([], [
+    ['请选择功能', KEYS.down + KEYS.down + KEYS.enter], // API Key
+    ['开通 Key', KEYS.down + KEYS.enter],
+    ['显示名称', 'tty-key\r'],
+    ['选择分组', KEYS.space + KEYS.down + KEYS.space + KEYS.enter],
+    ['总并发', '\r'],
+    ['日额度美元', '\r'],
+    ['确认执行？', 'y'],
+    ['按回车键返回主菜单', KEYS.enter],
+    ['请选择功能', KEYS.esc],
+  ], { label: ['tty-menu', 'keys', 'create'] })
+  assert.equal(result.code, 0, result.stderr)
+  const created = fullKeys(result.stdout)
+  assert.equal(created.length, 1, result.stdout)
+  shownKeys.push(created[0])
+  assert.equal((await keyNamed('tty-key')).groups.length, 2)
+  assert.equal(fullKeys(result.stderr).length, 0, '完整 Key 不进 stderr')
+})
+
+test('终端菜单：Ctrl+C 在主菜单退出；--dry-run 进菜单时模型勾选只预览', async () => {
+  const quit = await cliTty([], [['请选择功能', '\x03']], { label: ['tty-menu', 'ctrl-c'] })
+  assert.equal(quit.code, 0, quit.stderr)
+
+  const writes = await lastWriteId()
+  const dry = await cliTty(['--dry-run'], [
+    ['请选择功能', KEYS.down + KEYS.enter],
+    ['查看 / 开关某个渠道的模型', KEYS.down + KEYS.enter],
+    ['选择渠道', KEYS.enter],
+    ['tch 的模型', KEYS.space + KEYS.enter],
+    ['tch 的模型', KEYS.esc],
+    ['请选择功能', KEYS.esc],
+  ], { label: ['tty-menu', 'models', 'dry-run'] })
+  assert.equal(dry.code, 0, dry.stderr)
+  assert.match(dry.stdout, /预览（--dry-run，不会发出写请求）/)
+  assert.doesNotMatch(dry.stderr, /确认执行？/, '--dry-run 不需要确认')
+  assert.equal(await lastWriteId(), writes)
 })
 
 test('菜单里密码不对：只发一次登录就退出 3，不会每个动作再撞一次登录限流', async () => {
