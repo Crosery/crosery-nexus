@@ -1,6 +1,6 @@
 # cradmin：中转站管理 CLI
 
-`cradmin` 是 crosery-api-console 的管理员命令行。它和公开分发的 `crapi` 是两个东西：`crapi` 给终端用户接入网关，`cradmin` 只给管理员用，代码在本仓库 `cli/`，和服务端同仓、同测。
+`cradmin` 是 crosery-api-console 的管理员命令行。它和公开分发的 `crapi` 是两个东西：`crapi` 给终端用户接入网关，`cradmin` 只给管理员用。两者都在本仓库、同仓同测：`cradmin` 在 `cli/`（随 `npm test`），`crapi` 是 Go 程序在 `crapi/`（`npm run test:crapi`，要 Go 工具链）。`crapi/` 不进控制台发布包；它的发布走 `crapi/scripts/sync_qiniu.sh <版本>`（七牛云 CDN + 公开仓库 `Crosery/crapi` 的 Release），与控制台发版互不相干。
 
 - **只调控制台的 HTTP API**，复用服务端的校验、写队列、审计和冷却；不直接改 SQLite 或 JSON 数据文件。
 - 只用 Node 内置模块，不新增依赖；要求 Node 24+。

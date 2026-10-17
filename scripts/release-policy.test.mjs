@@ -95,7 +95,7 @@ test('仓库里的 preview/production env 文件本身合规', async () => {
 })
 
 test('发布包不带 QA 交付物与本地状态', () => {
-  for (const file of ['docs/qa/deploy/x.md', '.env', '.env.local', 'data/console.db', 'node_modules/a/b.js', 'src/.DS_Store']) assert.equal(shippable(file), false, file)
+  for (const file of ['docs/qa/deploy/x.md', 'crapi/main.go', 'crapi/internal/cli/cli.go', '.env', '.env.local', 'data/console.db', 'node_modules/a/b.js', 'src/.DS_Store']) assert.equal(shippable(file), false, file)
   for (const file of ['.env.example', 'server/index.ts', 'docs/cli.md', 'deploy/env/preview.env']) assert.equal(shippable(file), true, file)
 })
 

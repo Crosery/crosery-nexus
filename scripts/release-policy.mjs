@@ -137,7 +137,7 @@ export function publicEnvProblems(env) {
 }
 
 /** 发布包里不放的跟踪文件（QA 交付物与本地状态）。 */
-export const NEVER_SHIP = [/^docs\/qa\//, /^\.env$/, /^\.env\.(?!example$)/, /^node_modules\//, /^data\//, /(^|\/)\.DS_Store$/, /\.log$/]
+export const NEVER_SHIP = [/^docs\/qa\//, /^crapi\//, /^\.env$/, /^\.env\.(?!example$)/, /^node_modules\//, /^data\//, /(^|\/)\.DS_Store$/, /\.log$/]
 
 export function shippable(file) {
   return !NEVER_SHIP.some((pattern) => pattern.test(file))

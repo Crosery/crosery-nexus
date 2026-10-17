@@ -34,11 +34,12 @@
     "typecheck": "tsc -b --pretty false && tsc -p apps/data/tsconfig.json --pretty false",
     "test": "node --test --test-timeout=30000 --import tsx server/*.test.ts src/features/models/*.test.ts src/features/channels/*.test.ts apps/data/src/*.test.ts packages/contracts/*.test.ts scripts/*.test.mjs cli/*.test.mjs",
     "test:backfill": "node --test --test-timeout=30000 scripts/backfill-data-plane.test.mjs",
+    "test:crapi": "cd crapi && go vet ./... && go test ./...",
     "test:deploy": "sh deploy/data-plane/tests/postgres-secrets.test.sh && sh deploy/data-plane/tests/data-secrets.test.sh && sh deploy/data-plane/tests/wal-archive.test.sh",
     "test:pg": "npm run test:integration --workspace @crosery/cpe-data",
     "qa:bundle": "node scripts/check-bundle-budget.mjs",
     "benchmark:api": "node scripts/benchmark-api.mjs",
-    "verify": "npm run test && npm run test:deploy && npm run lint && npm run build:all && npm run qa:bundle",
+    "verify": "npm run test && npm run test:crapi && npm run test:deploy && npm run lint && npm run build:all && npm run qa:bundle",
     "pricing:update": "node scripts/build-pricing.mjs"
   },
   "dependencies": {

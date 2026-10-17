@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# 自动同步 crapi 发布产物到七牛云存储桶 crosery 并刷新 CDN 缓存。
-# 用法：scripts/sync_qiniu.sh [version]
+# 自动同步 crapi 发布产物到七牛云存储桶 crosery 并刷新 CDN 缓存，再把产物发到公开仓库的 GitHub Release。
+# 用法：crapi/scripts/sync_qiniu.sh <version>      例：crapi/scripts/sync_qiniu.sh 0.3.0
+# 源码在 crosery-api-console 的 crapi/ 下；Crosery/crapi 只做分发（Release 产物、jsDelivr 安装脚本），
+# 所以这里不给控制台仓库打 tag、不推送，GitHub 操作一律用 --repo 指向公开仓库。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${1:-0.1.5}"
+VERSION="${1:?用法：scripts/sync_qiniu.sh <version>，例如 0.3.0}"
+VERSION="${VERSION#v}"
+PUBLIC_REPO="Crosery/crapi"
+
 echo "1. 编译全平台产物（版本：$VERSION）..."
 ./scripts/build.sh "$VERSION"
 
@@ -21,12 +26,12 @@ done
 echo "4. 刷新七牛云 CDN 缓存 (https://cdn.crosery.com/crapi/)..."
 echo "https://cdn.crosery.com/crapi/" | qshell cdnrefresh -r
 
-echo "5. 同步更新 GitHub Release (v$VERSION)..."
+echo "5. 同步更新 GitHub Release (v$VERSION → $PUBLIC_REPO)..."
 if command -v gh >/dev/null 2>&1; then
-  git tag -f "v$VERSION"
-  git push origin "v$VERSION" --force 2>/dev/null || true
-  gh release delete "v$VERSION" -y 2>/dev/null || true
-  gh release create "v$VERSION" dist/* --title "Release v$VERSION" --notes "Release v$VERSION with Qiniu CDN and multi-mirror sync" 2>/dev/null || true
+  gh release delete "v$VERSION" --repo "$PUBLIC_REPO" --cleanup-tag -y 2>/dev/null || true
+  gh release create "v$VERSION" dist/* --repo "$PUBLIC_REPO" --title "Release v$VERSION" \
+    --notes "Release v$VERSION with Qiniu CDN and multi-mirror sync" \
+    || echo "  ! GitHub Release 创建失败，七牛云 CDN 已更新；请手动补发 Release"
 fi
 
 echo "6. 刷新 jsDelivr 历史旧缓存（防止第三方镜像污染）..."
