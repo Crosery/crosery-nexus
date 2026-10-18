@@ -184,7 +184,7 @@ const requestsLink = computed(() => ({ path: '/usage/requests', query: { keyId: 
 .kx-detail__wk { font-size: var(--fs-xs); color: var(--ink-3); }
 .kx-detail__amt { font-size: var(--fs-xs); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kx-detail__rst { color: var(--ink-3); }
-.kx-detail__days { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.kx-detail__days { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; width: 100%; }
 .kx-detail__sum { margin: 0; font-size: var(--fs-xs); color: var(--ink-2); }
 .kx-detail__kinds { margin: 0; font-size: var(--fs-xs); color: var(--ink-2); }
 .kx-detail__empty { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); }

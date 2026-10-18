@@ -15,7 +15,6 @@ import { useSheetWrite } from '../../lib/resource'
 import { api } from '../../api'
 import type { SegmentItem } from '../../ui/types'
 import { CHANNEL_NAME_RE, suggestName } from './channelModel'
-
 /**
  * 添加渠道 (DESIGN §6.4): 地址 → 探测 → 选模型 → 创建 (the form reveals each step; the footer hint says
  * what is missing next, so there is no separate step rail). Probing calls the upstream's /models once with the
@@ -215,6 +214,7 @@ async function create() {
   <Sheet v-model="open" title="添加渠道" size="560px" :height="isMobile ? '92vh' : 'auto'">
     <form class="cx-new" novalidate @submit.prevent="create">
       <div class="cx-new__field">
+
         <span class="cx-new__label">协议</span>
         <Segmented v-model="protocol" :items="PROTOCOLS" label="上游协议" />
         <span class="cx-new__hint">{{ protocol === 'claude' ? 'Anthropic /v1/messages · 渠道名由地址决定' : protocol === 'responses' ? '/v1/responses 原生中继 · 上游需支持 Responses API' : '/v1/chat/completions 兼容端点' }}</span>
@@ -291,8 +291,7 @@ async function create() {
       </template>
 
       <p v-if="submitError" class="cx-new__err" role="alert">◆ {{ submitError }}</p>
-      <button type="submit" hidden aria-hidden="true" tabindex="-1" />
-    </form>
+      </form>
 
     <template #footer="{ close }">
       <div class="cx-new__foot">

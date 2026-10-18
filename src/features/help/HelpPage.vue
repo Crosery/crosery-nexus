@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, ref, type FunctionalComponent } from 'vue'
 import { useRouter } from 'vue-router'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import { TxCollapse, TxCollapseItem } from '@talex-touch/tuffex/collapse'
@@ -16,6 +17,7 @@ import { copyText } from '../../ui/feedback/toast'
 import { resolveDataState, type DataState } from '../../ui/composables/useLive'
 import { isReducedMotion } from '../../ui/composables/prefs'
 import { fmtInt } from '../../ui/fmt'
+import { useSkinPref } from '../../lib/skin'
 import { useResource } from '../../lib/resource'
 import { usePaletteCommands } from '../../shell/palette'
 import { api } from '../../api'
@@ -49,7 +51,7 @@ import {
 type ConnectInfo = { baseUrl: string; anthropicBaseUrl: string | null; configured: boolean }
 
 const router = useRouter()
-
+const { pref: skin } = useSkinPref()
 const connect = useResource(() => request<ConnectInfo>('/api/connect'))
 const catalog = useResource(() => api.modelIndex<ModelIndexData>())
 
@@ -209,7 +211,7 @@ usePaletteCommands(() => [
 
 
 <template>
-  <div class="ui-page help">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page help" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead title="帮助" :status="status">
       <template #actions>
         <TxButton variant="secondary" size="sm" class="help__toc-btn" aria-haspopup="dialog" :aria-expanded="tocOpen" @click="tocOpen = true">
@@ -219,7 +221,7 @@ usePaletteCommands(() => [
       </template>
     </PageHead>
 
-    <div class="help__layout">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="help__layout" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <nav class="help__toc" aria-label="帮助目录">
         <a
           v-for="s in sections"
@@ -232,10 +234,10 @@ usePaletteCommands(() => [
         >{{ s.label }}</a>
       </nav>
 
-      <div class="ui-grid help__body">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-grid help__body" :direction="skin === 'minimal' ? 'vertical' : undefined">
         <Plate id="start" tabindex="-1" class="help__sec c-12" title="开始之前" :state="startState" :rows="2" :cols="['1fr', '1fr']">
           <template #meta>
-            <button v-if="settled(connect) && !info" type="button" class="ui-link" @click="connect.reload">重读配置</button>
+            <span v-if="settled(connect) && !info"><TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="connect.reload">重读配置</TxButton><button v-else type="button" class="ui-link" @click="connect.reload">重读配置</button></span>
           </template>
           <div class="help__fields">
             <CopyField label="OpenAI 兼容 Base URL" :value="base" :hint="baseHint" />
@@ -336,7 +338,8 @@ usePaletteCommands(() => [
 
         <Plate id="faq" tabindex="-1" class="help__sec c-12" title="常见问题">
           <template #meta>
-            <button type="button" class="ui-link" :aria-pressed="allOpen" @click="toggleAll">{{ allOpen ? '全部收起' : '全部展开' }}</button>
+            <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :aria-pressed="allOpen" @click="toggleAll">{{ allOpen ? '全部收起' : '全部展开' }}</TxButton>
+            <button v-else type="button" class="ui-link" :aria-pressed="allOpen" @click="toggleAll">{{ allOpen ? '全部收起' : '全部展开' }}</button>
           </template>
           <div class="help__faq">
             <TxCollapse v-for="(col, c) in faqCols" :key="c" class="help__faq-col" :model-value="colOpen[c]" @update:model-value="setCol(c, $event)">
@@ -352,8 +355,8 @@ usePaletteCommands(() => [
             </TxCollapse>
           </div>
         </Plate>
-      </div>
-    </div>
+      </component>
+    </component>
 
     <Sheet v-model="tocOpen" title="目录" side="bottom">
       <nav class="help__sheet" aria-label="帮助目录">
@@ -368,7 +371,7 @@ usePaletteCommands(() => [
         >{{ s.label }}</a>
       </nav>
     </Sheet>
-  </div>
+  </component>
 </template>
 
 <style scoped>

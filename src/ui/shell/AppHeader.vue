@@ -7,6 +7,7 @@ import BrandMark from './BrandMark.vue'
 import HeaderTrace from './HeaderTrace.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import MaskToggle from './MaskToggle.vue'
+import SkinPicker from './SkinPicker.vue'
 import Icon from '../Icon.vue'
 import Kbd from '../form/Kbd.vue'
 import { CALM_MENU } from '../form/anchor'
@@ -114,6 +115,7 @@ const keyChip = computed(() => {
         </span>
         <MaskToggle v-if="role === 'admin'" />
         <ThemeToggle />
+        <SkinPicker />
         <TxDropdownMenu v-if="role === 'admin' && user" v-model="menuOpen" class="ui-umenu" placement="bottom-end" :min-width="168" :offset="6" v-bind="CALM_MENU">
           <template #trigger>
             <TxButton ref="menuBtn" variant="ghost" class="ui-umenu__btn" :aria-expanded="menuOpen" aria-haspopup="menu" :aria-label="`用户菜单：${user.name}`">
@@ -138,6 +140,7 @@ const keyChip = computed(() => {
           <i v-for="j in syncBars" :key="j.id" :class="`is-${j.state}`" />
         </RouterLink>
         <ThemeToggle />
+        <SkinPicker compact />
         <TxIconButton v-if="role === 'admin'" label="搜索与命令" size="sm" @click="emit('palette')"><Icon name="search" /></TxIconButton>
         <TxIconButton v-else label="退出" title="退出" size="sm" @click="emit('logout')"><Icon name="out" /></TxIconButton>
       </div>

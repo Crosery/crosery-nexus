@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { RouterLink } from 'vue-router'
 import { TxIconButton } from '@talex-touch/tuffex/button'
 import PageHead from '../../ui/shell/PageHead.vue'
@@ -9,6 +10,7 @@ import CodeSnippet from '../../ui/form/CodeSnippet.vue'
 import MaskedKey from '../../ui/form/MaskedKey.vue'
 import Icon from '../../ui/Icon.vue'
 import { useLive } from '../../ui/composables/useLive'
+import { useSkinPref } from '../../lib/skin'
 import { copyText } from '../../ui/feedback/toast'
 import { fmtInt } from '../../ui/fmt'
 import { api } from '../../api'
@@ -22,6 +24,8 @@ import type { MeModels } from '../../types'
  * Example model ids are models this key can call: a client whose protocol has no callable model is not offered,
  * and with no callable model at all the snippets carry a `<模型 ID>` placeholder and say why.
  */
+const { pref: skin } = useSkinPref()
+
 const connect = useLive<MeConnectX>((signal) => api.me.connect(signal) as Promise<MeConnectX>, { intervalMs: 0 })
 const models = useLive<MeModels>((signal) => api.me.models(signal), {
   intervalMs: 0,
@@ -111,12 +115,12 @@ const modelsEmptyText = computed(() => {
 </script>
 
 <template>
-  <div class="ui-page me-connect">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page me-connect" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead title="接入" plain status="OpenAI / Anthropic 兼容 · 三步跑通">
       <template #actions><a class="ui-btn ui-btn--sm" href="/docs" target="_blank" rel="noopener">文档 ↗</a></template>
     </PageHead>
 
-    <div class="me-connect__grid">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-connect__grid" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <div class="me-connect__col me-connect__l">
         <Plate title="地址" class="me-connect__p1" :state="connect.state.value" :error="connect.error.value" :rows="3" @retry="connect.refresh">
           <div class="me-connect__fields">
@@ -163,8 +167,8 @@ const modelsEmptyText = computed(() => {
           <p class="me-connect__hint">{{ verifyHint }}</p>
         </Plate>
       </div>
-    </div>
-  </div>
+    </component>
+  </component>
 </template>
 
 <style>

@@ -1,7 +1,9 @@
 <script setup lang="ts" generic="T extends Record<string, any>">
-import { getCurrentInstance } from 'vue'
+import { getCurrentInstance, computed } from 'vue'
+import { TxCard } from '@talex-touch/tuffex/card'
 import RowTable from './RowTable.vue'
 import StateBlock from './StateBlock.vue'
+import { useSkinPref } from '../../lib/skin'
 import type { DataState, RowColumn, RowTone } from '../types'
 
 /**
@@ -38,6 +40,8 @@ const expanded = defineModel<Key[]>('expandedKeys', { default: () => [] })
 /* rows are clickable only when the parent listens (same rule as RowTable) */
 const clickable = Boolean(getCurrentInstance()?.vnode.props?.onRowClick)
 const rowListeners = (g: Group) => (clickable ? { onRowClick: (row: T, i: number) => emit('rowClick', row, i, g) } : {})
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
@@ -45,28 +49,51 @@ const rowListeners = (g: Group) => (clickable ? { onRowClick: (row: T, i: number
     <StateBlock v-if="state === 'loading' || state === 'error' || state === 'forbidden'" :state="state" :error="error" :rows="8" @retry="emit('retry')" />
     <StateBlock v-else-if="state === 'empty' || !groups.length" state="empty" :empty-text="emptyText" />
     <template v-else>
-    <section v-for="(g, gi) in groups" :key="g.key" class="ui-grt__group" data-print>
-      <header class="ui-grt__head">
-        <slot name="group-head" :group="g" :index="gi"><h3 class="ui-grt__title">{{ g.head }}</h3></slot>
-      </header>
-      <RowTable
-        :columns="columns"
-        :data="g.rows"
-        :row-key="rowKey"
-        :density="density"
-        :expandable="expandable"
-        :expanded-keys="expanded"
-        :row-expandable="rowExpandable"
-        :row-tone="rowTone"
-        :card-below="cardBelow"
-        :show-head="gi === 0"
-        :caption="g.head"
-        :empty-text="groupEmptyText"
-        @update:expanded-keys="expanded = $event"
-        v-bind="rowListeners(g)"
-      >
-        <template v-for="(_, name) in $slots" :key="name" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
-      </RowTable>
+    <section v-for="(g, gi) in groups" :key="g.key" data-print>
+      <TxCard v-if="minimal">
+        <template #header><slot name="group-head" :group="g" :index="gi"><h3>{{ g.head }}</h3></slot></template>
+        <RowTable
+          :columns="columns"
+          :data="g.rows"
+          :row-key="rowKey"
+          :density="density"
+          :expandable="expandable"
+          :expanded-keys="expanded"
+          :row-expandable="rowExpandable"
+          :row-tone="rowTone"
+          :card-below="cardBelow"
+          :show-head="gi === 0"
+          :caption="g.head"
+          :empty-text="groupEmptyText"
+          @update:expanded-keys="expanded = $event"
+          v-bind="rowListeners(g)"
+        >
+          <template v-for="(_, name) in $slots" :key="name" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
+        </RowTable>
+      </TxCard>
+      <template v-else>
+        <header class="ui-grt__head">
+          <slot name="group-head" :group="g" :index="gi"><h3 class="ui-grt__title">{{ g.head }}</h3></slot>
+        </header>
+        <RowTable
+          :columns="columns"
+          :data="g.rows"
+          :row-key="rowKey"
+          :density="density"
+          :expandable="expandable"
+          :expanded-keys="expanded"
+          :row-expandable="rowExpandable"
+          :row-tone="rowTone"
+          :card-below="cardBelow"
+          :show-head="gi === 0"
+          :caption="g.head"
+          :empty-text="groupEmptyText"
+          @update:expanded-keys="expanded = $event"
+          v-bind="rowListeners(g)"
+        >
+          <template v-for="(_, name) in $slots" :key="name" #[name]="scope"><slot :name="name" v-bind="scope ?? {}" /></template>
+        </RowTable>
+      </template>
     </section>
     </template>
   </div>

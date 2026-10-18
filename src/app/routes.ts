@@ -53,6 +53,7 @@ export const routes: RouteRecordRaw[] = [
           { path: '/usage/performance', name: 'usage-performance', component: () => import('../features/usage/tabs/PerformanceTab.vue') },
         ],
       },
+      { path: '/operations', name: 'operations', component: () => import('../features/operations/OperationsPage.vue'), meta: { title: '运营数据' } },
       { path: '/settings', name: 'settings', component: () => import('../features/settings/SettingsPage.vue'), meta: { title: '设置' } },
       { path: '/help', name: 'help', component: () => import('../features/help/HelpPage.vue'), meta: { title: '帮助' } },
     ],

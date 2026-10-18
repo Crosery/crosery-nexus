@@ -5,6 +5,7 @@
  * that way); enabling does not. Writes go through the existing PATCH; the switch stays locked until the page has re-read.
  */
 import { computed, ref } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { RouterLink } from 'vue-router'
 import Sheet from '../../ui/feedback/Sheet.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
@@ -18,6 +19,7 @@ import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { copyText, notify } from '../../ui/feedback/toast'
 import { fmtCompact, fmtInt, fmtPct, fmtTime, fmtUsd } from '../../ui/fmt'
 import { errorReason } from '../../lib/errors'
+import { useSkinPref } from '../../lib/skin'
 import { api } from '../../api'
 import ModelPricingSources from './ModelPricingSources.vue'
 import ModelUpstreamModels from './ModelUpstreamModels.vue'
@@ -36,6 +38,7 @@ const props = defineProps<{
   /** re-reads the list after a write; the switch stays locked until it resolves (else `changed` is emitted) */
   reload?: () => Promise<void>
 }>()
+const { pref: skin } = useSkinPref()
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ changed: [] }>()
 
@@ -204,7 +207,7 @@ const usageFacts = computed(() => {
     <template v-if="row" #head-extra>
       <TxIconButton label="复制模型 id" title="复制模型 id" size="sm" @click="copyText(row.id, '模型 id')"><Icon name="copy" /></TxIconButton>
     </template>
-    <div v-if="row" class="msh">
+    <component v-if="row" :is="skin === 'minimal' ? TxStack : 'div'" class="msh" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <div class="msh__top">
         <p class="msh__id">
           <ProviderMark :provider="row.vendor === 'other' ? row.key : row.vendor" :size="20" />
@@ -313,7 +316,7 @@ const usageFacts = computed(() => {
         </dl>
         <RouterLink class="ui-link msh__link" :to="{ path: '/usage/requests', query: { model: row.key } }">看这个模型的请求 →</RouterLink>
       </section>
-    </div>
+    </component>
   </Sheet>
 </template>
 

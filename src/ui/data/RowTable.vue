@@ -5,6 +5,7 @@ import StateBlock from './StateBlock.vue'
 import './rowcard.css'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useQueryState } from '../../lib/listState'
+import { useSkinPref } from '../../lib/skin'
 import type { DataState, RowColumn, RowTone, SortState } from '../types'
 
 /**
@@ -78,8 +79,9 @@ const instance = getCurrentInstance()
 const clickable = computed(() => Boolean(instance?.vnode.props?.onRowClick))
 
 const { width } = useBreakpoint()
-const asCards = computed(() => width.value < props.cardBelow)
-
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const asCards = computed(() => !minimal.value && width.value < props.cardBelow)
 /* ── sort: URL → prop → local ── */
 const encode = (s: SortState | null | undefined) => (s && s.order ? `${s.key}:${s.order}` : '')
 const decode = (raw: string): SortState | null => {
@@ -137,7 +139,8 @@ function toneOf(row: T, index: number): string {
   return tone ? `is-${tone}` : ''
 }
 
-/* TxDataTable column objects: card metadata stripped, alignment kept */
+/* TxDataTable columns: card metadata is never passed to the native table. */
+const minimalColumns = computed(() => props.columns.map(({ card: _card, cardLabel: _label, ...rest }) => ({ ...rest })))
 const tableColumns = computed(() =>
   props.columns.map(({ card: _card, cardLabel: _label, ...rest }) => ({ ...rest, nowrap: rest.nowrap ?? true })),
 )
@@ -237,24 +240,17 @@ const tableListeners = computed(() =>
 
     <TxDataTable
       v-else
-      :columns="tableColumns"
+      :columns="minimal ? minimalColumns : tableColumns"
       :data="rows"
       :row-key="keyOf"
-      table-layout="fixed"
-      hover
-      :sticky-header="maxHeight !== undefined"
-      :max-height="maxHeight"
+      v-bind="{ ...(minimal ? { tableLayout: 'fixed', hover: true, stickyHeader: maxHeight !== undefined, maxHeight, expandLabel: '展开', collapseLabel: '收起' } : { tableLayout: 'fixed', hover: true, stickyHeader: maxHeight !== undefined, maxHeight, sort: sortState, sortOnClient: false, sortCycle: 'tri', expandable, expandedKeys, rowExpandable, expandLabel: '展开', collapseLabel: '收起', rowClass: toneOf, ariaLabel: caption }), ...tableListeners }"
+      :scroll-x="minimal"
       :sort="sortState"
       :sort-on-client="false"
-      sort-cycle="tri"
       :expandable="expandable"
       :expanded-keys="expandedKeys"
       :row-expandable="rowExpandable"
-      expand-label="展开"
-      collapse-label="收起"
-      :row-class="toneOf"
       :aria-label="caption"
-      v-bind="tableListeners"
       @update:sort="onSort"
       @update:expanded-keys="emit('update:expandedKeys', $event)"
     >

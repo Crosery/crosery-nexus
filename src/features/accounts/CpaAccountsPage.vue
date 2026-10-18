@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { useRoute, useRouter } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -24,6 +25,7 @@ import { fmtInt, fmtTime } from '../../ui/fmt'
 import { maskEmail, useMask } from '../../lib/privacy'
 import { describeError } from '../../lib/errors'
 import { notify } from '../../ui/feedback/toast'
+import { useSkinPref } from '../../lib/skin'
 import { setNavCount } from '../../shell/badges'
 import { usePaletteCommands } from '../../shell/palette'
 import type { CommandItem, DataState, SegmentItem } from '../../ui/types'
@@ -74,6 +76,7 @@ const emit = defineEmits<{
 const route = useRoute()
 const router = useRouter()
 const { isMobile } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 const now = useNow()
 const { on: masked } = useMask()
 
@@ -400,7 +403,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
 </script>
 
 <template>
-  <div class="ui-page acc" :class="{ 'is-embedded': props.embedded }">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page acc" :class="{ 'is-embedded': props.embedded }" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead v-if="!props.embedded" title="账号">
       <template #status>
         <span class="acc-status num"><template v-for="(p, i) in headStatus" :key="i"><template v-if="i"> · </template><span :class="{ sig: p.sig }">{{ p.t }}</span></template></span>
@@ -411,11 +414,13 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       </template>
     </PageHead>
 
-    <div v-if="!props.embedded && (counts.all || filtering)" class="ui-toolbar acc-tools">
+    <component v-if="!props.embedded && (counts.all || filtering)" :is="skin === 'minimal' ? TxStack : 'div'" class="ui-toolbar acc-tools" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
       <SearchField v-model="ownQ" query="q" placeholder="邮箱 / 套餐 / 服务" label="搜索账号" />
       <Segmented v-model="ownShow" query="show" default-value="all" :items="showItems" label="按状态筛选" />
       <Segmented v-model="mode" class="push" :items="MODE_ITEMS" label="额度显示已用或剩余" />
-    </div>
+    </component>
+
+
 
     <Plate :title="props.plateTitle" flush class="acc-plate" :state="bodyState" :error="live.error.value" :stale-at="live.lastAt.value" :rows="8" :cols="cols" @retry="refresh">
       <template #meta>
@@ -429,7 +434,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
         <TxButton variant="subtle" size="small" @click="openAdd()"><Icon name="plus" :size="14" />添加账号</TxButton>
       </template>
 
-      <div ref="listEl" class="acc-list" :class="{ 'is-mobile': isMobile }">
+      <component ref="listEl" :is="skin === 'minimal' ? TxStack : 'div'" class="acc-list" :class="{ 'is-mobile': isMobile }" :direction="skin === 'minimal' ? 'vertical' : undefined">
         <div v-if="!isMobile && visibleCount" class="acc-cols micro" aria-hidden="true">
           <span>状态</span><span>账号</span><span>路由</span><span>窗口 A</span><span>窗口 B</span><span class="acc-cols__rs">重置</span><span class="acc-cols__rc">最近</span><span />
         </div>
@@ -495,7 +500,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
             @click="openAdd(p.id)"
           ><ProviderMark :provider="p.mark" :size="18" />{{ p.name }}<Icon name="plus" :size="12" /></TxButton>
         </div>
-      </div>
+      </component>
     </Plate>
 
     <!-- 390: the expanded content lives in a sheet with 40px actions -->
@@ -548,7 +553,7 @@ const meter = computed(() => (listW.value < 1300 ? 48 : 56))
       :disable-models="disableProviderModels"
       @toggle="handleToggleProviderModel"
     />
-  </div>
+  </component>
 </template>
 
 <style>

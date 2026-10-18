@@ -74,3 +74,10 @@ const isDigit = (c: string) => c >= '0' && c <= '9'
     </template>
   </span>
 </template>
+
+<style scoped>
+.ui-roll { display: inline-flex; white-space: pre; line-height: 1; font-variant-numeric: tabular-nums; vertical-align: baseline; }
+.ui-roll .rd { display: inline-block; height: 1em; overflow: hidden; vertical-align: baseline; }
+.ui-roll .rd > span { display: flex; flex-direction: column; transition: transform var(--dur-roll, 760ms) var(--ease-settle, cubic-bezier(0.16, 1, 0.3, 1)); transition-delay: calc(var(--k, 0) * 34ms); }
+.ui-roll .rd > span > span { height: 1em; line-height: 1; display: block; }
+</style>

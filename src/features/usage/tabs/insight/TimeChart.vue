@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, useTemplateRef } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
 import RowTable from '../../../../ui/data/RowTable.vue'
 import { useElementWidth } from '../../../../ui/composables/useElementWidth'
 import { niceAxis, niceTicks } from '../../../../ui/viz/model'
@@ -268,7 +269,7 @@ const tableColumns = computed<RowColumn<TableRow>[]>(() => {
           <span v-if="sparse" class="tc__sparse">{{ filled }} / {{ n }} 个时间段有数据</span>
         </template>
       </span>
-      <button type="button" class="ui-link tc__tbl" :aria-pressed="asTable" @click="asTable = !asTable">{{ asTable ? '看图' : '⋯ 以表格查看' }}</button>
+      <TxButton variant="ghost" size="sm" class="tc__tbl" :aria-pressed="asTable" @click="asTable = !asTable">{{ asTable ? '看图' : '⋯ 以表格查看' }}</TxButton>
     </figcaption>
 
     <div v-show="!asTable" ref="host" class="tc__plot">

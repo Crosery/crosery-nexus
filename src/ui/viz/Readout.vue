@@ -2,8 +2,9 @@
 import { computed } from 'vue'
 import { fmtDelta, NONE } from '../fmt'
 import RollNumber from './RollNumber.vue'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import type { DataState, ReadoutDelta } from '../types'
-
 /**
  * Metric readout (DESIGN.md §5.2 viz/Readout — "Metric"): the Chinese label (`en` is accepted, not rendered),
  * a 26px tabular value that rolls, an optional unit, a delta line and a 70×30 seven-day history (6 days ink-4,
@@ -67,10 +68,12 @@ const bars = computed(() => {
     meanY: mean !== null ? y(mean) : null,
   }
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <div class="ui-ro" :class="[`ui-ro--${size}`, { 'is-stale': state === 'stale' }]">
+  <div class="ui-ro" :class="[`ui-ro--${size}`, { 'is-stale': state === 'stale', 'is-minimal': minimal }]">
     <div class="ui-ro__k">
       <span>{{ label }}</span>
       <slot name="label-extra" />
@@ -78,7 +81,7 @@ const bars = computed(() => {
     <div class="ui-ro__row">
       <span v-if="state === 'loading'" class="ui-ro__skel ui-skel" aria-hidden="true"><i /></span>
       <span v-else class="ui-ro__v">
-        <RollNumber v-if="roll" :value="display" :live="live" /><template v-else>{{ display }}</template><span v-if="unit && display !== NONE" class="ui-ro__u">{{ unit }}</span>
+        <RollNumber v-if="roll && !minimal" :value="display" :live="live" /><template v-else>{{ display }}</template><span v-if="unit && display !== NONE" class="ui-ro__u">{{ unit }}</span>
       </span>
       <svg v-if="bars && state !== 'loading'" class="ui-ro__hist" width="70" height="30" viewBox="0 0 70 30" aria-hidden="true">
         <rect v-if="bars.proj" class="ui-ro__proj" :x="bars.proj.x" :y="bars.proj.y" width="8" :height="bars.proj.h" />

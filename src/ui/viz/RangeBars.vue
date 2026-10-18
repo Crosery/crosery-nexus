@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import { fmtDuration, fmtInt } from '../fmt'
 import { niceTicks } from './model'
 import type { RangeRow } from '../types'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * Latency range bars (DESIGN.md §5.2 viz/RangeBars, §6.7 性能): one row per upstream / model, a dot at p50
@@ -21,10 +23,25 @@ const max = computed(() => Math.max(1, ...props.rows.map((r) => r.p95 ?? r.p50 ?
 const ticks = computed(() => niceTicks(0, max.value, 4))
 const axisMax = computed(() => Math.max(max.value, ticks.value[ticks.value.length - 1] ?? max.value))
 const pos = (v: number | null) => (v === null ? null : Math.max(0, Math.min(100, (v / axisMax.value) * 100)))
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => props.rows.map((row) => ({ name: row.name, p50: props.format(row.p50), p95: props.format(row.p95), samples: row.n == null ? '—' : fmtInt(row.n) })))
 </script>
 
 <template>
-  <div v-if="rows.length" class="ui-range">
+  <NativeVizTable
+    v-if="minimal"
+    :columns="[
+      { key: 'name', title: '名称', dataIndex: 'name' },
+      { key: 'p50', title: 'P50', dataIndex: 'p50' },
+      { key: 'p95', title: 'P95', dataIndex: 'p95' },
+      { key: 'samples', title: '样本', dataIndex: 'samples' },
+    ]"
+    :data="nativeRows"
+    row-key="name"
+    aria-label="延迟范围"
+  />
+  <div v-else-if="rows.length" class="ui-range">
     <div v-for="(r, i) in rows" :key="r.key ?? r.name" class="ui-range__row" data-row :style="{ '--r': i }">
       <span class="ui-range__n ellip" :title="r.name">{{ r.name }}</span>
       <span class="ui-range__track" role="img" :aria-label="`${r.name} p50 ${format(r.p50)}，p95 ${format(r.p95)}`">

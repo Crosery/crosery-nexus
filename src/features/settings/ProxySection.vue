@@ -372,7 +372,7 @@ function subLine(sub: ProxySubscriptionView): string {
           <span class="px-status__k">内核</span>
           <StatusMark :state="kernel.state" :label="kernel.label" />
           <span v-if="kernel.detail" class="px-status__d">{{ kernel.detail }}</span>
-          <button v-if="kernel.action" type="button" class="ui-link" :disabled="busy === 'kernel'" @click="kernelAction(kernel.action)">{{ kernel.action === 'start' ? '启动内核' : '重启内核' }}</button>
+          <TxButton v-if="kernel.action" variant="ghost" size="sm" :disabled="busy === 'kernel'" @click="kernelAction(kernel.action)">{{ kernel.action === 'start' ? '启动内核' : '重启内核' }}</TxButton>
         </span>
         <span v-if="data.summary.mihomo" class="px-status__seg"><span class="px-status__k">本机端口</span><span class="num">{{ portRange(data.ports) }}</span></span>
         <span v-if="defaultName" class="px-status__seg"><span class="px-status__k">默认出口</span><span class="px-status__v ellip">{{ defaultName }}</span></span>
@@ -431,7 +431,7 @@ function subLine(sub: ProxySubscriptionView): string {
           </template>
           <template #cell-used="{ row }">
             <span class="px-used__k" aria-hidden="true">在用</span>
-            <button v-if="row.usedBy.total" type="button" class="ui-link num px-used" :title="row.usedTitle" :aria-label="`${row.usedBy.total} 个账号在用 ${row.name}`" @click="openAssign(row, true)">{{ row.usedBy.total }}</button>
+            <TxButton v-if="row.usedBy.total" variant="ghost" size="sm" class="px-used num" :title="row.usedTitle" :aria-label="`${row.usedBy.total} 个账号在用 ${row.name}`" @click="openAssign(row, true)">{{ row.usedBy.total }}</TxButton>
             <span v-else class="num px-dim">0</span>
           </template>
           <template #cell-checked="{ row }">

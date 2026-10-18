@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, useId, useTemplateRef } from 'vue
 import { TxSelect } from '@talex-touch/tuffex/select'
 import { CALM_PANEL } from './anchor'
 import { fmtInt } from '../fmt'
+import { useSkinPref } from '../../lib/skin'
 import type { SegmentItem } from '../types'
 
 /**
@@ -32,7 +33,7 @@ const selectOptions = computed(() => [
 
 /* TxSelect moves arrow-key focus through aria-activedescendant only (no class on the option): mirror it as
    `.is-kbd` so sighted keyboard users see which option Enter will pick. */
-const root = useTemplateRef<HTMLElement>('root')
+const root = useTemplateRef<HTMLElement | { $el: HTMLElement }>('root')
 let observer: MutationObserver | null = null
 let marked: Element | null = null
 function syncKbd(input: HTMLElement) {
@@ -42,7 +43,8 @@ function syncKbd(input: HTMLElement) {
   marked?.classList.add('is-kbd')
 }
 onMounted(() => {
-  const input = root.value?.querySelector<HTMLElement>('[role="combobox"]')
+  const element = root.value && ('$el' in root.value ? root.value.$el : root.value)
+  const input = element?.querySelector<HTMLElement>('[role="combobox"]')
   if (!input || typeof MutationObserver === 'undefined') return
   observer = new MutationObserver(() => syncKbd(input))
   observer.observe(input, { attributes: true, attributeFilter: ['aria-activedescendant'] })
@@ -51,16 +53,18 @@ onBeforeUnmount(() => {
   observer?.disconnect()
   marked?.classList.remove('is-kbd')
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <div ref="root" class="ui-ff" :class="{ 'is-set': model !== '' }">
+  <div ref="root" class="ui-ff" :class="{ 'is-set': model !== '', 'is-minimal': minimal }">
     <label class="ui-ff__k" :for="id">{{ label }}</label>
     <TxSelect
       :id="id"
       v-model="model"
       class="ui-ff__sel"
-      v-bind="CALM_PANEL"
+      v-bind="minimal ? {} : CALM_PANEL"
       :options="selectOptions"
       :searchable="searchable && selectOptions.length > 8"
       :placeholder="allLabel ?? '请选择'"

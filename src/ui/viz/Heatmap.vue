@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, useTemplateRef, watch } from 'vue'
-import type { RouteLocationRaw } from 'vue-router'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxHeatmapChart } from '@talex-touch/tuffex/charts'
+import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useElementWidth } from '../composables/useElementWidth'
 import { dayKey, fmtCompact, fmtInt, fmtUsd, NONE } from '../fmt'
 import DayReadout from './DayReadout.vue'
 import HeatCard from './HeatCard.vue'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import { aggregateSpan, buildHeatGraph, dayTitle, heatValueText, spanTitle, type HeatCell, type HeatMetric, type HeatSeries } from './heatModel'
-
 /**
  * Usage contribution graph (GitHub style): weeks are columns (Monday first), one square per day, four ink steps
  * plus a faint "nothing" square; days before the retention window are fainter still and inert ("无记录").
@@ -337,12 +341,36 @@ function apply() {
   card.value = null
   emit('apply', c.from, c.to)
 }
+const nativeStart = ref<string | null>(null)
+function chooseNativeRange(date: string) {
+  if (!props.spanAction) {
+    openDay(date)
+    return
+  }
+  if (!nativeStart.value) {
+    nativeStart.value = date
+    return
+  }
+  const range = ordered(nativeStart.value, date)
+  nativeStart.value = null
+  emit('apply', range.from, range.to)
+}
 
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => graph.value.cells.map((cell) => ({ date: cell.date, value: cell.kind === 'void' ? '无记录' : valueText(cell.value), status: cell.kind === 'void' ? `只保留近 ${retention.value} 天` : cell.today ? '今天' : '已记录', to: cell.kind === 'day' ? props.dayLink?.(cell.date) ?? null : null, source: cell })))
+const nativeHeatRows = ['一', '二', '三', '四', '五', '六', '日']
+const nativeHeatColumns = computed(() => Array.from({ length: graph.value.cols }, (_, index) => String(index + 1)))
+const nativeHeatValues = computed(() => {
+  const values = nativeHeatRows.map(() => Array(graph.value.cols).fill(0) as number[])
+  for (const cell of graph.value.cells) if (cell.kind === 'day') values[cell.row][cell.col] = cell.value
+  return values
+})
 const inSpan = (date: string) => Boolean(span.value && date >= span.value.from && date <= span.value.to)
 </script>
 
 <template>
-  <div ref="root" class="ui-hm" :class="{ 'is-span': Boolean(span), 'is-drag': Boolean(drag), 'is-scroll': plotWidth > width }">
+  <div ref="root" class="ui-hm" :class="{ 'is-span': Boolean(span), 'is-drag': Boolean(drag), 'is-scroll': plotWidth > width, 'is-minimal': minimal }">
     <div ref="scroller" class="ui-hm__scroll">
       <div class="ui-hm__plot" :style="{ '--c': `${cell}px`, '--g': `${GAP}px`, '--lw': `${LABEL_W}px`, width: `${plotWidth}px` }">
         <div class="ui-hm__months" aria-hidden="true" :style="{ gridTemplateColumns: `repeat(${graph.cols}, var(--c))` }">
@@ -365,7 +393,7 @@ const inSpan = (date: string) => Boolean(span.value && date >= span.value.from &
             @keydown="onKeydown"
             @focusin="onFocusIn"
           >
-            <div v-for="(row, r) in rows" :key="r" role="row" class="ui-hm__row">
+            <div v-for="(row, r) in rows" :key="r" role="row" class="ui-hm__row" style="display: contents;">
               <template v-for="c in row" :key="c.date">
                 <button
                   v-if="c.kind === 'day'"

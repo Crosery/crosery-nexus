@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { TxIconButton } from '@talex-touch/tuffex/button'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import Icon from '../Icon.vue'
 import { copyText } from '../feedback/toast'
-
+import { useSkinPref } from '../../lib/skin'
 /**
  * Copy field (DESIGN.md §5.2 form/CopyField): small label, the value in mono on one paper-2 fill (wraps, never scrolls), a 32px
  * (40px touch) copy button with aria-label + title; toast `已复制 ‹label›`. `copyValue` lets the button copy
@@ -23,17 +25,19 @@ const props = withDefaults(
 function copy() {
   void copyText(props.copyValue ?? props.value, props.label)
 }
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <div class="ui-copy">
+  <component :is="minimal ? TxStack : 'div'" class="ui-copy" :direction="minimal ? 'vertical' : undefined" :gap="minimal ? 4 : undefined">
     <span class="ui-copy__k">{{ label }}</span>
     <div class="ui-copy__row">
       <code class="ui-copy__v" :class="{ 'is-sans': !mono }">{{ value }}</code>
       <TxIconButton :label="`复制${label}`" :title="`复制${label}`" size="sm" @click="copy"><Icon name="copy" /></TxIconButton>
     </div>
     <p v-if="hint" class="ui-copy__hint">{{ hint }}</p>
-  </div>
+  </component>
 </template>
 
 <style>

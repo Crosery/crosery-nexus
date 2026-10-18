@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
+import { useSkinPref } from '../../lib/skin'
 import { useQueryState } from '../../lib/listState'
 import Segmented from './Segmented.vue'
 import FilterField from './FilterField.vue'
@@ -38,10 +39,12 @@ function set(key: string, value: string | number | null | undefined) {
   state[key] = value === null || value === undefined ? '' : String(value)
 }
 defineExpose({ reset: q.reset, activeKeys: q.activeKeys })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <div class="ui-fbar">
+  <div class="ui-fbar" :class="{ 'is-minimal': minimal }">
     <Segmented
       v-if="range"
       class="ui-fbar__range"

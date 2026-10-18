@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, useTemplateRef, watch } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import FilterBar from '../../ui/form/FilterBar.vue'
 import Switch from '../../ui/form/Switch.vue'
@@ -8,23 +10,24 @@ import { useLive } from '../../ui/composables/useLive'
 import { fmtInt, fmtPct } from '../../ui/fmt'
 import { useQueryState } from '../../lib/listState'
 import { notify } from '../../ui/feedback/toast'
+import { useSkinPref } from '../../lib/skin'
 import { USAGE_TABS } from '../../app/nav'
 import type { FilterBarField, SegmentItem } from '../../ui/types'
 import { isCurrentOnly, refusedWindow, sharedUsageQuery, spanLabel, USAGE_DAYS, USAGE_FILTER_DEFAULTS, USAGE_RANGE_ITEMS, usageFilterFrom } from './filters'
 import { api } from './shared/api'
 import { isPendingRestart } from './shared/format'
 import type { UsageFacetOption } from './shared/types'
-
 /**
  * 用量 workspace (DESIGN §6.7): the tab row is the page head (live metrics on the labels), and ONE FilterBar under it owns the shared URL filters (window · Key · 模型 · 渠道 · 客户端) for all
  * four tabs, with the same defaults everywhere (filters.ts). A tab switch carries the shared keys and drops
  * tab-local state (page, status, open request).
  * Channel scope: every tab counts ALL traffic by default — channels removed since then included (history is
- * history; spend is spend), so /usage, /keys, the dashboard and /me agree for one Key. 「只看当前渠道」 is the
+ * history; spend is spend), so /usage, /keys, the operations data and /me agree for one Key. 「只看当前渠道」 is the
  * opt-in `currentOnly=1`, shared by the four tabs.
  */
 const route = useRoute()
 const router = useRouter()
+const { pref: skin } = useSkinPref()
 const carried = computed(() => sharedUsageQuery(route.query))
 const activeId = computed(() => (typeof route.name === 'string' ? route.name : 'usage'))
 
@@ -112,7 +115,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [activeId, tabMetric], 2)
 </script>
 
 <template>
-  <div class="ui-page usage-ws">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page usage-ws" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <header class="usage-ws__head">
       <h1 class="sr-only">用量</h1>
       <nav ref="host" class="usage-ws__tabs" aria-label="用量视图">
@@ -129,27 +132,28 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [activeId, tabMetric], 2)
     </header>
 
     <div class="usage-ws__barrow">
-    <span v-if="span" class="usage-ws__span">
-      <span class="sr-only">时间范围</span>
-      <span class="num">{{ spanText }}</span>
-      <button type="button" class="usage-ws__span-x" :aria-label="`清除时间范围 ${spanText}`" title="清除，回到滚动窗口" @click="clearSpan">×</button>
-    </span>
-    <FilterBar :key="span ? 'span' : 'days'" class="usage-ws__bar" :range="span ? null : range" :fields="fields">
-      <template #extra>
-        <span v-if="facetsPending">筛选计数待重启生效</span>
-        <template v-else-if="data">
-          <span v-if="removed && removed.requests > 0" :title="removedTitle">{{ data.scope.kind === 'current' ? '未含' : '含' }}已移除渠道 {{ fmtInt(removed.requests) }} 次</span>
-          <span v-if="unpriced > 0" :title="data.totals.unpricedModels.join(' · ')">未定价 {{ unpriced }} 个模型不计入</span>
+      <span v-if="span" class="usage-ws__span">
+        <span class="sr-only">时间范围</span>
+        <span class="num">{{ spanText }}</span>
+        <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :aria-label="`清除时间范围 ${spanText}`" title="清除，回到滚动窗口" @click="clearSpan">×</TxButton>
+        <button v-else type="button" class="usage-ws__span-x" :aria-label="`清除时间范围 ${spanText}`" title="清除，回到滚动窗口" @click="clearSpan">×</button>
+      </span>
+      <FilterBar :key="span ? 'span' : 'days'" class="usage-ws__bar" :range="span ? null : range" :fields="fields">
+        <template #extra>
+          <span v-if="facetsPending">筛选计数待重启生效</span>
+          <template v-else-if="data">
+            <span v-if="removed && removed.requests > 0" :title="removedTitle">{{ data.scope.kind === 'current' ? '未含' : '含' }}已移除渠道 {{ fmtInt(removed.requests) }} 次</span>
+            <span v-if="unpriced > 0" :title="data.totals.unpricedModels.join(' · ')">未定价 {{ unpriced }} 个模型不计入</span>
+          </template>
+          <Switch v-model="currentOnly" class="usage-ws__scope" label="只看当前渠道" />
         </template>
-        <Switch v-model="currentOnly" class="usage-ws__scope" label="只看当前渠道" />
-      </template>
-    </FilterBar>
+      </FilterBar>
     </div>
 
     <RouterView v-slot="{ Component }">
       <component :is="Component" :key="spanKey" />
     </RouterView>
-  </div>
+  </component>
 </template>
 
 <style>

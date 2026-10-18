@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, useId, useTemplateRef } from 'vue'
+import { computed, ref, useId, useTemplateRef } from 'vue'
 import { TxInput } from '@talex-touch/tuffex/input'
+import { TxIconButton } from '@talex-touch/tuffex/button'
 import Icon from '../Icon.vue'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * Secret field (DESIGN.md §5.2 form, §6.1): an API key or password typed into a masked `<input type="password">`
@@ -38,6 +40,8 @@ const revealed = ref(false)
 const fallbackId = useId()
 const inputId = () => props.id ?? fallbackId
 const field = useTemplateRef<InstanceType<typeof TxInput>>('field')
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 
 function toggle() {
   revealed.value = !revealed.value
@@ -72,7 +76,18 @@ defineExpose({ focus, mask })
     caps-lock-text="大写锁定已开启"
   >
     <template #suffix>
+      <TxIconButton
+        v-if="minimal"
+        :label="revealed ? `隐藏${noun}` : `显示${noun}`"
+        :title="revealed ? `隐藏${noun}` : `显示${noun}`"
+        size="sm"
+        :disabled="disabled"
+        :aria-pressed="revealed"
+        :aria-controls="inputId()"
+        @click="toggle"
+      ><Icon :name="revealed ? 'eye-off' : 'eye'" /></TxIconButton>
       <button
+        v-else
         type="button"
         class="ui-icon-btn ui-secret__eye"
         :aria-label="`显示${noun}`"

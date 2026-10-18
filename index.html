@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#F2EFE7">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Crosery API Console</title>
-<script>try{var t=localStorage['cx-theme'];t&&(document.documentElement.dataset.theme=t)}catch(e){}</script>
+<script>try{var r=document.documentElement,t=localStorage['cx-theme'],s=localStorage['cx-skin'];if(t==='light'||t==='dark')r.dataset.theme=t;r.dataset.skin=s==='minimal'?'minimal':'telemetry'}catch(e){}</script>
 </head>
 <body>
 <div id="app"></div>

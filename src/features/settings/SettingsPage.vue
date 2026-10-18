@@ -2,6 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
+import { TxStack } from '@talex-touch/tuffex/stack'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxForm, TxFormItem } from '@talex-touch/tuffex/form'
 import PageHead from '../../ui/shell/PageHead.vue'
 import LiveMark from '../../ui/shell/LiveMark.vue'
 import Plate from '../../ui/data/Plate.vue'
@@ -10,7 +13,7 @@ import { session } from '../../app/session'
 import { useLogout } from '../../shell/logout'
 import { useSharedAdminLive } from '../../shell/useAdminStatus'
 import { useLive } from '../../ui/composables/useLive'
-import { useThemePref } from '../../ui/composables/prefs'
+import { useSkinPref, useThemePref } from '../../ui/composables/prefs'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { notify } from '../../ui/feedback/toast'
 import { errorMessage } from '../../lib/errors'
@@ -33,6 +36,8 @@ const logout = useLogout()
 const route = useRoute()
 const router = useRouter()
 const theme = useThemePref()
+const skin = useSkinPref()
+const minimal = computed(() => skin.pref.value === 'minimal')
 
 const shared = useSharedAdminLive()
 const sync = shared?.sync ?? useLive<SyncStatus>((signal) => api.sync.status(signal), { intervalMs: 15_000 })
@@ -72,12 +77,13 @@ const statusLine = computed(() => {
 })
 
 const THEME_WORD = { light: '浅色', dark: '深色', system: '跟随' } as const
+const SKIN_WORD = { telemetry: 'Telemetry', minimal: '简约' } as const
 const toc = computed(() => [
   { id: 'sync', label: '同步中心', value: sync.data.value ? (tally.value.bad + tally.value.warn ? `◇ ${tally.value.bad + tally.value.warn}` : `${tally.value.total} 任务`) : '', hot: tally.value.bad + tally.value.warn > 0 },
   { id: 'gateway', label: '网关', value: '', hot: false },
   { id: 'proxy', label: '代理', value: proxyIndex.value?.value ?? '', hot: proxyIndex.value?.hot ?? false },
   { id: 'rtk-relay', label: 'RTK 中转', value: relayIndex.value?.value ?? '', hot: relayIndex.value?.hot ?? false },
-  { id: 'prefs', label: '偏好', value: THEME_WORD[theme.pref.value], hot: false },
+  { id: 'prefs', label: '偏好', value: `${SKIN_WORD[skin.pref.value]} · ${THEME_WORD[theme.pref.value]}`, hot: false },
   { id: 'session', label: '会话', value: session.user?.name ?? 'admin', hot: false },
 ])
 
@@ -200,15 +206,15 @@ async function signOut() {
 </script>
 
 <template>
-  <div class="ui-page set-page">
+  <component :is="minimal ? TxStack : 'div'" class="ui-page set-page">
     <PageHead title="设置" :status="statusLine">
       <template #live>
         <LiveMark :state="sync.state.value" :last-at="sync.lastAt.value" :interval-ms="sync.intervalMs" @retry="sync.refresh" />
       </template>
     </PageHead>
 
-    <div class="set-layout">
-      <nav class="set-toc" aria-label="设置分区">
+    <component :is="minimal ? TxStack : 'div'" class="set-layout">
+      <nav v-if="!minimal" class="set-toc" aria-label="设置分区">
         <a
           v-for="item in toc"
           :key="item.id"
@@ -220,6 +226,9 @@ async function signOut() {
           <span class="set-toc__v num" :class="{ 'is-hot': item.hot }">{{ item.value }}</span>
         </a>
       </nav>
+      <TxFlex v-if="minimal" wrap="wrap" aria-label="设置分区">
+        <TxButton v-for="item in toc" :key="item.id" :aria-current="active === item.id ? 'location' : undefined" @click="jump(item.id)">{{ item.label }} {{ item.value }}</TxButton>
+      </TxFlex>
 
       <div ref="body" class="set-body ui-grid">
         <SyncCenter
@@ -243,22 +252,31 @@ async function signOut() {
         <ProxySection class="c-12" @index="proxyIndex = $event" />
         <RtkRelaySection class="c-12" @index="relayIndex = $event" />
         <ServiceRestartSection class="c-12" />
-        <PrefsSection class="c-8" />
-        <Plate id="session" title="会话" class="set-sec c-4">
-          <dl class="set-session">
-            <dt>身份</dt>
-            <dd class="num">{{ session.user?.name ?? 'admin' }} · 管理员</dd>
-            <dt>登录方式</dt>
-            <dd>账号密码 · 本浏览器</dd>
-          </dl>
-          <div class="set-session__act">
-            <span class="dim">退出只影响这个浏览器</span>
-            <TxButton size="sm" variant="secondary" @click="signOut">退出登录</TxButton>
-          </div>
-        </Plate>
+        <div class="set-grid-row c-12">
+          <PrefsSection class="set-prefs-plate" />
+          <Plate id="session" title="会话" class="set-sec set-session-plate">
+            <TxForm v-if="minimal" label-position="top">
+              <TxFormItem label="身份">{{ session.user?.name ?? 'admin' }} · 管理员</TxFormItem>
+              <TxFormItem label="登录方式">账号密码 · 本浏览器</TxFormItem>
+              <TxFormItem>
+                <TxStack><TxButton @click="signOut">退出登录</TxButton><small>退出只影响这个浏览器</small></TxStack>
+              </TxFormItem>
+            </TxForm>
+            <dl v-if="!minimal" class="set-session">
+              <dt>身份</dt>
+              <dd class="num">{{ session.user?.name ?? 'admin' }} · 管理员</dd>
+              <dt>登录方式</dt>
+              <dd>账号密码 · 本浏览器</dd>
+            </dl>
+            <div v-if="!minimal" class="set-session__act">
+              <span class="dim">退出只影响这个浏览器</span>
+              <TxButton size="sm" variant="secondary" @click="signOut">退出登录</TxButton>
+            </div>
+          </Plate>
+        </div>
       </div>
-    </div>
-  </div>
+    </component>
+  </component>
 </template>
 
 <style>
@@ -280,6 +298,8 @@ async function signOut() {
 .set-toc__v { font-size: var(--fs-xs); color: var(--ink-3); font-weight: 400; white-space: nowrap; }
 .set-toc__v.is-hot { color: var(--signal-ink); }
 .set-body { min-width: 0; }
+.set-grid-row { display: grid; grid-template-columns: 2fr 1fr; gap: var(--grid-gap, 16px); }
+@media (max-width: 767px) { .set-grid-row { grid-template-columns: 1fr; } }
 
 .set-session { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0 20px; margin: 0; font-size: var(--fs-sm); }
 .set-session dt, .set-session dd { margin: 0; min-height: 40px; display: flex; align-items: center; }

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, inject, provide, ref } from 'vue'
 import { TxCard } from '@talex-touch/tuffex/card'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxFlex } from '@talex-touch/tuffex/flex'
 import StateBlock from './StateBlock.vue'
+import { useSkinPref } from '../../lib/skin'
 import { usePrintIn } from '../composables/usePrintIn'
 import { useNow, toMs } from '../composables/useNow'
 import { fmtAgo } from '../fmt'
@@ -70,6 +73,8 @@ const staleLabel = computed(() => {
   return at === null ? '陈旧' : `陈旧 · ${fmtAgo(at, now.value)}`
 })
 const headingTag = computed(() => `h${props.headingLevel}`)
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
@@ -80,7 +85,40 @@ const headingTag = computed(() => `h${props.headingLevel}`)
     :class="{ 'is-flush': flush, 'is-stale': state === 'stale' }"
     :aria-busy="state === 'loading' || undefined"
   >
-    <TxCard class="ui-plate__card" variant="plain" background="pure" shadow="none" :radius="2" :padding="0">
+    <TxCard v-if="minimal" class="ui-plate__card">
+      <template #header>
+        <TxFlex align="center" justify="space-between" wrap="wrap" :gap="8">
+          <component :is="headingTag" class="ui-plate__heading">{{ title }}</component>
+          <slot name="title-extra" />
+          <div v-if="state === 'stale' || $slots.meta || $slots.actions" class="ui-plate__meta">
+            <span v-if="state === 'stale'">
+              <span aria-hidden="true">◇</span> {{ staleLabel }}
+              <TxButton size="sm" variant="ghost" @click="emit('retry')">重试</TxButton>
+            </span>
+            <slot name="meta" />
+            <slot name="actions" />
+          </div>
+        </TxFlex>
+      </template>
+      <template v-if="showBody">
+        <slot />
+      </template>
+      <StateBlock
+        v-else
+        :state="state"
+        :rows="rows"
+        :cols="cols"
+        :error="error"
+        :empty-text="emptyText"
+        :action-label="emptyAction"
+        @retry="emit('retry')"
+        @action="emit('empty-action')"
+      >
+        <template v-if="$slots.empty" #empty-extra><slot name="empty" /></template>
+      </StateBlock>
+      <template v-if="$slots.footer" #footer><slot name="footer" /></template>
+    </TxCard>
+    <TxCard v-else class="ui-plate__card" variant="plain" background="pure" shadow="none" :radius="2" :padding="0">
       <header class="ui-plate__head">
         <component :is="headingTag" class="ui-plate__title">{{ title }}</component>
         <slot name="title-extra" />

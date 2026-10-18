@@ -6,6 +6,7 @@
  * links to 设置 · 同步中心. The index is read without `fresh=1`; one 60s loop reads index, usage, evidence, sync.
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { useRoute, useRouter } from 'vue-router'
 import PageHead from '../../ui/shell/PageHead.vue'
 import LiveMark from '../../ui/shell/LiveMark.vue'
@@ -26,6 +27,7 @@ import { useBreakpoint } from '../../ui/composables/useBreakpoint'
 import { fmtCompact, fmtInt, fmtPct, fmtTime } from '../../ui/fmt'
 import { errorReason, errorStatus } from '../../lib/errors'
 import { paginate, resettingField, useQueryState } from '../../lib/listState'
+import { useSkinPref } from '../../lib/skin'
 import { whenIdle } from '../../lib/resource'
 import { ApiError, request } from '../../api/http'
 import { api } from '../../api'
@@ -101,6 +103,7 @@ const typeModel = resettingField(scope, 'type', { page: '1' })
 const qModel = resettingField(scope, 'q', { page: '1' })
 const vendorModel = resettingField(scope, 'vendor', { page: '1' })
 const { width } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 
 const rows = computed<ModelRow[]>(() => {
   const data = live.data.value
@@ -374,7 +377,7 @@ usePaletteCommands(() => [
 </script>
 
 <template>
-  <div class="ui-page mp">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page mp" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead title="模型">
       <template #status>
         <span v-if="discovery || priceSources" class="mp-sync">
@@ -394,16 +397,15 @@ usePaletteCommands(() => [
       </template>
     </PageHead>
 
-    <div class="ui-toolbar mp-tools">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-toolbar mp-tools" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <Segmented v-model="viewModel" :items="segments" label="模型范围" />
       <Segmented v-if="typeChips" v-model="typeModel" :items="typeChips" label="模型类型" />
-      <!-- one unit: when the chips need the row, 厂商 / 排序 / 搜索 move down together instead of stranding the search -->
-      <span class="mp-tools__pick">
+      <component :is="skin === 'minimal' ? TxStack : 'span'" class="mp-tools__pick" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
         <FilterField v-model="vendorModel" label="厂商" :options="vendorOptions" />
         <FilterField v-model="sortField" class="mp-sort" label="排序" :options="sortOptions" :all-label="null" :searchable="false" />
         <SearchField v-model="qModel" class="mp-search" placeholder="模型 ID / 别名 / 渠道" label="搜索模型" />
-      </span>
-    </div>
+      </component>
+    </component>
 
     <Plate
       title="模型目录"
@@ -422,7 +424,7 @@ usePaletteCommands(() => [
           <span class="mp-meta__maps"><span class="num">{{ fmtInt(mappingCount) }}</span> 条渠道映射</span>
           <span v-for="note in plateNotes" :key="note" class="mp-meta__warn">◇ {{ note }}</span>
           <Tip>
-            <button type="button" class="ui-link mp-legend">状态说明<span class="sr-only">：{{ STATUS_LEGEND.join('；') }}</span></button>
+            <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm">状态说明<span class="sr-only">：{{ STATUS_LEGEND.join('；') }}</span></TxButton><button v-else type="button" class="ui-link mp-legend">状态说明<span class="sr-only">：{{ STATUS_LEGEND.join('；') }}</span></button>
             <template #content><span v-for="line in STATUS_LEGEND" :key="line" class="mp-legend__ln">{{ line }}</span></template>
           </Tip>
         </span>
@@ -433,8 +435,10 @@ usePaletteCommands(() => [
 
       <div v-if="batchMode" class="mp-batch" role="region" aria-label="批量操作">
         <span class="num">已选 {{ fmtInt(pickedRows.length) }} 个模型</span>
-        <button type="button" class="ui-link" :disabled="batchRunning || !paged.rows.length" @click="pickPage">选中本页</button>
-        <button type="button" class="ui-link" :disabled="batchRunning || !picked.size" @click="picked = new Set()">清除</button>
+        <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :disabled="batchRunning || !paged.rows.length" @click="pickPage">选中本页</TxButton>
+        <button v-else type="button" class="ui-link" :disabled="batchRunning || !paged.rows.length" @click="pickPage">选中本页</button>
+        <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :disabled="batchRunning || !picked.size" @click="picked = new Set()">清除</TxButton>
+        <button v-else type="button" class="ui-link" :disabled="batchRunning || !picked.size" @click="picked = new Set()">清除</button>
         <span class="mp-batch__act">
           <span v-if="batchRunning" class="num mp-batch__run" aria-live="polite">执行中 {{ batchDone }}/{{ batchTotal }}</span>
           <TxButton size="sm" variant="secondary" :disabled="batchRunning || !pickedRows.length" @click="applyBatch(true)">启用映射</TxButton>
@@ -465,7 +469,7 @@ usePaletteCommands(() => [
         <template #cell-id="{ row }">
           <span class="mr-id">
             <ProviderMark :provider="row.vendor === 'other' ? row.key : row.vendor" :size="18" />
-            <button type="button" class="mr-id__t num" :title="row.id" @click.stop="openRow(row)">{{ row.id }}</button>
+            <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" class="mr-id__t num" :title="row.id" @click.stop="openRow(row)">{{ row.id }}</TxButton><button v-else type="button" class="mr-id__t num" :title="row.id" @click.stop="openRow(row)">{{ row.id }}</button>
             <TxTag v-if="kindTag(row.kind, kind)" size="sm" variant="outline" class="mr-id__kind" :label="kindTag(row.kind) ?? ''" />
             <TxTag v-if="row.aliases.length" size="sm" variant="plain" class="mr-id__alias" :title="`别名：${row.aliases.join(' · ')}`" :label="width >= 1180 ? `+${row.aliases.length} 别名` : `+${row.aliases.length}`" />
           </span>
@@ -484,7 +488,7 @@ usePaletteCommands(() => [
         </template>
         <template #cell-tokens="{ row }">
           <span class="mr-tok">
-            <i class="mr-bar" :class="{ 'has-fill': hasBar(row) }" aria-hidden="true"><b v-if="hasBar(row)" :style="{ width: `${share(row) * 100}%` }" /></i>
+            <i class="mr-bar" :class="{ 'has-fill': hasBar(row) }" aria-hidden="true"><b v-if="hasBar(row)" :style="skin === 'minimal' ? undefined : { width: `${share(row) * 100}%` }" /></i>
             <span class="num" :class="{ 'mr-dim': !row.tokens }">{{ row.tokens === null ? '—' : row.tokens ? fmtCompact(row.tokens) : '0' }}</span>
           </span>
         </template>
@@ -513,7 +517,7 @@ usePaletteCommands(() => [
             <div class="mr-card__ln">
               <span class="mr-card__tok">
                 <span class="mr-card__k">{{ WINDOW_DAYS }} 天</span>
-                <i v-if="row.tokens" class="mr-bar" :class="{ 'has-fill': hasBar(row) }" aria-hidden="true"><b v-if="hasBar(row)" :style="{ width: `${share(row) * 100}%` }" /></i>
+                <i v-if="row.tokens" class="mr-bar" :class="{ 'has-fill': hasBar(row) }" aria-hidden="true"><b v-if="hasBar(row)" :style="skin === 'minimal' ? undefined : { width: `${share(row) * 100}%` }" /></i>
                 <span class="num" :class="{ 'mr-dim': !row.tokens }">{{ row.tokens === null ? '—' : row.tokens ? fmtCompact(row.tokens) : row.requests || row.successRate !== null ? '0 Token' : '无调用' }}</span>
               </span>
               <span v-if="row.successRate !== null" class="num" :class="{ 'mr-hot': row.bad }">成功 {{ successText(row) }}</span>
@@ -537,7 +541,7 @@ usePaletteCommands(() => [
       :usage-missing="Boolean(live.data.value?.usageFailed)"
       :reload="reload"
     />
-  </div>
+  </component>
 </template>
 
 <style scoped>

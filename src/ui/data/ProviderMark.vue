@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { TxIcon } from '@talex-touch/tuffex/icon'
+import { TxTag } from '@talex-touch/tuffex/tag'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * Provider logo as a CSS mask filled with --ink (so it follows the theme), inside a 1px ink square with a notch.
@@ -26,10 +29,20 @@ const style = computed(() => ({
   '--pm': `${props.size}px`,
   ...(logo.value ? { '--logo': `url(/logos/${logo.value}.svg)` } : {}),
 }))
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <span class="ui-pm" :class="{ 'has-logo': logo }" :style="style" :role="label ? 'img' : undefined" :aria-label="label" :aria-hidden="label ? undefined : 'true'">
+  <TxIcon
+    v-if="minimal && logo"
+    :icon="{ type: 'url', value: `/logos/${logo}.svg` }"
+    :name="provider"
+    :alt="label"
+    :size="size"
+  />
+  <TxTag v-else-if="minimal" :label="monogram" size="sm" />
+  <span v-else class="ui-pm" :class="{ 'has-logo': logo }" :style="style" :role="label ? 'img' : undefined" :aria-label="label" :aria-hidden="label ? undefined : 'true'">
     <i v-if="logo" class="ui-pm__logo" />
     <span v-else class="ui-pm__mono">{{ monogram }}</span>
   </span>

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { TxDrawer } from '@talex-touch/tuffex/drawer'
 import { TxIconButton } from '@talex-touch/tuffex/button'
 import Icon from '../Icon.vue'
+import { useSkinPref } from '../../lib/skin'
 import { useBreakpoint } from '../composables/useBreakpoint'
 import { useBodyScrollLock } from '../composables/useBodyScrollLock'
 
@@ -31,8 +32,9 @@ const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ close: [] }>()
 useBodyScrollLock(open)
 const { isMobile } = useBreakpoint()
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 const bottom = computed(() => props.side === 'bottom' || (props.side === 'auto' && isMobile.value))
-
 /* drag to dismiss (bottom sheets) */
 const drag = ref<{ y0: number; t0: number; dy: number; panel: HTMLElement } | null>(null)
 function onDown(event: PointerEvent) {
@@ -66,6 +68,27 @@ function close() {
 
 <template>
   <TxDrawer
+    v-if="minimal"
+    v-model:visible="open"
+    :title="title"
+    :direction="bottom ? 'bottom' : 'right'"
+    :size="bottom ? height : size"
+    :mobile-adapt="false"
+    :close-on-click-mask="closeOnMask"
+    @close="emit('close')"
+  >
+    <template #header="{ close: nativeClose }">
+      <h2>{{ title }}</h2>
+      <slot name="head-extra" />
+      <TxIconButton label="关闭" title="关闭 (Esc)" size="sm" @click="nativeClose"><Icon name="x" /></TxIconButton>
+    </template>
+    <slot :close="close" />
+    <template v-if="$slots.footer" #footer="{ close: nativeClose }">
+      <slot name="footer" :close="nativeClose" />
+    </template>
+  </TxDrawer>
+  <TxDrawer
+    v-else
     v-model:visible="open"
     :title="title"
     :direction="bottom ? 'bottom' : 'right'"
@@ -95,8 +118,8 @@ function close() {
       <div class="ui-sheet__foot"><slot name="footer" :close="close" /></div>
     </template>
   </TxDrawer>
-</template>
 
+</template>
 <style>
 /* TxDrawer renders through a Teleport root, so a class on <TxDrawer> never reaches it: hook on :has(.ui-sheet). */
 .tx-drawer:has(.ui-sheet) { --tx-drawer-transition: 280ms var(--ease-exit); --tx-drawer-mask-background: var(--scrim); }

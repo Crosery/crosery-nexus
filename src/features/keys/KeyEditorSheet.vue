@@ -185,6 +185,7 @@ const QUOTA_WINDOWS: Array<{ key: keyof QuotaDraft; label: string }> = [
     <form ref="body" class="kx-form" novalidate @submit.prevent="submit">
       <fieldset class="kx-form__lock" :disabled="busy && !stale">
       <div class="kx-field" data-field="name">
+
         <label :for="fid('name')" class="kx-field__k">名称</label>
         <TxInput
           :id="fid('name')"
@@ -217,7 +218,7 @@ const QUOTA_WINDOWS: Array<{ key: keyof QuotaDraft; label: string }> = [
       <fieldset class="kx-field" data-field="groups">
         <legend class="kx-field__k">
           渠道 <span class="kx-field__opt">{{ draft.groups.length }} / {{ groups.length }}</span>
-          <button v-if="groups.length > 1" type="button" class="ui-link kx-field__all" @click="toggleAll">{{ allOn ? '全不选' : '全选' }}</button>
+          <TxButton v-if="groups.length > 1" variant="ghost" size="sm" class="kx-field__all" @click="toggleAll">{{ allOn ? '全不选' : '全选' }}</TxButton>
         </legend>
         <div v-if="groups.length || orphanGroups.length" class="kx-chips">
           <TxCheckbox

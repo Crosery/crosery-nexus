@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { useRoute } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
 import PageHead from '../../ui/shell/PageHead.vue'
@@ -11,6 +12,7 @@ import RankList from '../../ui/viz/RankList.vue'
 import { dayBounds, heatSummary, type HeatMetric, type HeatSeries, type HeatYear } from '../../ui/viz/heatModel'
 import { useLive } from '../../ui/composables/useLive'
 import { useBreakpoint } from '../../ui/composables/useBreakpoint'
+import { useSkinPref } from '../../lib/skin'
 import { fmtCompact, fmtInt, fmtPct, fmtTime, fmtUsd, NONE } from '../../ui/fmt'
 import { useQueryState } from '../../lib/listState'
 import { errorMessage } from '../../lib/errors'
@@ -28,6 +30,7 @@ import type { DataState, RankRow } from '../../ui/types'
  * (newest first, `更多` pages back). No Key / 渠道 / 客户端 filters exist here. Totals cover every request
  * the key made, so they agree with the request list and the quota ledger.
  */
+const { pref: skin } = useSkinPref()
 const RANGES = [
   { value: '7', label: '7 天' },
   { value: '30', label: '30 天' },
@@ -192,15 +195,15 @@ function backToLatest() {
 </script>
 
 <template>
-  <div class="ui-page me-usage">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page me-usage" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead title="用量" plain :status="headStatus">
       <template #actions>
         <Segmented v-model="scope.state.days" :items="RANGES" label="时间范围" />
       </template>
     </PageHead>
 
-    <div class="me-usage__grid">
-      <div class="me-usage__col me-usage__l">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-usage__grid" :direction="skin === 'minimal' ? 'vertical' : undefined">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-usage__col me-usage__l" :direction="skin === 'minimal' ? 'vertical' : undefined">
         <Plate :title="heatTitle" class="me-usage__p1" :state="heatState" :error="heat.error.value" :rows="7" :stale-at="heat.lastAt.value" @retry="heat.refresh">
           <template #actions>
             <HeatYears v-if="series" v-model="heatYear" :years="series.years" />
@@ -214,26 +217,29 @@ function backToLatest() {
           <FailureCauses v-if="failures" :failures="failures" :total="totals?.requests ?? 0" selectable @select="showFailures" />
           <RankList v-else :rows="failureFallback" :format="(v) => `${fmtInt(v)} 次`" :limit="6" :show-share="false" />
         </Plate>
-      </div>
+      </component>
 
-      <div class="me-usage__col me-usage__r">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-usage__col me-usage__r" :direction="skin === 'minimal' ? 'vertical' : undefined">
+
         <Plate :title="anyPriced ? '按模型 · 花费' : '按模型 · Token'" class="me-usage__p2" :state="range.state.value" :error="range.error.value" :rows="8" :stale-at="range.lastAt.value" :empty-text="`近 ${shownDays} 个自然日没有调用`" @retry="range.refresh">
           <RankList :rows="modelRows" :format="modelFormat" :limit="showAllModels ? modelRows.length : modelLimit" />
-          <button v-if="modelRows.length > modelLimit" type="button" class="ui-link me-usage__toggle" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">
-            {{ showAllModels ? '收起' : `全部 ${modelRows.length} 个 →` }}
-          </button>
+          <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : `全部 ${modelRows.length} 个 →` }}</TxButton>
+          <button v-else type="button" class="ui-link me-usage__toggle" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : `全部 ${modelRows.length} 个 →` }}</button>
         </Plate>
-      </div>
+      </component>
+
 
       <Plate id="requests" title="我的请求" class="me-usage__p4" flush :state="reqState" :error="reqError" :rows="8" :empty-text="reqEmpty" @retry="loadRequests()">
         <template #meta>
           <span v-if="cursorDay" class="me-usage__cursor">
             <span class="num">{{ cursorDay }}</span>
-            <button type="button" class="ui-link" @click="backToLatest">回到最新</button>
+            <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="backToLatest">回到最新</TxButton>
+            <button v-else type="button" class="ui-link" @click="backToLatest">回到最新</button>
           </span>
           <span v-else-if="scope.state.before" class="me-usage__cursor">
             <span class="num">{{ fmtTime(scope.state.before) }}</span> 之前
-            <button type="button" class="ui-link" @click="backToLatest">回到最新</button>
+            <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="backToLatest">回到最新</TxButton>
+            <button v-else type="button" class="ui-link" @click="backToLatest">回到最新</button>
           </span>
         </template>
         <template #actions>
@@ -246,8 +252,8 @@ function backToLatest() {
           <span v-if="reqState === 'stale'" class="dim2">◇ {{ errorMessage(reqError) || '读取失败' }}</span>
         </div>
       </Plate>
-    </div>
-  </div>
+    </component>
+  </component>
 </template>
 
 <style>

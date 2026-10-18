@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { useRoute, useRouter } from 'vue-router'
 import { TxCollapse, TxCollapseItem } from '@talex-touch/tuffex/collapse'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -12,6 +14,7 @@ import TickMeter from '../../../ui/viz/TickMeter.vue'
 import { useLive } from '../../../ui/composables/useLive'
 import { useBreakpoint } from '../../../ui/composables/useBreakpoint'
 import { useNow } from '../../../ui/composables/useNow'
+import { useSkinPref } from '../../../lib/skin'
 import { fmtClock, fmtCompact, fmtDuration, fmtInt, fmtPct, fmtTime, fmtUsd, NONE, splitUnit } from '../../../ui/fmt'
 import type { DataState, RowColumn, ShareSegment } from '../../../ui/types'
 import { CLIENT_LABELS } from '../../../clientLabels'
@@ -31,6 +34,7 @@ import './insight/insight.css'
 const route = useRoute()
 const router = useRouter()
 const { isMobile, isWide, isCompact } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 const scope = computed(() => scopeFromQuery(route.query))
 const now = useNow()
 
@@ -352,7 +356,8 @@ const chartH = computed(() => (isCompact.value ? 120 : isMobile.value ? 140 : 16
       </RowTable>
       <template v-if="(summary?.byModel.length ?? 0) > MODEL_LIMIT" #footer>
         <span>{{ showAllModels ? `全部 ${summary?.byModel.length} 个` : `其余 ${(summary?.byModel.length ?? 0) - MODEL_LIMIT} 个模型` }}</span>
-        <button type="button" class="ui-link" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : '展开' }}</button>
+        <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : '展开' }}</TxButton>
+        <button v-else type="button" class="ui-link" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : '展开' }}</button>
       </template>
     </Plate>
 
@@ -376,7 +381,8 @@ const chartH = computed(() => (isCompact.value ? 120 : isMobile.value ? 140 : 16
           <template v-else-if="streamState === 'down'">
             <StatusMark state="warn" label="已断开" />
             <span class="num">重连 {{ retryIn }}</span>
-            <button type="button" class="ui-link" @click="reconnectNow">现在重连</button>
+            <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="reconnectNow">现在重连</TxButton>
+            <button v-else type="button" class="ui-link" @click="reconnectNow">现在重连</button>
           </template>
           <template v-else><StatusMark state="busy" label="连接中" /></template>
           <span>· 不受时间筛选</span>
@@ -402,7 +408,8 @@ const chartH = computed(() => (isCompact.value ? 120 : isMobile.value ? 140 : 16
       </RowTable>
       <template v-if="isMobile && events.length > LIVE_PHONE_LIMIT" #footer>
         <span>{{ showAllLive ? `全部 ${events.length} 条` : `其余 ${events.length - LIVE_PHONE_LIMIT} 条` }}</span>
-        <button type="button" class="ui-link" :aria-expanded="showAllLive" @click="showAllLive = !showAllLive">{{ showAllLive ? '收起' : '展开' }}</button>
+        <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :aria-expanded="showAllLive" @click="showAllLive = !showAllLive">{{ showAllLive ? '收起' : '展开' }}</TxButton>
+        <button v-else type="button" class="ui-link" :aria-expanded="showAllLive" @click="showAllLive = !showAllLive">{{ showAllLive ? '收起' : '展开' }}</button>
       </template>
     </Plate>
   </div>

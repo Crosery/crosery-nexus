@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, toRef } from 'vue'
 import { TxDotIndicator } from '@talex-touch/tuffex/dot-indicator'
+import { useSkinPref } from '../../lib/skin'
 import { useLiveRing } from '../composables/useLiveRing'
 import type { StatusKind } from '../types'
 
@@ -31,10 +32,19 @@ const word = computed(() => props.label ?? WORDS[props.state])
 const liveOn = computed(() => props.live && props.state === 'run')
 const animated = useLiveRing(toRef(() => liveOn.value))
 const pie = computed(() => `${Math.round(Math.max(0, Math.min(1, props.progress)) * 360)}deg`)
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
   <TxDotIndicator
+    v-if="minimal"
+    :size="7"
+    :label="bare ? undefined : word"
+    :aria-label="bare ? word : undefined"
+  />
+  <TxDotIndicator
+    v-else
     class="ui-st"
     :class="[`ui-st--${state}`, { 'is-bare': bare, 'is-live': liveOn && animated, 'is-halo': liveOn && !animated }]"
     :size="7"

@@ -2,6 +2,8 @@
 import { computed, useTemplateRef } from 'vue'
 import { fmtUsd } from '../fmt'
 import { useElementWidth } from '../composables/useElementWidth'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import './viz.css'
 
 /**
@@ -74,10 +76,30 @@ const summary = computed(() => {
   if (props.limit != null) parts.push(`日额度 ${props.format(props.limit)}`)
   return parts.join('，')
 })
+const nativeRows = computed(() => {
+  let total = 0
+  return props.hourly.map((value, hour) => {
+    total += value ?? 0
+    return { hour: `${String(hour).padStart(2, '0')}:00`, spend: value == null ? '—' : props.format(value), cumulative: props.format(total) }
+  })
+})
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <figure class="ui-forecast">
+  <NativeVizTable
+    v-if="minimal"
+    :columns="[
+      { key: 'hour', title: '时间', dataIndex: 'hour' },
+      { key: 'spend', title: '时段花费', dataIndex: 'spend' },
+      { key: 'cumulative', title: '累计', dataIndex: 'cumulative' },
+    ]"
+    :data="nativeRows"
+    row-key="hour"
+    aria-label="每日花费预测"
+  />
+  <figure v-else class="ui-forecast">
     <div ref="host" class="ui-forecast__plot">
       <svg class="ui-viz" :width="width" :height="h" :viewBox="`0 0 ${width} ${h}`" role="img" :aria-label="summary">
         <line class="base" x1="0" :x2="width" :y1="lineH - 0.5" :y2="lineH - 0.5" />
@@ -98,7 +120,7 @@ const summary = computed(() => {
       按当前速度 ≈ {{ format(projected) }}<template v-if="over"> · <slot name="over">将超过日额度</slot></template>
     </figcaption>
   </figure>
-</template>
+  </template>
 
 <style>
 .ui-forecast { margin: 0; min-width: 0; }

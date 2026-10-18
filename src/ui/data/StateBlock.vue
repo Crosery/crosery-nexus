@@ -5,7 +5,10 @@ import { TxEmptyState } from '@talex-touch/tuffex/empty-state'
 import { TxErrorState } from '@talex-touch/tuffex/error-state'
 import { TxPermissionState } from '@talex-touch/tuffex/permission-state'
 import { TxButton } from '@talex-touch/tuffex/button'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { toast } from '@talex-touch/tuffex/utils'
+import { useSkinPref } from '../../lib/skin'
 import { describeError } from '../../lib/errors'
 import type { DataState } from '../composables/useLive'
 
@@ -59,6 +62,8 @@ const reason = computed(() => {
   const v = view.value
   return [v.status ? String(v.status) : null, v.title].filter(Boolean).join(' · ')
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 
 async function copyTrace() {
   try {
@@ -71,34 +76,74 @@ async function copyTrace() {
 </script>
 
 <template>
-  <div v-if="state === 'loading'" class="ui-sb ui-sb--loading" role="status" aria-live="polite" aria-label="正在加载">
-    <div v-if="showSkeleton" class="ui-sb__skel">
-      <div v-for="r in rows" :key="r" class="ui-sb__row" :style="{ gridTemplateColumns: grid, height: `${rowHeight}px` }">
-        <TxSkeleton v-for="(c, ci) in cols" :key="ci" :width="ci === 0 ? `${62 + ((r * 17) % 30)}%` : '70%'" :height="8" :radius="1" />
+  <template v-if="minimal">
+    <TxStack v-if="state === 'loading' && showSkeleton" direction="vertical" :gap="8" role="status" aria-label="正在加载">
+      <TxFlex v-for="r in rows" :key="r" direction="row" :gap="16">
+        <TxSkeleton v-for="(c, ci) in cols" :key="ci" :width="ci === 0 ? `${62 + ((r * 17) % 30)}%` : '70%'" :height="8" />
+      </TxFlex>
+    </TxStack>
+    <TxEmptyState
+      v-else-if="state === 'empty'"
+      variant="empty"
+      :title="emptyText"
+      description=""
+      :icon="null"
+      :primary-action="actionLabel ? { label: actionLabel } : undefined"
+      @primary="emit('action')"
+    >
+      <template v-if="actionLabel || $slots['empty-extra']" #actions>
+        <TxButton v-if="actionLabel" size="sm" @click="emit('action')">{{ actionLabel }}</TxButton>
+        <slot name="empty-extra" />
+      </template>
+    </TxEmptyState>
+    <TxErrorState
+      v-else-if="state === 'error'"
+      :title="title"
+      :description="reason"
+      :icon="null"
+      :primary-action="{ label: '重试' }"
+      role="alert"
+      @primary="emit('retry')"
+    >
+      <template #description><span>{{ reason }}</span> <TxButton size="sm" variant="ghost" @click="copyTrace">{{ view.trace }}</TxButton></template>
+    </TxErrorState>
+    <TxPermissionState
+      v-else-if="state === 'forbidden'"
+      :title="forbiddenText"
+      description=""
+      :icon="null"
+    />
+  </template>
+  <template v-else>
+    <div v-if="state === 'loading'" class="ui-sb ui-sb--loading" role="status" aria-live="polite" aria-label="正在加载">
+      <div v-if="showSkeleton" class="ui-sb__skel">
+        <div v-for="r in rows" :key="r" class="ui-sb__row" :style="{ gridTemplateColumns: grid, height: `${rowHeight}px` }">
+          <TxSkeleton v-for="(c, ci) in cols" :key="ci" :width="ci === 0 ? `${62 + ((r * 17) % 30)}%` : '70%'" :height="8" :radius="1" />
+        </div>
       </div>
+      <div v-else :style="{ height: `${rows * rowHeight}px` }" />
     </div>
-    <div v-else :style="{ height: `${rows * rowHeight}px` }" />
-  </div>
 
-  <TxEmptyState v-else-if="state === 'empty'" class="ui-sb ui-sb--line" variant="custom" :icon="null" layout="horizontal" align="start" size="small" surface="plain" title="" description="">
-    <template #title><span class="ui-sb__mark" aria-hidden="true">—</span><span class="ui-sb__txt">{{ emptyText }}</span></template>
-    <template v-if="actionLabel || $slots['empty-extra']" #actions>
-      <button v-if="actionLabel" type="button" class="ui-link" @click="emit('action')">{{ actionLabel }}</button>
-      <slot name="empty-extra" />
-    </template>
-  </TxEmptyState>
+    <TxEmptyState v-else-if="state === 'empty'" class="ui-sb ui-sb--line" variant="custom" :icon="null" layout="horizontal" align="start" size="small" surface="plain" title="" description="">
+      <template #title><span class="ui-sb__mark" aria-hidden="true">—</span><span class="ui-sb__txt">{{ emptyText }}</span></template>
+      <template v-if="actionLabel || $slots['empty-extra']" #actions>
+        <button v-if="actionLabel" type="button" class="ui-link" @click="emit('action')">{{ actionLabel }}</button>
+        <slot name="empty-extra" />
+      </template>
+    </TxEmptyState>
 
-  <TxErrorState v-else-if="state === 'error'" class="ui-sb ui-sb--error" role="alert" :icon="null" layout="horizontal" align="start" size="small" surface="plain" title="" description="">
-    <template #title><span class="ui-sb__mark sig" aria-hidden="true">◆</span><span class="sig">{{ title }}</span><span class="ui-sb__reason">{{ reason }}</span></template>
-    <template #description><button type="button" class="ui-sb__trace mono" title="点击复制" @click="copyTrace">{{ view.trace }}</button></template>
-    <template #actions><TxButton size="sm" @click="emit('retry')">重试</TxButton></template>
-  </TxErrorState>
+    <TxErrorState v-else-if="state === 'error'" class="ui-sb ui-sb--error" role="alert" :icon="null" layout="horizontal" align="start" size="small" surface="plain" title="" description="">
+      <template #title><span class="ui-sb__mark sig" aria-hidden="true">◆</span><span class="sig">{{ title }}</span><span class="ui-sb__reason">{{ reason }}</span></template>
+      <template #description><button type="button" class="ui-sb__trace mono" title="点击复制" @click="copyTrace">{{ view.trace }}</button></template>
+      <template #actions><TxButton size="sm" @click="emit('retry')">重试</TxButton></template>
+    </TxErrorState>
 
-  <TxPermissionState v-else-if="state === 'forbidden'" class="ui-sb ui-sb--line" :icon="null" layout="horizontal" align="start" size="small" surface="plain" title="" description="">
-    <template #title><span class="ui-sb__mark" aria-hidden="true">⊘</span><span class="ui-sb__txt dim2">{{ forbiddenText }}</span></template>
-  </TxPermissionState>
+    <TxPermissionState v-else-if="state === 'forbidden'" class="ui-sb ui-sb--line" :icon="null" layout="horizontal" align="start" size="small" surface="plain" title="" description="">
+      <template #title><span class="ui-sb__mark" aria-hidden="true">⊘</span><span class="ui-sb__txt dim2">{{ forbiddenText }}</span></template>
+    </TxPermissionState>
+  </template>
+
 </template>
-
 <style>
 html:root .ui-sb { min-width: 0; font-size: var(--fs-sm); }
 html:root .ui-sb--line { min-height: var(--row-dense); color: var(--ink-3); }

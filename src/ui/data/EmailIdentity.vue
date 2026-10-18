@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { maskEmail, useMask } from '../../lib/privacy'
-
+import { useSkinPref } from '../../lib/skin'
 /**
  * Two-line account identity (DESIGN.md §6.5): local part in ink, domain receding in ink-3; when space runs out
  * the domain truncates first and the local part last. Line 2 (plan · 首选 · 参与路由) is 11px ink-3.
@@ -18,10 +19,16 @@ const at = computed(() => props.email.lastIndexOf('@'))
 const local = computed(() => (at.value > 0 ? props.email.slice(0, at.value) : props.email))
 const domain = computed(() => (at.value > 0 ? props.email.slice(at.value) : ''))
 const hidden = computed(() => maskEmail(props.email))
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <span class="ui-em" :class="{ 'is-struck': struck, 'is-sans': !mono }">
+  <TxStack v-if="minimal" direction="vertical" :gap="4">
+    <span>{{ masked ? hidden : email }}</span>
+    <span v-if="line2 || $slots.line2"><slot name="line2">{{ line2 }}</slot></span>
+  </TxStack>
+  <span v-else class="ui-em" :class="{ 'is-struck': struck, 'is-sans': !mono }">
     <span class="ui-em__l1" :title="masked ? undefined : email">
       <span class="pii-t ui-em__local">{{ local }}</span><span class="pii-t ui-em__domain">{{ domain }}</span>
       <span class="pii-m ui-em__masked">{{ hidden }}</span>

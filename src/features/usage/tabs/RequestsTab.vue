@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import { TxButton } from '@talex-touch/tuffex/button'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import Icon from '../../../ui/Icon.vue'
 import Plate from '../../../ui/data/Plate.vue'
 import RowTable from '../../../ui/data/RowTable.vue'
@@ -11,6 +12,7 @@ import { useLive } from '../../../ui/composables/useLive'
 import { useBreakpoint } from '../../../ui/composables/useBreakpoint'
 import { fmtClock, fmtCompact, fmtDuration, fmtInt, fmtPct, fmtUsd, NONE } from '../../../ui/fmt'
 import { useQueryState } from '../../../lib/listState'
+import { useSkinPref } from '../../../lib/skin'
 import { clientLabel } from '../../../clientLabels'
 import type { RowColumn } from '../../../ui/types'
 import type { AnalyticsData } from '../../../types'
@@ -27,6 +29,7 @@ import type { UsageRequestRow, UsageRequestsData } from '../shared/types'
  * one Shanghai day; `request` deep-links the detail sheet.
  */
 const PAGE_SIZE = 50
+const { pref: skin } = useSkinPref()
 const scope = useQueryState({ ...USAGE_FILTER_DEFAULTS, status: '', category: '', day: '', page: '1', request: '' })
 const filter = computed(() => usageFilterFrom(scope.state))
 const query = computed<RequestsQuery>(() => ({
@@ -129,7 +132,7 @@ const tableEmpty = computed(() => (data.value && data.value.total === 0 ? emptyT
 </script>
 
 <template>
-  <div class="ui-grid ureq" :class="{ 'is-busy': busy }" :aria-busy="busy || undefined">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-grid ureq" :class="{ 'is-busy': busy }" :direction="skin === 'minimal' ? 'vertical' : undefined" :aria-busy="busy || undefined">
     <UsageState
       v-if="state === 'error' || state === 'forbidden' || state === 'empty'"
       class="c-12"
@@ -170,7 +173,7 @@ const tableEmpty = computed(() => (data.value && data.value.total === 0 ? emptyT
           <span v-if="summary" class="num">{{ fmtInt(summary.requests) }} 次 · 失败 {{ fmtInt(summary.errors) }}<template v-if="summary.requests"> · {{ fmtPct(summary.errorRate, 2) }}</template></span>
           <span v-if="data" class="ureq-span num">{{ windowSpan(data.window) }}</span>
         </template>
-        <div class="ureq-tools">
+        <component :is="skin === 'minimal' ? TxStack : 'div'" class="ureq-tools" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
           <Segmented :items="STATUS_ITEMS" label="状态" :model-value="scope.state.status" @update:model-value="setStatus(String($event ?? ''))" />
           <TxButton v-if="query.day" variant="secondary" size="sm" class="ureq-chip" @click="clearDay">
             <span>{{ query.day.slice(5).replace('-', '/') }} 全天</span><Icon name="x" :size="12" /><span class="sr-only">清除日期</span>
@@ -179,7 +182,7 @@ const tableEmpty = computed(() => (data.value && data.value.total === 0 ? emptyT
             <span>{{ categoryLabel(query.category) }}</span><Icon name="x" :size="12" /><span class="sr-only">清除失败类别</span>
           </TxButton>
           <span v-if="data && data.total !== summary?.requests" class="ureq-tools__n dim">筛选后 {{ fmtInt(data.total) }} 条</span>
-        </div>
+        </component>
         <RowTable
           :columns="columns"
           :data="rows"
@@ -215,7 +218,7 @@ const tableEmpty = computed(() => (data.value && data.value.total === 0 ? emptyT
     </template>
 
     <RequestDetailSheet v-model="detailOpen" :request="selected" :category-label="categoryLabel" />
-  </div>
+  </component>
 </template>
 
 <style>
