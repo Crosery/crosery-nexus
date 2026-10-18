@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
 import RowTable from '../../ui/data/RowTable.vue'
 import { copyText } from '../../ui/feedback/toast'
 import { fmtClock, fmtCompact, fmtDuration, fmtTime, fmtUsd, NONE } from '../../ui/fmt'
@@ -90,7 +91,7 @@ const rowTone = (row: Item) => (row.success ? null : 'attn')
       <span class="num">{{ cost(row) }}</span>
     </template>
     <template #cell-requestId="{ row }">
-      <button v-if="row.requestId" type="button" class="me-req__rid num" :title="`复制请求 ID ${row.requestId}`" :aria-label="`复制请求 ID ${row.requestId}`" @click.stop="copyText(row.requestId, '请求 ID')">{{ shortId(row.requestId) }}</button>
+      <TxButton v-if="row.requestId" variant="ghost" size="sm" class="me-req__rid num" :title="`复制请求 ID ${row.requestId}`" :aria-label="`复制请求 ID ${row.requestId}`" @click.stop="copyText(row.requestId, '请求 ID')">{{ shortId(row.requestId) }}</TxButton>
       <span v-else class="dim">{{ NONE }}</span>
     </template>
 

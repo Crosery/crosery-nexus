@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { RouterLink } from 'vue-router'
 import PageHead from '../../ui/shell/PageHead.vue'
 import LiveMark from '../../ui/shell/LiveMark.vue'
@@ -11,6 +12,7 @@ import SpendForecast from '../../ui/viz/SpendForecast.vue'
 import CopyField from '../../ui/form/CopyField.vue'
 import { useLive } from '../../ui/composables/useLive'
 import { useNow } from '../../ui/composables/useNow'
+import { useSkinPref } from '../../lib/skin'
 import { clockParts, fmtAgo, fmtClock, fmtCompact, fmtDuration, fmtInt, fmtPct, fmtUsd, NONE } from '../../ui/fmt'
 import { api } from '../../api'
 import MeRequestTable from './MeRequestTable.vue'
@@ -25,6 +27,7 @@ import type { StatusKind } from '../../ui/types'
  * latest requests and the base URL. Every figure comes from /api/me* (the server filters by the session's
  * key and counts all of its traffic, so today's spend equals the daily quota's 已用).
  */
+const { pref: skin } = useSkinPref()
 const now = useNow()
 const me = useLive<MeOverviewX>((signal) => api.me.overview(signal) as Promise<MeOverviewX>, { intervalMs: 15_000 })
 const week = useLive<MeUsageX>((signal) => api.me.usage(7, signal) as Promise<MeUsageX>, { intervalMs: 60_000 })
@@ -139,7 +142,7 @@ const facts = computed(() => {
 </script>
 
 <template>
-  <div class="ui-page me-ov">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page me-ov" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead :title="data?.key.name ?? '概览'" plain>
       <template v-if="keyState" #status>
         <span class="me-ov__id">
@@ -154,7 +157,7 @@ const facts = computed(() => {
 
     <p v-if="blocked" class="me-ov__alert" role="status"><span aria-hidden="true">◆</span> 已暂停 · {{ blocked }}</p>
 
-    <div class="me-ov__grid">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-ov__grid" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <div class="me-ov__col me-ov__a1">
         <Plate title="额度" class="me-ov__p1" :state="me.state.value" :error="me.error.value" :rows="3" :stale-at="me.lastAt.value" @retry="me.refresh">
           <template v-if="allUnlimited" #meta><span>不限额 · 只记花费</span></template>
@@ -273,8 +276,8 @@ const facts = computed(() => {
           </div>
         </Plate>
       </div>
-    </div>
-  </div>
+    </component>
+  </component>
 </template>
 
 <style>

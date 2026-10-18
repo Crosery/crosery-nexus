@@ -1,7 +1,17 @@
 <script setup lang="ts">
+import { watch } from 'vue'
 import { RouterView } from 'vue-router'
 import { TxToastHost } from '@talex-touch/tuffex/toast'
 import ConfirmHost from './ui/feedback/ConfirmHost.vue'
+import { useSkinPref } from './lib/skin'
+import { useTitlePref } from './lib/title'
+
+const legacyTitle = document.title
+const skin = useSkinPref()
+const title = useTitlePref()
+watch([skin.pref, title.pref], ([activeSkin, name]) => {
+  document.title = activeSkin === 'minimal' ? name : legacyTitle
+}, { immediate: true, flush: 'sync' })
 </script>
 
 <template>

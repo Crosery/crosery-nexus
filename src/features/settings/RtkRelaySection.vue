@@ -1,21 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import Plate from '../../ui/data/Plate.vue'
 import StatusMark from '../../ui/data/StatusMark.vue'
 import Switch from '../../ui/form/Switch.vue'
 import { api } from '../../api'
 import { errorMessage } from '../../lib/errors'
+import { useSkinPref } from '../../lib/skin'
 import { notify } from '../../ui/feedback/toast'
 import { fmtCompact, fmtInt } from '../../ui/fmt'
 import { useLive } from '../../ui/composables/useLive'
 import type { RtkRelayStatus, RtkRelayTally } from '../../types'
 import type { StatusKind } from '../../ui/types'
-
 /**
  * RTK 中转 (#rtk-relay, server/rtkRelay.ts): the relay process in front of the context guard (its own unit,
  * RTK_RELAY_PORT on the host), the global compression switch and what it saved.
  */
 const emit = defineEmits<{ index: [value: { value: string; hot: boolean } | null] }>()
+const { pref: skin } = useSkinPref()
 
 const busy = ref(false)
 const relay = useLive<RtkRelayStatus>((signal) => api.rtkRelay.get(signal), { intervalMs: 60_000, enabled: () => !busy.value })
@@ -75,7 +77,7 @@ async function setEnabled(enabled: boolean) {
     @retry="relay.refresh"
   >
     <template #meta><StatusMark v-if="mark" :state="mark.state" :label="mark.label" /></template>
-    <div v-if="relay.data.value" class="set-relay">
+    <component v-if="relay.data.value" :is="skin === 'minimal' ? TxStack : 'div'" class="set-relay" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <div class="set-relay__row">
         <span class="set-relay__k">监听</span>
         <span class="set-relay__v num">{{ listenerLine }}</span>
@@ -95,7 +97,7 @@ async function setEnabled(enabled: boolean) {
         <span class="set-relay__v num">{{ tally(relay.data.value.total) }}</span>
       </div>
       <p class="set-relay__note">tok 是按移除字节 ÷ 4 的估算，不是账单节省 · 跳过 = 压缩出错，请求按原样转发</p>
-    </div>
+    </component>
   </Plate>
 </template>
 

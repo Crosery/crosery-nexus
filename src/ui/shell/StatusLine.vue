@@ -42,7 +42,7 @@ const gw = computed(() => props.status.gateway ?? null)
         <template v-if="status.kernel">{{ status.kernel }}</template>
         <template v-if="status.kernel && status.rtk != null"> · </template><template v-if="status.rtk != null">RTK <b>{{ status.rtk ? '开' : '关' }}</b></template>
       </span>
-      <span class="ui-sl__seg ui-sl__keys"><Kbd keys="mod+k" /> 命令 · 1–7 跳转 · T 主题 · M 脱敏</span>
+      <span class="ui-sl__seg ui-sl__keys"><Kbd keys="mod+k" /> 命令 · 1–8 跳转 · T 主题 · M 脱敏</span>
     </template>
     <template v-else>
       <span v-if="status.key" class="ui-sl__seg"><b>{{ status.key.name }}</b></span>

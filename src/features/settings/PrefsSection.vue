@@ -1,24 +1,40 @@
 <script setup lang="ts">
-import { computed, useTemplateRef } from 'vue'
+import { computed, ref, useTemplateRef } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxForm, TxFormItem } from '@talex-touch/tuffex/form'
+import { TxFilterChips } from '@talex-touch/tuffex/filter-chips'
+import { TxSwitch } from '@talex-touch/tuffex/switch'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import Plate from '../../ui/data/Plate.vue'
 import Segmented from '../../ui/form/Segmented.vue'
 import Switch from '../../ui/form/Switch.vue'
-import { useMask, useMotionPref, useThemePref, type MotionPref, type ThemePref } from '../../ui/composables/prefs'
+import { useMask, useMotionPref, useSkinPref, useThemePref, useTitlePref, type MotionPref, type SkinPref, type ThemePref } from '../../ui/composables/prefs'
 import { useSingleKeyPref } from '../../ui/composables/useShortcuts'
+import ConsoleTitleEditor from '../../ui/shell/ConsoleTitleEditor.vue'
 
 /**
- * 偏好 (#prefs, DESIGN §6.8 外观 + 隐私): theme (circular wipe from the control), motion, the WCAG 2.1.4
- * single-key shortcut switch and the privacy mask. Everything is per device (localStorage), nothing is sent.
+ * 偏好 (#prefs, DESIGN §6.8 外观 + 隐私): theme, skin, motion, the WCAG 2.1.4 single-key shortcut switch
+ * and the privacy mask. Everything is per device (localStorage), nothing is sent.
  */
 const theme = useThemePref()
+const skin = useSkinPref()
 const motion = useMotionPref()
 const keys = useSingleKeyPref()
 const mask = useMask()
+const titlePref = useTitlePref()
+const titleEditorOpen = ref(false)
+function openTitleEditor() {
+  titleEditorOpen.value = true
+}
 
 const THEMES = [
   { value: 'light', label: '浅色' },
   { value: 'dark', label: '深色' },
   { value: 'system', label: '跟随系统' },
+]
+const SKINS = [
+  { value: 'telemetry', label: 'Telemetry' },
+  { value: 'minimal', label: '简约' },
 ]
 const MOTIONS = [
   { value: 'full', label: '完整' },
@@ -42,7 +58,42 @@ const motionNote = computed(() => (motion.reduced.value ? '当前减弱 · 不�
 <template>
   <Plate id="prefs" title="偏好" class="set-sec" :print="true">
     <template #meta><span>只存在这台设备</span></template>
-    <div class="set-prefs">
+    <TxForm v-if="skin.pref.value === 'minimal'" label-position="top" class="set-prefs-form">
+      <TxFormItem label="皮肤" class="set-prefs-form__item">
+        <TxFilterChips :model-value="skin.pref.value" :items="SKINS" aria-label="皮肤" @update:model-value="skin.set($event as SkinPref)" />
+      </TxFormItem>
+      <TxFormItem label="主题" class="set-prefs-form__item">
+        <TxFilterChips :model-value="theme.pref.value" :items="THEMES" aria-label="主题" @update:model-value="setTheme" />
+      </TxFormItem>
+      <TxFormItem label="单键快捷键" class="set-prefs-form__item">
+        <TxStack>
+          <TxSwitch :model-value="keys.on.value" aria-label="单键快捷键" @update:model-value="keys.set" />
+          <small>T 主题 · M 脱敏 · 1–8 跳转</small>
+        </TxStack>
+      </TxFormItem>
+      <TxFormItem label="动效" class="set-prefs-form__item">
+        <TxStack>
+          <TxFilterChips :model-value="motion.pref.value" :items="MOTIONS" aria-label="动效" @update:model-value="setMotion" />
+          <small>{{ motionNote }}</small>
+        </TxStack>
+      </TxFormItem>
+      <TxFormItem label="邮箱脱敏" class="set-prefs-form__item">
+        <TxStack>
+          <TxSwitch :model-value="mask.on.value" aria-label="邮箱脱敏" @update:model-value="mask.set" />
+          <small>只影响当前设备的显示</small>
+        </TxStack>
+      </TxFormItem>
+      <TxFormItem label="控制台标题" class="set-prefs-form__item">
+        <TxStack>
+          <TxButton size="sm" variant="secondary" @click="openTitleEditor">编辑</TxButton>
+          <small style="color: var(--tx-text-color-secondary)">当前：{{ titlePref.pref.value }} · 默认 Crosery</small>
+        </TxStack>
+      </TxFormItem>
+      <TxFormItem label="API Key 明文" class="set-prefs-form__item set-prefs-form__item--wide">
+        <span style="font-size: 13px; color: var(--tx-text-color-secondary)">列表只显示尾号 · 新建后或确认后才显示完整 Key</span>
+      </TxFormItem>
+    </TxForm>
+    <div v-else class="set-prefs">
       <div class="set-pref">
         <span class="set-pref__k">主题</span>
         <span ref="themeHost" class="set-pref__v">
@@ -50,7 +101,13 @@ const motionNote = computed(() => (motion.reduced.value ? '当前减弱 · 不�
         </span>
       </div>
       <div class="set-pref">
-        <span class="set-pref__k">单键快捷键<small>T 主题 · M 脱敏 · 1–7 跳转</small></span>
+        <span class="set-pref__k">皮肤<small>简约只使用 Tuffex 原生组件样式</small></span>
+        <span class="set-pref__v">
+          <Segmented :model-value="skin.pref.value" :items="SKINS" label="皮肤" @update:model-value="skin.set($event as SkinPref)" />
+        </span>
+      </div>
+      <div class="set-pref">
+        <span class="set-pref__k">单键快捷键<small>T 主题 · M 脱敏 · 1–8 跳转</small></span>
         <span class="set-pref__v">
           <Switch :model-value="keys.on.value" aria-label="单键快捷键" @update:model-value="keys.set" />
         </span>
@@ -73,6 +130,7 @@ const motionNote = computed(() => (motion.reduced.value ? '当前减弱 · 不�
       </div>
     </div>
   </Plate>
+  <ConsoleTitleEditor v-if="skin.pref.value === 'minimal'" v-model="titleEditorOpen" />
 </template>
 
 <style>

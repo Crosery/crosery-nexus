@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { TxGrid } from '@talex-touch/tuffex/grid'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { TxDropdownItem, TxDropdownMenu } from '@talex-touch/tuffex/dropdown-menu'
 import { TxButton, TxIconButton } from '@talex-touch/tuffex/button'
 import PageHead from '../../ui/shell/PageHead.vue'
@@ -24,6 +26,7 @@ import { confirmSheet } from '../../ui/feedback/confirmSheet'
 import { setNavCount } from '../../shell/badges'
 import { usePaletteCommands } from '../../shell/palette'
 import { useQueryState } from '../../lib/listState'
+import { useSkinPref } from '../../lib/skin'
 import { errorReason } from '../../lib/errors'
 import { whenIdle } from '../../lib/resource'
 import { ApiError, api } from '../../api'
@@ -43,6 +46,7 @@ import {
  * The only upstream-touching action here is 立即发现 — the existing model-discovery sync job, cooldown-aware.
  */
 const { isMobile, isCompact, width } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 /** every figure gets its own column only when the name column keeps ≥200px (1440 → yes, 1097/1180 → no) */
 const full = computed(() => width.value >= 1320)
 const now = useNow()
@@ -543,7 +547,7 @@ function copyAddress(channel: ChannelItem) {
 </script>
 
 <template>
-  <div class="ui-page cx-channels">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page cx-channels" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead title="渠道">
       <template #status>
         <span v-if="channels.data.value" class="cx-head num">
@@ -569,20 +573,22 @@ function copyAddress(channel: ChannelItem) {
       </template>
     </PageHead>
 
-    <div class="cx-body">
-    <div class="ui-toolbar cx-toolbar">
-      <div class="cx-searchrow">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="cx-body" :direction="skin === 'minimal' ? 'vertical' : undefined">
+
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-toolbar cx-toolbar" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="cx-searchrow" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
         <SearchField v-model="scope.state.q" placeholder="名称 / 地址" label="搜索渠道" class="cx-search" />
         <TxButton v-if="isMobile" variant="primary" class="cx-add-m" @click="createOpen = true"><Icon name="plus" /><span>添加</span></TxButton>
-      </div>
+      </component>
       <Segmented v-model="scope.state.status" :items="statusItems" label="按状态筛选" />
-      <div class="push cx-window">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="push cx-window" :direction="skin === 'minimal' ? 'horizontal' : undefined">
         <span class="micro" aria-hidden="true">统计窗口</span>
         <Segmented v-model="scope.state.hours" :items="WINDOWS.map((w) => ({ value: w.value, label: w.label }))" label="统计窗口" />
-      </div>
-    </div>
+      </component>
+    </component>
 
-    <div class="ui-grid">
+    <component :is="skin === 'minimal' ? TxGrid : 'div'" class="ui-grid" :cols="skin === 'minimal' ? { xs: 1 } : undefined" :gap="skin === 'minimal' ? 16 : undefined">
+
       <Plate
         title="上游渠道"
         class="c-12"
@@ -599,11 +605,11 @@ function copyAddress(channel: ChannelItem) {
         <template #meta>
           <span v-if="!healthAvailable" class="cx-meta-note">◇ 健康数据待服务更新后可见</span>
           <span v-else-if="health.state.value === 'error'" class="cx-meta-note">
-            ◇ 健康数据读取失败 <button type="button" class="ui-link" @click="health.refresh">重试</button>
+            ◇ 健康数据读取失败 <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="health.refresh">重试</TxButton><button v-else type="button" class="ui-link" @click="health.refresh">重试</button>
           </span>
         </template>
         <template v-if="channels.data.value" #actions>
-          <button type="button" class="ui-link" :disabled="pruning" title="删掉网关里已不存在的渠道快照 · 先确认" @click="pruneStale">清理残留</button>
+          <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :disabled="pruning" title="删掉网关里已不存在的渠道快照 · 先确认" @click="pruneStale">清理残留</TxButton><button v-else type="button" class="ui-link" :disabled="pruning" title="删掉网关里已不存在的渠道快照 · 先确认" @click="pruneStale">清理残留</button>
         </template>
 
         <RowTable
@@ -631,7 +637,7 @@ function copyAddress(channel: ChannelItem) {
 
           <template #cell-name="{ row }">
             <span class="cx-2l">
-              <button type="button" class="ui-link cx-name mono ellip" :title="`查看 ${row.name}`" @click.stop="openChannel(row)">{{ row.name }}</button>
+              <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" class="cx-name mono ellip" :title="`查看 ${row.name}`" @click.stop="openChannel(row)">{{ row.name }}</TxButton><button v-else type="button" class="ui-link cx-name mono ellip" :title="`查看 ${row.name}`" @click.stop="openChannel(row)">{{ row.name }}</button>
               <span class="cx-l2 mono ellip" :title="row.channel.baseUrl">{{ middleEllipsis(row.host, full ? 44 : 30) }}<template v-if="row.channel.keyCount > 1"> · {{ row.channel.keyCount }} Key</template><template v-else-if="row.channel.keyCount === 0"> · 无 Key</template></span>
             </span>
           </template>
@@ -775,8 +781,8 @@ function copyAddress(channel: ChannelItem) {
         <p v-if="isMobile && discoveryMeta" class="cx-disc-line cx-disc-line--rule num">{{ discoveryMeta }}</p>
         <TimingLanes :jobs="discoveryLane" :from-hours="isCompact ? 6 : 24" :to-hours="isCompact ? 1 : 2" />
       </Plate>
-    </div>
-    </div>
+    </component>
+    </component>
 
     <ChannelSheet
       v-model="sheetOpen"
@@ -793,7 +799,7 @@ function copyAddress(channel: ChannelItem) {
       @delete="deleteChannel"
     />
     <CreateChannelSheet v-model="createOpen" :existing="list.map((c) => c.name)" @created="refreshAll" />
-  </div>
+  </component>
 </template>
 
 <style>

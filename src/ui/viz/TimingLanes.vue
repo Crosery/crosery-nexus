@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, useTemplateRef } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
 import { fmtDuration, fmtInt, fmtTime } from '../fmt'
 import { toMs, useNow } from '../composables/useNow'
 import { useElementWidth } from '../composables/useElementWidth'
 import StatusMark from '../data/StatusMark.vue'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import { timeX } from './model'
 import type { LaneJob, LaneRun } from '../types'
 
@@ -70,10 +73,13 @@ const axis = computed(() => {
   const marks = [-props.fromHours, -props.fromHours / 2, -props.fromHours / 4, 0, props.toHours]
   return marks.map((hh) => ({ x: timeX(nowMs.value + hh * 3_600_000, from.value, to.value, width.value) ?? 0, text: hh === 0 ? '现在' : `${hh > 0 ? '+' : '−'}${Math.abs(hh)}h` }))
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => props.jobs.flatMap((job) => job.runs.length ? job.runs.map((run) => ({ key: `${job.id}-${run.at}`, job: job.label, source: job, at: fmtTime(run.at), result: RESULT_WORD[run.result], duration: run.durationMs == null ? '—' : fmtDuration(run.durationMs), calls: job.calls24h == null ? '—' : `${fmtInt(job.calls24h)} 次/24h`, status: job.stateLabel ?? '' })) : [{ key: job.id, job: job.label, source: job, at: '—', result: '无运行', duration: '—', calls: job.calls24h == null ? '—' : `${fmtInt(job.calls24h)} 次/24h`, status: job.stateLabel ?? '' }] ))
 </script>
 
 <template>
-  <div v-if="jobs.length" class="ui-lanes">
+  <div v-if="jobs.length" class="ui-lanes" :class="{ 'is-minimal': minimal }">
     <div v-for="(l, i) in lanes" :key="l.job.id" class="ui-lanes__row" data-row :style="{ '--r': i }">
       <div class="ui-lanes__k">
         <button v-if="selectable" type="button" class="ui-lanes__name ellip" @click="emit('select', l.job)">{{ l.job.label }}</button>

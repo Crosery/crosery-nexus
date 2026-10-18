@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { TxButton } from '@talex-touch/tuffex/button'
 import Sheet from '../../ui/feedback/Sheet.vue'
 import Icon from '../../ui/Icon.vue'
 import { copyText } from '../../ui/feedback/toast'
-
+import { useSkinPref } from '../../lib/skin'
 /**
  * The only place a full API key is ever on screen (DESIGN §7.1): right after 创建, or after a confirmed
  * 显示完整 Key. The value lives in the parent only while this sheet is open and is wiped on close; it is never
@@ -13,6 +14,7 @@ import { copyText } from '../../ui/feedback/toast'
  * already confirmed they want it shown).
  */
 const props = defineProps<{ name: string; value: string; mode: 'created' | 'revealed'; note?: string | null }>()
+const { pref: skin } = useSkinPref()
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ done: [] }>()
 
@@ -41,21 +43,21 @@ function selectAll(event: Event) {
 
 <template>
   <Sheet v-model="open" :title="mode === 'created' ? `已创建 · ${name}` : `完整 Key · ${name}`" :close-on-mask="mode !== 'created'">
-    <div class="kx-reveal">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="kx-reveal" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <p class="kx-reveal__warn">
         <span aria-hidden="true">◆</span>
         <template v-if="mode === 'created'">现在复制保存 · 关闭后需确认才能再次显示</template>
         <template v-else>明文显示中 · 关闭后从屏幕清除</template>
       </p>
       <output class="kx-reveal__key mono" tabindex="0" aria-label="完整 API Key" @focus="selectAll" @click="selectAll">{{ value }}</output>
-      <div class="kx-reveal__row">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="kx-reveal__row" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
         <TxButton variant="secondary" @click="copy">
           <Icon :name="copied ? 'check' : 'copy'" />{{ copied ? '已复制' : '复制' }}
         </TxButton>
         <span class="kx-reveal__hint">放进客户端的环境变量 · 不要贴进聊天或代码库</span>
-      </div>
       <p v-if="note" class="kx-reveal__note">◇ {{ note }}</p>
-    </div>
+      </component>
+    </component>
     <template #footer="{ close }">
       <TxButton ref="done" variant="primary" @click="close">{{ mode === 'created' ? '我已保存' : '完成' }}</TxButton>
     </template>

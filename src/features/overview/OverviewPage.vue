@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
+import { TxGrid } from '@talex-touch/tuffex/grid'
 import { RouterLink } from 'vue-router'
 import PageHead from '../../ui/shell/PageHead.vue'
 import LiveMark from '../../ui/shell/LiveMark.vue'
@@ -16,6 +17,7 @@ import { api } from '../../api'
 import { ApiError, request } from '../../api/http'
 import { errorStatus } from '../../lib/errors'
 import { useQueryState } from '../../lib/listState'
+import { useSkinPref } from '../../lib/skin'
 import { setNavCount } from '../../shell/badges'
 import { useSharedAdminLive } from '../../shell/useAdminStatus'
 import type { ApiKeyItem, CacheTrendData, ChannelsData, ChartsData, DashboardData, MonitorData, UsageOverviewData } from '../../types'
@@ -23,6 +25,7 @@ import GatewayPlate from './GatewayPlate.vue'
 import KeyBurnPlate from './KeyBurnPlate.vue'
 import PressurePlate from './PressurePlate.vue'
 import ChecksList from './ChecksList.vue'
+import OverviewDashboard from './OverviewDashboard.vue'
 import { attention, burnRows, channelHealth, checks, inspection, kindWord, laneJobs, ledger, policyWords, pressureRows, severityWords, type CacheSummaryLike } from './model'
 import type { MonitorAccount, OverviewPayload, OverviewRange, ScopeRange } from './types'
 
@@ -33,6 +36,7 @@ import type { MonitorAccount, OverviewPayload, OverviewRange, ScopeRange } from 
  * sync and versions are the shell's own polls (useSharedAdminLive), not a second copy.
  */
 const { width, isMobile } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 const now = useNow()
 
 /* ── gateway: /api/pulse (live, 2 s) + /api/overview (range, 15 s) ─────────────────────────────── */
@@ -235,13 +239,77 @@ onBeforeUnmount(() => {
   for (const id of ['keys', 'accounts', 'channels']) setNavCount(id, null)
 })
 
+/* ── 简约皮肤: the Tuff Pulse dashboard (OverviewDashboard) reads the same model ─────────────────────── */
+/** the seeded local demo kernel reports a `-fake` build: only then does the board say its numbers are mock */
+const demo = computed(() => {
+  const cpa = versions.data.value?.cpa
+  return Boolean(cpa && [cpa.version, cpa.commit].some((label) => typeof label === 'string' && /-fake\b/i.test(label)))
+})
+const refreshing = ref(false)
+/** 刷新: every source this page reads, once; the pollers keep their own cadence afterwards */
+async function refreshAll() {
+  refreshing.value = true
+  try {
+    await Promise.allSettled([
+      overviewMissing.value ? null : overview.refresh(),
+      pulseMissing.value ? null : pulse.refresh(),
+      boot.refresh(),
+      monitor.refresh(),
+      channels.refresh(),
+      sync.refresh(),
+      versions.refresh(),
+      ledgerLive.refresh(),
+    ])
+  } finally {
+    refreshing.value = false
+  }
+}
+/** the attention list is built from these four sources (the Telemetry plate retries the same set) */
+function retryAttention() {
+  boot.refresh()
+  monitor.refresh()
+  channels.refresh()
+  sync.refresh()
+}
+
 /** no OAuth accounts at all: the pressure plate is one line, so it takes its own row instead of leaving a dead band */
 const noAccounts = computed(() => monitor.state.value === 'empty')
 const ledgerCols = computed(() => (width.value >= 1180 ? 6 : isMobile.value ? 2 : 3))
 </script>
 
 <template>
-  <div class="ui-page ov">
+  <OverviewDashboard
+    v-if="skin === 'minimal'"
+    :range="effectiveRange"
+    :ranges-available="!overviewMissing"
+    :overview="overview.data.value ?? null"
+    :pulse="pulse.data.value ?? null"
+    :gateway="{ state: gatewayState, error: gatewayError, at: gatewayAt, retry: () => (effectiveRange === 'live' ? pulse.refresh() : overview.refresh()) }"
+    :enabled-keys="enabledKeys"
+    :kernel="kernel"
+    :demo="demo"
+    :attention="{ items: attItems, recovered: attRecovered, counts: att.counts }"
+    :attention-source="{ state: attState, error: attError, retry: retryAttention }"
+    :attention-empty="attEmpty"
+    :inspection="insp"
+    :checks="checkRows"
+    :ledger="ledgerCells"
+    :ledger-source="{ state: ledgerLive.state.value, error: ledgerLive.error.value, at: ledgerLive.lastAt.value, retry: ledgerLive.refresh }"
+    :ledger-as-of="ledgerAsOf"
+    :health="health"
+    :health-state="healthState"
+    :burn="burn"
+    :keys-source="{ state: boot.state.value, error: boot.error.value, at: boot.lastAt.value, retry: boot.refresh }"
+    :pressure="press"
+    :accounts-source="{ state: monitor.state.value, error: monitor.error.value, at: monitor.lastAt.value, retry: monitor.refresh }"
+    :lanes="lanes"
+    :policy="policy"
+    :sync-source="{ state: syncState, error: sync.error.value, at: sync.lastAt.value, retry: sync.refresh }"
+    :refreshing="refreshing"
+    @update:range="setRange"
+    @refresh="refreshAll"
+  />
+  <div v-else class="ui-page ov">
     <PageHead title="概览">
       <template #status>
         <span class="ov-head">
@@ -259,7 +327,7 @@ const ledgerCols = computed(() => (width.value >= 1180 ? 6 : isMobile.value ? 2 
       </template>
     </PageHead>
 
-    <div class="ui-grid ov-grid">
+    <component :is="skin === 'minimal' ? TxGrid : 'div'" class="ui-grid ov-grid" :cols="skin === 'minimal' ? { xs: 1, md: 2 } : undefined" :gap="skin === 'minimal' ? 16 : undefined">
       <Plate title="需要处理" class="c-5 md-c-6 stretch ov-att" :state="attState" :error="attError" :rows="5" :cols="['14px', '32px', '1fr', '64px']" @retry="boot.refresh(); monitor.refresh(); channels.refresh(); sync.refresh()">
         <AttentionList :items="attItems" :recovered="attRecovered" :max="7" :empty-text="attEmpty" />
         <ChecksList v-if="!isMobile || att.items.length < 3" :rows="checkRows" />
@@ -323,7 +391,7 @@ const ledgerCols = computed(() => (width.value >= 1180 ? 6 : isMobile.value ? 2 
         </template>
         <TimingLanes :jobs="lanes" :from-hours="isMobile ? 6 : 24" :to-hours="isMobile ? 1 : 2" />
       </Plate>
-    </div>
+    </component>
   </div>
 </template>
 

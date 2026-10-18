@@ -1,18 +1,23 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { useSkinPref } from '../../lib/skin'
 /**
  * Masked API key (DESIGN.md §5.2 form/MaskedKey, §6.10): only ever the stored tail (`sk-cr…7f3a`) as plain
  * mono text with `完整 Key 只在你自己的设备上`. There is deliberately NO reveal and NO copy — nothing here
  * could be revealed. Admins use the one-time reveal flow on /keys instead.
  */
 withDefaults(defineProps<{ tail: string; label?: string; hint?: string | null }>(), { label: 'API KEY', hint: '完整 Key 只在你自己的设备上' })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <div class="ui-mkey">
+  <component :is="minimal ? TxFlex : 'div'" class="ui-mkey" :direction="minimal ? 'row' : undefined" :wrap="minimal ? 'wrap' : undefined" :gap="minimal ? 8 : undefined" align="center">
     <span class="ui-mkey__k">{{ label }}</span>
     <span class="ui-mkey__v">{{ tail }}</span>
     <span v-if="hint" class="ui-mkey__hint">{{ hint }}</span>
-  </div>
+  </component>
 </template>
 
 <style>

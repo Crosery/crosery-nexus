@@ -4,6 +4,7 @@ import Sheet from '../feedback/Sheet.vue'
 import Switch from '../form/Switch.vue'
 import Segmented from '../form/Segmented.vue'
 import Icon from '../Icon.vue'
+import { useSkinPref } from '../../lib/skin'
 import { useThemePref } from '../../lib/theme'
 import { useMotionPref } from '../../lib/motion'
 import { useMask } from '../../lib/privacy'
@@ -12,18 +13,23 @@ import type { NavItem } from '../types'
 
 /**
  * 更多 sheet (DESIGN.md §4.2): bottom Sheet with the remaining nav grouped like the IA (接入: 渠道 · 模型 /
- * 系统: 设置 · 帮助), then 主题 (浅 / 深 / 跟随), 隐私脱敏, 减弱动效 and 退出. 48px rows: icon, label, count.
+ * 系统: 设置 · 帮助), then 主题、皮肤、隐私脱敏、减弱动效 and 退出. 48px rows: icon, label, count.
  */
 withDefaults(defineProps<{ groups: Array<{ label: string; items: NavItem[] }>; showMask?: boolean }>(), { showMask: true })
 const open = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ logout: [] }>()
 const theme = useThemePref()
+const skin = useSkinPref()
 const motion = useMotionPref()
 const mask = useMask()
 const THEMES = [
   { value: 'light', label: '浅' },
   { value: 'dark', label: '深' },
   { value: 'system', label: '跟随' },
+]
+const SKINS = [
+  { value: 'telemetry', label: '默认' },
+  { value: 'minimal', label: '简约' },
 ]
 </script>
 
@@ -45,6 +51,10 @@ const THEMES = [
       <div class="ui-more__row is-ctl">
         <span class="ui-more__lb">主题</span>
         <Segmented :items="THEMES" label="主题" :model-value="theme.pref.value" @update:model-value="theme.set($event as 'light' | 'dark' | 'system')" />
+      </div>
+      <div class="ui-more__row is-ctl">
+        <span class="ui-more__lb">皮肤</span>
+        <Segmented :items="SKINS" label="皮肤" :model-value="skin.pref.value" @update:model-value="skin.set($event as 'telemetry' | 'minimal')" />
       </div>
       <div v-if="showMask" class="ui-more__row is-ctl">
         <span class="ui-more__lb">隐私脱敏</span>

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { TxFlex } from '@talex-touch/tuffex/flex'
 import { TxProgressBar } from '@talex-touch/tuffex/progress-bar'
 import { isReducedMotion } from '../../lib/motion'
 import { fmtTime } from '../fmt'
+import { useSkinPref } from '../../lib/skin'
 import { meterModel, snapMeterWidth } from './model'
 import type { Instant } from '../types'
 
@@ -48,6 +50,8 @@ const valueText = computed(() => {
 })
 
 /* grow from 0 on first paint (TxProgressBar animates its width); instant under reduce / capture */
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 const armed = ref(isReducedMotion())
 const fill = computed(() => (props.unlimited || m.value.pct === null ? 0 : armed.value ? Math.min(100, m.value.pct) : 0))
 let raf = 0
@@ -68,7 +72,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <span class="ui-tm" :class="{ 'is-fluid': fluid, 'is-over': m.over && !unlimited }">
+  <TxFlex v-if="minimal" direction="row" align="center" :gap="8">
+    <span v-if="label">{{ label }}</span>
+    <TxProgressBar v-if="!unlimited" :percentage="fill" :aria-label="valueText" />
+    <span v-if="showPct">{{ pctText }}</span>
+    <span v-if="resetText">↻ {{ resetText }}</span>
+  </TxFlex>
+  <span v-else class="ui-tm" :class="{ 'is-fluid': fluid, 'is-over': m.over && !unlimited }">
     <span v-if="label" class="ui-tm__k" aria-hidden="true">{{ label }}</span>
     <span class="ui-tm__track" :class="{ 'no-red': noRedline || unlimited }" :style="{ '--w': `${w}px`, '--red': redline }">
       <span

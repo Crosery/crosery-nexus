@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { areaPath, extentOf, linePath, points } from './model'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import './viz.css'
-
 /**
  * Sparkline / trace (DESIGN.md §5.2 viz/Spark, motion recipe 5): path with pathLength=1 drawn on over
  * 900ms settle, the area fades in 300ms later, the end dot pops at the finish. Null samples are gaps.
@@ -46,10 +47,24 @@ const last = computed(() => {
   for (let i = pts.length - 1; i >= 0; i -= 1) if (pts[i]) return pts[i]
   return null
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => props.values.map((value, index) => ({ index: index + 1, value: value ?? '—' })))
 </script>
 
 <template>
+  <NativeVizTable
+    v-if="minimal"
+    :columns="[
+      { key: 'index', title: '样本', dataIndex: 'index' },
+      { key: 'value', title: '值', dataIndex: 'value' },
+    ]"
+    :data="nativeRows"
+    row-key="index"
+    :aria-label="label ?? '趋势'"
+  />
   <svg
+    v-else
     class="ui-viz ui-spark"
     :class="{ hot }"
     :width="fluid ? '100%' : w"

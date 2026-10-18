@@ -17,7 +17,7 @@ import type { CommandItem, UserMenuItem } from '../ui/types'
 
 /**
  * Admin chrome (DESIGN §4.1, §4.2, §4.4): the kit AppShell fed with the IA, live status, attention counts and
- * the ⌘K actions. ≥960 top rail + statusline; <960 top bar + ticker + tab bar 概览·账号·Key·用量·更多.
+ * the ⌘K actions. Telemetry ≥960 top rail + statusline; <960 top bar + ticker + tab bar 概览·账号·Key·用量·更多.
  */
 const route = useRoute()
 const router = useRouter()

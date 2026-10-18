@@ -1,18 +1,19 @@
 /**
  * Navigation model — the single source for the desktop rail, the mobile tab bar, the 更多 sheet, ⌘K page
- * jumps, 1–7 / 1–4 shortcuts and page heads (`04 / 接入 · ACCOUNTS`). `server/navRoutes.test.ts` holds this
+ * jumps, 1–8 / 1–4 shortcuts and page heads (`04 / 接入 · ACCOUNTS`). `server/navRoutes.test.ts` holds this
  * file and `routes.ts` in parity: every page route has a nav entry and every nav target is a page route.
  */
 import type { IconName } from '../ui/icons'
 import type { NavItem } from '../ui/types'
 
-export type NavGroupKey = 'overview' | 'access' | 'usage' | 'system'
+export type NavGroupKey = 'overview' | 'access' | 'usage' | 'operations' | 'system'
 
 /** BRIEF IA groups: rail dividers, ⌘K sections, 更多 sheet, page-head micro. */
 export const NAV_GROUP_LABEL: Record<NavGroupKey, string> = {
   overview: '概览',
   access: '接入',
   usage: '用量',
+  operations: '运营数据',
   system: '系统',
 }
 
@@ -24,8 +25,9 @@ export const ADMIN_NAV: AppNavItem[] = [
   { id: 'providers', idx: '03', label: '供应商', en: 'PROVIDERS', group: 'access', icon: 'plug', to: '/providers' },
   { id: 'models', idx: '04', label: '模型', en: 'MODELS', group: 'access', icon: 'cube', to: '/models' },
   { id: 'usage', idx: '05', label: '用量', en: 'USAGE', group: 'usage', icon: 'chart', to: '/usage' },
-  { id: 'settings', idx: '06', label: '设置', en: 'SETTINGS', group: 'system', icon: 'gear', to: '/settings' },
-  { id: 'help', idx: '07', label: '帮助', en: 'HELP', group: 'system', icon: 'help', to: '/help' },
+  { id: 'operations', idx: '06', label: '运营数据', en: 'OPERATIONS', group: 'operations', icon: 'chart', to: '/operations' },
+  { id: 'settings', idx: '07', label: '设置', en: 'SETTINGS', group: 'system', icon: 'gear', to: '/settings' },
+  { id: 'help', idx: '08', label: '帮助', en: 'HELP', group: 'system', icon: 'help', to: '/help' },
 ]
 
 /** Mobile bottom bar (admin): 概览 · 供应商 · Key · 用量, then 更多. */
@@ -34,6 +36,7 @@ export const ADMIN_TAB_IDS = ['dashboard', 'providers', 'keys', 'usage'] as cons
 /** What the 更多 sheet lists, grouped like the IA. */
 export const ADMIN_MORE_IDS: Array<{ group: NavGroupKey; ids: string[] }> = [
   { group: 'access', ids: ['models'] },
+  { group: 'operations', ids: ['operations'] },
   { group: 'system', ids: ['settings', 'help'] },
 ]
 

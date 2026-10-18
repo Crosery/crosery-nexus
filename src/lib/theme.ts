@@ -39,7 +39,11 @@ const appliedTheme = computed<ThemeName>(() => resolveTheme(themePref.value, sys
 function paint(theme: ThemeName) {
   if (!hasDom()) return
   document.documentElement.dataset.theme = theme
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_PAPER[theme])
+  const root = document.documentElement
+  const color = root.dataset.skin === 'minimal'
+    ? getComputedStyle(root).getPropertyValue('--tx-bg-color-page').trim()
+    : THEME_PAPER[theme]
+  if (color) document.querySelector('meta[name="theme-color"]')?.setAttribute('content', color)
 }
 
 let initialized = false
@@ -90,7 +94,7 @@ export function setThemePref(pref: ThemePref, origin?: WipeOrigin) {
   if (after === before) return paint(after)
 
   const doc = document as ViewTransitionDocument
-  if (isReducedMotion()) return paint(after)
+  if (document.documentElement.dataset.skin === 'minimal' || isReducedMotion()) return paint(after)
   if (typeof doc.startViewTransition !== 'function') {
     paint(after)
     requestScan()

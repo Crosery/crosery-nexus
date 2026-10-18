@@ -5,9 +5,12 @@ import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import UnoCSS from 'unocss/vite'
 import { expandStyleClosure, tuffexOnDemandStylePlugin } from '@talex-touch/tuffex/vite'
+import type { Root } from 'postcss'
 
 const TX_OVERRIDES_DIR = resolve(import.meta.dirname, 'src/styles/tx')
 const TUFFEX_IMPORT_RE = /\bfrom\s+['"]@talex-touch\/tuffex\/([a-z0-9-]+)['"]|import\(\s*['"]@talex-touch\/tuffex\/([a-z0-9-]+)['"]\s*\)/g
+const SOURCE_DIR = `${resolve(import.meta.dirname, 'src')}/`
+const MINIMAL_LAYOUT_FILE = resolve(import.meta.dirname, 'src/styles/minimal-layout.css')
 
 /**
  * Telemetry Paper restyles for tuffex components (src/styles/tx/<component>.css) ride along with the
@@ -49,6 +52,45 @@ export default defineConfig({
     tuffexOnDemandStylePlugin(),
     tuffexThemeOverrides(),
   ],
+  css: {
+    postcss: {
+      plugins: [{
+        postcssPlugin: 'console-skin-style-boundary',
+        Once(root: Root) {
+          // Only unscoped project CSS inherits Telemetry; authored scopes keep their skin boundary.
+          const file = root.source?.input.file?.split('?')[0]
+          if (!file || file === MINIMAL_LAYOUT_FILE || file.endsWith('/__uno.css') || !file.startsWith(SOURCE_DIR)) return
+          // @scope implicitly anchors ordinary selectors below its root; document-root rules
+          // must name :scope explicitly or tokens and html-prefixed overrides never match.
+          root.walkRules(rule => {
+            let parent: Root | Root['parent'] | typeof rule.parent = rule.parent
+            while (parent && parent !== root) {
+              if (parent.type === 'atrule' && 'name' in parent && parent.name === 'scope') return
+              parent = parent.parent
+            }
+            rule.selectors = rule.selectors.map(selector => selector
+              .replace(/:root\b/g, ':scope')
+              .replace(/^html(?!:scope)(?=[.#:[\s]|$)/, 'html:scope'))
+          })
+          const nodes = [...root.nodes]
+          root.removeAll()
+          let unscoped: Root['nodes'] = []
+          const appendTelemetry = () => {
+            if (!unscoped.length) return
+            root.append({ name: 'scope', params: '(html:not([data-skin="minimal"]))', nodes: unscoped })
+            unscoped = []
+          }
+          for (const node of nodes) {
+            if (node.type === 'atrule' && node.name === 'scope') {
+              appendTelemetry()
+              root.append(node)
+            } else unscoped.push(node)
+          }
+          appendTelemetry()
+        },
+      }],
+    },
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,

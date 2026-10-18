@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxGrid } from '@talex-touch/tuffex/grid'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { useRoute, useRouter } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -21,6 +24,7 @@ import { fmtDuration, fmtInt, fmtPct, NONE } from '../../ui/fmt'
 import { errorMessage } from '../../lib/errors'
 import { notify } from '../../ui/feedback/toast'
 import { confirmSheet } from '../../ui/feedback/confirmSheet'
+import { useSkinPref } from '../../lib/skin'
 import { api } from '../../api'
 import type { ChannelItem, ChannelModelChanges, ChannelModelPreview, ChannelsData, EgressData } from '../../types'
 import { proxyApi } from '../../api/proxy'
@@ -32,7 +36,7 @@ import CreateChannelSheet from '../channels/CreateChannelSheet.vue'
 import { classifyChannel, hostOf, modelCounts } from '../channels/channelModel'
 import { fetchChannelHealth, type HealthResult } from '../channels/channelsApi'
 import {
-  accountShow, accountsFigure, channelInStatus, channelsFigure, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems, successFigure,
+  accountShow, accountsFigure, channelInStatus, channelsFigure, matchesQuery, pageLive, parseStatus, statusCounts, statusForSection, statusItems as buildStatusItems,
   type AccountCountsLike, type ChannelBucket, type LiveSource, type ProviderStatus,
 } from './providersModel'
 /**
@@ -49,6 +53,7 @@ const PAGE_INTERVAL = 60_000
 const route = useRoute()
 const router = useRouter()
 const { width } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 const now = useNow()
 
 /* ── 顶层视图切换：仅保留「全部供应商」与「全局共享模型」，去除与全部冲突的顶层渠道标签 ── */
@@ -578,32 +583,19 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 </script>
 
 <template>
-  <div class="ui-page pv-page">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page pv-page" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <!-- 1. 工作区头部：完全复用用量页面 usage-ws__head 规范，滑动指示器，仅设「全部供应商」与「★ 全局共享模型」两项 -->
     <header class="usage-ws__head">
       <h1 class="sr-only">供应商</h1>
       <nav ref="host" class="usage-ws__tabs" aria-label="供应商工作区视图">
-        <button
-          type="button"
-          class="usage-ws__tab"
-          :class="{ 'is-active': currentTab === 'providers' }"
-          :aria-current="currentTab === 'providers' ? 'page' : undefined"
-          @click="setTab('providers')"
-        >
-          全部供应商
-          <span class="usage-ws__m">{{ totalProvidersCount }}</span>
-        </button>
+        <TxButton variant="ghost" class="usage-ws__tab" :class="{ 'is-active': currentTab === 'providers' }" :aria-current="currentTab === 'providers' ? 'page' : undefined" @click="setTab('providers')">
+          全部供应商 <span class="usage-ws__m">{{ totalProvidersCount }}</span>
+        </TxButton>
 
-        <button
-          type="button"
-          class="usage-ws__tab"
-          :class="{ 'is-active': currentTab === 'shared' }"
-          :aria-current="currentTab === 'shared' ? 'page' : undefined"
-          @click="setTab('shared')"
-        >
-          全局共享模型
-          <span class="usage-ws__m">{{ sharedModelsList.length }}</span>
-        </button>
+        <TxButton variant="ghost" class="usage-ws__tab" :class="{ 'is-active': currentTab === 'shared' }" :aria-current="currentTab === 'shared' ? 'page' : undefined" @click="setTab('shared')">
+          全局共享模型 <span class="usage-ws__m">{{ sharedModelsList.length }}</span>
+        </TxButton>
+
 
         <button
           type="button"
@@ -623,9 +615,11 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       </div>
     </header>
 
+
+
     <!-- 2. 指标：每张写明口径与窗口，数据来自本页已读的接口 -->
     <section v-show="currentTab !== 'plugins'" class="pv-metrics" aria-label="供应商概览指标">
-      <div class="pv-metrics__grid">
+      <component :is="skin === 'minimal' ? TxGrid : 'div'" class="pv-metrics__grid" :cols="skin === 'minimal' ? { xs: 1, md: 3 } : undefined" :gap="skin === 'minimal' ? 16 : undefined">
         <Readout
           v-for="card in stats"
           :key="card.key"
@@ -638,7 +632,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
             <span class="pv-sub-info">{{ card.note }}</span>
           </template>
         </Readout>
-      </div>
+      </component>
     </section>
 
     <PluginsPanel v-if="currentTab === 'plugins'" />
@@ -702,10 +696,10 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
     </template>
 
     <!-- 4. 全部供应商视图：分「API 渠道」和「订阅账号」两栏展现；切到共享模型时只隐藏，账号池照常上报计数与刷新时间 -->
-    <div v-show="currentTab === 'providers'" class="pv-body">
+    <component v-show="currentTab === 'providers'" :is="skin === 'minimal' ? TxStack : 'div'" class="pv-body" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <!-- 整页一个搜索、一个状态筛选，同时管两栏；右侧切换看哪一栏 -->
-      <div class="ui-toolbar pv-toolbar">
-        <div class="pv-searchrow">
+      <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-toolbar pv-toolbar" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
+        <component :is="skin === 'minimal' ? TxStack : 'div'" class="pv-searchrow" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
           <SearchField
             v-model="searchQuery"
             query="q"
@@ -719,14 +713,14 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
             label="按状态筛选"
             @update:model-value="(v) => setStatus(v as ProviderStatus)"
           />
-        </div>
+        </component>
         <Segmented
           :model-value="sectionFilter"
           :items="sectionItems"
           label="分类"
           @update:model-value="(v: string) => setSection(v as any)"
         />
-      </div>
+      </component>
 
       <!-- 栏目 1：API 渠道清单 -->
       <section v-if="sectionFilter === 'all' || sectionFilter === 'channels'" class="pv-section">
@@ -760,14 +754,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
             <template #cell-name="{ row }">
               <span class="cx-2l">
                 <span class="pv-name-line">
-                  <button
-                    type="button"
-                    class="ui-link cx-name mono ellip"
-                    :title="`配置 ${row.name}`"
-                    @click.stop="openChannelConfig(row)"
-                  >
-                    {{ row.name }}
-                  </button>
+                  <TxButton variant="ghost" size="sm" class="cx-name mono ellip" :title="`配置 ${row.name}`" @click.stop="openChannelConfig(row)">{{ row.name }}</TxButton>
                   <span v-if="row.channelRef.protocol === 'responses'" class="pv-proto" title="OpenAI Responses 原生中继（/v1/responses 直发上游）">Responses</span>
                 </span>
                 <span class="cx-l2 mono ellip" :title="row.url">{{ row.url }}</span>
@@ -780,14 +767,10 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
 
             <template #cell-models="{ row }">
               <span class="cx-2l cx-r num">
-                <button
-                  type="button"
-                  class="ui-link cx-link-num"
-                  @click.stop="openChannelConfig(row)"
-                >
+                <TxButton variant="ghost" size="sm" class="cx-link-num" @click.stop="openChannelConfig(row)">
                   <b class="cx-strong">{{ fmtInt(row.modelsOn) }}</b>
                   <span class="dim"> / {{ fmtInt(row.modelsTotal) }}</span>
-                </button>
+                </TxButton>
                 <span class="cx-l2">已启用</span>
               </span>
             </template>
@@ -876,7 +859,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
           @clear-filters="clearFilters"
         />
       </section>
-    </div>
+    </component>
 
     <!-- 弹窗 1: 渠道配置抽屉（模型开关、渠道开关、删除渠道） -->
     <ChannelSheet
@@ -922,7 +905,7 @@ useIndicator(host, ind, '.usage-ws__tab.is-active', [currentTab, totalProvidersC
       @apply="addSharedModels"
     />
 
-  </div>
+  </component>
 </template>
 
 <style>

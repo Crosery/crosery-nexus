@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { fmtCompact, fmtPct } from '../fmt'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import type { RankRow } from '../types'
 
 /**
@@ -37,49 +39,131 @@ const items = computed(() => {
     hot: typeof r.err === 'number' && r.err >= props.errThreshold,
   }))
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => items.value.map((item) => ({ name: item.row.name, value: props.format(item.row.value), share: item.share === null ? '—' : fmtPct(item.share), error: item.row.err == null ? '—' : fmtPct(item.row.err) })))
 </script>
 
 <template>
-  <ol v-if="items.length" class="ui-rank" :class="{ 'has-err': items.some((it) => it.hot) }">
+  <ol v-if="items.length" class="ui-rank" :class="{ 'has-err': items.some((it) => it.hot), 'is-minimal': minimal }">
     <li v-for="it in items" :key="it.row.key ?? it.row.name" data-row :style="{ '--r': it.i }">
       <span class="ui-rank__n">
         <RouterLink v-if="it.row.to" :to="it.row.to" class="ui-link ellip">{{ it.row.name }}</RouterLink>
-        <button v-else-if="selectable && it.row.selectable !== false" type="button" class="ui-rank__btn ellip" @click="emit('select', it.row, it.i)">{{ it.row.name }}</button>
+        <button v-else-if="selectable && it.row.selectable !== false" type="button" class="ui-rank__btn ellip" :title="`按 ${it.row.name} 筛选`" @click="emit('select', it.row, it.i)">{{ it.row.name }}</button>
         <span v-else class="ellip">{{ it.row.name }}</span>
         <span v-if="it.row.sub" class="ui-rank__sub ellip">{{ it.row.sub }}</span>
       </span>
       <span class="ui-rank__bar" aria-hidden="true"><b :style="{ transform: `scaleX(${it.bar})` }" /></span>
       <span class="ui-rank__v num">{{ format(it.row.value) }}</span>
       <span v-if="showShare" class="ui-rank__s num">{{ it.share === null ? '—' : fmtPct(it.share) }}</span>
-      <span v-if="it.hot" class="ui-rank__err num">err {{ fmtPct(it.row.err) }}</span>
+      <template v-if="items.some((it) => it.hot)">
+        <span v-if="it.hot" class="ui-rank__err num">err {{ fmtPct(it.row.err) }}</span>
+        <span v-else class="ui-rank__err-empty" aria-hidden="true" />
+      </template>
     </li>
   </ol>
   <p v-else class="ui-rank__empty">{{ emptyText }}</p>
 </template>
 
-<style>
-.ui-rank { margin: 0; padding: 0; list-style: none; }
-.ui-rank li {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(40px, 22%) auto auto auto; align-items: center; gap: 0 10px;
-  min-height: 34px; border-bottom: 1px solid var(--rule); font-size: var(--fs-sm);
+<style scoped>
+.ui-rank {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
-.ui-rank.has-err li { grid-template-columns: minmax(0, 1fr) minmax(40px, 22%) auto auto 10ch; }
-.ui-rank li:has(.ui-rank__sub) { padding: 5px 0; }
-.ui-rank__n { display: grid; min-width: 0; }
-.ui-rank__btn { all: unset; cursor: pointer; color: var(--ink); }
-.ui-rank__btn:hover { text-decoration: underline; text-underline-offset: 3px; }
-.ui-rank__sub { font-size: var(--fs-xs); color: var(--ink-3); }
-.ui-rank__bar { height: 3px; background: var(--paper-3); overflow: hidden; }
-.ui-rank__bar b { display: block; height: 100%; background: var(--ink-2); transform-origin: left; transition: transform var(--dur-4) var(--ease-settle); }
-.is-entering .ui-rank__bar b { animation: ui-rank-grow var(--dur-4) var(--ease-settle) backwards; animation-delay: calc(var(--pd, 40ms) + 120ms + min(var(--r, 0), 14) * var(--stagger)); }
-@keyframes ui-rank-grow { from { transform: scaleX(0); } }
-.ui-rank__v { text-align: right; color: var(--ink); }
-.ui-rank__s { text-align: right; min-width: 5ch; color: var(--ink-3); font-size: var(--fs-xs); }
-.ui-rank__err { text-align: right; color: var(--signal-ink); font-size: var(--fs-xs); }
-.ui-rank__empty { margin: 0; padding: 8px 0; font-size: var(--fs-sm); color: var(--ink-3); }
-@media (max-width: 599px) {
-  .ui-rank li { grid-template-columns: minmax(0, 1fr) auto auto auto; }
-  .ui-rank.has-err li { grid-template-columns: minmax(0, 1fr) auto auto 10ch; }
-  .ui-rank__bar { grid-column: 1 / -1; grid-row: 2; margin-bottom: 6px; }
+.ui-rank li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(50px, 1fr) 56px 42px;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+  font-size: 13px;
+}
+.ui-rank.has-err li {
+  grid-template-columns: minmax(0, 1.2fr) minmax(50px, 1fr) 56px 42px 64px;
+}
+.ui-rank__err-empty {
+  display: block;
+  width: 64px;
+}
+.ui-rank__n {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.ui-rank__btn {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  font: inherit;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.ui-rank__btn:hover {
+  color: var(--tx-color-primary, #409eff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ui-rank__sub {
+  font-size: 11px;
+  color: var(--tx-text-color-placeholder, #94a3b8);
+  margin-left: 6px;
+  flex: none;
+}
+.ui-rank__err {
+  text-align: right;
+  color: var(--tx-color-danger, #ef4444);
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ui-rank__bar {
+  height: 6px;
+  background: var(--tx-fill-color, rgba(255, 255, 255, 0.08));
+  border-radius: 99px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.ui-rank__bar b {
+  display: block;
+  height: 100%;
+  background: var(--tx-color-primary, #409eff);
+  border-radius: 99px;
+  transform-origin: left;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.ui-rank__v {
+  text-align: right;
+  font-weight: 600;
+  color: var(--tx-text-color-primary, #f1f5f9);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ui-rank__s {
+  text-align: right;
+  min-width: 4.5ch;
+  color: var(--tx-text-color-secondary, #94a3b8);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ui-rank__empty {
+  margin: 0;
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--tx-text-color-secondary, #94a3b8);
+  text-align: center;
 }
 </style>

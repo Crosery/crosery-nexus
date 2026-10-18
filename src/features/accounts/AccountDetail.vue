@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { TxInput } from '@talex-touch/tuffex/input'
 import { TxTag } from '@talex-touch/tuffex/tag'
@@ -9,10 +10,9 @@ import TickStrip from '../../ui/viz/TickStrip.vue'
 import ShareBar from '../../ui/viz/ShareBar.vue'
 import { fmtCompact, fmtInt } from '../../ui/fmt'
 import { maskName, useMask } from '../../lib/privacy'
+import { useSkinPref } from '../../lib/skin'
 import type { EgressData, ProxyPreset } from '../../types'
 import type { SegmentItem, ShareSegment } from '../../ui/types'
-import QuotaCell from './QuotaCell.vue'
-import EgressTag from './EgressTag.vue'
 import { fmtStamp, PROXY_CUSTOM, PROXY_UNKNOWN, proxyChoice, proxyKeepsDraft, proxyNeedsWrite, proxySentAfterWrite, type AccountView, type ShareWindow } from './model'
 import { cpaRef, egressBadge, egressOptions, serviceOf } from './egressModel'
 import { proxyRead, readProxy } from './proxyStore'
@@ -38,6 +38,7 @@ const props = withDefaults(
 )
 const emit = defineEmits<{ reset: []; proxy: [url: string]; weight: [weight: number]; remove: [] }>()
 const { on: masked } = useMask()
+const { pref: skin } = useSkinPref()
 
 /** 调度权重 = -CPA priority：越小越优先，默认 0 */
 const weight = computed(() => (props.row.priority ? -props.row.priority : 0))
@@ -113,7 +114,7 @@ function saveCustom() {
 </script>
 
 <template>
-  <div class="acc-x" :class="{ 'is-compact': compact }">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="acc-x" :class="{ 'is-compact': compact }" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <section class="acc-x__col" aria-label="全部窗口">
       <h4 class="acc-x__h">全部窗口</h4>
       <ul v-if="row.windows.length" class="acc-x__wins">
@@ -183,10 +184,11 @@ function saveCustom() {
         <TxInput v-model="draft" type="url" inputmode="url" autocomplete="off" spellcheck="false" :placeholder="current && choice === CUSTOM ? '新地址 · socks5://host:port' : 'socks5://host:port'" aria-label="自定义代理地址" @keydown.enter.prevent="saveCustom" />
         <TxButton variant="secondary" size="sm" :disabled="!draftOk || Boolean(busy)" @click="saveCustom">保存</TxButton>
       </span>
-      <span class="acc-x__file mono" :title="masked ? undefined : row.name"><span class="pii-t">{{ row.name }}</span><span class="pii-m">{{ maskName(row.name) }}</span></span>
+      <span class="acc-x__file mono" :title="masked ? undefined : row.name"><span class="pii-t" v-if="skin !== 'minimal' || !masked">{{ row.name }}</span><span class="pii-m" v-if="skin !== 'minimal' || masked">{{ maskName(row.name) }}</span></span>
+
       <TxButton v-if="!compact" class="acc-x__rm" variant="danger" size="sm" :disabled="Boolean(busy)" @click="emit('remove')">移除</TxButton>
     </footer>
-  </div>
+  </component>
 </template>
 
 <style>

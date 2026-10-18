@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { RouterLink, useRoute } from 'vue-router'
 import Plate from '../../../ui/data/Plate.vue'
 import Readout from '../../../ui/viz/Readout.vue'
@@ -10,6 +12,7 @@ import Segmented from '../../../ui/form/Segmented.vue'
 import { useLive } from '../../../ui/composables/useLive'
 import { fmtCompact, fmtInt, fmtPct, fmtUsd, NONE } from '../../../ui/fmt'
 import { useQueryState } from '../../../lib/listState'
+import { useSkinPref } from '../../../lib/skin'
 import type { RankRow, ReadoutDelta } from '../../../ui/types'
 import { heatSummary, type HeatMetric, type HeatYear } from '../../../ui/viz/heatModel'
 import { sharedUsageQuery, USAGE_FILTER_DEFAULTS, usageFilterFrom, windowText as windowTextOf } from '../filters'
@@ -25,6 +28,7 @@ import type { UsageDay, UsageOverviewData, UsageRank } from '../shared/types'
  * on the tab (and on 请求 / the dashboard for the same filter) adds up.
  */
 const route = useRoute()
+const { pref: skin } = useSkinPref()
 const scope = useQueryState({ ...USAGE_FILTER_DEFAULTS, heat: 'tokens' })
 const filter = computed(() => usageFilterFrom(scope.state))
 const carried = computed(() => sharedUsageQuery(route.query))
@@ -162,6 +166,11 @@ const clientRows = computed<RankRow[]>(() => (data.value?.clients ?? []).map((r)
 // the plate meta carries the ≈; rows stay bare numbers
 const costFormat = (value: number | null) => (value === null ? NONE : fmtUsd(value, { digits: value >= 100 ? 0 : 2 }))
 
+const accessTab = ref<'provider' | 'client'>('provider')
+const ACCESS_TABS = [
+  { value: 'provider', label: '渠道' },
+  { value: 'client', label: '客户端' },
+]
 function pick(field: 'model' | 'keyId' | 'provider' | 'client', row: RankRow) {
   const id = String(row.key ?? '')
   if (!id || UNSELECTABLE.has(id)) return
@@ -190,7 +199,7 @@ const emptyText = computed(() => `${windowText.value}没有请求`)
 </script>
 
 <template>
-  <div class="ui-grid uov" :class="{ 'is-busy': busy }" :aria-busy="busy || undefined">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-grid uov" :class="{ 'is-busy': busy }" :direction="skin === 'minimal' ? 'vertical' : undefined" :aria-busy="busy || undefined">
     <UsageState
       v-if="state === 'error' || state === 'forbidden' || state === 'empty'"
       class="c-12"
@@ -208,7 +217,7 @@ const emptyText = computed(() => `${windowText.value}没有请求`)
           <span>{{ windowText }}</span>
           <span v-if="data" class="num">{{ windowSpan(data.window) }}</span>
           <span v-if="data && !previous">前 {{ data.window.days === 1 ? '24 小时' : `${data.window.days} 日` }}无记录 · 不比较</span>
-          <span v-if="state === 'stale'" class="uov-ledger__stale">◇ 陈旧 <button type="button" class="ui-link" @click="live.refresh">重试</button></span>
+          <span v-if="state === 'stale'" class="uov-ledger__stale">◇ 陈旧 <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="live.refresh">重试</TxButton><button v-else type="button" class="ui-link" @click="live.refresh">重试</button></span>
         </p>
         <div class="uov-ledger__grid">
           <template v-if="ledger">
@@ -245,7 +254,7 @@ const emptyText = computed(() => `${windowText.value}没有请求`)
         <template #meta><span>{{ windowText }}</span></template>
         <div v-if="data" class="uov-mix">
           <div class="uov-mix__bar" role="img" :aria-label="mixRows.map((row) => `${row.label} ${row.share === null ? NONE : fmtPct(row.share)}`).join('，')">
-            <i v-for="row in mixRows.filter((r) => r.value > 0)" :key="row.key" :class="row.tone" :style="{ flexGrow: row.value }" />
+            <i v-for="row in mixRows.filter((r) => r.value > 0)" :key="row.key" :class="row.tone" :style="skin === 'minimal' ? undefined : { flexGrow: row.value }" />
           </div>
           <dl class="uov-mix__rows">
             <template v-for="row in mixRows" :key="row.key">
@@ -277,12 +286,18 @@ const emptyText = computed(() => `${windowText.value}没有请求`)
         <RankList :rows="keyRows" :format="keysByCost ? costFormat : fmtInt" selectable empty-text="— 没有请求" @select="(row) => pick('keyId', row)" />
       </Plate>
 
-      <Plate title="按渠道" class="c-4 md-c-6" :state="plateState" :stale-at="live.lastAt.value" @retry="live.refresh">
+      <Plate v-if="skin === 'minimal'" :title="accessTab === 'provider' ? '按渠道' : '按客户端'" class="c-4 md-c-6" :state="plateState" :stale-at="live.lastAt.value" @retry="live.refresh">
+        <template #meta><Segmented v-model="accessTab" :items="ACCESS_TABS" label="切换渠道或客户端" /></template>
+        <RankList v-if="accessTab === 'provider'" :rows="channelRows" :format="fmtInt" selectable empty-text="— 没有请求" @select="(row) => pick('provider', row)" />
+        <RankList v-else :rows="clientRows" :format="fmtInt" selectable empty-text="— 没有请求" @select="(row) => pick('client', row)" />
+      </Plate>
+
+      <Plate v-else title="按渠道" class="c-4 md-c-6" :state="plateState" :stale-at="live.lastAt.value" @retry="live.refresh">
         <template #meta><span>请求 · 份额</span></template>
         <RankList :rows="channelRows" :format="fmtInt" selectable empty-text="— 没有请求" @select="(row) => pick('provider', row)" />
       </Plate>
 
-      <Plate title="按客户端" class="c-4 md-c-6 uov-half" :state="plateState" :stale-at="live.lastAt.value" @retry="live.refresh">
+      <Plate v-if="skin !== 'minimal'" title="按客户端" class="c-4 md-c-6 uov-half" :state="plateState" :stale-at="live.lastAt.value" @retry="live.refresh">
         <template #meta><span>请求 · 份额</span></template>
         <RankList :rows="clientRows" :format="fmtInt" selectable empty-text="— 没有请求" @select="(row) => pick('client', row)" />
       </Plate>
@@ -295,7 +310,7 @@ const emptyText = computed(() => `${windowText.value}没有请求`)
               <span class="uov-fail__code num">{{ f.codes || '—' }}</span>
               <span class="ellip">{{ f.label }}</span>
             </RouterLink>
-            <span class="uov-fail__bar" aria-hidden="true"><b :style="{ transform: `scaleX(${f.bar})` }" /></span>
+            <span class="uov-fail__bar" aria-hidden="true"><b :style="skin === 'minimal' ? undefined : { transform: `scaleX(${f.bar})` }" /></span>
             <span class="num">{{ fmtInt(f.count) }}</span>
             <span class="uov-fail__o">{{ f.owner }}</span>
           </li>
@@ -303,7 +318,7 @@ const emptyText = computed(() => `${windowText.value}没有请求`)
         <p v-else class="uov-none">— {{ windowText }}没有失败</p>
       </Plate>
     </template>
-  </div>
+  </component>
 </template>
 
 <style>

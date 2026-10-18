@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import { fmtInt } from '../fmt'
 import StatusMark from '../data/StatusMark.vue'
 import TickMeter from './TickMeter.vue'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import type { BudgetSource } from '../types'
 
 /**
@@ -32,10 +34,27 @@ const rows = computed(() => {
   })
   return list.map((x, i) => ({ ...x, attn: i === top && best >= props.attnFrom }))
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => rows.value.map(({ s, ratio }) => ({ name: s.name, used: props.format(s.used), limit: s.limit == null ? '不限' : props.format(s.limit), interval: s.minInterval ?? '—', status: s.stateLabel ?? s.state ?? '—', ratio: ratio == null ? '—' : `${Math.round(ratio * 100)}%` })))
 </script>
 
 <template>
-  <div v-if="rows.length" class="ui-budget" role="table" aria-label="请求预算">
+  <NativeVizTable
+    v-if="minimal"
+    :columns="[
+      { key: 'name', title: '来源', dataIndex: 'name' },
+      { key: 'used', title: '已用', dataIndex: 'used' },
+      { key: 'limit', title: '上限', dataIndex: 'limit' },
+      { key: 'ratio', title: '比例', dataIndex: 'ratio' },
+      { key: 'interval', title: '最小间隔', dataIndex: 'interval' },
+      { key: 'status', title: '状态', dataIndex: 'status' },
+    ]"
+    :data="nativeRows"
+    row-key="name"
+    aria-label="请求预算"
+  />
+  <div v-else-if="rows.length" class="ui-budget" role="table" aria-label="请求预算">
     <div class="ui-budget__head" role="row">
       <span role="columnheader">来源</span><span role="columnheader">用量</span><span role="columnheader" class="num">已用 / 上限</span>
       <span role="columnheader">最小间隔</span><span role="columnheader">状态</span>

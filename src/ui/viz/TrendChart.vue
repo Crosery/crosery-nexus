@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, useTemplateRef } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxEChart } from '@talex-touch/tuffex/charts'
 import { fmtCompact, fmtTime } from '../fmt'
 import { useElementWidth } from '../composables/useElementWidth'
 import { areaPath, linePath, niceAxis, points as plotPoints } from './model'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import type { TrendPoint } from '../types'
 import './viz.css'
 
@@ -87,10 +92,44 @@ function onKey(event: KeyboardEvent) {
 }
 
 const asTable = ref(false)
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => props.points.map((point) => ({ time: xLabel(point), value: format(point.v) })))
+const nativeOption = computed(() => ({
+  xAxis: { type: 'category' as const, data: props.points.map(xLabel) },
+  yAxis: props.zero ? { min: 0 } : {},
+  series: [{
+    type: 'line' as const,
+    data: props.points.map((point) => point.v),
+    connectNulls: false,
+    ...(props.area ? { areaStyle: {} } : {}),
+    ...(props.reference ? { markLine: { data: [{ yAxis: props.reference.value, name: props.reference.label }] } } : {}),
+  }],
+}))
+
 </script>
 
 <template>
-  <figure class="ui-trend" :class="{ hot }">
+  <TxFlex v-if="minimal" direction="column" :gap="8">
+    <TxEChart
+      v-if="!asTable"
+      :option="nativeOption"
+      :height="h"
+      :aria-label="label"
+    />
+    <NativeVizTable
+      v-else
+      :columns="[
+        { key: 'time', title: '时间', dataIndex: 'time' },
+        { key: 'value', title: '值', dataIndex: 'value' },
+      ]"
+      :data="nativeRows"
+      row-key="time"
+      :aria-label="label"
+    />
+    <TxButton size="sm" variant="ghost" @click="asTable = !asTable">{{ asTable ? '看图' : '以表格查看' }}</TxButton>
+  </TxFlex>
+  <figure v-else class="ui-trend" :class="{ hot }">
     <figcaption class="ui-trend__head">
       <span class="ui-trend__read" aria-live="polite">
         <template v-if="cursorPoint">
@@ -140,8 +179,8 @@ const asTable = ref(false)
       </tbody>
     </table>
   </figure>
-</template>
 
+</template>
 <style>
 .ui-trend { margin: 0; min-width: 0; }
 .ui-trend__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 20px; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }

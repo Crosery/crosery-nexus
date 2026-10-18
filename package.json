@@ -44,10 +44,11 @@
   },
   "dependencies": {
     "@iconify-json/carbon": "^1.2.28",
-    "@talex-touch/tuffex": "^0.6.2",
+    "@talex-touch/tuffex": "^0.7.0",
     "@vitejs/plugin-vue": "^6.0.9",
     "busboy": "^1.6.0",
     "cookie-parser": "^1.4.7",
+    "echarts": "^6.1.0",
     "express": "^5.2.1",
     "unocss": "^66.10.5",
     "vue": "^3.5.43",
@@ -64,6 +65,7 @@
     "adm-zip": "^0.6.1",
     "concurrently": "^10.0.4",
     "oxlint": "^1.71.0",
+    "postcss": "^8.5.28",
     "tsx": "^4.23.1",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"

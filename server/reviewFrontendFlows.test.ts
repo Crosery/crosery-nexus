@@ -564,7 +564,8 @@ test('FF-19 stale-channel cleanup is always reachable (palette + plate action), 
   assert.doesNotMatch(page, /if \(!stale\.length\) return/)
   assert.doesNotMatch(page, /if \(counts\.value\.stale\) cmds\.push/)
   assert.match(page, /id: 'act:channel:prune',[\s\S]{0,200}run: \(\) => void pruneStale\(\)/)
-  assert.match(page, /<button type="button" class="ui-link" :disabled="pruning"[^>]*@click="pruneStale">清理残留<\/button>/)
+  const actions = [...page.matchAll(/<(?:button|TxButton)\b[^>]*:disabled="pruning"[^>]*@click="pruneStale">清理残留<\/(?:button|TxButton)>/g)]
+  assert.equal(actions.length, 2, '两种皮肤均提供受禁用状态保护的清理入口')
   assert.match(page, /async function pruneStale\(\) \{[\s\S]{0,200}const ok = await confirmSheet\(/)
 })
 

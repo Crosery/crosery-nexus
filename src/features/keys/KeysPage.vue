@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { TxButton } from '@talex-touch/tuffex/button'
+import { TxSparkChart } from '@talex-touch/tuffex/spark-chart'
+import type { SparkPoint, SparkSeries } from '@talex-touch/tuffex/spark-chart'
+import { TxStatusBadge } from '@talex-touch/tuffex/status-badge'
 import PageHead from '../../ui/shell/PageHead.vue'
 import LiveMark from '../../ui/shell/LiveMark.vue'
 import Plate from '../../ui/data/Plate.vue'
@@ -26,6 +30,7 @@ import type { RowColumn, SegmentItem } from '../../ui/types'
 import { setNavCount } from '../../shell/badges'
 import { usePaletteCommands } from '../../shell/palette'
 import { paginate, useQueryState } from '../../lib/listState'
+import { useSkinPref } from '../../lib/skin'
 import { errorMessage } from '../../lib/errors'
 import type { ApiKeyItem } from '../../types'
 import { fetchKeysSnapshot, keysApi, type KeysSnapshot } from './keysApi'
@@ -57,7 +62,6 @@ import KeyRowMenu from './KeyRowMenu.vue'
 import KeyEditorSheet from './KeyEditorSheet.vue'
 import KeyQuotaSheet from './KeyQuotaSheet.vue'
 import KeyRevealSheet from './KeyRevealSheet.vue'
-
 /**
  * /keys (DESIGN §6.3): which Keys are in use, which are near their limit, which are erroring, and what to do
  * about each. Dense 40px rows (name + masked tail on one line), today / this week spend each with its quota
@@ -69,6 +73,7 @@ import KeyRevealSheet from './KeyRevealSheet.vue'
 const route = useRoute()
 const router = useRouter()
 const { isMobile, isWide, width } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 const PAGE_SIZE = 50
 
 /* one URL state for the whole page (avoids two debounced writers racing on the same query) */
@@ -190,24 +195,25 @@ const KEY_MIN = 248
  */
 const layout = computed(() => {
   const pageX = width.value >= 1180 ? 32 : 24
-  const avail = Math.min(width.value - 2 * pageX, 1680) - 28 - 40 /* plate padding + expand toggle */
+  const sidebar = skin.value === 'minimal' && width.value >= 640 ? (width.value >= 960 ? 232 : 200) : 0
+  const avail = Math.min(width.value - sidebar - 2 * pageX, 1680) - 28 - 40 /* plate padding + expand toggle */
   const flags = { lim: true, total: anyLimit.value.total, h24: true, last: true, quotaBtn: true }
   const widthOf = () => {
     const meter = flags.lim ? 228 : 180
-    return 84 + (anyLimit.value.daily ? meter : 92) + (anyLimit.value.weekly ? meter : 100)
+    return (skin.value === 'minimal' ? 104 : 84) + (anyLimit.value.daily ? meter : 92) + (anyLimit.value.weekly ? meter : 100)
       + (flags.total ? 132 : 0) + (flags.h24 ? 88 : 0) + 112 + (flags.last ? 76 : 0) + (flags.quotaBtn ? 112 : 44)
   }
   for (const drop of ['lim', 'total', 'quotaBtn', 'h24', 'last'] as const) {
     if (avail - widthOf() >= KEY_MIN) break
     flags[drop] = false
   }
-  return { ...flags, meter: flags.lim ? 228 : 180 }
+  return { ...flags, meter: flags.lim ? 228 : 180, keyWidth: skin.value === 'minimal' ? Math.max(KEY_MIN, avail - widthOf()) : undefined }
 })
 const columns = computed<RowColumn<ApiKeyItem>[]>(() => {
   const l = layout.value
   const list: RowColumn<ApiKeyItem>[] = [
-    { key: 'status', title: '状态', width: 84 },
-    { key: 'key', title: 'Key' },
+    { key: 'status', title: '状态', width: skin.value === 'minimal' ? 104 : 84 },
+    { key: 'key', title: 'Key', width: l.keyWidth },
     { key: 'today', title: '今日', width: anyLimit.value.daily ? l.meter : 92 },
     { key: 'week', title: '本周', width: anyLimit.value.weekly ? l.meter : 100 },
   ]
@@ -414,6 +420,17 @@ const meterAria = (label: string, row: ApiKeyItem) => `${row.name} ${label}`
 const failing = (h: { requests: number[]; errors: number[] }) => failingBuckets(h.requests, h.errors)
 /** 24h bars only when there was traffic: an all-zero strip is a bare baseline that says nothing */
 const h24Busy = (row: ApiKeyItem) => (activityOf(row.id)?.h24.requests ?? []).some((n) => n > 0)
+/** Native CMS-style row sparks, recalculated only when the activity snapshot changes. */
+const h24Sparks = computed(() => new Map([...activityMap.value].map(([id, activity]) => {
+  const points = (values: number[]): SparkPoint[] => values.map((value, time) => ({ time, value }))
+  const series: SparkSeries[] = [{ id: 'requests', label: '请求', data: points(activity.h24.requests) }]
+  if (activity.h24.errors.some(value => value > 0)) {
+    series.push({ id: 'errors', label: '错误', data: points(activity.h24.errors), color: 'var(--tx-color-danger)' })
+  }
+  return [id, series] as const
+})))
+const noSpark: SparkSeries[] = []
+const h24Spark = (row: ApiKeyItem) => h24Sparks.value.get(row.id) ?? noSpark
 
 /** phone card line 3: 本周 · 累计 · 7 天 · 最近 — segments never split, a wrap only falls after a `·` */
 function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
@@ -434,9 +451,19 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
 </script>
 
 <template>
-  <div class="ui-page kx">
-    <div class="kx-top">
-    <PageHead title="Key">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page kx" :direction="skin === 'minimal' ? 'vertical' : undefined" :gap="skin === 'minimal' ? 20 : undefined">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="kx-top" :direction="skin === 'minimal' ? 'vertical' : undefined" :gap="skin === 'minimal' ? 20 : undefined">
+    <header v-if="skin === 'minimal'" class="kx-workbench-head">
+      <div>
+        <h1>Key</h1>
+        <p>管理访问范围、额度与调用记录</p>
+      </div>
+      <div class="kx-workbench-head__actions">
+        <LiveMark :state="live.state.value" :last-at="live.lastAt.value" :interval-ms="30_000" @retry="live.refresh" />
+        <TxButton variant="primary" @click="openCreate"><Icon name="plus" />新建 Key</TxButton>
+      </div>
+    </header>
+    <PageHead v-else title="Key">
       <template #live>
         <LiveMark :state="live.state.value" :last-at="live.lastAt.value" :interval-ms="30_000" @retry="live.refresh" />
       </template>
@@ -445,12 +472,13 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
       </template>
     </PageHead>
 
-    <div class="kx-bar">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="kx-bar" :direction="skin === 'minimal' ? 'horizontal' : undefined" :wrap="skin === 'minimal'">
       <SearchField v-model="query" class="kx-bar__search" placeholder="名称 / 尾号 / 渠道 / 备注" label="搜索 Key" />
       <Segmented v-model="filter" class="kx-bar__seg" :items="segItems" label="按状态筛选" />
       <FilterField v-model="sortModel" class="kx-bar__sort" label="排序" :options="sortOptions" :all-label="SORT_LABEL.pressure" :searchable="false" />
-    </div>
-    </div>
+    </component>
+
+    </component>
 
     <Plate
       :title="plateTitle"
@@ -464,7 +492,7 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
     >
       <template #meta>
         <span class="kx-meta">
-          <span v-if="activityMeta" class="kx-meta__warn"><span aria-hidden="true">◇</span> {{ activityMeta }} <button type="button" class="ui-link" @click="live.refresh">重试</button></span>
+          <span v-if="activityMeta" class="kx-meta__warn"><span aria-hidden="true">◇</span> {{ activityMeta }} <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="live.refresh">重试</TxButton><button v-else type="button" class="ui-link" @click="live.refresh">重试</button></span>
           <Tip v-if="live.data.value?.boot.degraded" :content="live.data.value?.boot.degradedReason" :disabled="!live.data.value?.boot.degradedReason">
             <span class="kx-meta__warn" tabindex="0"><span aria-hidden="true">◇</span> 渠道沿用上次结果</span>
           </Tip>
@@ -478,6 +506,7 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
         :data="paged.rows"
         row-key="id"
         density="list"
+        :max-height="skin === 'minimal' ? 620 : undefined"
         expandable
         :row-tone="rowTone"
         :empty-text="emptyText"
@@ -487,8 +516,9 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
         @empty-action="onEmptyAction"
       >
         <template #cell-status="{ row }">
-          <!-- the default (启用) is a bare dot; only states that need attention spell out their word -->
-          <StatusMark :state="STATUS_VIEW[keyStatus(row)].mark" :label="STATUS_VIEW[keyStatus(row)].word" :bare="keyStatus(row) === 'run'" :live="isLive(row)" />
+          <!-- Telemetry keeps its bare normal-state dot; minimal uses the CMS status badge. -->
+          <TxStatusBadge v-if="skin === 'minimal'" size="sm" :text="STATUS_VIEW[keyStatus(row)].word || '启用'" :status="keyStatus(row) === 'blocked' ? 'danger' : keyStatus(row) === 'near' ? 'warning' : keyStatus(row) === 'off' ? 'muted' : 'success'" />
+          <StatusMark v-else :state="STATUS_VIEW[keyStatus(row)].mark" :label="STATUS_VIEW[keyStatus(row)].word" :bare="keyStatus(row) === 'run'" :live="isLive(row)" />
         </template>
 
         <template #cell-key="{ row }">
@@ -527,7 +557,7 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
 
         <template #cell-h24="{ row }">
           <MicroBars
-            v-if="h24Busy(row)"
+            v-if="skin !== 'minimal' && h24Busy(row)"
             class="kx-bars"
             :buckets="activityOf(row.id)!.h24.requests"
             :errors="failing(activityOf(row.id)!.h24)"
@@ -535,6 +565,16 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
             :h="16"
             :gap="1"
             :label="`${row.name} 近 24 小时每小时请求`"
+          />
+          <TxSparkChart
+            v-else-if="h24Busy(row)"
+            class="kx-spark"
+            :series="h24Spark(row)"
+            :padding="{ top: 3, bottom: 3, left: 0, right: 0 }"
+            :interactive="false"
+            :baseline="false"
+            :animation="false"
+            :aria-label="`${row.name} 近 24 小时每小时请求`"
           />
           <span v-else class="kx-dim">—</span>
         </template>
@@ -570,6 +610,7 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
               :enabled="row.enabled"
               :blocked="Boolean(row.blockedReason)"
               :has-daily="limited(row.quotaState?.daily) && (row.quotaState?.daily?.spentUsd ?? 0) > 0"
+              :show-quota="!layout.quotaBtn"
               @action="act(row, $event)"
             />
           </span>
@@ -624,7 +665,8 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
         </p>
         <div v-if="h24Busy(detailItem)" class="kx-sheet__h24">
           <span class="kx-card__k">24h</span>
-          <MicroBars :buckets="activityOf(detailItem.id)!.h24.requests" :errors="failing(activityOf(detailItem.id)!.h24)" :w="143" :h="20" :gap="1" :label="`${detailItem.name} 近 24 小时每小时请求`" />
+          <MicroBars v-if="skin !== 'minimal'" :buckets="activityOf(detailItem.id)!.h24.requests" :errors="failing(activityOf(detailItem.id)!.h24)" :w="143" :h="20" :gap="1" :label="`${detailItem.name} 近 24 小时每小时请求`" />
+          <TxSparkChart v-else class="kx-spark" :series="h24Spark(detailItem)" :padding="{ top: 3, bottom: 3, left: 0, right: 0 }" :baseline="false" :aria-label="`${detailItem.name} 近 24 小时每小时请求`" />
         </div>
         <KeyDetail :item="detailItem" :activity="activityOf(detailItem.id)" :activity-state="activityState" :groups="groups" compact />
       </template>
@@ -653,7 +695,7 @@ function cardFacts(row: ApiKeyItem): Array<{ text: string; sig?: boolean }> {
     />
     <KeyQuotaSheet v-model="quotaOpen" :item="quotaItem" @changed="live.refresh" />
     <KeyRevealSheet v-model="reveal.open" :name="reveal.name" :value="reveal.value" :mode="reveal.mode" :note="reveal.note" @done="onRevealDone" />
-  </div>
+  </component>
 </template>
 
 <style>
@@ -684,6 +726,42 @@ html:root .tx-button.kx-new { flex: none; }
 .kx-total.is-none, .kx-last.is-none, .kx-dim { color: var(--ink-3); font-size: var(--fs-xs); }
 .kx-last { font-size: var(--fs-xs); color: var(--ink-2); }
 .kx-bars { display: block; }
+@scope (html[data-skin="minimal"]) {
+  .kx-workbench-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .kx-workbench-head h1 { font-size: 22px; font-weight: 650; line-height: 1.3; }
+  .kx-workbench-head p { margin-top: 6px; color: var(--tx-text-color-secondary); font-size: 13px; }
+  .kx-workbench-head__actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .kx-bar { display: grid; grid-template-columns: minmax(240px, 1fr) auto auto; align-items: center; gap: 12px; }
+  .kx-bar__search { min-width: 0; width: 100%; }
+  .kx-bar__search .tx-search-input { width: 100%; }
+  .kx-bar__sort { min-width: 172px; }
+  .kx-id { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; }
+  .kx-id__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+  .kx-id__tail { color: var(--tx-text-color-secondary); font-size: 12px; }
+  .kx-id__scope { grid-column: 1 / -1; color: var(--tx-text-color-secondary); font-size: 12px; overflow-wrap: anywhere; }
+  .kx-win { display: flex; align-items: center; gap: 8px; }
+  .kx-win > .tx-flex { width: 64px; flex: 0 0 64px; }
+  .kx-win__lim, .kx-last, .kx-dim { color: var(--tx-text-color-secondary); font-size: 12px; }
+  .kx-d7 { display: inline-flex; align-items: center; gap: 6px; }
+  .kx-d7__err { color: var(--tx-text-color-secondary); font-size: 12px; }
+  .kx-d7__err.sig { color: var(--tx-color-danger); }
+  .kx-ops { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .kx-meta { display: inline-flex; align-items: center; gap: 12px; color: var(--tx-text-color-secondary); font-size: 12px; }
+  .kx-sheet__id, .kx-sheet__h24 { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .kx-sheet__h24 .kx-spark { width: 100%; height: 72px; }
+  .kx-sheet__acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  @media (max-width: 959px) {
+    .kx-bar { grid-template-columns: minmax(0, 1fr) auto; }
+    .kx-bar__search { grid-column: 1 / -1; }
+  }
+  @media (max-width: 639px) {
+    .kx-workbench-head { align-items: flex-start; flex-wrap: wrap; }
+    .kx-workbench-head__actions { justify-content: space-between; width: 100%; }
+    .kx-bar { grid-template-columns: minmax(0, 1fr); }
+    .kx-bar__sort { width: 100%; }
+  }
+  .kx-spark { display: block; width: 72px; height: 24px; }
+}
 .kx-d7 { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 5px; font-size: var(--fs-sm); color: var(--ink); }
 .kx-d7__sep { color: var(--ink-4); }
 .kx-d7__err { font-size: var(--fs-xs); color: var(--ink-3); }

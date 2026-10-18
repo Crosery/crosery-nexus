@@ -60,21 +60,21 @@ const diff = (a: string[], b: string[]) => {
   return a.filter((value) => !set.has(value))
 }
 
-test('admin 树：页面路由 = 顶栏 7 项 ∪ 用量页签，双向无差集', () => {
+test('admin 树：页面路由 = 顶栏 8 项 ∪ 用量页签，双向无差集', () => {
   const routePaths = adminRoutes.map((r) => r.path).sort()
   const navPaths = [...navTargets(navSource, 'ADMIN_NAV'), ...navTargets(navSource, 'USAGE_TABS')].map((n) => n.to)
   const unique = [...new Set(navPaths)].sort()
   assert.deepEqual(diff(routePaths, unique), [], '有 admin 页面没有导航入口（顶栏或用量页签）')
   assert.deepEqual(diff(unique, routePaths), [], '有导航项指向不存在的 admin 页面')
   assert.deepEqual(routePaths, [
-    '/dashboard', '/help', '/keys', '/models', '/providers', '/settings',
+    '/dashboard', '/help', '/keys', '/models', '/operations', '/providers', '/settings',
     '/usage', '/usage/cache', '/usage/performance', '/usage/requests',
   ])
 })
 
-test('顶栏 01–07 连续编号（1–7 跳转快捷键按顺序绑定），key 用户 01–04', () => {
+test('顶栏 01–08 连续编号（1–8 跳转快捷键按顺序绑定），key 用户 01–04', () => {
   const admin = navTargets(navSource, 'ADMIN_NAV')
-  assert.deepEqual(admin.map((n) => n.idx), ['01', '02', '03', '04', '05', '06', '07'])
+  assert.deepEqual(admin.map((n) => n.idx), ['01', '02', '03', '04', '05', '06', '07', '08'])
   const key = navTargets(navSource, 'KEY_NAV')
   assert.deepEqual(key.map((n) => n.idx), ['01', '02', '03', '04'])
   // 移动端底栏与「更多」只引用顶栏里存在的 id

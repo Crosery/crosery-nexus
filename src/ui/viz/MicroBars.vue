@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * Micro-bars (DESIGN.md §5.2 viz/MicroBars): one bar per bucket (48 × 30 min by default), ink-3 bars,
@@ -30,11 +31,14 @@ const bars = computed(() => {
     return { x: i * (bw + props.gap), w: bw, y: props.h - h, h, bad: (props.errors?.[i] ?? 0) > 0, none: value <= 0 }
   })
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
   <svg
     class="ui-mbars"
+    :class="{ 'is-minimal': minimal }"
     :width="w"
     :height="h"
     :viewBox="`0 0 ${w} ${h}`"
@@ -54,4 +58,10 @@ const bars = computed(() => {
 .ui-mbars rect { fill: var(--ink-3); }
 .ui-mbars__base { stroke: var(--rule); stroke-width: 1; }
 .ui-mbars rect.is-bad { fill: var(--signal); }
+@scope (html[data-skin="minimal"]) {
+  .ui-mbars { display: inline-block; vertical-align: middle; }
+  .ui-mbars__base { stroke: var(--tx-border-color-lighter); stroke-width: 1; }
+  .ui-mbars rect { fill: var(--tx-color-primary); rx: 1.5px; opacity: 0.9; }
+  .ui-mbars rect.is-bad { fill: var(--tx-color-danger); opacity: 1; }
+}
 </style>

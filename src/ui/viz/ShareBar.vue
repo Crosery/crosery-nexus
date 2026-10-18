@@ -3,6 +3,8 @@ import { computed, useTemplateRef } from 'vue'
 import { useElementWidth } from '../composables/useElementWidth'
 import { fmtCompact, fmtPct } from '../fmt'
 import type { ShareSegment } from '../types'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import './viz.css'
 
 /**
@@ -61,10 +63,24 @@ const summary = computed(() => {
   const shares = rows.value.items.map((s) => `${s.label} ${fmtPct(s.share)}`).join('，')
   return props.label ? `${props.label}：${shares}` : shares
 })
+const nativeRows = computed(() => rows.value.items.map((item) => ({ label: item.label, value: props.format(item.value), share: fmtPct(item.share) })))
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 </script>
 
 <template>
-  <div ref="host" class="ui-share">
+  <NativeVizTable
+    v-if="minimal"
+    :columns="[
+      { key: 'label', title: '分类', dataIndex: 'label' },
+      { key: 'value', title: '值', dataIndex: 'value' },
+      { key: 'share', title: '占比', dataIndex: 'share' },
+    ]"
+    :data="nativeRows"
+    row-key="label"
+    :aria-label="label ?? '占比'"
+  />
+  <div v-else ref="host" class="ui-share">
     <div v-if="showDirect && rows.items.some((s) => s.direct)" class="ui-share__direct" aria-hidden="true">
       <span v-for="s in rows.items.filter((x) => x.direct)" :key="s.key" :style="{ left: `${s.left * 100}%`, maxWidth: `${s.share * 100}%` }">
         <template v-if="s.name">{{ s.name }} </template><b>{{ s.pct }}</b>
@@ -80,7 +96,7 @@ const summary = computed(() => {
       </li>
     </ul>
   </div>
-</template>
+  </template>
 
 <style>
 .ui-share { min-width: 0; }

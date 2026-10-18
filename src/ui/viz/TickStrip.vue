@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * Tick strip (DESIGN.md §5.2 viz/TickStrip): one 2px tick per slot (36 × 5 min = 3h by default).
@@ -26,10 +28,25 @@ const items = computed(() =>
     return { x: i * 4, on, bad }
   }),
 )
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => props.ticks.map((value, index) => ({ slot: index + 1, activity: value ?? 0, status: props.bad?.[index] ? '失败' : value ? '有流量' : '空闲' })))
 </script>
 
 <template>
+  <NativeVizTable
+    v-if="minimal"
+    :columns="[
+      { key: 'slot', title: '时段', dataIndex: 'slot' },
+      { key: 'activity', title: '流量', dataIndex: 'activity' },
+      { key: 'status', title: '状态', dataIndex: 'status' },
+    ]"
+    :data="nativeRows"
+    row-key="slot"
+    :aria-label="label ?? '时段流量'"
+  />
   <svg
+    v-else
     class="ui-ticks"
     :width="w"
     :height="h"

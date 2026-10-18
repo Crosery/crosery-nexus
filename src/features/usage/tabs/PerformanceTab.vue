@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { useRoute, useRouter } from 'vue-router'
 import Plate from '../../../ui/data/Plate.vue'
 import Readout from '../../../ui/viz/Readout.vue'
@@ -7,6 +8,7 @@ import RankList from '../../../ui/viz/RankList.vue'
 import Segmented from '../../../ui/form/Segmented.vue'
 import { useLive } from '../../../ui/composables/useLive'
 import { useBreakpoint } from '../../../ui/composables/useBreakpoint'
+import { useSkinPref } from '../../../lib/skin'
 import { fmtDuration, fmtInt, fmtPct, fmtTime, splitUnit } from '../../../ui/fmt'
 import type { DataState, RankRow } from '../../../ui/types'
 import TimeChart from './insight/TimeChart.vue'
@@ -27,6 +29,7 @@ import './insight/insight.css'
 const route = useRoute()
 const router = useRouter()
 const { isMobile, isCompact } = useBreakpoint()
+const { pref: skin } = useSkinPref()
 const scope = computed(() => scopeFromQuery(route.query))
 
 /** set once the server answered 404 (route not deployed yet): the timer stops instead of polling a 404 */
@@ -228,7 +231,8 @@ const now = computed(() => (report.value ? Date.parse(report.value.to) : Date.no
       <LatencyRows v-if="report" :rows="visibleModels" name-label="模型" />
       <template v-if="models.length > MODEL_LIMIT" #footer>
         <span>{{ showAllModels ? `全部 ${models.length} 个` : `其余 ${models.length - MODEL_LIMIT} 个模型` }}</span>
-        <button type="button" class="ui-link" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : '展开' }}</button>
+        <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : '展开' }}</TxButton>
+        <button v-else type="button" class="ui-link" :aria-expanded="showAllModels" @click="showAllModels = !showAllModels">{{ showAllModels ? '收起' : '展开' }}</button>
       </template>
     </Plate>
   </div>

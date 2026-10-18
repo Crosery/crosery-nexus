@@ -3,8 +3,9 @@ import { computed, ref, useTemplateRef } from 'vue'
 import { fmtDuration, fmtInt } from '../fmt'
 import { useElementWidth } from '../composables/useElementWidth'
 import { areaPath, extentOf, linePath, niceAxis } from './model'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 import './viz.css'
-
 /**
  * Gateway scope (DESIGN.md §5.2 viz/Scope, §6.2): requests/min trace with a tonal area on a light grid,
  * a rug of signal error ticks along the bottom, the now-line at the right edge, and — instead of a second
@@ -79,10 +80,13 @@ const readout = computed(() => {
     err: props.err ? fmtInt(props.err[i] ?? 0) : null,
   }
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => props.rpm.map((rpm, index) => ({ sample: index + 1, rpm: fmtInt(rpm), p95: props.p95 ? fmtDuration(props.p95[index] ?? null) : '—', errors: fmtInt(props.err?.[index] ?? 0) })))
 </script>
 
 <template>
-  <figure class="ui-scope" :class="{ 'is-stale': stale }">
+  <figure class="ui-scope" :class="{ 'is-stale': stale, 'is-minimal': minimal }">
     <figcaption class="ui-scope__head">
       <span class="ui-scope__key"><i class="k-rpm" />rpm <i class="k-err" />错误</span>
       <span class="ui-scope__read" aria-live="polite">
@@ -114,7 +118,7 @@ const readout = computed(() => {
     </div>
     <div class="ui-scope__x-axis" aria-hidden="true"><span>{{ fromLabel }}</span><span>现在</span></div>
   </figure>
-</template>
+  </template>
 
 <style>
 .ui-scope { margin: 0; min-width: 0; }

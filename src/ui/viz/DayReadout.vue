@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import { TxButton } from '@talex-touch/tuffex/button'
 import { fmtCompact, fmtInt } from '../fmt'
+import NativeVizTable from './NativeVizTable.vue'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * The heatmap's day / span card body, in the old relay's shape (simple first): the date, one big token figure,
@@ -42,10 +44,21 @@ const mixLine = computed(() => {
     { k: '缓存写', v: m.cacheWrite },
   ].filter((part) => part.v > 0)
 })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
+const nativeRows = computed(() => [{
+  metric: props.title,
+  tokens: fmtCompact(props.tokens),
+  requests: fmtInt(props.requests),
+  errors: fmtInt(props.errors),
+  cost: props.cost,
+  mix: mixLine.value.map((part) => `${part.k} ${fmtCompact(part.v)}`).join('，') || '—',
+  models: (props.top ?? []).map((model) => `${model.model}: ${fmtCompact(model.tokens)}`).join('，') || '—',
+}])
 </script>
 
 <template>
-  <div class="ui-day">
+  <div class="ui-day" :class="{ 'is-minimal': minimal }">
     <p v-if="!bare" class="ui-day__t">{{ title }}</p>
     <p v-if="empty" class="ui-day__none">{{ emptyText }}</p>
     <template v-else>

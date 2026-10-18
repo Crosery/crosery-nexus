@@ -10,6 +10,8 @@ import { useCountdown } from '../../ui/composables/useNow'
 import type { SessionRole } from '../../types'
 import type { LoginMode } from '../../ui/types'
 import { describeLoginError, lockError, lockSeconds, mainField, precheck, type FieldError, type LoginField, type LoginPayload } from './loginModel'
+import { TxContainer } from '@talex-touch/tuffex/container'
+import { useSkinPref } from '../../lib/skin'
 
 /**
  * /login (DESIGN §6.1, §3.4): the glyph globe and the plate. One endpoint, two credentials — admin
@@ -24,6 +26,7 @@ const router = useRouter()
 const route = useRoute()
 const page = useTemplateRef<HTMLElement>('page')
 const globe = useTemplateRef<InstanceType<typeof LoginGlobe>>('globe')
+const skin = useSkinPref()
 
 const mode = ref<LoginMode>()
 const busy = ref(false)
@@ -118,7 +121,7 @@ async function submit(payload: LoginPayload) {
       return
     }
     await nextTick()
-    requestScan()
+    if (skin.pref.value !== 'minimal') requestScan()
   } catch (err) {
     const sec = lockSeconds(err)
     if (sec !== null) {
@@ -141,7 +144,10 @@ onMounted(() => {
 
 <template>
   <main id="main" ref="page" class="login-page" aria-label="登录" @input="onEdit">
-    <LoginGlobe ref="globe">
+    <TxContainer v-if="skin.pref.value === 'minimal'">
+      <LoginPlate v-model:mode="mode" :busy="busy" :locked="locked" :error="plateError" :notice="notice" @submit="submit" />
+    </TxContainer>
+    <LoginGlobe v-else ref="globe">
       <LoginPlate v-model:mode="mode" :busy="busy" :locked="locked" :error="plateError" :notice="notice" @submit="submit" />
     </LoginGlobe>
   </main>

@@ -12,12 +12,16 @@ import { CALM_MENU } from '../../ui/form/anchor'
  */
 type Action = 'edit' | 'quota' | 'reveal' | 'reset-daily' | 'toggle' | 'delete'
 
-const props = defineProps<{
-  name: string
-  enabled: boolean
-  blocked: boolean
-  hasDaily: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    name: string
+    enabled: boolean
+    blocked: boolean
+    hasDaily: boolean
+    showQuota?: boolean
+  }>(),
+  { showQuota: false },
+)
 const emit = defineEmits<{ action: [action: Action] }>()
 
 const open = ref(false)
@@ -46,7 +50,7 @@ async function run(action: Action) {
       </TxIconButton>
     </template>
     <TxDropdownItem @select="run('edit')">编辑</TxDropdownItem>
-    <TxDropdownItem @select="run('quota')">调整额度</TxDropdownItem>
+    <TxDropdownItem v-if="showQuota" @select="run('quota')">调整额度</TxDropdownItem>
     <TxDropdownItem @select="run('reveal')">显示完整 Key</TxDropdownItem>
     <TxDropdownItem v-if="hasDaily" @select="run('reset-daily')">重置今日额度</TxDropdownItem>
     <div class="kx-menu__rule" role="separator" />

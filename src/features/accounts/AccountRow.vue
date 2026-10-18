@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
 import { TxButton, TxIconButton } from '@talex-touch/tuffex/button'
 import StatusMark from '../../ui/data/StatusMark.vue'
 import EmailIdentity from '../../ui/data/EmailIdentity.vue'
@@ -9,6 +10,7 @@ import Switch from '../../ui/form/Switch.vue'
 import Icon from '../../ui/Icon.vue'
 import { fmtInt } from '../../ui/fmt'
 import { maskEmail, useMask } from '../../lib/privacy'
+import { useSkinPref } from '../../lib/skin'
 import type { EgressData, ProxyPreset } from '../../types'
 import QuotaCell from './QuotaCell.vue'
 import AccountDetail from './AccountDetail.vue'
@@ -42,6 +44,7 @@ const props = withDefaults(
   { meter: 56, busy: undefined, washed: false, share: null, presets: () => [], egress: null },
 )
 const emit = defineEmits<{ expand: []; routing: [on: boolean]; reset: []; reauth: []; proxy: [url: string]; remove: []; cooled: [] }>()
+const { pref: skin } = useSkinPref()
 const { on: masked } = useMask()
 
 const tone = computed(() => {
@@ -87,7 +90,7 @@ function onRowClick(event: MouseEvent) {
 </script>
 
 <template>
-  <li class="acc-row" :class="[tone, { 'is-open': expanded, 'ui-washed': washed }]" data-row :style="{ '--r': Math.min(index, 14) }" @click="onRowClick">
+  <component :is="skin === 'minimal' ? TxStack : 'li'" class="acc-row" :class="[tone, { 'is-open': expanded, 'ui-washed': washed }]" data-row :style="skin === 'minimal' ? undefined : { '--r': Math.min(index, 14) }" @click="onRowClick">
     <span class="acc-c acc-c--st">
       <CountdownPie v-if="row.state === 'cool' && row.coolUntil" :until="row.coolUntil" :total="row.coolTotal" @done="emit('cooled')" />
       <StatusMark v-else :state="row.state" :label="row.stateLabel" :live="recentLive" />
@@ -144,5 +147,5 @@ function onRowClick(event: MouseEvent) {
     <div v-if="expanded" :id="detailId" class="acc-row__x">
       <AccountDetail :row="row" :share="share" :mode="mode" :now="now" :busy="busy" :presets="presets" :egress="egress" @reset="emit('reset')" @proxy="emit('proxy', $event)" @remove="emit('remove')" />
     </div>
-  </li>
+  </component>
 </template>

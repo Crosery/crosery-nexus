@@ -45,15 +45,16 @@ hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
 .tnum { font-variant-numeric: tabular-nums; }
 .unit { font-size: var(--fs-base); color: var(--ink-3); margin-left: 2px; letter-spacing: 0; font-weight: 400; }
 .hatched { background-image: var(--hatch); }
-.sr-only, .sr {
-  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+/* Accessibility and privacy are shared behavior, not a skin override. */
+@scope (:root) {
+  .sr-only, .sr {
+    position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .pii-m { display: none; }
+  :scope[data-mask="on"] .pii-t { display: none; }
+  :scope[data-mask="on"] .pii-m { display: inline; }
 }
-
-/* privacy mask: any element marked .pii swaps to its masked twin (see src/ui/data/Pii.vue) */
-.pii-m { display: none; }
-:root[data-mask="on"] .pii-t { display: none; }
-:root[data-mask="on"] .pii-m { display: inline; }
 
 /* focus: 2px signal outline, 2px offset, never removed */
 :focus { outline: none; }

@@ -13,7 +13,6 @@ import type { ApiKeyItem } from '../../types'
 import { keysApi } from './keysApi'
 import './keys.css'
 import { keyTail, limited, quotaDraftOf, resetLabel, validateQuotaDraft, windowRatio, WINDOW_NOUN, type QuotaDraft, type WindowKey } from './keysModel'
-
 /**
  * 调整额度 (DESIGN §6.3): the three USD windows of one Key. Empty = 不限. Each window shows what it has used
  * and when it rolls over, and a 重置 that zeroes that window's tally after a confirm that spells out the
@@ -135,6 +134,7 @@ async function resetWindow(key: WindowKey) {
     <form v-if="item" ref="body" class="kx-quota" novalidate @submit.prevent="save">
       <fieldset class="kx-form__lock" :disabled="busy && !stale">
       <p class="kx-quota__id">
+
         <span class="mono">{{ keyTail(item.maskedKey) }}</span>
         <span class="dim">美元 · 留空 = 不限 · 按 Asia/Shanghai 计</span>
       </p>
@@ -171,7 +171,8 @@ async function resetWindow(key: WindowKey) {
           <p v-if="errors[r.key]" class="kx-field__err kx-quota__err" role="alert">◆ {{ errors[r.key] }}</p>
         </li>
       </ul>
-      <button v-if="!allEmpty" type="button" class="ui-link kx-quota__clear" @click="clearAll">全部设为不限</button>
+      <TxButton v-if="!allEmpty" variant="ghost" size="sm" class="kx-quota__clear" @click="clearAll">全部设为不限</TxButton>
+
       <p v-if="failure" class="kx-form__fail" role="alert">◆ 保存失败 · {{ failure }}</p>
       </fieldset>
       <button type="submit" class="kx-form__submit" tabindex="-1" aria-hidden="true" :disabled="busy" />

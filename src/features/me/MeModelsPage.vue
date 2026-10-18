@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { TxStack } from '@talex-touch/tuffex/stack'
+import { TxButton } from '@talex-touch/tuffex/button'
 import { TxIconButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import PageHead from '../../ui/shell/PageHead.vue'
@@ -11,6 +13,7 @@ import SearchField from '../../ui/form/SearchField.vue'
 import Segmented from '../../ui/form/Segmented.vue'
 import Icon from '../../ui/Icon.vue'
 import { useLive } from '../../ui/composables/useLive'
+import { useSkinPref } from '../../lib/skin'
 import { copyText } from '../../ui/feedback/toast'
 import { fmtInt, NONE } from '../../ui/fmt'
 import { useQueryState } from '../../lib/listState'
@@ -31,6 +34,7 @@ const live = useLive<MeModels>((signal) => api.me.models(signal), {
   intervalMs: 5 * 60_000,
   isEmpty: (data) => data.models.length === 0,
 })
+const { pref: skin } = useSkinPref()
 const scope = useQueryState({ q: '', f: 'all', type: '' })
 
 const models = computed(() => live.data.value?.models ?? [])
@@ -137,27 +141,27 @@ usePaletteCommands(() =>
 </script>
 
 <template>
-  <div class="ui-page me-models">
+  <component :is="skin === 'minimal' ? TxStack : 'div'" class="ui-page me-models" :direction="skin === 'minimal' ? 'vertical' : undefined">
     <PageHead title="模型" plain :status="headStatus">
       <template #actions>
         <SearchField v-model="scope.state.q" placeholder="搜索模型 id" label="搜索模型" />
       </template>
     </PageHead>
 
-    <div class="me-models__filter">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-models__filter" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <span class="me-models__chips">
         <Segmented v-model="scope.state.f" :items="FILTERS" label="模型筛选" />
         <Segmented v-if="typeChips" v-model="scope.state.type" :items="typeChips" label="模型类型" />
       </span>
       <span class="me-models__unit">价格 = 每百万 token · 未定价 —</span>
-    </div>
+    </component>
 
-    <div class="me-models__stack">
+    <component :is="skin === 'minimal' ? TxStack : 'div'" class="me-models__stack" :direction="skin === 'minimal' ? 'vertical' : undefined">
       <Plate v-if="favourites.length && !narrowed" title="我常用的" flush :state="live.state.value" :error="live.error.value" :rows="5" @retry="live.refresh">
         <RowTable :columns="columns" :data="favourites" row-key="id" density="dense" caption="我常用的模型">
           <template #cell-id="{ row }">
             <span class="me-models__id">
-              <button type="button" class="me-models__name num" :title="`复制 ${row.id}`" :aria-label="`复制 ${row.id}`" @click.stop="copyText(row.id, row.id)">{{ row.id }}</button>
+              <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" class="me-models__name num" :title="`复制 ${row.id}`" :aria-label="`复制 ${row.id}`" @click.stop="copyText(row.id, row.id)">{{ row.id }}</TxButton><button v-else type="button" class="me-models__name num" :title="`复制 ${row.id}`" :aria-label="`复制 ${row.id}`" @click.stop="copyText(row.id, row.id)">{{ row.id }}</button>
               <TxTag v-if="kindTag(row.kind, kind)" :label="kindTag(row.kind) ?? ''" size="sm" variant="outline" />
               <TxTag v-if="row.reasoning" label="思考" size="sm" variant="plain" />
             </span>
@@ -186,20 +190,19 @@ usePaletteCommands(() =>
         :stale-at="live.lastAt.value"
         @retry="live.refresh"
       >
-        <p v-if="!filtered.length" class="me-models__none">— {{ noMatch }} · <button type="button" class="ui-link" @click="scope.reset()">清除筛选</button></p>
+        <p v-if="!filtered.length" class="me-models__none">— {{ noMatch }} · <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" @click="scope.reset()">清除筛选</TxButton><button v-else type="button" class="ui-link" @click="scope.reset()">清除筛选</button></p>
         <GroupedRowTable v-else :groups="groups" :columns="columns" row-key="id" density="dense">
           <template #group-head="{ group }">
             <ProviderMark v-if="group.vendor.logo" :provider="group.vendor.logo" :size="22" />
             <span v-else class="me-models__nomark" aria-hidden="true" />
             <h3 class="me-models__vendor">{{ group.head }}</h3>
             <span class="me-models__count num">{{ fmtInt(group.total) }}</span>
-            <button v-if="!narrowed && group.total > COLLAPSED" type="button" class="ui-link me-models__more" :aria-expanded="expanded.has(group.key)" @click="toggle(group.key)">
-              {{ expanded.has(group.key) ? '收起' : `展开另 ${fmtInt(group.total - COLLAPSED)} 个` }}
-            </button>
+            <TxButton v-if="skin === 'minimal' && !narrowed && group.total > COLLAPSED" variant="ghost" size="sm" class="me-models__more" :aria-expanded="expanded.has(group.key)" @click="toggle(group.key)">{{ expanded.has(group.key) ? '收起' : `展开另 ${fmtInt(group.total - COLLAPSED)} 个` }}</TxButton>
+            <button v-else-if="!narrowed && group.total > COLLAPSED" type="button" class="ui-link me-models__more" :aria-expanded="expanded.has(group.key)" @click="toggle(group.key)">{{ expanded.has(group.key) ? '收起' : `展开另 ${fmtInt(group.total - COLLAPSED)} 个` }}</button>
           </template>
           <template #cell-id="{ row }">
             <span class="me-models__id">
-              <button type="button" class="me-models__name num" :title="`复制 ${row.id}`" :aria-label="`复制 ${row.id}`" @click.stop="copyText(row.id, row.id)">{{ row.id }}</button>
+              <TxButton v-if="skin === 'minimal'" variant="ghost" size="sm" class="me-models__name num" :title="`复制 ${row.id}`" :aria-label="`复制 ${row.id}`" @click.stop="copyText(row.id, row.id)">{{ row.id }}</TxButton><button v-else type="button" class="me-models__name num" :title="`复制 ${row.id}`" :aria-label="`复制 ${row.id}`" @click.stop="copyText(row.id, row.id)">{{ row.id }}</button>
               <TxTag v-if="kindTag(row.kind, kind)" :label="kindTag(row.kind) ?? ''" size="sm" variant="outline" />
               <TxTag v-if="row.reasoning" label="思考" size="sm" variant="plain" />
             </span>
@@ -218,8 +221,8 @@ usePaletteCommands(() =>
           </template>
         </GroupedRowTable>
       </Plate>
-    </div>
-  </div>
+    </component>
+  </component>
 </template>
 
 <style>

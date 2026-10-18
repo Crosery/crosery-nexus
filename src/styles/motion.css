@@ -80,18 +80,20 @@
 .ui-leader { stroke-dasharray: 1 1; stroke-dashoffset: 1; animation: ui-draw var(--dur-3) var(--ease-settle) forwards; }
 
 /* reduced motion: content complete, nothing travels; sheet/toast fades ≤120ms */
-:root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after {
+@scope (:root) {
+:scope[data-motion="reduce"] *, :scope[data-motion="reduce"] *::before, :scope[data-motion="reduce"] *::after {
   animation-duration: .01ms !important; animation-delay: 0ms !important;
   animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0ms !important; }
-:root[data-motion="reduce"] .ui-scan, :root[data-motion="reduce"] .ui-skel::after { display: none; }
-:root[data-motion="reduce"] .ui-live::after { animation: none !important; transform: none; inset: -3px; border: 0; background: currentColor; opacity: .14; }
-:root[data-motion="reduce"] .ui-draw, :root[data-motion="reduce"] .ui-leader { stroke-dashoffset: 0; stroke-dasharray: none; }
-:root[data-motion="reduce"]::view-transition-new(root) { animation: none; }
+:scope[data-motion="reduce"] .ui-scan, :scope[data-motion="reduce"] .ui-skel::after { display: none; }
+:scope[data-motion="reduce"] .ui-live::after { animation: none !important; transform: none; inset: -3px; border: 0; background: currentColor; opacity: .14; }
+:scope[data-motion="reduce"] .ui-draw, :scope[data-motion="reduce"] .ui-leader { stroke-dashoffset: 0; stroke-dasharray: none; }
+:scope[data-motion="reduce"]::view-transition-new(root) { animation: none; }
 
 /* capture mode (?capture=1 or HeadlessChrome) */
-:root[data-capture] *, :root[data-capture] *::before, :root[data-capture] *::after {
+:scope[data-capture] *, :scope[data-capture] *::before, :scope[data-capture] *::after {
   animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important;
   transition-duration: 0ms !important; transition-delay: 0ms !important; }
-:root[data-capture] .ui-draw, :root[data-capture] .ui-leader { stroke-dashoffset: 0; stroke-dasharray: none; }
-:root[data-capture] .ui-live::after { animation: none !important; transform: none; inset: -3px; border: 0; background: currentColor; opacity: .14; }
-:root[data-capture] .ui-scan, :root[data-capture] .ui-skel::after { display: none; }
+:scope[data-capture] .ui-draw, :scope[data-capture] .ui-leader { stroke-dashoffset: 0; stroke-dasharray: none; }
+:scope[data-capture] .ui-live::after { animation: none !important; transform: none; inset: -3px; border: 0; background: currentColor; opacity: .14; }
+:scope[data-capture] .ui-scan, :scope[data-capture] .ui-skel::after { display: none; }
+}

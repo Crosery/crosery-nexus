@@ -3,6 +3,16 @@ import { computed, nextTick, onBeforeUnmount, ref, useTemplateRef, watch } from 
 import Segmented from '../form/Segmented.vue'
 import SecretField from '../form/SecretField.vue'
 import type { LoginMode } from '../types'
+import { TxCard } from '@talex-touch/tuffex/card'
+import { TxForm, TxFormItem } from '@talex-touch/tuffex/form'
+import { TxInput } from '@talex-touch/tuffex/input'
+import { TxButton } from '@talex-touch/tuffex/button'
+import { TxFilterChips } from '@talex-touch/tuffex/filter-chips'
+import { TxStack } from '@talex-touch/tuffex/stack'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxAlert } from '@talex-touch/tuffex/alert'
+import { useSkinPref } from '../../lib/skin'
+import SkinPicker from '../shell/SkinPicker.vue'
 
 /**
  * Login plate (DESIGN.md §6.1): brand row + `v3.0`, h1 `进入中转控制台`, a mode sub-line, Segmented
@@ -34,6 +44,7 @@ const props = withDefaults(
   { busy: false, error: null, locked: false, notice: null, version: 'v3.0' },
 )
 const emit = defineEmits<{ submit: [payload: { mode: LoginMode; key?: string; username?: string; password?: string }] }>()
+const skin = useSkinPref()
 
 const MODE_KEY = 'cx-login-mode'
 function initialMode(): LoginMode {
@@ -124,7 +135,42 @@ const msgId = (field: 'key' | 'username' | 'password') => `ui-lp-${field}-msg`
 </script>
 
 <template>
-  <form ref="root" class="ui-lp" novalidate :aria-busy="busy" @submit.prevent="submit" @paste.capture="mode === 'admin' && onPaste($event)">
+  <div v-if="skin.pref.value === 'minimal'" ref="root" @paste.capture="mode === 'admin' && onPaste($event)">
+    <TxCard background="pure">
+      <TxStack>
+        <TxFlex justify="space-between" wrap="wrap" align="center"><h1>进入中转控制台</h1><SkinPicker /></TxFlex>
+        <p>{{ sub }}</p>
+        <TxAlert v-if="notice" type="info" :message="notice" :closable="false" />
+        <TxFilterChips v-model="mode" :items="MODES" aria-label="登录方式" />
+        <TxForm label-position="top" :disabled="busy || locked" :aria-busy="busy" @submit.prevent="submit">
+          <template v-if="mode === 'key'">
+            <input type="text" name="username" autocomplete="username" value="API Key" hidden readonly tabindex="-1" aria-hidden="true">
+            <TxFormItem label="API Key">
+              <TxStack>
+                <div class="ui-lp__key"><SecretField id="ui-lp-key" ref="keyField" v-model="key" name="apiKey" autocomplete="current-password" placeholder="sk-…" noun="Key" :invalid="Boolean(errFor('key'))" :describedby="msgId('key')" /></div>
+                <TxButton @click="pasteKey">从剪贴板粘贴</TxButton>
+                <small :id="msgId('key')" :role="recognized ? 'status' : undefined">{{ recognized ? '已识别为 API Key' : 'Key 不会显示在页面上' }}</small>
+              </TxStack>
+            </TxFormItem>
+          </template>
+          <template v-else>
+            <TxFormItem label="账号">
+              <TxInput id="ui-lp-user" v-model="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" :aria-invalid="errFor('username') ? 'true' : undefined" />
+            </TxFormItem>
+            <TxFormItem label="密码">
+              <div class="ui-lp__pw"><SecretField id="ui-lp-pw" ref="pwField" v-model="password" name="password" autocomplete="current-password" noun="密码" :invalid="Boolean(errFor('password'))" /></div>
+            </TxFormItem>
+          </template>
+          <TxStack>
+            <TxAlert v-if="announce" type="error" :message="announce" :closable="false" role="alert" />
+            <TxButton native-type="submit" variant="primary" :loading="busy" :disabled="busy || locked">登录</TxButton>
+            <small>Tab 切换字段 · Enter 提交</small>
+          </TxStack>
+        </TxForm>
+      </TxStack>
+    </TxCard>
+  </div>
+  <form v-else ref="root" class="ui-lp" novalidate :aria-busy="busy" @submit.prevent="submit" @paste.capture="mode === 'admin' && onPaste($event)">
     <div class="ui-lp__brand">
       <span class="ui-lp__word">
         <svg class="ui-lp__mark" viewBox="0 0 22 22" width="18" height="18" aria-hidden="true">
@@ -136,6 +182,7 @@ const msgId = (field: 'key' | 'username' | 'password') => `ui-lp-${field}-msg`
       </span>
       <span class="ui-lp__ver">{{ version }}</span>
     </div>
+    <SkinPicker />
     <h1 class="ui-lp__h">进入中转控制台</h1>
     <p class="ui-lp__sub">{{ sub }}</p>
     <p v-if="notice" class="ui-lp__notice">{{ notice }}</p>

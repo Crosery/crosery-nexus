@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { TxButton } from '@talex-touch/tuffex/button'
 import { TxTag } from '@talex-touch/tuffex/tag'
 import ProviderMark from '../../ui/data/ProviderMark.vue'
 import Icon from '../../ui/Icon.vue'
@@ -32,22 +33,24 @@ const facts = computed(() => {
     <TxTag v-if="provider?.risk && !compact" size="sm" variant="outline" label="登录有风控风险" title="通过网关共享订阅账号可能违反供应商条款" />
     <span v-if="facts" class="acc-ph__facts num">{{ compact ? `${total}` : facts }}</span>
     <span class="acc-ph__r">
-      <button
+      <TxButton
         v-if="provider"
-        type="button"
-        class="ui-link acc-ph__cfg"
+        variant="ghost"
+        size="sm"
+        class="acc-ph__cfg"
         :aria-label="`配置 ${provider.name} 模型`"
         title="查看并配置该账号池的模型"
         @click="emit('config')"
-      ><Icon name="settings" :size="14" />{{ compact ? '配置' : '配置模型' }}</button>
-      <button
+      ><Icon name="settings" :size="14" />{{ compact ? '配置' : '配置模型' }}</TxButton>
+      <TxButton
         v-if="provider"
-        type="button"
-        class="ui-link acc-ph__add"
+        variant="ghost"
+        size="sm"
+        class="acc-ph__add"
         :aria-label="`添加 ${provider.name} 账号`"
         :title="flowLabel(provider)"
         @click="emit('add')"
-      ><Icon name="plus" :size="14" />{{ compact ? '添加' : '添加账号' }}</button>
+      ><Icon name="plus" :size="14" />{{ compact ? '添加' : '添加账号' }}</TxButton>
     </span>
   </header>
 </template>

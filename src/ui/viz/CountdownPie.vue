@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
+import { TxFlex } from '@talex-touch/tuffex/flex'
+import { TxProgressBar } from '@talex-touch/tuffex/progress-bar'
 import { useCountdown } from '../composables/useNow'
+import { useSkinPref } from '../../lib/skin'
 import type { Instant } from '../types'
-
 /**
  * Cooldown pie (DESIGN.md §5.2 viz/CountdownPie, motion recipe 15): ink-2 conic pie draining to empty plus
  * `冷却 23:41`, driven by the shared 1 s ticker. Cooldown is self-healing, so it is never orange.
@@ -23,13 +25,19 @@ const emit = defineEmits<{ done: [] }>()
 const cd = useCountdown(() => props.until, () => props.total)
 const deg = computed(() => `${Math.round(cd.ratio.value * 360)}deg`)
 const text = cd.label
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 watch(cd.done, (done) => {
   if (done) emit('done')
 })
 </script>
 
 <template>
-  <span class="ui-cdp" :aria-label="`${label} 剩余 ${text}`" role="timer">
+  <TxFlex v-if="minimal" direction="row" align="center" :gap="8" role="timer" :aria-label="`${label} 剩余 ${text}`">
+    <TxProgressBar :percentage="cd.ratio.value * 100" :aria-label="`${label} 剩余 ${text}`" />
+    <span v-if="!bare">{{ label }} <b>{{ text }}</b></span>
+  </TxFlex>
+  <span v-else class="ui-cdp" :aria-label="`${label} 剩余 ${text}`" role="timer">
     <i class="ui-cdp__pie" :style="{ '--pie': deg }" aria-hidden="true" />
     <span v-if="!bare" class="ui-cdp__t" aria-hidden="true">{{ label }} <b class="num">{{ text }}</b></span>
   </span>

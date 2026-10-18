@@ -29,6 +29,7 @@ export const ICON_PATHS = {
   external: '<path d="M9 2.5h4.5V7M13.5 2.5 7 9M11.5 9.5v3.5h-9v-9H6"/>',
   x: '<path d="m4 4 8 8M12 4l-8 8"/>',
   reset: '<path d="M3 8a5 5 0 1 0 1.5-3.6M3 2.8v2.6h2.6"/>',
+  edit: '<path d="M7 7 16 16l-4 4L3 17l1-5 7-7 3 3z"/><path d="M14.5 5.5 16.5 7.5 10 14H8v-2l6.5-6.5Z"/>',
   pause: '<path d="M6 3.5v9M10 3.5v9"/>',
   play: '<path d="M5 3.5v9l7-4.5-7-4.5Z"/>',
   sys: '<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/><circle cx="5" cy="4" r="1.2"/><circle cx="10.5" cy="8" r="1.2"/><circle cx="7" cy="12" r="1.2"/>',

@@ -38,8 +38,8 @@ test('index.html: boot script uses the same storage key and the file stays under
   const html = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8')
   assert.ok(html.includes(`localStorage['${THEME_STORAGE_KEY}']`), 'boot script must read the theme key')
   assert.match(html, /viewport-fit=cover/)
-  // the built index.html adds ~460 bytes of asset tags; staticCompression.test expects it under 1 KB
-  assert.ok(Buffer.byteLength(html) < 640, `index.html source is ${Buffer.byteLength(html)} bytes`)
+  // The source stays below 1 KB; generated preload tags are covered by staticCompression.test.
+  assert.ok(Buffer.byteLength(html) < 1024, `index.html source is ${Buffer.byteLength(html)} bytes`)
 })
 
 test('motion: one switch — explicit choice wins, system follows prefers-reduced-motion', () => {

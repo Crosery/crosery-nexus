@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { useTemplateRef, watch } from 'vue'
+import { computed, useTemplateRef, watch } from 'vue'
+import { TxFlex } from '@talex-touch/tuffex/flex'
 import { TxSearchInput } from '@talex-touch/tuffex/search-input'
+import { useSkinPref } from '../../lib/skin'
 import { useQueryState } from '../../lib/listState'
 import { useShortcuts } from '../composables/useShortcuts'
 import Kbd from './Kbd.vue'
@@ -21,7 +23,7 @@ const props = withDefaults(
   { placeholder: '搜索', label: undefined, query: undefined, slash: true },
 )
 const model = defineModel<string>({ default: '' })
-const root = useTemplateRef<HTMLElement>('root')
+const root = useTemplateRef<HTMLElement | { $el: HTMLElement }>('root')
 
 const url = props.query ? useQueryState({ [props.query]: '' }) : null
 if (url && props.query) {
@@ -31,19 +33,22 @@ if (url && props.query) {
 }
 
 function focus() {
-  const input = root.value?.querySelector('input')
+  const element = root.value && ('$el' in root.value ? root.value.$el : root.value)
+  const input = element?.querySelector('input')
   input?.focus()
   input?.select()
 }
 if (props.slash) useShortcuts({ '/': focus })
+const { pref: skin } = useSkinPref()
+const minimal = computed(() => skin.value === 'minimal')
 defineExpose({ focus })
 </script>
 
 <template>
-  <div ref="root" class="ui-search" role="search">
+  <component :is="minimal ? TxFlex : 'div'" ref="root" class="ui-search" :direction="minimal ? 'row' : undefined" :gap="minimal ? 8 : undefined" align="center" role="search">
     <TxSearchInput v-model="model" :placeholder="placeholder" :aria-label="label ?? placeholder" clearable />
     <Kbd v-if="slash && !model" keys="/" class="ui-search__kbd" />
-  </div>
+  </component>
 </template>
 
 <style>
